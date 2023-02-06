@@ -10,7 +10,7 @@ We use the javaparser lib to convert Java code to an AST and use the visitor pat
 
 ## Quick Navigation
 
--   [Parse Methods From Java Files](src/org/fit/hiai/main/ProgramMethodsProcessor)
+-   [Parse Methods From Java Files](tree/main/src/org/fit/hiai/main/ProgramMethodsProcessor)
 
 -   [Build and Print out Textual AST](src/org/fit/hiai/main/PProgramTreeBuilder)
 
