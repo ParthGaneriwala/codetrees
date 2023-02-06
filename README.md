@@ -4,13 +4,13 @@
 
 This repository stores Java Code, which is part of my research into finding similar code structures. One concept used is known as code clones and is widely discussed in the literature.
 
-We use the javaparser lib to convert Java code to an AST and use the visitor pattern to traverse the nodes in the tree. JavaParser is written by [Federico Tomassetti](https://leanpub.com/u/tomassetti%5D), who has also written a book on how to use the javaparser library. A free copy is here. A copy of the book is in the [repo]()
+We use the javaparser lib to convert Java code to an AST and use the visitor pattern to traverse the nodes in the tree. JavaParser is written by [Federico Tomassetti](https://leanpub.com/u/tomassetti), who has also written a book on how to use the javaparser library. A free copy is here. A copy of the book is in the [repo]()
 
 **Data Processing Summary** In order to find similar code, we used 3 open source repositories. We parse the Java files and separate the methods into files. These sample files can be found in [data](data)
 
 ## Quick Navigation
 
--   [Parse Methods From Java Files](tree/main/src/org/fit/hiai/main/ProgramMethodsProcessor)
+-   [Parse Methods From Java Files](src/org/fit/hiai/main/ProgramMethodClassifier.java)
 
 -   [Build and Print out Textual AST](src/org/fit/hiai/main/PProgramTreeBuilder)
 
