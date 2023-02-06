@@ -12,15 +12,15 @@ We use the javaparser lib to convert Java code to an AST and use the visitor pat
 
 -   [Parse Methods From Java Files](src/org/fit/hiai/main/ProgramMethodClassifier.java)
 
--   [Build and Print out Textual AST](src/org/fit/hiai/main/PProgramTreeBuilder)
+-   [Build and Print out Textual AST](src/org/fit/hiai/main/PProgramTreeBuilder.java)
 
--   [Convert Java Methods to ARFF File Based on Ordered Node Frequency](src/org/fit/hiai/main/ProgramMethodClassifier)
+-   [Convert Java Methods to ARFF File Based on Ordered Node Frequency](src/org/fit/hiai/main/ProgramMethodClassifier.java)
 
--   [Encode Java Methods and Align using the LCS Algorithm](src/org/fit/hiai/main/EncodedMethodAligner)
+-   [Encode Java Methods and Align using the LCS Algorithm](src/org/fit/hiai/main/EncodedMethodAligner.java)
 
--   [Compare Java Methods using Semi-Isomorphic AST Match](src/org/fit/hiai/main/IsomorphicMethodsMatcher)
+-   [Compare Java Methods using Semi-Isomorphic AST Match](src/org/fit/hiai/main/IsomorphicMethodsMatcher.java)
 
--   [Classify Methods using KNN](src/org/fit/hiai/main/ProgramMethodClassifier)
+-   [Classify Methods using KNN](src/org/fit/hiai/main/ProgramMethodClassifier.java)
 
 -   Learn more about [WEKA](https://www.cs.waikato.ac.nz/ml/weka/) and the [ARFF file format](https://www.cs.waikato.ac.nz/ml/weka/arff.html) \## JavaParser Nodes
 
