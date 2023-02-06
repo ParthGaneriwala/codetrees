@@ -1,0 +1,94 @@
+public void run() {
+    try {
+        // total and count are for tracking the number of entries in a reduce queue
+        int total = getReduceQSize(jobID, Integer.parseInt(bucket), committedMap);
+        int count = 0;
+        int oldcount = 0;
+        int emptypass = 0;
+        // allocate worker
+        WorkerThreadQueue workers = new WorkerThreadQueue(Global.numDownloadWorkersPerReduce, "reduce" + bucket);
+        // A reduce queue could contain multiple reduce keys
+        // set numReduceQReadBuffer high to request a lot to parallelize
+        SimpleQueue value = queueManager.getQueue(getSubReduceQueueName(jobID, bucket), true, Global.numReduceQReadBuffer, QueueManager.QueueType.REDUCE, committedMap, null, workers);
+        long reduceLocal = perf.getStartTime();
+        do {
+            for (Message msg : value) {
+                String keyVal = msg.getBody();
+                count++;
+                // could choose indexOf too, should be unique in theory
+                int sep = keyVal.lastIndexOf(Global.separator);
+                String key = keyVal.substring(0, sep);
+                String val = keyVal.substring(sep + Global.separator.length());
+                // decode message as it was encoded when pushed to SQS
+                try {
+                    key = URLDecoder.decode(key, "UTF-8");
+                    val = URLDecoder.decode(val, "UTF-8");
+                } catch (Exception ex) {
+                    logger.error("Message decoding failed. " + ex.getMessage());
+                }
+                if (!reduceStates.containsKey(key)) {
+                    long reduceStart = perf.getStartTime();
+                    Object state = reduce.start(key, collector);
+                    perf.stopTimer("reduceStart", reduceStart);
+                    reduceStates.put(key, state);
+                }
+                long reduceNext = perf.getStartTime();
+                reduce.next(key, val, reduceStates.get(key), collector, perf);
+                perf.stopTimer("reduceNext", reduceNext);
+            }
+            if (oldcount != count) {
+                logger.debug(bucket + ": Processed " + count + " out of total " + total);
+                oldcount = count;
+                emptypass = 0;
+            } else
+                emptypass++;
+            if (count < total)
+                // sleep a little bit to wait
+                Thread.sleep(1000);
+            if (emptypass > 5) {
+                // should we start conflict resolution process?
+                // count how often we do this
+                perf.incrementCounter("attemptConflictResolution", 1);
+                logger.info("start conflict resolution");
+                // do not bother again for another round
+                emptypass = 0;
+                dbManager.claimReduce(jobID, taskID, bucket, receiptHandle);
+                String winner = dbManager.resolveReduce(jobID, bucket);
+                logger.info("resolution winner is " + winner);
+                if (winner != null && !winner.startsWith(taskID)) {
+                    // if we are not the winner, clean and quit
+                    perf.incrementCounter("lostReduceConflictResolution", 1);
+                    /*
+							String winningReceipt = winner.substring(winner.indexOf('_')+1);
+							if ( winningReceipt != receiptHandle ) {
+								perf.incrementCounter("lostReduceConflictResolutionBecauseOfDup", 1);
+								logger.info("Remove duplicate master reduce message " + receiptHandle);
+								// must have been duplicate message in the master reduce queue, remove the redundant one, but not the primary one in case of failure
+								masterReduceQueue.deleteMessage(winningReceipt);
+							}*/
+                    return;
+                }
+            }
+        } while (// queue may not be empty because of eventual consistency
+        count < total);
+        if (count > total)
+            logger.warn("Reduce queue " + bucket + " processed more than available: " + count + " vs. " + total);
+        for (Entry<String, Object> entry : reduceStates.entrySet()) {
+            long reduceComplete = perf.getStartTime();
+            reduce.complete(entry.getKey(), entry.getValue(), collector);
+            perf.stopTimer("reduceComplete", reduceComplete);
+        }
+        // If a reduce task fails before commit, there could be a problem in conflict resolution when others think that this reduce task is still working on it
+        // Not a problem in theory because eventually a lower numbered task will grab it, but need to look into faster ways of recovery
+        dbManager.commitTask(jobID, taskID, Integer.parseInt(bucket), Global.STAGE.REDUCE);
+        // delete what we processed
+        masterReduceQueue.deleteMessage(receiptHandle);
+        // delete threads
+        // No need to wait for finish because we only download. The fact that we have downloaded all data means the workers have finished
+        workers.close();
+        // reduceStates.clear();
+        perf.stopTimer("reduceLocal", reduceLocal);
+    } catch (Exception e) {
+        logger.warn("ReduceRunnable Exception: " + e.getMessage());
+    }
+}

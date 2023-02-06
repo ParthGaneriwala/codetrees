@@ -1,0 +1,88 @@
+// DB_TABLE_UIEDIT/<Table_Name>
+// DB_TABLE_UIEDIT/<Table_Name>/<FieldName>/<Value>
+/*
+	 * DATE CHAR BLOB CLOB VARCHAR INTEGER BIGINT DECIMAL DOUBLE REAL SMALLINT
+	 * TIME TIMESTAMP
+	 */
+public String getResponseXml() throws Exception {
+    Connection conn = DBUtils.getConnection();
+    String sql = "SELECT * FROM " + m_parameter[1];
+    boolean isDate = false;
+    boolean isInteger = false;
+    if (m_parameter.length == 4) {
+        if (m_parameter[3].indexOf("~") != -1) {
+            m_parameter[3] = m_parameter[3].replaceAll("~", "/");
+            isDate = true;
+        }
+        String old = m_parameter[3];
+        try {
+            m_parameter[3] = new SimpleDateFormat("MM/dd/yyyy").format(new SimpleDateFormat(CSWConstants.dateFormat).parse(m_parameter[3]));
+            isDate = true;
+        } catch (Exception e) {
+            try {
+                Integer.parseInt(m_parameter[3]);
+                isInteger = true;
+            } catch (Exception e1) {
+                m_parameter[3] = old;
+            }
+        }
+        if (isDate)
+            sql = sql + " WHERE " + m_parameter[2] + " = '" + m_parameter[3] + "'";
+        else if (isInteger)
+            sql = sql + " WHERE " + m_parameter[2] + " = " + m_parameter[3];
+        else
+            sql = sql + " WHERE UCASE(" + m_parameter[2] + ") LIKE '%" + m_parameter[3].toUpperCase() + "%'";
+    }
+    Log.debug(sql);
+    PreparedStatement ps = conn.prepareStatement(sql);
+    ps.setMaxRows(CSWConstants.maxQueryResults);
+    ResultSet rs = ps.executeQuery();
+    StringBuffer sb = new StringBuffer();
+    sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    sb.append("<" + m_parameter[1] + ">");
+    int i = 1;
+    while (rs.next()) {
+        sb.append("<RECORD>");
+        for (int j = 0; j < rs.getMetaData().getColumnCount(); j++) {
+            sb.append("<" + rs.getMetaData().getColumnName(j + 1) + ">");
+            if (rs.getMetaData().getColumnTypeName(j + 1).equalsIgnoreCase("DATE")) {
+                String date = new SimpleDateFormat(CSWConstants.dateFormat).format(new Date(rs.getDate(j + 1).getTime()));
+                // Derby takes this value
+                String maxDate1 = new SimpleDateFormat(CSWConstants.dateFormat).format(new SimpleDateFormat("dd-MMM-yyyy").parse("01-Feb-3653"));
+                // Mysql takes this value. (not sure why)
+                String maxDate2 = new SimpleDateFormat(CSWConstants.dateFormat).format(new SimpleDateFormat("dd-MMM-yyyy").parse("31-Jan-3653"));
+                if (date.equalsIgnoreCase(maxDate1) || date.equalsIgnoreCase(maxDate2))
+                    sb.append("");
+                else
+                    sb.append(date);
+            } else if (rs.getMetaData().getColumnTypeName(j + 1).equalsIgnoreCase("CHAR")) {
+                String chkbox = rs.getString(j + 1);
+                if (chkbox == null || chkbox.equalsIgnoreCase(""))
+                    chkbox = "F";
+                if (chkbox.equalsIgnoreCase("Y") || chkbox.equalsIgnoreCase("T"))
+                    sb.append("true");
+                else
+                    sb.append("false");
+            } else if (rs.getMetaData().getColumnTypeName(j + 1).equalsIgnoreCase("BLOB")) {
+                ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                IOUtils.copy(rs.getBinaryStream(j + 1), bos);
+                sb.append(Base64.encodeBase64String(bos.toByteArray()));
+            } else
+                sb.append(rs.getString(j + 1));
+            sb.append("</" + rs.getMetaData().getColumnName(j + 1) + ">");
+        }
+        sb.append("</RECORD>");
+        i++;
+    }
+    // if (i == 1) {
+    // // Empty Record
+    // sb.append("<RECORD>");
+    // for (int j = 0; j < rs.getMetaData().getColumnCount(); j++)
+    // sb.append("<" + rs.getMetaData().getColumnName(j + 1) + "/>");
+    // sb.append("</RECORD>");
+    // }
+    rs.close();
+    ps.close();
+    sb.append("</" + m_parameter[1] + ">");
+    return sb.toString();
+}

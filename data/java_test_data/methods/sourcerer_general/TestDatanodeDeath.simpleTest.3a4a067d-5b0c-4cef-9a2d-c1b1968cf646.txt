@@ -1,0 +1,58 @@
+private void simpleTest(int datanodeToKill) throws IOException {
+    Configuration conf = new Configuration();
+    conf.setInt("heartbeat.recheck.interval", 2000);
+    conf.setInt("dfs.heartbeat.interval", 1);
+    conf.setInt("dfs.replication.pending.timeout.sec", 2);
+    conf.setInt("dfs.socket.timeout", 5000);
+    int myMaxNodes = 5;
+    System.out.println("SimpleTest starting with DataNode to Kill " + datanodeToKill);
+    MiniDFSCluster cluster = new MiniDFSCluster(conf, myMaxNodes, true, null);
+    cluster.waitActive();
+    FileSystem fs = cluster.getFileSystem();
+    short repl = 3;
+    Path filename = new Path("simpletest.dat");
+    try {
+        // create a file and write one block of data
+        System.out.println("SimpleTest creating file " + filename);
+        FSDataOutputStream stm = createFile(fs, filename, repl);
+        DFSClient.DFSOutputStream dfstream = (DFSClient.DFSOutputStream) (stm.getWrappedStream());
+        // these are test settings
+        dfstream.setChunksPerPacket(5);
+        dfstream.setArtificialSlowdown(3000);
+        final long myseed = AppendTestUtil.nextLong();
+        byte[] buffer = AppendTestUtil.randomBytes(myseed, fileSize);
+        int mid = fileSize / 4;
+        stm.write(buffer, 0, mid);
+        DatanodeInfo[] targets = dfstream.getPipeline();
+        int count = 5;
+        while (count-- > 0 && targets == null) {
+            try {
+                System.out.println("SimpleTest: Waiting for pipeline to be created.");
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+            }
+            targets = dfstream.getPipeline();
+        }
+        if (targets == null) {
+            int victim = AppendTestUtil.nextInt(myMaxNodes);
+            System.out.println("SimpleTest stopping datanode random " + victim);
+            cluster.stopDataNode(victim);
+        } else {
+            int victim = datanodeToKill;
+            System.out.println("SimpleTest stopping datanode " + targets[victim].getName());
+            cluster.stopDataNode(targets[victim].getName());
+        }
+        System.out.println("SimpleTest stopping datanode complete");
+        // write some more data to file, close and verify
+        stm.write(buffer, mid, fileSize - mid);
+        stm.close();
+        checkFile(fs, filename, repl, numBlocks, fileSize, myseed);
+    } catch (Throwable e) {
+        System.out.println("Simple Workload exception " + e);
+        e.printStackTrace();
+        assertTrue(e.toString(), false);
+    } finally {
+        fs.close();
+        cluster.shutdown();
+    }
+}

@@ -1,0 +1,79 @@
+// ------------------------------------------------------------------------
+private Packet[] _parsePacket(String ipAddr, byte[] pkt) {
+    // 'pkt' always represents a single packet
+    /* Running Fletcher checksum */
+    this.fletcher.runningChecksum(pkt);
+    /* print packet */
+    if ((pkt != null) && (pkt.length > 0)) {
+        if (pkt[0] == Encoding.AsciiEncodingChar) {
+            int len = (pkt[pkt.length - 1] == Encoding.AsciiEndOfLineChar) ? (pkt.length - 1) : pkt.length;
+            Print.logDebug("<== " + StringTools.toStringValue(pkt, 0, len));
+        } else {
+            String encPkt = StringTools.toHexString(pkt);
+            Print.logDebug("<== 0x" + encPkt);
+        }
+    }
+    /* parse packet */
+    Packet packet = null;
+    try {
+        /* parse packet */
+        // Note: 'this.deviceId' may be null here (eg. before device is defined)
+        // The device id is only needed for custom payload templates when parsing
+        // custom events.
+        // client packet
+        packet = new Packet(this.deviceId, true, pkt);
+        if (this.encoding == Encoding.ENCODING_UNKNOWN) {
+            // The first received packet establishes the encoding
+            this.encoding = packet.getEncoding();
+        }
+        /* handle client packet, return response packets */
+        Packet[] p = this._handlePacket(ipAddr, packet);
+        return p;
+    } catch (PacketParseException ppe) {
+        /* set packet if null */
+        Packet errPkt = ppe.getPacket();
+        if (errPkt == null) {
+            ppe.setPacket(packet);
+            errPkt = packet;
+        }
+        /* terminate? */
+        if (ppe.terminateSession()) {
+            // error
+            this._setTerminateSession();
+        }
+        /* avoid duplicate NAK_FORMAT_NOT_RECOGNIZED error codes */
+        int errCode = ppe.getErrorCode();
+        if (errCode == ServerErrors.NAK_FORMAT_NOT_RECOGNIZED) {
+            if (++this.formatErrorCount == 1) {
+                // This section will be executed at-most once during a session
+                if (errPkt != null) {
+                    // save first custom packet type found
+                    this.formatErrorType = errPkt.getPacketType();
+                    if (this.isDuplex()) {
+                        // This is only a warning for Duplex communication
+                        int hdrType = (errPkt.getPacketHeader() << 8) | errPkt.getPacketType();
+                        String hdrTypeStr = StringTools.toHexString(hdrType, 16);
+                        Print.logWarn("Unrecognized event packet type: 0x" + hdrTypeStr + " (client will be notified)");
+                        // we're now expecting an event template response from the client
+                        if (DMTPServer.getAllowFirstSessionNegotiation()) {
+                            this.expectEventTemplate = true;
+                        }
+                    } else {
+                        // This is an error for Simplex communication
+                        Print.logException("Unrecognized event packet type during Simplex transport!", ppe);
+                    }
+                } else {
+                    // will not occur
+                    this.formatErrorType = 0;
+                }
+            } else if ((errPkt != null) && (errPkt.getPacketType() == this.formatErrorType)) {
+                // do not send duplicates.
+                return null;
+            }
+        } else {
+            Print.logException("Error: ", ppe);
+        }
+        /* return error packet */
+        return new Packet[] { ppe.createServerErrorPacket() };
+    }
+}

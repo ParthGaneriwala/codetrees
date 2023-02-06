@@ -1,0 +1,90 @@
+@Override
+protected void ProcessNewStreamObj(Instance inst) {
+    if (bShowProgress)
+        ShowProgress("Processed " + objId + " stream objects.");
+    // PrintInstance(inst);
+    double[] values = getInstanceValues(inst);
+    StreamObj obj = new StreamObj(values);
+    if (bTrace)
+        Println("\n- - - - - - - - - - - -\n");
+    // delete a node if it has expired
+    DeleteExpiredNode();
+    // create new ISB node
+    ISBNodeAppr nodeNew = new ISBNodeAppr(inst, obj, objId, m_k);
+    if (bTrace) {
+        Print("New obj: ");
+        PrintNode(nodeNew);
+    }
+    // update object identifier
+    objId++;
+    // init nodeNew
+    nodeNew.count_after = 1L;
+    nodeNew.count_before = 0L;
+    // perform range query search
+    if (bTrace)
+        Println("Perform range query seach:");
+    nRangeQueriesExecuted++;
+    Vector<ISBIndex.ISBSearchResult> nodes = ISB.RangeSearch(nodeNew, m_radius);
+    // process each returned node
+    int nSafeInliers;
+    Long count_si_before = 0L;
+    for (ISBSearchResult res : nodes) {
+        ISBNodeAppr n = (ISBNodeAppr) res.node;
+        if (bTrace) {
+            Printf("   Found at d=%.2f: ", res.distance);
+            PrintNode(res.node);
+        }
+        n.count_after++;
+        if (IsSafeInlier(n)) {
+            if (bTrace)
+                Println("   Safe inlier: id=" + n.id);
+            AddSafeInlier(n);
+            count_si_before++;
+        }
+        nSafeInliers = safe_inliers.size();
+        if (nSafeInliers > m_FractWindowSize) {
+            // get a random safe inlier: 0 <= idx < nSafeInliers
+            int idx = m_Random.nextInt(nSafeInliers);
+            ISBNode si = GetSafeInlier(idx);
+            if (bTrace)
+                Println("   Remove random safe inlier: id=" + si.id);
+            // remove node from ISB and safe-inliers-list
+            RemoveSafeInlier(si);
+        }
+        nodeNew.count_before++;
+    }
+    // Set fract_before of curr_node which is determined as the ratio
+    // between the number of preceding neighbors of curr_node in ISB
+    // which are safe inliers and the total number of safe inliers in
+    // ISB, at the arrival time of curr_node.
+    nSafeInliers = safe_inliers.size();
+    if (nSafeInliers > 0) {
+        nodeNew.fract_before = (double) count_si_before / (double) nSafeInliers;
+    } else {
+        if (bTrace)
+            Println("Set fract before: no safe inliers yet, set 0.");
+        nodeNew.fract_before = 0;
+    }
+    if (bTrace) {
+        Println("Node: ");
+        Println("   count_after=" + nodeNew.count_after);
+        Println("   count_before=" + nodeNew.count_before);
+        Printf("   fract_before=%.3f\n", nodeNew.fract_before);
+        Println("Insert new node to ISB.");
+    }
+    // insert node to ISB
+    ISB.Insert(nodeNew);
+    // insert node at window
+    windowNodes.add(nodeNew);
+    if (bTrace) {
+        PrintWindow();
+        PrintSafeInliers();
+    }
+    if (CanSearch()) {
+        // invoke query function to detect outliers
+        SearchOutliers();
+    } else {
+        // update statistics outlierness of new node
+        UpdateNodeStatistics(nodeNew);
+    }
+}

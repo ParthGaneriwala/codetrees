@@ -1,0 +1,107 @@
+public ProcessError modificar() {
+    Connection connection = JDBCConnectionManager.getInstance().getConnection();
+    PreparedStatement ps = null;
+    ResultSet rs = null;
+    try {
+        Date date = null;
+        try {
+            date = (Date) dateFormatter.parse(this.getFechaEntrega());
+        } catch (ParseException e) {
+            e.printStackTrace();
+        }
+        ps = connection.prepareStatement("select id from hojaderuta where fecha::date = '" + this.getFechaEntrega() + "'");
+        rs = ps.executeQuery();
+        Boolean hojaDeRutaCreada = false;
+        while (rs.next()) {
+            hojaDeRutaCreada = true;
+        }
+        if (hojaDeRutaCreada) {
+            StringBuffer sb = new StringBuffer();
+            sb.append(this.getPedidoId());
+            sb.append(" La Hoja de Ruta para el " + this.getFechaEntrega() + " ya se encuentra cerrada. El pedido no se puede modificar para esta fecha.");
+            this.setResult(sb.toString());
+            return null;
+        }
+        ps = connection.prepareStatement("select * from pedido p, hojaderuta h where p.fecha_entrega::date = h.fecha::date and p.id = ?");
+        ps.setInt(1, this.getPedidoId());
+        rs = ps.executeQuery();
+        hojaDeRutaCreada = false;
+        while (rs.next()) {
+            hojaDeRutaCreada = true;
+        }
+        if (hojaDeRutaCreada) {
+            StringBuffer sb = new StringBuffer();
+            sb.append(this.getPedidoId());
+            sb.append(" La Hoja de Ruta para el " + this.getFechaEntrega() + " ya se encuentra cerrada. No se puede modificar un pedido para esa fecha.");
+            this.setResult(sb.toString());
+            return null;
+        }
+        boolean entra = false;
+        CallableStatement st = connection.prepareCall("select entra_pedido(?,?)");
+        st.setInt(1, this.getPedidoId());
+        st.setTimestamp(2, new Timestamp(date.getTime()));
+        rs = st.executeQuery();
+        while (rs.next()) {
+            entra = rs.getBoolean(1);
+        }
+        entra = true;
+        if (!entra) {
+            StringBuffer sb = new StringBuffer();
+            sb.append(this.getPedidoId());
+            sb.append(" No se puede entregar el dia " + this.getFechaEntrega() + " debido a que los camiones no daran abasto. Por favor, elija otra fecha.");
+            this.setResult(sb.toString());
+            return null;
+        }
+        st = connection.prepareCall("select entra_pedido_un_camion(?,?)");
+        st.setInt(1, this.getPedidoId());
+        st.setTimestamp(2, new Timestamp(date.getTime()));
+        rs = st.executeQuery();
+        while (rs.next()) {
+            entra = rs.getBoolean(1);
+        }
+        entra = true;
+        if (!entra) {
+            StringBuffer sb = new StringBuffer();
+            sb.append(this.getPedidoId());
+            sb.append(" No se puede entregar el dia " + this.getFechaEntrega() + " debido a que el peso total supera al tolerado por un camion. Modifique sus pedido para que este quepa en dos diferentes..");
+            this.setResult(sb.toString());
+            return null;
+        }
+        if (entra) {
+            ps = connection.prepareStatement("update pedido" + " set cliente_id = ?, fecha_entrega = ?, sucursal_envio_id = ?, comentarios = ?, estado_id = 1" + " where id = ?");
+            ps.setInt(1, this.getClienteId());
+            ps.setTimestamp(2, new Timestamp(date.getTime()));
+            ps.setInt(3, this.getSucursalId());
+            ps.setString(4, this.getComentarios());
+            ps.setInt(5, this.getPedidoId());
+            ps.executeUpdate();
+            StringBuffer sb = new StringBuffer();
+            sb.append(this.getPedidoId());
+            sb.append(" ok");
+            this.setResult(sb.toString());
+        } else {
+            throw new IllegalArgumentException();
+        }
+    } catch (SQLException e) {
+        e.printStackTrace();
+        ProcessError error = new ProcessError();
+        error.addError("fatal");
+        return error;
+    } finally {
+        try {
+            try {
+                ps.close();
+            } catch (NullPointerException nu) {
+                return null;
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        try {
+            connection.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+    return null;
+}

@@ -1,0 +1,53 @@
+public static void main(String[] args) throws IOException {
+    OptionParser parser = new OptionParser();
+    parser.accepts("help", "print usage information");
+    parser.accepts("cluster", "[REQUIRED] path to cluster xml config file").withRequiredArg().describedAs("cluster.xml");
+    parser.accepts("stores", "[REQUIRED] path to stores xml config file").withRequiredArg().describedAs("stores.xml");
+    parser.accepts("name", "[REQUIRED] store name").withRequiredArg().describedAs("store name");
+    parser.accepts("buffer", "[REQUIRED] number of key/value pairs to buffer in memory").withRequiredArg().ofType(Integer.class);
+    parser.accepts("input", "[REQUIRED] input file to read from").withRequiredArg().describedAs("input-file");
+    parser.accepts("output", "[REQUIRED] directory to output stores to").withRequiredArg().describedAs("output directory");
+    parser.accepts("threads", "number of threads").withRequiredArg().ofType(Integer.class);
+    parser.accepts("chunks", "number of store chunks per store").withRequiredArg().ofType(Integer.class);
+    parser.accepts("io-buffer-size", "size of i/o buffers in bytes").withRequiredArg().ofType(Integer.class);
+    parser.accepts("temp-dir", "temporary directory for sorted file pieces").withRequiredArg().describedAs("temp dir");
+    OptionSet options = parser.parse(args);
+    if (options.has("help")) {
+        parser.printHelpOn(System.out);
+        System.exit(0);
+    }
+    Set<String> missing = CmdUtils.missing(options, "cluster", "stores", "name", "buffer", "input", "output");
+    if (missing.size() > 0) {
+        System.err.println("Missing required arguments: " + Joiner.on(", ").join(missing));
+        parser.printHelpOn(System.err);
+        System.exit(1);
+    }
+    String clusterFile = (String) options.valueOf("cluster");
+    String storeDefFile = (String) options.valueOf("stores");
+    String storeName = (String) options.valueOf("name");
+    int sortBufferSize = (Integer) options.valueOf("buffer");
+    String inputFile = (String) options.valueOf("input");
+    File outputDir = new File((String) options.valueOf("output"));
+    int numThreads = CmdUtils.valueOf(options, "threads", 2);
+    int numChunks = CmdUtils.valueOf(options, "chunks", 2);
+    int ioBufferSize = CmdUtils.valueOf(options, "io-buffer-size", 1000000);
+    File tempDir = new File(CmdUtils.valueOf(options, "temp-dir", System.getProperty("java.io.tmpdir")));
+    try {
+        JsonReader reader = new JsonReader(new BufferedReader(new FileReader(inputFile), ioBufferSize));
+        Cluster cluster = new ClusterMapper().readCluster(new BufferedReader(new FileReader(clusterFile)));
+        StoreDefinition storeDef = null;
+        List<StoreDefinition> stores = new StoreDefinitionsMapper().readStoreList(new BufferedReader(new FileReader(storeDefFile)));
+        for (StoreDefinition def : stores) {
+            if (def.getName().equals(storeName))
+                storeDef = def;
+        }
+        if (storeDef == null)
+            Utils.croak("No store found with name \"" + storeName + "\"");
+        if (!outputDir.exists())
+            Utils.croak("Directory \"" + outputDir.getAbsolutePath() + " does not exist.");
+        RoutingStrategy routingStrategy = new RoutingStrategyFactory().updateRoutingStrategy(storeDef, cluster);
+        new JsonStoreBuilder(reader, cluster, storeDef, routingStrategy, outputDir, tempDir, sortBufferSize, numThreads, numChunks, ioBufferSize).build();
+    } catch (FileNotFoundException e) {
+        Utils.croak(e.getMessage());
+    }
+}

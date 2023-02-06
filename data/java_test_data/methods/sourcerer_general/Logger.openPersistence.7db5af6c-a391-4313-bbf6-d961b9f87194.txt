@@ -1,0 +1,75 @@
+public void openPersistence() {
+    // oj@openoffice.org - changed to file access api
+    String fileaccess_class_name = (String) database.getURLProperties().getProperty(HsqlDatabaseProperties.url_fileaccess_class_name);
+    if (fileaccess_class_name != null) {
+        String storagekey = database.getURLProperties().getProperty(HsqlDatabaseProperties.url_storage_key);
+        try {
+            Class zclass = Class.forName(fileaccess_class_name);
+            Constructor constructor = zclass.getConstructor(new Class[] { Object.class });
+            fileAccess = (FileAccess) constructor.newInstance(new Object[] { storagekey });
+            isStoredFileAccess = true;
+        } catch (java.lang.ClassNotFoundException e) {
+            System.out.println("ClassNotFoundException");
+        } catch (java.lang.InstantiationException e) {
+            System.out.println("InstantiationException");
+        } catch (java.lang.IllegalAccessException e) {
+            System.out.println("IllegalAccessException");
+        } catch (Exception e) {
+            System.out.println("Exception");
+        }
+    } else {
+        fileAccess = FileUtil.getFileAccess(database.isFilesInJar());
+    }
+    boolean isFile = DatabaseURL.isFileBasedDatabaseType(database.getType());
+    database.databaseProperties = new HsqlDatabaseProperties(database);
+    isNewDatabase = !isFile || !fileAccess.isStreamElement(database.getPath() + ".script");
+    if (isNewDatabase) {
+        String name = newUniqueName();
+        database.setUniqueName(name);
+        boolean checkExists = database.isFilesInJar() || database.urlProperties.isPropertyTrue(HsqlDatabaseProperties.url_ifexists);
+        if (checkExists) {
+            throw Error.error(ErrorCode.DATABASE_NOT_EXISTS, database.getPath());
+        }
+        database.databaseProperties.setURLProperties(database.urlProperties);
+    } else {
+        database.databaseProperties.load();
+        if (database.urlProperties.isPropertyTrue(HsqlDatabaseProperties.hsqldb_files_readonly)) {
+            database.databaseProperties.setProperty(HsqlDatabaseProperties.hsqldb_files_readonly, true);
+        }
+        if (database.urlProperties.isPropertyTrue(HsqlDatabaseProperties.hsqldb_readonly)) {
+            database.databaseProperties.setProperty(HsqlDatabaseProperties.hsqldb_readonly, true);
+        }
+    }
+    setVariables();
+    String logPath = null;
+    if (DatabaseURL.isFileBasedDatabaseType(database.getType()) && !database.isFilesReadOnly()) {
+        logPath = database.getPath() + ".app.log";
+    }
+    this.appLog = new SimpleLog(logPath, propEventLogLevel);
+    database.setReferentialIntegrity(propRefIntegrity);
+    if (!isFile) {
+        return;
+    }
+    checkpointRequired = false;
+    logsStatements = false;
+    boolean useLock = database.getProperties().isPropertyTrue(HsqlDatabaseProperties.hsqldb_lock_file);
+    if (useLock && !database.isFilesReadOnly()) {
+        acquireLock(database.getPath());
+    }
+    log = new Log(database);
+    log.open();
+    logsStatements = true;
+    loggingEnabled = propLogData && !database.isFilesReadOnly();
+    boolean version18 = database.databaseProperties.isVersion18();
+    if (version18) {
+        HsqlName name = database.schemaManager.findSchemaHsqlName(SqlInvariants.PUBLIC_SCHEMA);
+        if (name != null) {
+            database.schemaManager.setDefaultSchemaHsqlName(name);
+        }
+        database.setUniqueName(newUniqueName());
+        checkpoint(false);
+    }
+    if (database.getUniqueName() == null) {
+        database.setUniqueName(newUniqueName());
+    }
+}

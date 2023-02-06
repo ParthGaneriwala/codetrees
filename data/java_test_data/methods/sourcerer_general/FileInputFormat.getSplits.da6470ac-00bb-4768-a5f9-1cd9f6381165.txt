@@ -1,0 +1,43 @@
+@SuppressWarnings("deprecation")
+public InputSplit[] getSplits(JobConf job, int numSplits) throws IOException {
+    FileStatus[] files = listStatus(job);
+    // compute total size
+    long totalSize = 0;
+    for (FileStatus file : files) {
+        // check we have valid files
+        if (file.isDir()) {
+            throw new IOException("Not a file: " + file.getPath());
+        }
+        totalSize += file.getLen();
+    }
+    long goalSize = totalSize / (numSplits == 0 ? 1 : numSplits);
+    long minSize = Math.max(job.getLong("mapred.min.split.size", 1), minSplitSize);
+    // generate splits
+    ArrayList<FileSplit> splits = new ArrayList<FileSplit>(numSplits);
+    for (FileStatus file : files) {
+        Path path = file.getPath();
+        FileSystem fs = path.getFileSystem(job);
+        long length = file.getLen();
+        BlockLocation[] blkLocations = fs.getFileBlockLocations(file, 0, length);
+        if ((length != 0) && isSplitable(fs, path)) {
+            long blockSize = file.getBlockSize();
+            long splitSize = computeSplitSize(goalSize, minSize, blockSize);
+            long bytesRemaining = length;
+            while (((double) bytesRemaining) / splitSize > SPLIT_SLOP) {
+                int blkIndex = getBlockIndex(blkLocations, length - bytesRemaining);
+                splits.add(new FileSplit(path, length - bytesRemaining, splitSize, blkLocations[blkIndex].getHosts()));
+                bytesRemaining -= splitSize;
+            }
+            if (bytesRemaining != 0) {
+                splits.add(new FileSplit(path, length - bytesRemaining, bytesRemaining, blkLocations[blkLocations.length - 1].getHosts()));
+            }
+        } else if (length != 0) {
+            splits.add(new FileSplit(path, 0, length, blkLocations[0].getHosts()));
+        } else {
+            // Create empty hosts array for zero length files
+            splits.add(new FileSplit(path, 0, length, new String[0]));
+        }
+    }
+    LOG.debug("Total # of splits: " + splits.size());
+    return splits.toArray(new FileSplit[splits.size()]);
+}

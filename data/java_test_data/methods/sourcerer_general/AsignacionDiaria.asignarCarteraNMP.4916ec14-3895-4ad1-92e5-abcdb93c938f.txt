@@ -1,0 +1,123 @@
+private List<Llamada__c> asignarCarteraNMP(ID idEmpresa, int maximoCarga, String metodoPago, List<Cobro> cobros, List<Agente> agentes, List<Mora> moras) throws Exception {
+    try {
+        List<Llamada__c> newLlamadas = new ArrayList<Llamada__c>();
+        // Paso 1. Ordenar la lista de cobros
+        if (metodoPago == null) {
+            throw new Exception("La empresa no tiene el metodo de pago definido");
+        }
+        if (metodoPago.equals(Empresa.METODO_PAGO_SALDO_MINIMO)) {
+            Collections.sort(cobros, new CobroTarjetaCreditoComparator());
+        } else {
+            Collections.sort(cobros, new CobroPrestamoComparator());
+        }
+        // Paso 2. Obtiene los feriados
+        List<Date> feriados = this.obtenerFeriados();
+        // Date fechaRealInicioCiclo = new Date();//Lo inicializa con la fecha de hoy
+        // Lo inicializa con la fecha de hoy
+        Date fechaRealInicioCiclo = Util.obtenerSiguienteDiaCal(new Date());
+        // Paso 3. Inicializa los dias de cobro del agente
+        for (Agente agente : agentes) {
+            if (agente.getDiasCobro().size() == 0) {
+                DiaAgente dia = new DiaAgente(fechaRealInicioCiclo);
+                if (agente.getDiasCobro().size() == 0) {
+                    agente.getDiasCobro().add(dia);
+                }
+            }
+        }
+        // Paso 4. Asignar cobros a agentes
+        Integer indexCobro = 0;
+        for (Iterator<Cobro> iterCobro = cobros.iterator(); iterCobro.hasNext(); ) {
+            Cobro cobro = iterCobro.next();
+            logger.info("Asignando cobro " + (indexCobro + 1) + ": " + cobro.getCobro__c().getName() + " (" + cobro.getCobro__c().getId() + ").");
+            logger.info("	" + cobro.getCobro__c().getSaldo_total_pr_stamo__c());
+            if (!cobro.isAsignado()) {
+                // Cobros del mismo cliente, se marcan en la lista con asignado = true
+                List<Cobro> cobrosAdicionales = this.obtenerCobrosMismoCliente(cobros, indexCobro);
+                // Se hace una sola lista
+                List<Cobro> cobrosAgendar = cobrosAdicionales;
+                cobrosAgendar.add(0, cobro);
+                // Busca el agente que estaba llevando los cobros
+                Agente agente = null;
+                // Si agente es nulo debe buscar un nuevo agente desde la cola de agentes
+                if (agentes.size() > 0 && maximoCarga > 0) {
+                    // Ordena por nivel de mora para as�, buscar un agente que vea la mora mas alta
+                    if (cobrosAgendar.size() > 1) {
+                        Collections.sort(cobrosAgendar, new NivelMoraComparator());
+                    }
+                    // Busca al agente, se empieza desde el agente que tiene menos cobros asignados
+                    Collections.sort(agentes, new NumCobrosAgenteDiarioComparator());
+                    for (Iterator<Agente> iterA = agentes.iterator(); iterA.hasNext(); ) {
+                        Agente agenteTemp = iterA.next();
+                        logger.debug("Agente " + agenteTemp.getName() + " " + agenteTemp.getNumGestionesAsignadasCargaDiaria());
+                        if (agenteTemp.tieneCupoParaCobros(cobrosAgendar.size()) && esValidoProductoMora(cobrosAgendar.get(0), agenteTemp, cobrosAgendar.size()) == Constantes.PRODUCTO_MORA_VALIDOS) {
+                            agente = agenteTemp;
+                            break;
+                        }
+                    }
+                }
+                if (agente == null) {
+                    // Busca el rebalse
+                    ID idUser = obtenerRebalseMora(moras, cobrosAgendar.get(0).getCobro__c().getConf_Info_Mora__c());
+                    if (idUser == null) {
+                        idUser = cobrosAgendar.get(0).getCobro__c().getOwnerId();
+                    }
+                    // Crea una llamada para el primer dia
+                    for (Cobro cobroAgendar : cobrosAgendar) {
+                        cobroAgendar.setAsignado(true);
+                        cobroAgendar.getCobro__c().setAgente__c(null);
+                        cobroAgendar.getCobro__c().setIsMarcadorPredictivo__c(false);
+                        if (idUser != null) {
+                            cobroAgendar.getCobro__c().setOwnerId(idUser);
+                        }
+                        if (cobroAgendar.isEsNuevo()) {
+                            // Crea la llamada.
+                            newLlamadas.add(this.crearLlamada(idEmpresa, cobro.getCobro__c().getOwnerId(), null, cobroAgendar.getCobro__c(), fechaRealInicioCiclo, cobroAgendar.getIdRecordTypeLlamada()));
+                        }
+                    }
+                } else {
+                    // Le agrega las llamadas al agente
+                    agente.distribuirCobrosPorProducto(cobrosAgendar);
+                    for (Cobro cobroAgendar : cobrosAgendar) {
+                        cobroAgendar.getCobro__c().setOwnerId(agente.getIdUser());
+                        cobroAgendar.getCobro__c().setAgente__c(agente.getId());
+                        cobroAgendar.setAsignado(true);
+                        cobroAgendar.getCobro__c().setIsMarcadorPredictivo__c(false);
+                        // Obtiene el ultimo dia de cobro de la lista de dias de cobro
+                        DiaAgente diaAgente = agente.getDiasCobro().get(agente.getDiasCobro().size() - 1);
+                        // int cargaDiariaAgente = maximoCarga;
+                        int cargaDiariaAgente = this.obtenerCargaDiaAgente(agente.getMaximoCobrosDia(), agente.getMinimoCobrosDia(), agente.getDiasCobro().size(), diaAgente.getFecha());
+                        if (cobroAgendar.isEsNuevo()) {
+                            // Crea la llamada.
+                            if (diaAgente.getLlamadas().size() < cargaDiariaAgente) {
+                                // Crea una llamada para ese dia
+                                diaAgente.getLlamadas().add(this.crearLlamada(idEmpresa, agente.getIdUser(), agente.getId(), cobroAgendar.getCobro__c(), diaAgente.getFecha(), cobroAgendar.getIdRecordTypeLlamada()));
+                            } else {
+                                // Crea otro d�a para el agente
+                                Date sigDia = Util.obtenerSiguienteDiaHabil(diaAgente.getFecha(), feriados);
+                                DiaAgente newDiaAgente = new DiaAgente(sigDia);
+                                // Crea una nueva llamada
+                                newDiaAgente.getLlamadas().add(this.crearLlamada(idEmpresa, agente.getIdUser(), agente.getId(), cobroAgendar.getCobro__c(), newDiaAgente.getFecha(), cobroAgendar.getIdRecordTypeLlamada()));
+                                agente.getDiasCobro().add(newDiaAgente);
+                            }
+                        }
+                    }
+                // for
+                }
+            }
+            // end if
+            indexCobro++;
+        }
+        // End for
+        logger.info("Distribucion de los agentes");
+        for (Iterator<Agente> iterA = agentes.iterator(); iterA.hasNext(); ) {
+            Agente agenteTemp = iterA.next();
+            logger.info("Agente " + agenteTemp.getName() + " Num cobros " + agenteTemp.getNumGestionesAsignadasCargaDiaria());
+        }
+        // Devuelve la lista de llamadas nuevas
+        logger.info("Num Llamadas sin agente " + newLlamadas.size());
+        return newLlamadas;
+    } catch (Exception e) {
+        logger.error(e);
+        throw e;
+    }
+}

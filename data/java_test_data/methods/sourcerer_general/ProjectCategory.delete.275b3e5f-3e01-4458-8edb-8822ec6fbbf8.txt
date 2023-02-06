@@ -1,0 +1,63 @@
+public boolean delete(Connection db, String basePath) throws SQLException {
+    if (this.getId() == -1) {
+        throw new SQLException("ID was not specified");
+    }
+    int recordCount = 0;
+    boolean commit = db.getAutoCommit();
+    try {
+        if (commit) {
+            db.setAutoCommit(false);
+        }
+        // Don't leave invalid ids on the project
+        PreparedStatement pst = db.prepareStatement("UPDATE projects SET category_id = NULL WHERE category_id = ?");
+        pst.setInt(1, id);
+        pst.execute();
+        pst.close();
+        // Delete the associated badge categories
+        BadgeCategoryList badgeCategoryList = new BadgeCategoryList();
+        badgeCategoryList.setProjectCategoryId(this.id);
+        badgeCategoryList.buildList(db);
+        badgeCategoryList.delete(db, basePath);
+        // Delete the associated classified categories
+        ClassifiedCategoryList classifiedCategoryList = new ClassifiedCategoryList();
+        classifiedCategoryList.setProjectCategoryId(this.id);
+        classifiedCategoryList.buildList(db);
+        classifiedCategoryList.delete(db, basePath);
+        // Delete the associated ad categories
+        AdCategoryList adCategoryList = new AdCategoryList();
+        adCategoryList.setProjectCategoryId(this.id);
+        adCategoryList.buildList(db);
+        adCategoryList.delete(db, basePath);
+        // Delete the actual category
+        pst = db.prepareStatement("DELETE FROM lookup_project_category " + "WHERE code = ? ");
+        pst.setInt(1, id);
+        recordCount = pst.executeUpdate();
+        pst.close();
+        // Deleting files (last because they have associated files that get deleted)
+        FileItemList files = new FileItemList();
+        files.setLinkModuleId(Constants.PROJECT_CATEGORY_FILES);
+        files.setLinkItemId(this.id);
+        files.buildList(db);
+        files.delete(db, basePath);
+        if (commit) {
+            db.commit();
+        }
+        CacheUtils.invalidateValue(Constants.SYSTEM_PROJECT_CATEGORY_LIST_CACHE, id);
+    } catch (Exception e) {
+        if (commit) {
+            db.rollback();
+        }
+        e.printStackTrace(System.out);
+        throw new SQLException(e.getMessage());
+    } finally {
+        if (commit) {
+            db.setAutoCommit(true);
+        }
+    }
+    if (recordCount == 0) {
+        errors.put("actionError", "Project Category could not be deleted because it no longer exists.");
+        return false;
+    } else {
+        return true;
+    }
+}

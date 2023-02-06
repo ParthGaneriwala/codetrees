@@ -1,0 +1,76 @@
+public void storeTripleList(List triples, IDBID my_GID) {
+    // for relational dbs, there are two styles for bulk inserts.
+    // JDBC 2.0 supports batched updates.
+    // MySQL also supports a multiple-row insert.
+    // For now, we support only jdbc 2.0 batched updates
+    /**
+     * Set of PreparedStatements that need executeBatch() *
+     */
+    Triple t;
+    String cmd;
+    boolean autoState = false;
+    DriverRDB drvr = (DriverRDB) m_driver;
+    Iterator it = triples.iterator();
+    Hashtable batchedPreparedStatements = null;
+    if (SKIP_DUPLICATE_CHECK == false) {
+        // if ( false ) {
+        while (it.hasNext()) {
+            t = (Triple) it.next();
+            storeTriple(t, my_GID, false, null);
+        }
+    } else
+        try {
+            autoState = drvr.xactOp(DriverRDB.xactAutoOff);
+            batchedPreparedStatements = new Hashtable();
+            while (it.hasNext()) {
+                t = (Triple) it.next();
+                storeTriple(t, my_GID, true, batchedPreparedStatements);
+            }
+            Enumeration en = batchedPreparedStatements.keys();
+            while (en.hasMoreElements()) {
+                String op = (String) en.nextElement();
+                PreparedStatement p = (PreparedStatement) batchedPreparedStatements.get(op);
+                p.executeBatch();
+                batchedPreparedStatements.remove(op);
+                m_sql.returnPreparedSQLStatement(p);
+            }
+            if (autoState) {
+                drvr.xactOp(DriverRDB.xactCommit);
+                drvr.xactOp(DriverRDB.xactAutoOn);
+            }
+            batchedPreparedStatements = null;
+        // WARNING: caught exceptions should drop through to return.
+        // if not, be sure to reset autocommit before exiting.
+        } catch (BatchUpdateException b) {
+            System.err.println("SQLException: " + b.getMessage());
+            System.err.println("SQLState: " + b.getSQLState());
+            System.err.println("Message: " + b.getMessage());
+            System.err.println("Vendor: " + b.getErrorCode());
+            System.err.print("Update counts: ");
+            int[] updateCounts = b.getUpdateCounts();
+            for (int i = 0; i < updateCounts.length; i++) {
+                System.err.print(updateCounts[i] + " ");
+            }
+            if (autoState)
+                drvr.xactOp(DriverRDB.xactAutoOn);
+        } catch (SQLException ex) {
+            System.err.println("SQLException: " + ex.getMessage());
+            System.err.println("SQLState: " + ex.getSQLState());
+            System.err.println("Message: " + ex.getMessage());
+            System.err.println("Vendor: " + ex.getErrorCode());
+            if (autoState)
+                drvr.xactOp(DriverRDB.xactAutoOn);
+        } finally {
+            if (batchedPreparedStatements != null) {
+                Enumeration en = batchedPreparedStatements.keys();
+                while (en.hasMoreElements()) {
+                    String op = (String) en.nextElement();
+                    PreparedStatement p = (PreparedStatement) batchedPreparedStatements.get(op);
+                    batchedPreparedStatements.remove(op);
+                    m_sql.returnPreparedSQLStatement(p);
+                }
+            }
+        }
+    ArrayList c = new ArrayList(triples);
+    triples.removeAll(c);
+}

@@ -1,0 +1,100 @@
+public void commit() {
+    if (this.tableControl != null) {
+        this.tableControl.beforeCommit(this);
+    }
+    // System.out.println("commit();");
+    FieldConfig campoAtual = null;
+    for (TableToHtml tabela : arrTabelaToWrite) {
+        // Colocar no prepared statement
+        logger.debug("commit solicitando conexao");
+        Connection con = getConnection();
+        PreparedStatement st;
+        try {
+            if (tabela.toAdd) {
+                if (tabela.SQL_Insert == null) {
+                    continue;
+                }
+                st = con.prepareStatement(tabela.SQL_Insert);
+            } else {
+                if (tabela.SQL_Update == null) {
+                    continue;
+                }
+                st = con.prepareStatement(tabela.SQL_Update);
+            }
+            int i = 1;
+            for (FieldConfig fieldConfig : tabela.getListFieldConfig()) {
+                campoAtual = fieldConfig;
+                if (fieldConfig.isAutoIncrement) {
+                    // j� foi atribuido ou n�o precisa ser atribuido
+                    continue;
+                }
+                if (tabela.toUpd && fieldConfig.dontUpdate) {
+                    // a tabela � para update e a coluna n�o � para update
+                    continue;
+                }
+                setStatementParm(st, fieldConfig, i);
+                i++;
+            }
+            if (tabela.toUpd) {
+                st.setInt(i, Integer.valueOf(tabela.columnAutoIncrement.singleValue.toString()));
+            }
+            st.execute();
+            if (tabela.toUpd) {
+                this.message = "Atualizado com sucesso!";
+                if (this.tableControl != null) {
+                    this.tableControl.afterUpdate(this, tabela);
+                }
+            } else {
+                PreparedStatement ps = null;
+                ResultSet rs = null;
+                try {
+                    rs = st.getGeneratedKeys();
+                } catch (Exception e) {
+                    st.close();
+                    // maybe not supported (HSQLDB)
+                    String sqlSelect = "Select " + tabela.columnAutoIncrement.columnName + " From " + tabela.nome;
+                    ps = con.prepareStatement(sqlSelect + " order by " + tabela.columnAutoIncrement.columnName + " desc");
+                    rs = ps.executeQuery();
+                }
+                if (rs != null && rs.next()) {
+                    // System.out.println("inserido id="+rs.getInt(1));
+                    if (tabela.columnAutoIncrement != null) {
+                        tabela.columnAutoIncrement.singleValue = rs.getObject(1).toString();
+                    }
+                }
+                if (this.tableControl != null) {
+                    this.tableControl.afterInsert(this, tabela);
+                }
+                this.message = "Adicionado com sucesso!";
+                if (rs != null) {
+                    rs.close();
+                }
+                if (ps != null) {
+                    ps.close();
+                }
+                try {
+                    st.close();
+                } catch (Exception e) {
+                }
+            }
+        } catch (IllegalArgumentException e) {
+            this.message += "Preencha corretamente o campo \"" + campoAtual.displayName + "\"";
+            tabela.toUpd = true;
+            tabela.toAdd = false;
+        // e.printStackTrace();
+        } catch (SQLException e) {
+            this.message += "Erro: " + e.getMessage();
+            logger.error("Erro ao dar commit()", e);
+        } catch (Exception e) {
+            this.message += "Erro: " + e.getMessage();
+            logger.error("Erro ao dar commit()", e);
+        } finally {
+            try {
+                logger.debug("Fechando conexao");
+                con.close();
+            } catch (SQLException e) {
+                logger.error("Erro ao fechar conexao");
+            }
+        }
+    }
+}

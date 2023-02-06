@@ -1,0 +1,137 @@
+public Cluster[] K_CoreFinder(CyNetwork inputNetwork, String resultTitle) {
+    String callerID = "Algorithm.K_CliqueFinder";
+    System.out.println("In" + callerID);
+    TreeMap nodeScoreSortedMap;
+    HashMap nodeInfoHashMap;
+    if (!nodeScoreResultsMap.containsKey(resultTitle)) {
+        // use the node score used last time
+        nodeScoreSortedMap = curNodeScores;
+        nodeInfoHashMap = curNodeInfos;
+        nodeScoreResultsMap.put(resultTitle, nodeScoreSortedMap);
+        nodeInfoResultsMap.put(resultTitle, nodeInfoHashMap);
+    } else {
+        // the scoring parameters haven't changed
+        nodeScoreSortedMap = (TreeMap) nodeScoreResultsMap.get(resultTitle);
+        nodeInfoHashMap = (HashMap) nodeInfoResultsMap.get(resultTitle);
+    }
+    params = getParams();
+    Cluster currentCluster;
+    if (inputNetwork == null) {
+        System.err.println("In " + callerID + ": inputNetwork was null.");
+        return (null);
+    }
+    if ((nodeInfoHashMap == null) || (nodeScoreSortedMap == null)) {
+        System.err.println("In " + callerID + ": nodeInfoHashMap or nodeScoreSortedMap was null.");
+        return (null);
+    }
+    // initialization
+    long msTimeBefore = System.currentTimeMillis();
+    // key is nodeIndex, value is true/false
+    HashMap nodeSeenHashMap = new HashMap();
+    Integer currentNode;
+    int findingProgress = 0;
+    int findingTotal = 0;
+    // returns a Collection sorted by key order (descending)
+    Collection values = nodeScoreSortedMap.values();
+    for (Iterator iterator1 = values.iterator(); iterator1.hasNext(); ) {
+        ArrayList value = (ArrayList) iterator1.next();
+        for (Iterator iterator2 = value.iterator(); iterator2.hasNext(); ) {
+            iterator2.next();
+            findingTotal++;
+        }
+    }
+    // stores the list of clusters as ArrayLists of node indices in the input Network
+    ArrayList alClusters = new ArrayList();
+    ArrayList alNodesWithSameScore;
+    for (Iterator iterator = values.iterator(); iterator.hasNext(); ) {
+        // each score may be associated with multiple nodes, iterate over these lists
+        alNodesWithSameScore = (ArrayList) iterator.next();
+        for (int j = 0; j < alNodesWithSameScore.size(); j++) {
+            currentNode = (Integer) alNodesWithSameScore.get(j);
+            if (!nodeSeenHashMap.containsKey(currentNode)) {
+                currentCluster = new Cluster();
+                // store the current node as the seed node
+                currentCluster.setSeedNode(currentNode);
+                // we store the current node seen hash map for later exploration purposes
+                HashMap nodeSeenHashMapSnapShot = new HashMap((HashMap) nodeSeenHashMap.clone());
+                // here we use the original node score cutoff
+                ArrayList alNodes = getClusterCore(currentNode, nodeSeenHashMap, params.getNodeScoreCutoff(), params.getMaxDepthFromStart(), nodeInfoHashMap);
+                if (alNodes.size() > 0) {
+                    // make sure seed node is part of cluster, if not already in there
+                    if (!alNodes.contains(currentNode)) {
+                        alNodes.add(currentNode);
+                    }
+                    // create an input graph for the filter and haircut methods
+                    GraphPerspective gpCluster = Algorithm.createGraphPerspective(alNodes, inputNetwork);
+                    if (!filterCluster(gpCluster)) {
+                        // only do this when the cluster need not filter
+                        if (params.isHaircut()) {
+                            haircutCluster(gpCluster, alNodes, inputNetwork);
+                        }
+                        if (params.isFluff()) {
+                            fluffClusterBoundary(alNodes, nodeSeenHashMap, nodeInfoHashMap);
+                        }
+                        currentCluster.setALNodes(alNodes);
+                        ;
+                        gpCluster = Algorithm.createGraphPerspective(alNodes, inputNetwork);
+                        currentCluster.setGPCluster(gpCluster);
+                        currentCluster.setClusterScore(scoreCluster(currentCluster));
+                        // //store all the nodes that have already been seen and incorporated in other clusters
+                        currentCluster.setNodeSeenHashMap(nodeSeenHashMapSnapShot);
+                        currentCluster.setResultTitle(resultTitle);
+                        // store detected cluster for later
+                        alClusters.add(currentCluster);
+                    }
+                }
+            }
+            if (taskMonitor != null) {
+                findingProgress++;
+                // We want to be sure that only progress changes are reported and not
+                // miniscule decimal increments so that the taskMonitor isn't overwhelmed
+                int newProgress = (findingProgress * 100) / findingTotal;
+                int oldProgress = ((findingProgress - 1) * 100) / findingTotal;
+                if (newProgress != oldProgress) {
+                    taskMonitor.setPercentCompleted(newProgress);
+                }
+            }
+            if (cancelled) {
+                break;
+            }
+        }
+    }
+    // we select only the ones that contain the selected node(s) and return those
+    for (Iterator it = alClusters.iterator(); it.hasNext(); ) {
+        Cluster cluster = (Cluster) it.next();
+        cluster.calModularity(inputNetwork);
+    }
+    ArrayList selectedALClusters = new ArrayList();
+    if (!params.getScope().equals(ParameterSet.NETWORK)) {
+        for (Iterator ic = alClusters.iterator(); ic.hasNext(); ) {
+            Cluster cluster = (Cluster) ic.next();
+            ArrayList alNodes = cluster.getALNodes();
+            ArrayList alSelectedNodes = new ArrayList();
+            for (int c = 0; c < params.getSelectedNodes().length; c++) {
+                alSelectedNodes.add(params.getSelectedNodes()[c]);
+            }
+            // method for returning all clusters that contain any of the selected nodes
+            boolean hit = false;
+            for (Iterator in = alSelectedNodes.iterator(); in.hasNext(); ) {
+                if (alNodes.contains((Integer) in.next())) {
+                    hit = true;
+                }
+            }
+            if (hit) {
+                selectedALClusters.add(cluster);
+            }
+        }
+        alClusters = selectedALClusters;
+    }
+    // Finally convert the arraylist into a fixed array
+    Cluster[] clusters = new Cluster[alClusters.size()];
+    for (int c = 0; c < clusters.length; c++) {
+        clusters[c] = (Cluster) alClusters.get(c);
+    }
+    long msTimeAfter = System.currentTimeMillis();
+    lastFindTime = msTimeAfter - msTimeBefore;
+    return clusters;
+}

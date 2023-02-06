@@ -1,0 +1,64 @@
+public boolean processNextAction(MillingMachine mill) {
+    boolean stepped = false;
+    do {
+        if (currentAction >= actionsList.size()) {
+            // At end
+            return false;
+        }
+        MillingAction action = (MillingAction) actionsList.get(currentAction);
+        if (action == null) {
+            throw new RuntimeException("action is null");
+        }
+        currentAction++;
+        if (action instanceof Executable) {
+            Executable exec = (Executable) action;
+            if (mill.getCurrentTool() == null || !mill.getCurrentTool().equals(action.getTool())) {
+                Tool newTool = action.getTool();
+                if (newTool != null) {
+                    // Save the state of the drill and vacuum
+                    boolean drillwas = mill.isDrillRelay();
+                    boolean vacwas = mill.isVacuumRelay();
+                    // Stop the Drill and Vacuum
+                    mill.setDrillRelay(false);
+                    mill.setVacuumRelay(false);
+                    // just used for synchronization
+                    Object waitObj = new Object();
+                    ToolChangeDialog dialog = new ToolChangeDialog(null, "" + newTool, waitObj);
+                    dialog.setVisible(true);
+                    while (dialog.getResult() == ToolChangeDialog.RESULT_UNKNOWN) {
+                        synchronized (waitObj) {
+                            try {
+                                waitObj.wait();
+                            } catch (InterruptedException e) {
+                                log.debug("in ToolChange.execute", e);
+                            }
+                        }
+                    }
+                    int result = dialog.getResult();
+                    if (result != ToolChangeDialog.RESULT_CONTINUE) {
+                        throw new MillingException(MillingException.UNKNOWN, ": user cancelled tool change");
+                    }
+                    mill.setCurrentTool(newTool);
+                    // Return the drill and vacuum to previous states
+                    mill.setDrillRelay(drillwas);
+                    mill.setVacuumRelay(vacwas);
+                }
+            }
+            exec.execute(mill);
+            final MillingAction finalAction = action;
+            try {
+                SwingUtilities.invokeAndWait(new Runnable() {
+
+                    public void run() {
+                        drawAction(finalAction);
+                        surface.repaint();
+                    }
+                });
+            } catch (Exception e) {
+                log.error(e);
+            }
+            stepped = true;
+        }
+    } while (!stepped);
+    return true;
+}

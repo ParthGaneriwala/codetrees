@@ -1,0 +1,78 @@
+public String doView(RenderRequest request, RenderResponse response) throws Exception {
+    // The JSP to show upon success
+    String defaultView = VIEW_PAGE;
+    // Determine the project container to use
+    Project project = findProject(request);
+    // Check the user's permissions
+    User user = getUser(request);
+    if (!ProjectUtils.hasAccess(project.getId(), user, "project-documents-view")) {
+        throw new PortletException("Unauthorized to view in this project");
+    }
+    // Check preferences
+    String title = request.getPreferences().getValue(PREF_TITLE, null);
+    if (title != null) {
+        request.setAttribute(TITLE, title);
+    }
+    // Share the namespace of this portlet so it can be controlled
+    for (String event : PortalUtils.getDashboardPortlet(request).getGenerateDataEvents()) {
+        if (event.startsWith("namespace-")) {
+            PortalUtils.setGeneratedData(request, event, response.getNamespace());
+        }
+    }
+    // Determine the database connection to use
+    Connection db = useConnection(request);
+    // Determine the paging url
+    PortletURL renderURL = response.createRenderURL();
+    String url = renderURL.toString();
+    // Paging will be used for remembering several list view settings
+    PagedListInfo pagedListInfo = getPagedListInfo(request, PAGED_LIST_INFO);
+    pagedListInfo.setLink(url);
+    pagedListInfo.setItemsPerPage(-1);
+    // Prepare a list of files to be returned
+    FileItemList files = new FileItemList();
+    files.setLinkModuleId(Constants.PROJECTS_FILES);
+    files.setLinkItemId(project.getId());
+    files.setPagedListInfo(pagedListInfo);
+    // Determine the current view
+    String domainObject = getPageDomainObject(request);
+    if ("folder".equals(domainObject)) {
+        // A specific folder is requested
+        FileFolder fileFolder = new FileFolder(db, getPageViewAsInt(request));
+        if (fileFolder.getLinkModuleId() != Constants.PROJECTS_FILES || fileFolder.getLinkItemId() != project.getId()) {
+            throw new PortletException("Project id mismatch");
+        }
+        files.setFolderId(fileFolder.getId());
+        request.setAttribute(CURRENT_FOLDER, fileFolder);
+        PortalUtils.setGeneratedData(request, CURRENT_FOLDER, fileFolder);
+        LOG.debug("setGeneratedData folder (a): " + fileFolder.getSubject());
+    } else {
+        PortalUtils.setGeneratedData(request, CURRENT_FOLDER, new FileFolder());
+        LOG.debug("setGeneratedData folder (b): new FileFolder()");
+    }
+    if ("date".equals(getPageView(request))) {
+        // A specific month is requested
+        String filterParam = getPageParameter(request);
+        files.setModifiedYearMonth(filterParam);
+        request.setAttribute("currentDate", filterParam);
+    }
+    // Determine the sort order parameter
+    String sortOrder = request.getParameter("view");
+    if (sortOrder == null || "recent".equals(sortOrder)) {
+        pagedListInfo.setColumnToSortBy("f.modified desc, f.subject");
+    } else if ("a-z".equals(sortOrder)) {
+        pagedListInfo.setColumnToSortBy("f.subject");
+    }
+    // Load the records
+    files.buildList(db);
+    request.setAttribute(FILE_LIST, files);
+    // Load the folder list
+    FileFolderList folderList = new FileFolderList();
+    folderList.setLinkModuleId(Constants.PROJECTS_FILES);
+    folderList.setLinkItemId(project.getId());
+    folderList.buildList(db);
+    request.setAttribute(FOLDER_LIST, folderList);
+    // Record view
+    PortalUtils.processSelectHook(request, files);
+    // JSP view
+    return defaultView;
+}

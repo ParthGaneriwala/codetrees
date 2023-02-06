@@ -1,0 +1,64 @@
+public ActionForward execute(ActionMapping mapping, ActionForm form, HttpServletRequest request, HttpServletResponse response) throws Exception {
+    HttpSession session = request.getSession();
+    Usuario user = (Usuario) session.getAttribute("usuario");
+    ActionMessages messages = new ActionMessages();
+    UsuarioDAO usuarioDAO = DAOFactory.getUsuarioDAO();
+    RevistaDAO revistaDAO = DAOFactory.getRevistaDAO();
+    ListaDAO listaDAO = DAOFactory.getListaDAO();
+    DoInscricaoActionForm frm = (DoInscricaoActionForm) form;
+    Lista lista = listaDAO.getListaByRevistaUsuario(frm.getIdRevista(), user.getId_usuario());
+    Date d = new Date();
+    lista.setDt_Entrega(d);
+    /* Verifica quantos dias ele ficou com a revista
+         * Se for maior que 3 dias perde 1 ponto de prioridade a cada dia que ficou a mais
+         */
+    boolean atrasado = false;
+    int dias = 0;
+    // diferenca entre dados em milissegunds
+    long difms = (lista.getDt_Entrega().getTime()) - (lista.getDt_Recebimento().getTime());
+    // faz dvisao inteira
+    dias = (int) difms / (24 * 60 * 60 * 1000);
+    if (dias > 3) {
+        System.out.println("passou do tempo de entrega... aplicar penalidade...");
+        for (int i = 0; i < (dias - 3); i++) {
+            lista.setPrioridade(lista.getPrioridade() - 1);
+        }
+        atrasado = true;
+    }
+    if (listaDAO.updateLista(lista)) {
+        messages.add("log", new ActionMessage("informaentrega.ok"));
+        saveErrors(request, messages);
+        /*
+             *Obtem o proximo da lista para receber
+             */
+        ArrayList<Lista> pendencias = listaDAO.getListaPendenteByRevista(frm.getIdRevista());
+        if (pendencias == null)
+            System.out.println("pendencias null");
+        else
+            System.out.println("pendencias length: " + pendencias.size());
+        String nextPend;
+        if (pendencias != null) {
+            Usuario nextPendente = usuarioDAO.getUsuarioByID(pendencias.get(0).getIDUsuario());
+            String dpto = "";
+            ResultSet rs = usuarioDAO.getDepartamentos();
+            while (rs.next()) {
+                if (rs.getInt("IDDEPARTAMENTO") == nextPendente.getId_departamento()) {
+                    dpto = rs.getString("NOME_DEPARTAMENTO");
+                }
+            }
+            nextPend = "Voc� deve enviar a revista para: " + nextPendente.getNome() + "/" + dpto;
+        } else {
+            nextPend = "Favor retornar a revista a biblioteca. ";
+        }
+        if (atrasado) {
+            nextPend = "Voce atrasou a entrega da revista em " + (dias - 3) + " dias. Ser�o descontados " + (dias - 3) + " pontos de prioridade.<br>" + nextPend;
+        }
+        if (request.getAttribute("mensagem") != null)
+            request.removeAttribute("nextPendente");
+        request.setAttribute("mensagem", nextPend);
+    } else {
+        messages.add("log", new ActionMessage("informaentrega.nok"));
+        saveErrors(request, messages);
+    }
+    return mapping.findForward(NEXT);
+}

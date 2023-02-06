@@ -1,0 +1,78 @@
+private void parseExpression() {
+    // Parse the expression until we encounter a comma or a semi-colon
+    // in the same brace nesting, bracket nesting and paren nesting.
+    // Parse functions if any...
+    String symbol;
+    JavaScriptToken token;
+    ScriptOrFnScope currentScope;
+    JavaScriptIdentifier identifier;
+    int expressionBraceNesting = braceNesting;
+    int bracketNesting = 0;
+    int parensNesting = 0;
+    int length = tokens.size();
+    while (offset < length) {
+        token = consumeToken();
+        currentScope = getCurrentScope();
+        switch(token.getType()) {
+            case Token.SEMI:
+            case Token.COMMA:
+                if (braceNesting == expressionBraceNesting && bracketNesting == 0 && parensNesting == 0) {
+                    return;
+                }
+                break;
+            case Token.FUNCTION:
+                parseFunctionDeclaration();
+                break;
+            case Token.LC:
+                braceNesting++;
+                break;
+            case Token.RC:
+                braceNesting--;
+                assert braceNesting >= expressionBraceNesting;
+                break;
+            case Token.LB:
+                bracketNesting++;
+                break;
+            case Token.RB:
+                bracketNesting--;
+                break;
+            case Token.LP:
+                parensNesting++;
+                break;
+            case Token.RP:
+                parensNesting--;
+                break;
+            case Token.CONDCOMMENT:
+                if (mode == BUILDING_SYMBOL_TREE) {
+                    protectScopeFromObfuscation(currentScope);
+                    warn("Using JScript conditional comments is not recommended." + (munge ? " Moreover, using JScript conditional comments reduces the level of compression!" : ""), true);
+                }
+                break;
+            case Token.NAME:
+                symbol = token.getValue();
+                if (mode == BUILDING_SYMBOL_TREE) {
+                    if (symbol.equals("eval")) {
+                        protectScopeFromObfuscation(currentScope);
+                        warn("Using 'eval' is not recommended." + (munge ? " Moreover, using 'eval' reduces the level of compression!" : ""), true);
+                    }
+                } else if (mode == CHECKING_SYMBOL_TREE) {
+                    if ((offset < 2 || (getToken(-2).getType() != Token.DOT && getToken(-2).getType() != Token.GET && getToken(-2).getType() != Token.SET)) && getToken(0).getType() != Token.OBJECTLIT) {
+                        identifier = getIdentifier(symbol, currentScope);
+                        if (identifier == null) {
+                            if (symbol.length() <= 3 && !builtin.contains(symbol)) {
+                                // Here, we found an undeclared and un-namespaced symbol that is
+                                // 3 characters or less in length. Declare it in the global scope.
+                                // We don't need to declare longer symbols since they won't cause
+                                // any conflict with other munged symbols.
+                                globalScope.declareIdentifier(symbol);
+                                warn("Found an undeclared symbol: " + symbol, true);
+                            }
+                        } else {
+                            identifier.incrementRefcount();
+                        }
+                    }
+                }
+                break;
+        }
+    }
+}

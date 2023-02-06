@@ -1,0 +1,65 @@
+public String executeCommandShowThumbnail(ActionContext context) {
+    String projectId = context.getRequest().getParameter("p");
+    String itemId = context.getRequest().getParameter("i");
+    String version = context.getRequest().getParameter("v");
+    String module = context.getRequest().getParameter("m");
+    boolean showFull = (context.getRequest().getParameter("s") != null);
+    FileItem thisItem = null;
+    Connection db = null;
+    Thumbnail thumbnail = null;
+    try {
+        db = getConnection(context);
+        // TODO: The conditions under which a file can be attached will change, so this condition check needs to be refactored
+        if (module != null) {
+            if (!getUser(context).getAccessAdmin()) {
+                return "PermissionError";
+            }
+            // Load the file
+            thisItem = new FileItem(db, Integer.parseInt(itemId), Integer.parseInt(projectId), Integer.parseInt(module));
+        } else {
+            // Load the project and check permissions
+            Project thisProject = retrieveAuthorizedProject(Integer.parseInt(projectId), context);
+            if (!hasProjectAccess(context, thisProject.getId(), "project-documents-files-download")) {
+                return "PermissionError";
+            }
+            // Load the file
+            thisItem = new FileItem(db, Integer.parseInt(itemId), thisProject.getId(), Constants.PROJECTS_FILES);
+            if (!showFull) {
+                thumbnail = ThumbnailUtils.retrieveThumbnail(db, thisItem, 0, 0, this.getPath(context, "projects"));
+            }
+        }
+    } catch (Exception e) {
+    } finally {
+        this.freeConnection(context, db);
+    }
+    // Start the download
+    try {
+        FileDownload fileDownload = new FileDownload();
+        if (thumbnail != null) {
+            String filePath = this.getPath(context, "projects") + getDatePath(thisItem.getModified()) + thumbnail.getFilename();
+            fileDownload.setFullPath(filePath);
+            fileDownload.setFileTimestamp(thisItem.getModificationDate().getTime());
+            fileDownload.streamThumbnail(context, thumbnail);
+        } else {
+            String filePath = null;
+            if (context.getRequest().getParameter("s") != null) {
+                filePath = this.getPath(context, "projects") + getDatePath(thisItem.getModified()) + thisItem.getFilename();
+            } else {
+                filePath = this.getPath(context, "projects") + getDatePath(thisItem.getModified()) + thisItem.getThumbnailFilename();
+            }
+            fileDownload.setFullPath(filePath);
+            fileDownload.setDisplayName(thisItem.getThumbnailFilename());
+            if (fileDownload.fileExists()) {
+                fileDownload.setFileTimestamp(thisItem.getModificationDate().getTime());
+                fileDownload.streamContent(context);
+                return "-none-";
+            } else {
+                return "SystemERROR";
+            }
+        }
+    } catch (java.net.SocketException se) {
+    // User either canceled the download or lost connection
+    } catch (Exception e) {
+    }
+    return ("-none-");
+}

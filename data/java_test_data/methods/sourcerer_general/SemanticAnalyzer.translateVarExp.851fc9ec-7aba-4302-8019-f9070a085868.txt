@@ -1,0 +1,118 @@
+public TranslatedExpAndType translateVarExp(Var var) {
+    TypeEntry varTypeEntry = null;
+    AssemType assemTypeVar = null;
+    if (var instanceof SimpleVar) {
+        SimpleVar simpleVar = (SimpleVar) var;
+        Symbol varName = simpleVar.getName();
+        VariableEntry variableEntry = null;
+        Entry entr = (Entry) environments.getVariableTable().get(varName);
+        if (entr == null) {
+            errorHandler.addError(var.getPosition(), ErrorHandler.THE_VARIABLE, varName.toString(), ErrorHandler.NOT_DEFINED);
+        } else {
+            if (entr instanceof VariableEntry) {
+                variableEntry = (VariableEntry) entr;
+                varTypeEntry = variableEntry.getType();
+                // Translate to assembly tree
+                int varNum;
+                boolean isArgument = variableEntry.isParamVar();
+                if (isArgument) {
+                    varNum = variableEntry.getParamNum();
+                    assemTypeVar = translatingMediator.translateVarExp(varNum, true, ActivationFrame.WORDSIZE, 0);
+                } else {
+                    // Level this variable has been declared
+                    Level varLevel = variableEntry.getLevel();
+                    if (variableEntry.isInRegister()) {
+                        // The variable is located in a register; check if it is the heap
+                        if (variableEntry.isOnHeap()) {
+                            Temp regTemp = variableEntry.getRegisterTemp();
+                            if (regTemp == null) {
+                                regTemp = new Temp();
+                                variableEntry.setRegisterTemp(regTemp);
+                                assemTypeVar = translatingMediator.translateTemp(regTemp);
+                            } else {
+                                assemTypeVar = translatingMediator.translateTemp(regTemp);
+                            }
+                        } else {
+                            if (varLevel == currentFunctionLevel) {
+                                // It is the same level as that of the current level
+                                Temp regTemp = variableEntry.getRegisterTemp();
+                                assemTypeVar = translatingMediator.translateVarExp(regTemp);
+                            } else {
+                                // This variable was declared in another function; escape it in THAT function
+                                // - this will involve removing it from the register and placing it the stack frame
+                                varNum = varLevel.getActivationFrame().getCurrentOffSet();
+                                varLevel.getActivationFrame().setCurrentOffSet(++varNum);
+                                variableEntry = new VariableEntry(variableEntry.getType(), false, varNum, varLevel);
+                                // Refer this from the stack frame
+                                int staticLinkLevelNum = 0;
+                                if (varLevel != currentFunctionLevel) {
+                                    // The variable being referred to is not declared in this function
+                                    staticLinkLevelNum = getVarLevelNum(varLevel);
+                                }
+                                assemTypeVar = translatingMediator.translateVarExp(varNum, isArgument, ActivationFrame.WORDSIZE, staticLinkLevelNum);
+                            }
+                        }
+                    } else {
+                        // The variable is located on the stack frame
+                        varNum = variableEntry.getLocalVariableNum();
+                        int staticLinkLevelNum = 0;
+                        if (varLevel != currentFunctionLevel) {
+                            // The variable being referred to is not declared in this function
+                            staticLinkLevelNum = getVarLevelNum(varLevel);
+                        }
+                        assemTypeVar = translatingMediator.translateVarExp(varNum, isArgument, ActivationFrame.WORDSIZE, staticLinkLevelNum);
+                    }
+                }
+            } else {
+                errorHandler.addError(var.getPosition(), ErrorHandler.THE_VARIABLE, varName.toString(), ErrorHandler.NOT_DEFINED);
+            }
+        }
+    } else if (var instanceof SubscriptVar) {
+        SubscriptVar subscriptVar = (SubscriptVar) var;
+        Var baseVar = subscriptVar.getBaseVar();
+        Exp indexExp = subscriptVar.getIndex();
+        if (translateExpression(indexExp).getTypeEntry() != IntTypeEntry.getInstance()) {
+            errorHandler.addError(var.getPosition(), ErrorHandler.ARRAY_INDEX_NOT_INT);
+        }
+        TypeEntry tpEntr = translateVarExp(baseVar).getTypeEntry();
+        if (tpEntr instanceof ArrayTypeEntry) {
+            ArrayTypeEntry arrTypeEntry = (ArrayTypeEntry) tpEntr;
+            varTypeEntry = arrTypeEntry.getBaseTypeEntry();
+        } else {
+        // TODO - Handle this Error!!!
+        }
+    } else if (var instanceof FieldVar) {
+        FieldVar fieldVar = (FieldVar) var;
+        Var baseVar = fieldVar.getBaseVar();
+        Symbol fldSym = fieldVar.getFieldSymbol();
+        TranslatedExpAndType baseExpAndType = translateVarExp(baseVar);
+        TypeEntry baseTpEntry = baseExpAndType.getTypeEntry();
+        AssemType assemTypeBase = baseExpAndType.getAssemType();
+        if (baseTpEntry instanceof RecordTypeEntry) {
+            RecordTypeEntry baseRecTpEntry = (RecordTypeEntry) baseTpEntry;
+            boolean foundField = false;
+            int fieldOffSet = 0;
+            for (RecordTypeEntry brte = baseRecTpEntry; brte != null; brte = brte.getNext()) {
+                fieldOffSet++;
+                Symbol foundFldSym = brte.getFieldName();
+                if (foundFldSym == fldSym) {
+                    foundField = true;
+                    varTypeEntry = brte.getFieldType();
+                    break;
+                }
+            }
+            if (!foundField) {
+                errorHandler.addError(var.getPosition(), ErrorHandler.THE_FIELD_NAME, fldSym.toString(), ErrorHandler.NOT_DEFINED);
+            } else {
+                assemTypeVar = translatingMediator.translateFieldVarExp(assemTypeBase, --fieldOffSet);
+            }
+        } else if (baseTpEntry instanceof ArrayTypeEntry) {
+            ArrayTypeEntry ate = (ArrayTypeEntry) baseTpEntry;
+            varTypeEntry = ate.getBaseTypeEntry();
+        }
+    }
+    TranslatedExpAndType translatedExpAndType = new TranslatedExpAndType();
+    translatedExpAndType.setEntry(varTypeEntry);
+    translatedExpAndType.setAssemType(assemTypeVar);
+    return translatedExpAndType;
+}

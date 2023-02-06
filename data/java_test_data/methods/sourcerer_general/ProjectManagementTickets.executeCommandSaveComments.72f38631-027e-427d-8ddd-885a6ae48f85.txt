@@ -1,0 +1,43 @@
+public String executeCommandSaveComments(ActionContext context) {
+    Connection db = null;
+    Ticket thisTicket = null;
+    try {
+        db = this.getConnection(context);
+        // Load the ticket and change the status
+        thisTicket = new Ticket(db, Integer.parseInt(context.getRequest().getParameter("id")));
+        // Load the project
+        Project thisProject = retrieveAuthorizedProject(thisTicket.getProjectId(), context);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-tickets-view")) {
+            return "PermissionError";
+        }
+        // Deny if this user is not allowed to view other's tickets
+        if (!hasProjectAccess(context, thisProject.getId(), "project-tickets-other") && thisTicket.getEnteredBy() != getUser(context).getId() && thisTicket.getAssignedTo() != getUser(context).getId()) {
+            return "PermissionError";
+        }
+        String comment = context.getRequest().getParameter("comment");
+        String attachmentList = context.getRequest().getParameter("attachmentList");
+        if (StringUtils.hasText(comment)) {
+            // Track the comment as part of the ticket update
+            thisTicket.setComment(comment);
+            Ticket previousTicket = new Ticket(db, thisTicket.getId());
+            // Insert the new comment
+            TicketLog thisEntry = new TicketLog();
+            thisEntry.setAssignedTo(thisTicket.getAssignedTo());
+            thisEntry.setPriorityCode(thisTicket.getPriorityCode());
+            thisEntry.setSeverityCode(thisTicket.getSeverityCode());
+            thisEntry.setEntryText(comment);
+            thisEntry.setTicketId(thisTicket.getId());
+            thisEntry.process(db, thisTicket.getId(), getUserId(context), getUserId(context));
+            thisTicket.setModifiedBy(getUserId(context));
+            thisTicket.updateModified(db);
+            FileItemList.convertTempFiles(db, Constants.PROJECT_TICKET_FILES, getUserId(context), thisTicket.getId(), attachmentList);
+            processUpdateHook(context, previousTicket, thisTicket);
+        }
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return ("SystemError");
+    } finally {
+        this.freeConnection(context, db);
+    }
+    return ("SaveCommentsOK");
+}

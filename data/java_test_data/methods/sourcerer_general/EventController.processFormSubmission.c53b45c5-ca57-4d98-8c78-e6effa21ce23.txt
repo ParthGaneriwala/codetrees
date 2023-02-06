@@ -1,0 +1,47 @@
+@SuppressWarnings("unchecked")
+@Override
+protected ModelAndView processFormSubmission(HttpServletRequest request, HttpServletResponse response, Object command, BindException errors) throws Exception {
+    EventForm eventForm = (EventForm) command;
+    Map model = errors.getModel();
+    if (BooleanUtils.isTrue(eventForm.getShowPreview())) {
+        Event event = EventFormFactory.createEvent(eventForm);
+        EventFormFactory.renderWiki(event, request);
+        // for processing the drop down selector for positional accuracies
+        addAccuracies(model);
+        if (null != event.getPositionalAccuracy()) {
+            event.setPositionalAccuracy((PositionalAccuracy) eventDao.getPositionalAccuracy(event.getPositionalAccuracy().getId()));
+        }
+        eventForm.setPreviewEvent(JSONFormat.toJSON(event));
+        return new ModelAndView(getFormView(), model);
+    } else if (errors.hasErrors()) {
+        addAccuracies(model);
+        return new ModelAndView(getFormView(), model);
+    } else {
+        // change the map center of the search form to wherever we are now!
+        EventSearchForm eventSearchForm = getEventSearchForm(request);
+        if (eventSearchForm == null) {
+            eventSearchForm = new EventSearchForm();
+        }
+        // now create or update the event
+        Event event;
+        if (eventForm.getEventId() != null) {
+            // get the event from the session
+            event = (Event) WebUtils.getSessionAttribute(request, SESSION_EVENT);
+            event = EventFormFactory.updateEvent(event, eventForm);
+        } else {
+            event = EventFormFactory.createEvent(eventForm);
+        }
+        // get the catalog from the URL
+        event.setCatalog(CatalogUtil.getCatalog(request));
+        this.eventDao.saveOrUpdate(event);
+        // update the tag cloud
+        this.tagAggregateService.refreshRecent(CatalogUtil.getCatalog(request));
+        // update the session
+        // we want to show only the event we've just edited
+        eventSearchForm.setDisplayEventId(event.getId());
+        WebUtils.setSessionAttribute(request, SESSION_EVENT, event);
+        WebUtils.setSessionAttribute(request, SearchHelper.SESSION_EVENT_SEARCH_FORM, eventSearchForm);
+        WebUtils.setSessionAttribute(request, SearchHelper.SESSION_DO_SEARCH_ON_SHOW, true);
+        return new ModelAndView(getSuccessView());
+    }
+}

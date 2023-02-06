@@ -1,0 +1,89 @@
+public void estimateModel(Counts counts) {
+    Trie<Count> countTrie = counts.getTrie();
+    this.futureVocab = new int[counts.getObservedVocab().size()];
+    {
+        int pos = 0;
+        for (Integer word : counts.getObservedVocab()) {
+            futureVocab[pos++] = word;
+        }
+        Arrays.sort(futureVocab);
+        counts.setObservedVocab(null);
+    }
+    if (futureTimeVar != null) {
+        HashMap<Integer, HashSet<Integer>> limitedVocabs = counts.getLimitedVocabs();
+        for (Map.Entry<Integer, HashSet<Integer>> e : limitedVocabs.entrySet()) {
+            HashSet<Integer> vocab = e.getValue();
+            int[] arrayVocab = new int[vocab.size()];
+            int i = 0;
+            for (int word : vocab) {
+                arrayVocab[i++] = word;
+            }
+            limitedFutureVocabs.put(e.getKey(), arrayVocab);
+        }
+        counts.setLimitedVocabs(null);
+    }
+    KNModSmoother[] smoothers = new KNModSmoother[getOrder()];
+    for (int o = 0; o < getOrder(); ++o) {
+        final SmootherProducer producer = new SmootherProducer(minCounts[o]);
+        Trie.Callback<Counts.Count> callback = new Trie.Callback<Counts.Count>() {
+
+            @Override
+            public void call(Trie<Count> t) {
+                for (Long2IntMap.Iterator it = t.getData().counts.iterator(); it.hasNext(); ) {
+                    int count = it.next().getValue();
+                    producer.addCount(count);
+                }
+            }
+        };
+        Trie.Callback<Counts.Count> lowerOrderCallback = new Trie.Callback<Counts.Count>() {
+
+            @Override
+            public void call(Trie<Count> t) {
+                producer.addCount(t.getData().counts.size());
+            }
+        };
+        if (o < getOrder() - 1) {
+            countTrie.iterate(o + 1, lowerOrderCallback);
+        } else {
+            countTrie.iterate(o, callback);
+        }
+        smoothers[o] = new KNModSmoother(producer, System.err);
+        if (Double.isNaN(smoothers[o].getBackoffProb())) {
+            System.err.println("Bad counts for KNMod, using dummy discounts");
+            smoothers[o] = new KNModSmoother(producer, 0.0, 0.0, 0.0);
+        }
+        System.err.printf("Order %d: smoother: %s\n", o, smoothers[o]);
+    }
+    theTrie = new Trie<BONode>(new BONode(1.0, countTrie.getData().counts.size()));
+    /*
+		// estimate the unigram model separately
+		for(int word : futureVocab) {
+			int count = countTrie.getData().counts.get(word);
+			double prob = smoothers[0].getProb(count);
+
+			// interpolate with uniform
+			prob += smoothers[0].getBackoffProb() / futureVocab.length;
+			theTrie.getData().putProb(word, prob);
+		}
+		theTrie.getData().bow = 1.0;
+		
+		verifyContextProbs(new int[0], 1);
+		
+		if (getOrder() == 1) return;
+		*/
+    int[] context = new int[getOrder() - 1];
+    estimateNode(theTrie, countTrie, 1, context, smoothers);
+/*
+		for(Map.Entry<Integer, Trie<Counts.Count>> entry : countTrie.getSubTries().entrySet()) {
+			int nextContext = entry.getKey();
+			Trie<Counts.Count> nextCounts = entry.getValue();
+			
+			Trie<BONode> nextTrie = new Trie<BONode>(new BONode(nextCounts.getData().counts.size()));
+			theTrie.addSubtrie(nextContext, nextTrie);
+			
+			context[0] = nextContext;
+			
+			estimateNode(nextTrie, nextCounts, 1, context, smoothers);
+		}
+		*/
+}

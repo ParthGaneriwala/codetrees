@@ -1,0 +1,205 @@
+public void parse(InputStream inStream) throws IOException, SAXException {
+    if (null == mContentHandler) {
+        throw new SAXException("No ContentHandler specified!");
+    }
+    mStack = new Stack<ASN1StackTraceElement>();
+    mCurrentFieldIndex = -1;
+    String tagURI = "";
+    AttributesImpl attributes = new AttributesImpl();
+    BERInputStream berStream = new BERInputStream(inStream);
+    mContentHandler.startDocument();
+    long typeCount = 0;
+    ASN1Type type;
+    while ((type = berStream.readType()) != null) {
+        typeCount++;
+        // Just for debugging
+        /*         if (type instanceof ASN1ApplicationType)
+         {
+            System.out.println("APPLICATION TYPE");
+         }
+*/
+        attributes.clear();
+        if (type instanceof ASN1EndOfContent) {
+            handleEndOfContentTag(berStream);
+        } else {
+            ASN1Definition def = (0 == mStack.size() ? mDefinition : mStack.peek().getDefinition());
+            String tagName = def.getLabel();
+            if (type instanceof ASN1ContextSpecific) {
+                tagName = null;
+                if (mStack.peek().getType() instanceof ASN1ContextSpecific && mCurrentFieldIndex >= 0) {
+                    tagName = def.getLabel();
+                    def = def.getField(mCurrentFieldIndex);
+                    if (null == def) {
+                        System.out.println("No def for field #" + mCurrentFieldIndex + " of " + mStack.peek().getDefinition());
+                    }
+                    tagName += "_" + def.getLabel();
+                    // Provide extending classes a chance to emit different tag values if necessary.
+                    tagName = transformTagName(tagName, def);
+                    mStack.add(new ASN1StackTraceElement(def, mStack.peek().getType(), mCurrentFieldIndex, tagName).setAutoPop(true));
+                    mContentHandler.startElement(tagURI, tagName, tagName, attributes);
+                    // System.out.println("<" + tagName + ">"); // TODO: debugging
+                    tagName = null;
+                }
+                mCurrentFieldIndex = type.getTypeNumber();
+                ASN1Definition constructedTypeDef = mModuleParser.getDefinition(def.getTypeName());
+                if (constructedTypeDef != null) {
+                    def = constructedTypeDef;
+                    tagName = def.getLabel();
+                    // Provide extending classes a chance to emit different tag values if necessary.
+                    tagName = transformTagName(tagName, def);
+                    mStack.add(new ASN1StackTraceElement(def, type, mCurrentFieldIndex, tagName).setAutoPop(true));
+                    mContentHandler.startElement(tagURI, tagName, tagName, attributes);
+                    // System.out.println("<" + tagName + ">");  // TODO: debugging
+                    tagName = null;
+                }
+                if (def.getCollectionFieldTypeName() != null) {
+                    if (def.getCollectionFieldTypeName().equals("CHOICE") || ASN1Type.isUniversalTypeName(def.getCollectionFieldTypeName())) {
+                        tagName = def.getLabel() + "_E";
+                    // ///                     mStack.add(new ASN1StackTraceElement(def, type, mCurrentFieldIndex, tagName).setAutoPop(true));
+                    // ///                     mContentHandler.startElement(tagURI, tagName, tagName, attributes);
+                    // System.out.println("<" + tagName + ">");  // TODO: debugging
+                    // ///                     tagName = null;
+                    } else // if (! def.getCollectionFieldTypeName().equals("CHOICE")
+                    // && ! ASN1Type.isUniversalTypeName(def.getCollectionFieldTypeName()))
+                    {
+                        ASN1Definition collectionTypeDef = mModuleParser.getDefinition(def.getCollectionFieldTypeName());
+                        if (null == collectionTypeDef) {
+                            throw new RuntimeException("No ASN definition found for " + StringUtil.singleQuote(def.getCollectionFieldTypeName()) + "!");
+                        }
+                        def = collectionTypeDef;
+                        tagName = def.getLabel();
+                    }
+                // mCurrentFieldIndex = -1;
+                }
+            // def = def.getField(mCurrentFieldIndex);
+            } else if (mCurrentFieldIndex >= 0) {
+                ASN1Definition constructedTypeDef = mModuleParser.getDefinition(def.getTypeName());
+                if (constructedTypeDef != null) {
+                    def = constructedTypeDef;
+                    tagName = def.getLabel();
+                    // Provide extending classes a chance to emit different tag values if necessary.
+                    tagName = transformTagName(tagName, def);
+                    mStack.add(new ASN1StackTraceElement(def, type, mCurrentFieldIndex, tagName).setAutoPop(true));
+                    mContentHandler.startElement(tagURI, tagName, tagName, attributes);
+                // System.out.println("<" + tagName + ">");  // TODO: debugging
+                }
+                if (def.getCollectionFieldTypeName() != null) {
+                    if (def.getCollectionFieldTypeName().equals("CHOICE")) // || ASN1Type.isUniversalTypeName(def.getCollectionFieldTypeName()))
+                    {
+                        tagName = def.getLabel() + "_E";
+                        def = def.getField(mCurrentFieldIndex);
+                        if (null == def) {
+                            System.out.println("No def for field #" + mCurrentFieldIndex + " of " + mStack.peek().getDefinition());
+                        }
+                        tagName += "_" + def.getLabel();
+                    } else if (ASN1Type.isUniversalTypeName(def.getCollectionFieldTypeName())) {
+                        tagName = def.getParentDefinition().getLabel() + "_" + def.getLabel() + "_E";
+                    } else // if (! def.getCollectionFieldTypeName().equals("CHOICE")
+                    // && ! ASN1Type.isUniversalTypeName(def.getCollectionFieldTypeName()))
+                    {
+                        ASN1Definition collectionTypeDef = mModuleParser.getDefinition(def.getCollectionFieldTypeName());
+                        if (null == collectionTypeDef) {
+                            throw new RuntimeException("No ASN definition found for " + StringUtil.singleQuote(def.getCollectionFieldTypeName()) + "!");
+                        }
+                        def = collectionTypeDef;
+                        tagName = def.getLabel();
+                        mCurrentFieldIndex = -1;
+                    }
+                } else {
+                    if (def.getParentDefinition() != null) {
+                        tagName = def.getParentDefinition().getLabel() + "_" + def.getLabel();
+                    }
+                    def = def.getField(mCurrentFieldIndex);
+                    if (null == def) {
+                        System.out.println("No def for field #" + mCurrentFieldIndex + " of " + mStack.peek().getDefinition());
+                    }
+                    tagName += "_" + def.getLabel();
+                    constructedTypeDef = mModuleParser.getDefinition(def.getTypeName());
+                    if (constructedTypeDef != null) {
+                        // Provide extending classes a chance to emit different tag values if necessary.
+                        tagName = transformTagName(tagName, def);
+                        mStack.add(new ASN1StackTraceElement(def, type, mCurrentFieldIndex, tagName).setAutoPop(true));
+                        mContentHandler.startElement(tagURI, tagName, tagName, attributes);
+                        // System.out.println("<" + tagName + ">"); // TODO: debugging
+                        def = constructedTypeDef;
+                        tagName = def.getLabel();
+                    }
+                }
+            } else {
+                if (def.getCollectionFieldTypeName() != null && typeCount > 1) {
+                    if (def.getCollectionFieldTypeName().equals("CHOICE") || ASN1Type.isUniversalTypeName(def.getCollectionFieldTypeName())) {
+                        tagName = def.getLabel() + "_E";
+                    } else // if (! def.getCollectionFieldTypeName().equals("CHOICE")
+                    // && ! ASN1Type.isUniversalTypeName(def.getCollectionFieldTypeName()))
+                    {
+                        ASN1Definition collectionTypeDef = mModuleParser.getDefinition(def.getCollectionFieldTypeName());
+                        if (null == collectionTypeDef) {
+                            throw new RuntimeException("No ASN definition found for " + StringUtil.singleQuote(def.getCollectionFieldTypeName()) + "!");
+                        }
+                        def = collectionTypeDef;
+                        tagName = def.getLabel();
+                    }
+                    mCurrentFieldIndex = -1;
+                }
+            }
+            if (tagName != null && Character.isLowerCase(tagName.charAt(0))) {
+                tagName = def.getParentDefinition().getLabel() + "_" + tagName + "_E";
+            }
+            // Provide extending classes a chance to emit different tag values if necessary.
+            tagName = transformTagName(tagName, def);
+            ASN1StackTraceElement ste = new ASN1StackTraceElement(def, type, mCurrentFieldIndex, tagName);
+            mStack.add(ste);
+            // Read the length
+            // The length field is encoded either as:
+            // * A single byte with the 8th bit as 0 and the other 7 bits encoding the length.
+            // * A "length of the length field" byte that indicates the number of bytes to follow that represent the length field, followed by that number of bytes encoding the length in big-endian byte order.
+            // * An indefinite-length encoding (only used with constructed encoding) where the length byte is coded as 80 to mean indefinite and a EOC TLV is used as the terminator.
+            int length = berStream.readLength();
+            if (length >= 0) {
+                // Read the value.
+                byte[] value = berStream.readValue(length);
+                String stringValue;
+                String attributeValue = null;
+                if (type instanceof ASN1Enumerated) {
+                    // TODO:  Replace with something faster
+                    int intValue = (length == 1 ? (int) value[0] : new BigInteger(value).intValue());
+                    attributeValue = def.getEnumeratedValue(intValue);
+                    attributes.addAttribute("", "value", "value", "CDATA", attributeValue);
+                    stringValue = null;
+                } else if (type instanceof ASN1Integer) {
+                    BigInteger bigIntValue = new BigInteger(value);
+                    stringValue = bigIntValue.toString();
+                    String enumValue = def.getEnumeratedValue(bigIntValue.intValue());
+                    if (enumValue != null) {
+                        attributeValue = enumValue;
+                        attributes.addAttribute("", "value", "value", "CDATA", attributeValue);
+                    }
+                } else if (type instanceof ASN1OctetString) {
+                    // TODO: Not sure how to handle this generically
+                    stringValue = decodeOctetString(value, def);
+                } else if (type instanceof ASN1Boolean) {
+                    attributeValue = (int) value[0] == 0 ? "false" : "true";
+                    attributes.addAttribute("", "value", "value", "CDATA", attributeValue);
+                    stringValue = null;
+                } else {
+                    stringValue = new String(value);
+                }
+                mContentHandler.startElement(tagURI, tagName, tagName, attributes);
+                if (stringValue != null) {
+                    mContentHandler.characters(stringValue.toCharArray(), 0, stringValue.length());
+                    // System.out.print(stringValue); // TODO: debugging
+                    observeValue(stringValue, def);
+                }
+                if (type.isPrimitive()) {
+                    mContentHandler.endElement(tagURI, tagName, tagName);
+                    // System.out.println("</" + tagName + ">");  // TODO: debugging
+                    mStack.pop();
+                }
+            } else if (StringUtil.isSet(tagName)) {
+                mContentHandler.startElement(tagURI, tagName, tagName, attributes);
+            // System.out.println("<" + tagName + ">");  // TODO: debugging
+            }
+        }
+    }
+    mContentHandler.endDocument();
+}

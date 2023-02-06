@@ -1,0 +1,49 @@
+private void processMsg(HttpServletRequest req, PrintWriter pw, String user, String key) throws IOException, SQLException {
+    String msg = req.getParameter("msg");
+    String region = req.getParameter("region");
+    if (user != null && key != null)
+        msg += "," + user + "," + key;
+    log.info("received from {" + region + "}: " + msg);
+    String rline = null;
+    try {
+        Socket s;
+        if (user != null && key != null) {
+            // SSLSocketFactory sslsf = (SSLSocketFactory) SSLSocketFactory.getDefault();
+            // SSLSocket sock = (SSLSocket) sslsf.createSocket("private.greenphosphor.com", 4443);
+            // String[] enabledCipherSuites = { "SSL_DH_anon_WITH_RC4_128_MD5" };
+            // sock.setEnabledCipherSuites(enabledCipherSuites);
+            // s = sock;
+            // no ssl; use the local private port
+            s = new Socket("127.0.0.1", 4455);
+        } else
+            s = new Socket("glasshouse.greenphosphor.com", 4445);
+        PrintWriter pwg = new PrintWriter(new OutputStreamWriter(s.getOutputStream()));
+        BufferedReader br = new BufferedReader(new InputStreamReader(s.getInputStream()));
+        pwg.println(msg);
+        pwg.flush();
+        rline = br.readLine();
+        GPLogger.log("ALL", "received from gateway: " + rline);
+        pwg.close();
+        br.close();
+    } catch (IOException ie) {
+        GPLogger.log("ALL", "exception processing msg: " + ie);
+    }
+    if (!msg.startsWith("init")) {
+        String[] split = msg.split(",");
+        int sourceLayer = Integer.parseInt(split[0]);
+        SLGraph slg = (SLGraph) layerTable.get(String.valueOf(sourceLayer));
+        if (split[2].equals("-3")) {
+            if (slg != null && !((user == null && slg.user != null) || (user != null && slg.user == null) || (key == null && slg.key != null) || (key != null && slg.key == null) || (user != null && !slg.user.equals(user)) || (key != null && !slg.key.equals(key)))) {
+                layerTable.remove(String.valueOf(sourceLayer));
+                RegionControl rcd = (RegionControl) regionTable.get(region);
+                if (rcd != null)
+                    rcd.freePrims(sourceLayer);
+            }
+        }
+    }
+    if (rline != null && (rline.startsWith("create") || rline.startsWith("flatImage") || rline.startsWith("modify"))) {
+        RegionControl rc = (RegionControl) regionTable.get(region);
+        loadCells(rline, pw, rc, user, key);
+    } else
+        pw.println("ok");
+}

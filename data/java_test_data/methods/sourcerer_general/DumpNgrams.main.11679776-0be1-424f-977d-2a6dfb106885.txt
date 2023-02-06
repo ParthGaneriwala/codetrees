@@ -1,0 +1,61 @@
+public static void main(String[] args) throws IOException {
+    OptionParser optParser = new OptionParser(Options.class);
+    Options opts = (Options) optParser.parse(args, true);
+    Experiment.initialize(opts.config);
+    Experiment experiment = Experiment.getInstance();
+    experiment.buildPrefixes();
+    LanguageModel lm = experiment.getLM(opts.lm);
+    ArrayList<String> dataFiles = new ArrayList<String>(5);
+    dataFiles.add(opts.file1);
+    if (opts.file2 != null) {
+        dataFiles.add(opts.file2);
+    }
+    if (opts.file3 != null) {
+        dataFiles.add(opts.file3);
+    }
+    if (opts.file4 != null) {
+        dataFiles.add(opts.file4);
+    }
+    if (opts.file5 != null) {
+        dataFiles.add(opts.file5);
+    }
+    File tmpFile = File.createTempFile("tmp-file", "data");
+    tmpFile.deleteOnExit();
+    RandomAccessFile outFile = new RandomAccessFile(tmpFile, "rw");
+    outFile.getChannel().truncate(0);
+    OnDiskTrainingDataWriter writer = new OnDiskTrainingDataWriter(outFile.getChannel());
+    WritableTrainingData popData = writer.createData();
+    long overtMask = Experiment.getInstance().getTupleDescription().getOvertFactorsMask();
+    TrainingDataFilter filter = new MaskedFuturesTrainingDataFilter(overtMask);
+    Long2IntMap counts = new Long2IntMap(20000);
+    // Aggregate multiple files into one
+    for (String fname : dataFiles) {
+        FileChannel channel = new FileInputStream(fname).getChannel();
+        TrainingDataReader reader = new OnDiskTrainingDataReader(channel);
+        ReadableTrainingData smoothingData = new ReadableTrainingData(reader);
+        TrainingDataUtil.reduceContext(smoothingData, popData, lm.getOvertOrder(), 1, filter, counts);
+        channel.close();
+    }
+    popData.finish();
+    System.err.printf("counts (1): %d\n", counts.sumValues());
+    counts.clear();
+    outFile.seek(0);
+    TrainingDataReader reader = new OnDiskTrainingDataReader(outFile.getChannel());
+    ReadableTrainingData data = new ReadableTrainingData(reader);
+    while (data.hasNext()) {
+        TrainingDataBlock block = data.next();
+        for (ContextFuturesPair pair : block) {
+            String contextString = "";
+            for (long word : pair.getContext().data) {
+                contextString += FactorTuple.toStringNoNull(word) + " ";
+            }
+            for (TupleCountPair tc : pair.getFutures()) {
+                counts.addAndGet(tc.tuple, tc.count);
+                System.out.printf("%s%s %d\n", contextString, FactorTuple.toStringNoNull(tc.tuple), tc.count);
+            }
+        }
+    }
+    tmpFile.delete();
+    outFile.close();
+    System.err.printf("counts (2): %d\n", counts.sumValues());
+}

@@ -1,0 +1,139 @@
+@Override
+public void run() {
+    m_remoteHostsStatus[ah] = IN_USE;
+    // m_subExpComplete[wtask] = TaskStatusInfo.PROCESSING;
+    RemoteBoundaryVisualizerSubTask vSubTask = new RemoteBoundaryVisualizerSubTask();
+    vSubTask.setXAttribute(m_xAttribute);
+    vSubTask.setYAttribute(m_yAttribute);
+    vSubTask.setRowNumber(wtask);
+    vSubTask.setPanelWidth(m_panelWidth);
+    vSubTask.setPanelHeight(m_panelHeight);
+    vSubTask.setPixHeight(m_pixHeight);
+    vSubTask.setPixWidth(m_pixWidth);
+    vSubTask.setClassifier(m_classifier);
+    vSubTask.setDataGenerator(m_dataGenerator);
+    vSubTask.setInstances(m_trainingData);
+    vSubTask.setMinMaxX(m_minX, m_maxX);
+    vSubTask.setMinMaxY(m_minY, m_maxY);
+    vSubTask.setNumSamplesPerRegion(m_numOfSamplesPerRegion);
+    vSubTask.setGeneratorSamplesBase(m_samplesBase);
+    try {
+        String name = "//" + (m_remoteHosts.elementAt(ah)) + "/RemoteEngine";
+        Compute comp = (Compute) Naming.lookup(name);
+        // assess the status of the sub-exp
+        notifyListeners(false, true, false, "Starting row " + wtask + " on host " + (m_remoteHosts.elementAt(ah)));
+        Object subTaskId = comp.executeTask(vSubTask);
+        boolean finished = false;
+        TaskStatusInfo is = null;
+        long startTime = System.currentTimeMillis();
+        while (!finished) {
+            try {
+                Thread.sleep(Math.max(m_minTaskPollTime, m_hostPollingTime[ah]));
+                TaskStatusInfo cs = (TaskStatusInfo) comp.checkStatus(subTaskId);
+                if (cs.getExecutionStatus() == TaskStatusInfo.FINISHED) {
+                    // push host back onto queue and try launching any waiting
+                    // sub-experiments
+                    long runTime = System.currentTimeMillis() - startTime;
+                    runTime /= 4;
+                    if (runTime < 1000) {
+                        runTime = 1000;
+                    }
+                    m_hostPollingTime[ah] = (int) runTime;
+                    // Extract the row from the result
+                    RemoteResult rr = (RemoteResult) cs.getTaskResult();
+                    double[][] probs = rr.getProbabilities();
+                    for (int i = 0; i < m_panelWidth; i++) {
+                        m_probabilityCache[wtask][i] = probs[i];
+                        if (i < m_panelWidth - 1) {
+                            plotPoint(i, wtask, probs[i], false);
+                        } else {
+                            plotPoint(i, wtask, probs[i], true);
+                        }
+                    }
+                    notifyListeners(false, true, false, cs.getStatusMessage());
+                    m_remoteHostsStatus[ah] = AVAILABLE;
+                    incrementFinished();
+                    availableHost(ah);
+                    finished = true;
+                } else if (cs.getExecutionStatus() == TaskStatusInfo.FAILED) {
+                    // a non connection related error---possibly host doesn't have
+                    // access to data sets or security policy is not set up
+                    // correctly or classifier(s) failed for some reason
+                    notifyListeners(false, true, false, cs.getStatusMessage());
+                    m_remoteHostsStatus[ah] = SOME_OTHER_FAILURE;
+                    // m_subExpComplete[wexp] = TaskStatusInfo.FAILED;
+                    notifyListeners(false, true, false, "Row " + wtask + " " + cs.getStatusMessage() + ". Scheduling for execution on another host.");
+                    incrementFailed(ah);
+                    // push experiment back onto queue
+                    waitingTask(wtask);
+                    // push host back onto queue and try launching any waiting
+                    // Tasks. Host is pushed back on the queue as the
+                    // failure may be temporary.
+                    availableHost(ah);
+                    finished = true;
+                } else {
+                    if (is == null) {
+                        is = cs;
+                        notifyListeners(false, true, false, cs.getStatusMessage());
+                    } else {
+                        RemoteResult rr = (RemoteResult) cs.getTaskResult();
+                        if (rr != null) {
+                            int percentComplete = rr.getPercentCompleted();
+                            String timeRemaining = "";
+                            if (percentComplete > 0 && percentComplete < 100) {
+                                double timeSoFar = (double) System.currentTimeMillis() - (double) startTime;
+                                double timeToGo = ((100.0 - percentComplete) / percentComplete) * timeSoFar;
+                                if (timeToGo < m_hostPollingTime[ah]) {
+                                    m_hostPollingTime[ah] = (int) timeToGo;
+                                }
+                                String units = "seconds";
+                                timeToGo /= 1000.0;
+                                if (timeToGo > 60) {
+                                    units = "minutes";
+                                    timeToGo /= 60.0;
+                                }
+                                if (timeToGo > 60) {
+                                    units = "hours";
+                                    timeToGo /= 60.0;
+                                }
+                                timeRemaining = " (approx. time remaining " + Utils.doubleToString(timeToGo, 1) + " " + units + ")";
+                            }
+                            if (percentComplete < 25) /* && minTaskPollTime < 30000 */
+                            {
+                                if (percentComplete > 0) {
+                                    m_hostPollingTime[ah] = (int) ((25.0 / percentComplete) * m_hostPollingTime[ah]);
+                                } else {
+                                    m_hostPollingTime[ah] *= 2;
+                                }
+                                if (m_hostPollingTime[ah] > 60000) {
+                                    m_hostPollingTime[ah] = 60000;
+                                }
+                            }
+                            notifyListeners(false, true, false, "Row " + wtask + " " + percentComplete + "% complete" + timeRemaining + ".");
+                        } else {
+                            notifyListeners(false, true, false, "Row " + wtask + " queued on " + (m_remoteHosts.elementAt(ah)));
+                            if (m_hostPollingTime[ah] < 60000) {
+                                m_hostPollingTime[ah] *= 2;
+                            }
+                        }
+                        is = cs;
+                    }
+                }
+            } catch (InterruptedException ie) {
+                ie.printStackTrace();
+            }
+        }
+    } catch (Exception ce) {
+        m_remoteHostsStatus[ah] = CONNECTION_FAILED;
+        m_removedHosts++;
+        System.err.println(ce);
+        ce.printStackTrace();
+        notifyListeners(false, true, false, "Connection to " + (m_remoteHosts.elementAt(ah)) + " failed. Scheduling row " + wtask + " for execution on another host.");
+        checkForAllFailedHosts();
+        waitingTask(wtask);
+    } finally {
+        if (isInterrupted()) {
+            System.err.println("Sub exp Interupted!");
+        }
+    }
+}

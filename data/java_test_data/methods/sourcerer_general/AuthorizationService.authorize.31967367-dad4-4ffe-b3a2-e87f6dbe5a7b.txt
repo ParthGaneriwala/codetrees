@@ -1,0 +1,60 @@
+public AuthorizationResult[] authorize(Subject[] subjects, Resource[] resources, Action action, Context context) throws AuthorizationFailedException {
+    if (subjects == null || subjects.length == 0 || resources == null || resources.length == 0 || action == null) {
+        throw new IllegalArgumentException("Parameters should not be null.");
+    }
+    // Create audit context
+    Context adtCtx = createAuditContext(subjects, resources, action, context);
+    if (authorizers == null || authorizers.length == 0) {
+        String msg = "No authorization provider configured for authorization service '" + serviceName + "'.";
+        audit(subjects, AuditSeverity.FAILURE, msg, adtCtx, null);
+        // throw an exception
+        throw new AuthorizationFailedException(msg);
+    }
+    try {
+        AuthorizationResult[] result = null;
+        if (adjudicationAlg == null) {
+            result = authorizers[0].authorize(subjects, resources, action, context);
+        } else {
+            AdjudicationAlgorithmIntf alg = algReg.get(adjudicationAlg);
+            if (alg != null) {
+                result = alg.adjudicate(authorizers, subjects, resources, action, context);
+            } else {
+                String msg = "Can not find the configured adjudication algorithm.";
+                audit(subjects, AuditSeverity.ERROR, msg, adtCtx, null);
+                // throw an exception
+                throw new AuthorizationFailedException(msg);
+            }
+        }
+        for (AuthorizationResult each : result) {
+            Decision decision = each.getDecision();
+            Resource res = each.getAuthorizedResource();
+            adtCtx.setAllAttributes(each.getResponseContext());
+            adtCtx.setAttribute(new Attribute(AuditConstants.ATTR_DECISION, AttributeType.String, decision.toString()));
+            if (result.length > 1) {
+                // If there are multiple authorization results, then each result should have a corresponding
+                // resource.
+                adtCtx.setAttribute(new Attribute(AuditConstants.ATTR_RESOURCE, AttributeType.String, res.getResourceString()));
+            // Otherwise, there should not be a resource in result.
+            }
+            audit(subjects, AuditSeverity.SUCCESS, "Authorization succeeded.", adtCtx, null);
+        }
+        return result;
+    } catch (InvocationTargetException inEx) {
+        Throwable t = inEx.getTargetException();
+        if (t instanceof AuthorizationFailedException) {
+            audit(subjects, AuditSeverity.FAILURE, "Authorization failed.", adtCtx, t);
+            throw (AuthorizationFailedException) t;
+        } else {
+            String msg = "Error occurs while doing adjudication.";
+            audit(subjects, AuditSeverity.ERROR, msg, adtCtx, t);
+            throw new AuthorizationFailedException(msg, t);
+        }
+    } catch (AuthorizationFailedException aEx) {
+        // We have already aduited this event.
+        throw aEx;
+    } catch (Exception e) {
+        String msg = "Error occurs while authorizing.";
+        audit(subjects, AuditSeverity.ERROR, msg, adtCtx, e);
+        throw new AuthorizationFailedException(msg, e);
+    }
+}

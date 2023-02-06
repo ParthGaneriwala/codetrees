@@ -1,0 +1,81 @@
+private Expression readColumnOrFunctionExpression() {
+    String name = token.tokenString;
+    boolean isSimpleQuoted = isDelimitedSimpleName();
+    String prefix = token.namePrefix;
+    String prePrefix = token.namePrePrefix;
+    String prePrePrefix = token.namePrePrePrefix;
+    Token recordedToken = getRecordedToken();
+    checkIsIdentifier();
+    if (isUndelimitedSimpleName()) {
+        FunctionSQL function = FunctionCustom.newCustomFunction(token.tokenString, token.tokenType);
+        if (function != null) {
+            int pos = getPosition();
+            try {
+                Expression e = readSQLFunction(function);
+                if (e != null) {
+                    return e;
+                }
+            } catch (HsqlException ex) {
+                ex.setLevel(compileContext.subqueryDepth);
+                if (lastError == null || lastError.getLevel() < ex.getLevel()) {
+                    lastError = ex;
+                }
+                rewind(pos);
+            }
+        } else if (isReservedKey()) {
+            function = FunctionSQL.newSQLFunction(name, compileContext);
+            if (function != null) {
+                Expression e = readSQLFunction(function);
+                if (e != null) {
+                    return e;
+                }
+            }
+        }
+    }
+    read();
+    if (token.tokenType != Tokens.OPENBRACKET) {
+        checkValidCatalogName(prePrePrefix);
+        Expression column = new ExpressionColumn(prePrefix, prefix, name, database.sqlEnforceRefs);
+        return column;
+    }
+    if (prePrePrefix != null) {
+        throw Error.error(ErrorCode.X_42551, prePrePrefix);
+    }
+    checkValidCatalogName(prePrefix);
+    prefix = session.getSchemaName(prefix);
+    RoutineSchema routineSchema = (RoutineSchema) database.schemaManager.findSchemaObject(name, prefix, SchemaObject.FUNCTION);
+    if (routineSchema == null && isSimpleQuoted) {
+        HsqlName schema = database.schemaManager.getDefaultSchemaHsqlName();
+        routineSchema = (RoutineSchema) database.schemaManager.findSchemaObject(name, schema.name, SchemaObject.FUNCTION);
+        if (routineSchema == null) {
+            Routine.createRoutines(session, schema, name);
+            routineSchema = (RoutineSchema) database.schemaManager.findSchemaObject(name, schema.name, SchemaObject.FUNCTION);
+        }
+    }
+    if (routineSchema == null) {
+        throw Error.error(ErrorCode.X_42501, name);
+    }
+    HsqlArrayList list = new HsqlArrayList();
+    readThis(Tokens.OPENBRACKET);
+    if (token.tokenType == Tokens.CLOSEBRACKET) {
+        read();
+    } else {
+        while (true) {
+            Expression e = XreadValueExpression();
+            list.add(e);
+            if (token.tokenType == Tokens.COMMA) {
+                read();
+            } else {
+                readThis(Tokens.CLOSEBRACKET);
+                break;
+            }
+        }
+    }
+    FunctionSQLInvoked function = new FunctionSQLInvoked(routineSchema);
+    Expression[] arguments = new Expression[list.size()];
+    list.toArray(arguments);
+    function.setArguments(arguments);
+    compileContext.addFunctionCall(function);
+    recordedToken.setExpression(routineSchema);
+    return function;
+}

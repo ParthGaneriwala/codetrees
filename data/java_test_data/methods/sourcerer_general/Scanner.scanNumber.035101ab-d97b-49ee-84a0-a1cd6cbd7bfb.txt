@@ -1,0 +1,137 @@
+void scanNumber() {
+    int c;
+    boolean hasDigit = false;
+    boolean hasPoint = false;
+    int exponentIndex = -1;
+    token.tokenType = Tokens.X_VALUE;
+    token.dataType = Type.SQL_INTEGER;
+    int tokenStart = currentPosition;
+    for (; currentPosition < limit; currentPosition++) {
+        boolean end = false;
+        c = charAt(currentPosition);
+        switch(c) {
+            case '0':
+            case '1':
+            case '2':
+            case '3':
+            case '4':
+            case '5':
+            case '6':
+            case '7':
+            case '8':
+            case '9':
+                hasDigit = true;
+                break;
+            case '.':
+                token.dataType = Type.SQL_NUMERIC;
+                if (hasPoint || exponentIndex != -1) {
+                    token.tokenString = sqlString.substring(tokenStart, currentPosition + 1);
+                    token.tokenType = Tokens.X_MALFORMED_NUMERIC;
+                    token.isMalformed = true;
+                    return;
+                }
+                hasPoint = true;
+                break;
+            case 'E':
+            case 'e':
+                token.dataType = Type.SQL_DOUBLE;
+                if (exponentIndex != -1 || !hasDigit) {
+                    token.tokenString = sqlString.substring(tokenStart, currentPosition + 1);
+                    token.tokenType = Tokens.X_MALFORMED_NUMERIC;
+                    token.isMalformed = true;
+                    return;
+                }
+                hasPoint = true;
+                exponentIndex = currentPosition;
+                break;
+            case '-':
+            case '+':
+                if (exponentIndex != currentPosition - 1) {
+                    end = true;
+                }
+                break;
+            case 'K':
+            case 'k':
+            case 'M':
+            case 'm':
+            case 'G':
+            case 'g':
+            case 'T':
+            case 't':
+            case 'P':
+            case 'p':
+                if (!hasDigit || hasPoint) {
+                    token.tokenType = Tokens.X_MALFORMED_NUMERIC;
+                    token.isMalformed = true;
+                    return;
+                }
+                String s = Character.toString((char) c).toUpperCase(Locale.ENGLISH);
+                token.lobMultiplierType = Tokens.getNonKeywordID(s, Tokens.X_MALFORMED_NUMERIC);
+                if (token.lobMultiplierType == Tokens.X_MALFORMED_NUMERIC) {
+                    token.tokenType = Tokens.X_MALFORMED_NUMERIC;
+                    token.isMalformed = true;
+                    return;
+                }
+                try {
+                    token.tokenValue = ValuePool.getInt(Integer.parseInt(sqlString.substring(tokenStart, currentPosition)));
+                    token.tokenType = Tokens.X_LOB_SIZE;
+                    currentPosition++;
+                    token.fullString = getPart(tokenPosition, currentPosition);
+                } catch (NumberFormatException e) {
+                    token.tokenType = Tokens.X_MALFORMED_NUMERIC;
+                    token.isMalformed = true;
+                }
+                return;
+            default:
+                end = true;
+                break;
+        }
+        if (end) {
+            break;
+        }
+    }
+    token.tokenString = sqlString.substring(tokenStart, currentPosition);
+    switch(token.dataType.typeCode) {
+        case Types.SQL_INTEGER:
+            // to a wider type.
+            if (token.tokenString.length() < 11) {
+                try {
+                    token.tokenValue = ValuePool.getInt(Integer.parseInt(token.tokenString));
+                    return;
+                } catch (Exception e1) {
+                }
+            }
+            if (this.token.tokenString.length() < 20) {
+                try {
+                    token.dataType = Type.SQL_BIGINT;
+                    token.tokenValue = ValuePool.getLong(Long.parseLong(token.tokenString));
+                    return;
+                } catch (Exception e2) {
+                }
+            }
+            token.dataType = Type.SQL_NUMERIC;
+        // fall through
+        case Types.SQL_NUMERIC:
+            try {
+                BigDecimal decimal = new BigDecimal(token.tokenString);
+                token.tokenValue = decimal;
+                token.dataType = NumberType.getNumberType(Types.NUMERIC, JavaSystem.precision(decimal), decimal.scale());
+            } catch (Exception e2) {
+                token.tokenType = Tokens.X_MALFORMED_NUMERIC;
+                token.isMalformed = true;
+                return;
+            }
+            return;
+        case Types.SQL_DOUBLE:
+            try {
+                double d = JavaSystem.parseDouble(token.tokenString);
+                long l = Double.doubleToLongBits(d);
+                token.tokenValue = ValuePool.getDouble(l);
+            } catch (Exception e2) {
+                token.tokenType = Tokens.X_MALFORMED_NUMERIC;
+                token.isMalformed = true;
+                return;
+            }
+            return;
+    }
+}

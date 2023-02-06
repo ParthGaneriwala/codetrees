@@ -1,0 +1,98 @@
+public static void parse(int display, SlkAction action, SlkToken tokens, SlkError error, SlkLog log, short start_symbol) {
+    short rhs, lhs;
+    short production_number, entry, symbol, token, new_token;
+    int top, index, level;
+    short[] stack = new short[512];
+    top = 511;
+    stack[top] = 0;
+    if (start_symbol == 0) {
+        start_symbol = START_SYMBOL;
+    }
+    if (top > 0) {
+        stack[--top] = start_symbol;
+    } else {
+        log.trace("SlkParse: stack overflow\n");
+        return;
+    }
+    token = tokens.get();
+    new_token = token;
+    if (display != 0) {
+        log.trace("\n\n\t\tPARSE DERIVATION\n\n");
+    }
+    for (symbol = (stack[top] != 0 ? stack[top++] : (short) 0); symbol != 0; ) {
+        if (symbol >= START_SYMBOL) {
+            // nonterminal symbol
+            entry = 0;
+            level = 1;
+            production_number = get_conditional_production(symbol);
+            if (production_number != 0) {
+                entry = get_predicted_entry(display, tokens, log, production_number, token, level, 1);
+            }
+            if (entry == 0) {
+                index = Parse_row[symbol - (START_SYMBOL - 1)];
+                index += Terminal_to_index[token];
+                entry = Parse[index];
+            }
+            while (entry < 0) {
+                index = Conflict_row[-entry];
+                index += Terminal_to_index[tokens.peek(level)];
+                entry = Conflict[index];
+                ++level;
+            }
+            if (entry != 0) {
+                index = Production_row[entry];
+                lhs = Production[++index];
+                if (lhs == symbol) {
+                    // valid row for lhs
+                    rhs = Production[++index];
+                    for (; rhs != 0; rhs = Production[++index]) {
+                        if (top > 0) {
+                            stack[--top] = rhs;
+                        } else {
+                            log.trace("SlkParse: stack overflow\n");
+                            return;
+                        }
+                    }
+                    if (display != 0) {
+                        log.trace_production(entry);
+                    }
+                } else {
+                    // lhs does not match
+                    new_token = error.no_entry(symbol, token, level - 1);
+                }
+            } else {
+                // no table entry
+                new_token = error.no_entry(symbol, token, level - 1);
+            }
+        } else if (symbol > 0) {
+            // terminal symbol
+            if (symbol == token) {
+                token = tokens.get();
+                new_token = token;
+            } else {
+                // token mismatch
+                new_token = error.mismatch(symbol, token);
+            }
+        } else {
+            // action symbol
+            if (display != 0) {
+                log.trace_action(symbol);
+            }
+            action.execute(-symbol);
+        }
+        if (token != new_token) {
+            if (new_token != 0) {
+                token = new_token;
+            }
+            if (token != END_OF_SLK_INPUT_) {
+                // try this token
+                continue;
+            }
+        }
+        symbol = (stack[top] != 0 ? stack[top++] : (short) 0);
+    }
+    if (token != END_OF_SLK_INPUT_) {
+        // input left over
+        error.input_left();
+    }
+}

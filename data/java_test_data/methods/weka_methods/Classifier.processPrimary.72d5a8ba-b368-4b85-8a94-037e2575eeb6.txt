@@ -1,0 +1,48 @@
+@Override
+public weka.classifiers.Classifier processPrimary(Integer setNum, Integer maxSetNum, Data data, PairedDataHelper<weka.classifiers.Classifier> helper) throws WekaException {
+    Instances trainingData = data.getPrimaryPayload();
+    if (m_trainedClassifierHeader == null) {
+        m_trainedClassifierHeader = new Instances(trainingData, 0);
+    }
+    try {
+        weka.classifiers.Classifier classifier = AbstractClassifier.makeCopy(m_classifierTemplate);
+        String classifierDesc = classifier.getClass().getCanonicalName();
+        classifierDesc = classifierDesc.substring(classifierDesc.lastIndexOf(".") + 1);
+        if (classifier instanceof OptionHandler) {
+            String optsString = Utils.joinOptions(((OptionHandler) classifier).getOptions());
+            classifierDesc += " " + optsString;
+        }
+        if (classifier instanceof EnvironmentHandler) {
+            ((EnvironmentHandler) classifier).setEnvironment(getStepManager().getExecutionEnvironment().getEnvironmentVariables());
+        }
+        // retain the training data
+        helper.addIndexedValueToNamedStore("trainingSplits", setNum, trainingData);
+        if (!isStopRequested()) {
+            getStepManager().logBasic("Building " + classifierDesc + " on " + trainingData.relationName() + " for fold/set " + setNum + " out of " + maxSetNum);
+            if (getStepManager().getLoggingLevel().ordinal() > LoggingLevel.LOW.ordinal()) {
+                getStepManager().statusMessage("Building " + classifierDesc + " on fold/set " + setNum);
+            }
+            if (maxSetNum == 1) {
+                // single train/test split - makes sense to retain this trained
+                // classifier
+                m_trainedClassifier = classifier;
+            }
+            classifier.buildClassifier((Instances) trainingData);
+            getStepManager().logDetailed("Finished building " + classifierDesc + "on " + trainingData.relationName() + " for fold/set " + setNum + " out of " + maxSetNum);
+            outputTextData(classifier, setNum);
+            outputGraphData(classifier, setNum);
+            if (getStepManager().numIncomingConnectionsOfType(StepManager.CON_TESTSET) == 0) {
+                // output a batch classifier for just the trained model
+                Data batchClassifier = new Data(StepManager.CON_BATCH_CLASSIFIER, classifier);
+                batchClassifier.setPayloadElement(StepManager.CON_AUX_DATA_TRAININGSET, trainingData);
+                batchClassifier.setPayloadElement(StepManager.CON_AUX_DATA_SET_NUM, setNum);
+                batchClassifier.setPayloadElement(StepManager.CON_AUX_DATA_MAX_SET_NUM, maxSetNum);
+                batchClassifier.setPayloadElement(StepManager.CON_AUX_DATA_LABEL, getName());
+                getStepManager().outputData(batchClassifier);
+            }
+        }
+        return classifier;
+    } catch (Exception ex) {
+        throw new WekaException(ex);
+    }
+}

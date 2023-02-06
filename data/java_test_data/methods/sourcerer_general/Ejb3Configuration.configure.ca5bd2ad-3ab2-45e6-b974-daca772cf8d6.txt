@@ -1,0 +1,79 @@
+private Ejb3Configuration configure(Properties properties, Map workingVars) {
+    // TODO check for people calling more than once this method (except buildEMF)
+    if (isConfigurationProcessed)
+        return this;
+    isConfigurationProcessed = true;
+    Properties preparedProperties = prepareProperties(properties, workingVars);
+    if (workingVars == null)
+        workingVars = CollectionHelper.EMPTY_MAP;
+    if (preparedProperties.containsKey(HibernatePersistence.CFG_FILE)) {
+        String cfgFileName = preparedProperties.getProperty(HibernatePersistence.CFG_FILE);
+        cfg.configure(cfgFileName);
+    }
+    // persistence.xml has priority over hibernate.cfg.xml
+    cfg.addProperties(preparedProperties);
+    addClassesToSessionFactory(workingVars);
+    // processes specific properties
+    List<String> jaccKeys = new ArrayList<String>();
+    Interceptor defaultInterceptor = DEFAULT_CONFIGURATION.getInterceptor();
+    NamingStrategy defaultNamingStrategy = DEFAULT_CONFIGURATION.getNamingStrategy();
+    Iterator propertyIt = preparedProperties.keySet().iterator();
+    while (propertyIt.hasNext()) {
+        Object uncastObject = propertyIt.next();
+        // had to be safe
+        if (uncastObject != null && uncastObject instanceof String) {
+            String propertyKey = (String) uncastObject;
+            if (propertyKey.startsWith(HibernatePersistence.CLASS_CACHE_PREFIX)) {
+                setCacheStrategy(propertyKey, preparedProperties, true, workingVars);
+            } else if (propertyKey.startsWith(HibernatePersistence.COLLECTION_CACHE_PREFIX)) {
+                setCacheStrategy(propertyKey, preparedProperties, false, workingVars);
+            } else if (propertyKey.startsWith(HibernatePersistence.JACC_PREFIX) && !(propertyKey.equals(HibernatePersistence.JACC_CONTEXT_ID) || propertyKey.equals(HibernatePersistence.JACC_ENABLED))) {
+                jaccKeys.add(propertyKey);
+            }
+        }
+    }
+    if (preparedProperties.containsKey(HibernatePersistence.INTERCEPTOR) && (cfg.getInterceptor() == null || cfg.getInterceptor().equals(defaultInterceptor))) {
+        // cfg.setInterceptor has precedence over configuration file
+        String interceptorName = preparedProperties.getProperty(HibernatePersistence.INTERCEPTOR);
+        try {
+            Class interceptor = classForName(interceptorName);
+            cfg.setInterceptor((Interceptor) interceptor.newInstance());
+        } catch (ClassNotFoundException e) {
+            throw new PersistenceException(getExceptionHeader() + "Unable to find interceptor class: " + interceptorName, e);
+        } catch (IllegalAccessException e) {
+            throw new PersistenceException(getExceptionHeader() + "Unable to access interceptor class: " + interceptorName, e);
+        } catch (InstantiationException e) {
+            throw new PersistenceException(getExceptionHeader() + "Unable to instanciate interceptor class: " + interceptorName, e);
+        } catch (ClassCastException e) {
+            throw new PersistenceException(getExceptionHeader() + "Interceptor class does not implement Interceptor interface: " + interceptorName, e);
+        }
+    }
+    if (preparedProperties.containsKey(HibernatePersistence.NAMING_STRATEGY) && (cfg.getNamingStrategy() == null || cfg.getNamingStrategy().equals(defaultNamingStrategy))) {
+        // cfg.setNamingStrategy has precedence over configuration file
+        String namingStrategyName = preparedProperties.getProperty(HibernatePersistence.NAMING_STRATEGY);
+        try {
+            Class namingStragegy = classForName(namingStrategyName);
+            cfg.setNamingStrategy((NamingStrategy) namingStragegy.newInstance());
+        } catch (ClassNotFoundException e) {
+            throw new PersistenceException(getExceptionHeader() + "Unable to find naming strategy class: " + namingStrategyName, e);
+        } catch (IllegalAccessException e) {
+            throw new PersistenceException(getExceptionHeader() + "Unable to access naming strategy class: " + namingStrategyName, e);
+        } catch (InstantiationException e) {
+            throw new PersistenceException(getExceptionHeader() + "Unable to instanciate naming strategy class: " + namingStrategyName, e);
+        } catch (ClassCastException e) {
+            throw new PersistenceException(getExceptionHeader() + "Naming strategyy class does not implement NmaingStrategy interface: " + namingStrategyName, e);
+        }
+    }
+    if (jaccKeys.size() > 0) {
+        addSecurity(jaccKeys, preparedProperties, workingVars);
+    }
+    // initialize listeners
+    listenerConfigurator.setProperties(preparedProperties);
+    listenerConfigurator.configure();
+    // TODO centralize that?
+    if (!"true".equalsIgnoreCase(cfg.getProperty(Environment.AUTOCOMMIT))) {
+        log.warn("{} = false break the EJB3 specification", Environment.AUTOCOMMIT);
+    }
+    discardOnClose = preparedProperties.getProperty(HibernatePersistence.DISCARD_PC_ON_CLOSE).equals("true");
+    return this;
+}

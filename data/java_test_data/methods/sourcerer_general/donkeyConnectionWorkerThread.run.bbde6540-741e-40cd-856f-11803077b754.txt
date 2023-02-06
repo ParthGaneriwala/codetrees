@@ -1,0 +1,79 @@
+public void run() {
+    setName("Worker thread Nr." + Integer.toString(threadNumber));
+    System.out.println(getName() + " started.");
+    while (active) {
+        int newKeys;
+        try {
+            newKeys = readselector.selectNow();
+            if (newKeys > 0) {
+                Set keys = readselector.selectedKeys();
+                Iterator i = keys.iterator();
+                while (i.hasNext()) {
+                    SelectionKey nextKey = (SelectionKey) i.next();
+                    i.remove();
+                    // System.out.println("Key selected. Ops: " + nextKey.interestOps());
+                    if (nextKey.isConnectable()) {
+                        SocketChannel sc = (SocketChannel) nextKey.channel();
+                        DonkeyConnection dc = (DonkeyConnection) nextKey.attachment();
+                        try {
+                            sc.finishConnect();
+                            nextKey.interestOps(SelectionKey.OP_READ);
+                            sc.register(writeselector, SelectionKey.OP_WRITE, dc);
+                            dc.setSelectionKey(nextKey);
+                            addConnection(dc);
+                        } catch (IOException e) {
+                            // System.out.println("Finishconnect failed: " + e.getMessage());
+                            dc.close();
+                        }
+                    } else if ((nextKey.readyOps() & SelectionKey.OP_READ) != 0) {
+                        DonkeyConnection dc = (DonkeyConnection) nextKey.attachment();
+                        try {
+                            ByteBuffer byteBuffer = ByteBuffer.allocate(1024);
+                            int n = dc.getChannel().read(byteBuffer);
+                            // System.out.println(dc.getRnd() + "IsReadable(). read " + n + "bytes.");
+                            if (n > 0) {
+                                dc.addReceivedBytesNum(n);
+                                dc.getInPackets().append(byteBuffer, n);
+                            }
+                        } catch (IOException e) {
+                            System.out.println(dc.getRnd() + " Error reading bytes: " + e.getMessage());
+                            dc.getChannel().close();
+                        }
+                    }
+                }
+            }
+        } catch (IOException e) {
+            System.out.println("Worker thread Nr. " + threadNumber + " error; " + e.toString());
+            active = false;
+        }
+        try {
+            newKeys = writeselector.selectNow();
+            if (newKeys > 0) {
+                Set keys = writeselector.selectedKeys();
+                Iterator i = keys.iterator();
+                while (i.hasNext()) {
+                    SelectionKey nextKey = (SelectionKey) i.next();
+                    i.remove();
+                    if ((nextKey.readyOps() & SelectionKey.OP_WRITE) != 0) {
+                        DonkeyConnection dc = (DonkeyConnection) nextKey.attachment();
+                        dc.processOutput();
+                    }
+                }
+            }
+        } catch (IOException e) {
+            System.out.println("Worker thread Nr. " + threadNumber + " error; " + e.toString());
+            active = false;
+        }
+        processConnections();
+        processPending();
+        if (getNumConnections() == 0 && wait == false)
+            active = false;
+        else {
+            try {
+                Thread.currentThread().sleep(20);
+            } catch (InterruptedException e) {
+            }
+        }
+    }
+    System.out.println("Worker thread Nr. " + threadNumber + " end.");
+}

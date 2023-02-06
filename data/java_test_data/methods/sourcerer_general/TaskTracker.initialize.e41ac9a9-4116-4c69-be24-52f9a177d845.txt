@@ -1,0 +1,80 @@
+synchronized void initialize() throws IOException {
+    // use configured nameserver & interface to get local hostname
+    this.fConf = new JobConf(originalConf);
+    if (fConf.get("slave.host.name") != null) {
+        this.localHostname = fConf.get("slave.host.name");
+    }
+    if (localHostname == null) {
+        this.localHostname = DNS.getDefaultHost(fConf.get("mapred.tasktracker.dns.interface", "default"), fConf.get("mapred.tasktracker.dns.nameserver", "default"));
+    }
+    // check local disk
+    checkLocalDirs(this.fConf.getLocalDirs());
+    fConf.deleteLocalFiles(SUBDIR);
+    // Clear out state tables
+    this.tasks.clear();
+    this.runningTasks = new LinkedHashMap<TaskAttemptID, TaskInProgress>();
+    this.runningJobs = new TreeMap<JobID, RunningJob>();
+    this.mapTotal = 0;
+    this.reduceTotal = 0;
+    this.acceptNewTasks = true;
+    this.status = null;
+    this.minSpaceStart = this.fConf.getLong("mapred.local.dir.minspacestart", 0L);
+    this.minSpaceKill = this.fConf.getLong("mapred.local.dir.minspacekill", 0L);
+    // tweak the probe sample size (make it a function of numCopiers)
+    probe_sample_size = this.fConf.getInt("mapred.tasktracker.events.batchsize", 500);
+    Class<? extends TaskTrackerInstrumentation> metricsInst = getInstrumentationClass(fConf);
+    try {
+        java.lang.reflect.Constructor<? extends TaskTrackerInstrumentation> c = metricsInst.getConstructor(new Class[] { TaskTracker.class });
+        this.myInstrumentation = c.newInstance(this);
+    } catch (Exception e) {
+        // Reflection can throw lots of exceptions -- handle them all by
+        // falling back on the default.
+        LOG.error("failed to initialize taskTracker metrics", e);
+        this.myInstrumentation = new TaskTrackerMetricsInst(this);
+    }
+    // bind address
+    String address = NetUtils.getServerAddress(fConf, "mapred.task.tracker.report.bindAddress", "mapred.task.tracker.report.port", "mapred.task.tracker.report.address");
+    InetSocketAddress socAddr = NetUtils.createSocketAddr(address);
+    String bindAddress = socAddr.getHostName();
+    int tmpPort = socAddr.getPort();
+    this.jvmManager = new JvmManager(this);
+    // RPC initialization
+    int max = maxCurrentMapTasks > maxCurrentReduceTasks ? maxCurrentMapTasks : maxCurrentReduceTasks;
+    // set the num handlers to max*2 since canCommit may wait for the duration
+    // of a heartbeat RPC
+    this.taskReportServer = RPC.getServer(this, bindAddress, tmpPort, 2 * max, false, this.fConf);
+    this.taskReportServer.start();
+    // get the assigned address
+    this.taskReportAddress = taskReportServer.getListenerAddress();
+    this.fConf.set("mapred.task.tracker.report.address", taskReportAddress.getHostName() + ":" + taskReportAddress.getPort());
+    LOG.info("TaskTracker up at: " + this.taskReportAddress);
+    this.taskTrackerName = "tracker_" + localHostname + ":" + taskReportAddress;
+    LOG.info("Starting tracker " + taskTrackerName);
+    // Clear out temporary files that might be lying around
+    DistributedCache.purgeCache(this.fConf);
+    cleanupStorage();
+    this.justStarted = true;
+    this.jobClient = (InterTrackerProtocol) RPC.waitForProxy(InterTrackerProtocol.class, InterTrackerProtocol.versionID, jobTrackAddr, this.fConf);
+    // start the thread that will fetch map task completion events
+    this.mapEventsFetcher = new MapEventsFetcherThread();
+    mapEventsFetcher.setDaemon(true);
+    mapEventsFetcher.setName("Map-events fetcher for all reduce tasks " + "on " + taskTrackerName);
+    mapEventsFetcher.start();
+    maxVirtualMemoryForTasks = fConf.getMaxVirtualMemoryForTasks();
+    if (maxVirtualMemoryForTasks != JobConf.DISABLED_VIRTUAL_MEMORY_LIMIT) {
+        defaultMemoryPerTask = maxVirtualMemoryForTasks / (maxCurrentMapTasks + maxCurrentReduceTasks);
+    }
+    this.indexCache = new IndexCache(this.fConf);
+    // start the taskMemoryManager thread only if enabled
+    setTaskMemoryManagerEnabledFlag();
+    if (isTaskMemoryManagerEnabled()) {
+        taskMemoryManager = new TaskMemoryManagerThread(this);
+        taskMemoryManager.setDaemon(true);
+        taskMemoryManager.start();
+    }
+    mapLauncher = new TaskLauncher(maxCurrentMapTasks);
+    reduceLauncher = new TaskLauncher(maxCurrentReduceTasks);
+    mapLauncher.start();
+    reduceLauncher.start();
+    this.running = true;
+}

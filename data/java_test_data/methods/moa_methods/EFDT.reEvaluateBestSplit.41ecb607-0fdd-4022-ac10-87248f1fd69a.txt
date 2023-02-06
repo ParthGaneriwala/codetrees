@@ -1,0 +1,106 @@
+protected void reEvaluateBestSplit(EFDTSplitNode node, EFDTSplitNode parent, int parentIndex) {
+    node.addToSplitAttempts(1);
+    // EFDT must transfer over gain averages when replacing a node: leaf to split, split to leaf, or split to split
+    // It must replace split nodes with leaves if null wins
+    // node is a reference to this anyway... why have it at all?
+    int currentSplit = -1;
+    if (this.splitTest != null) {
+        currentSplit = this.splitTest.getAttsTestDependsOn()[0];
+    // given the current implementations in MOA, we're only ever expecting one int to be returned
+    }
+    // compute Hoeffding bound
+    SplitCriterion splitCriterion = (SplitCriterion) getPreparedClassOption(EFDT.this.splitCriterionOption);
+    double hoeffdingBound = computeHoeffdingBound(splitCriterion.getRangeOfMerit(node.getClassDistributionAtTimeOfCreation()), EFDT.this.splitConfidenceOption.getValue(), node.observedClassDistribution.sumOfValues());
+    // get best split suggestions
+    AttributeSplitSuggestion[] bestSplitSuggestions = node.getBestSplitSuggestions(splitCriterion, EFDT.this);
+    Arrays.sort(bestSplitSuggestions);
+    // get the best suggestion
+    AttributeSplitSuggestion bestSuggestion = bestSplitSuggestions[bestSplitSuggestions.length - 1];
+    for (AttributeSplitSuggestion bestSplitSuggestion : bestSplitSuggestions) {
+        if (bestSplitSuggestion.splitTest != null) {
+            if (!node.getInfogainSum().containsKey((bestSplitSuggestion.splitTest.getAttsTestDependsOn()[0]))) {
+                node.getInfogainSum().put((bestSplitSuggestion.splitTest.getAttsTestDependsOn()[0]), 0.0);
+            }
+            double currentSum = node.getInfogainSum().get((bestSplitSuggestion.splitTest.getAttsTestDependsOn()[0]));
+            node.getInfogainSum().put((bestSplitSuggestion.splitTest.getAttsTestDependsOn()[0]), currentSum + bestSplitSuggestion.merit);
+        } else {
+            // handle the null attribute. this is fine to do- it'll always average zero, and we will use this later to potentially burn bad splits.
+            // null split
+            double currentSum = node.getInfogainSum().get(-1);
+            node.getInfogainSum().put(-1, currentSum + bestSplitSuggestion.merit);
+        }
+    }
+    // get the average merit for best and current splits
+    double bestSuggestionAverageMerit;
+    double currentAverageMerit;
+    if (bestSuggestion.splitTest == null) {
+        // best is null
+        bestSuggestionAverageMerit = node.getInfogainSum().get(-1) / node.getNumSplitAttempts();
+    } else {
+        bestSuggestionAverageMerit = node.getInfogainSum().get(bestSuggestion.splitTest.getAttsTestDependsOn()[0]) / node.getNumSplitAttempts();
+    }
+    if (node.splitTest == null) {
+        // current is null- shouldn't happen, check for robustness
+        currentAverageMerit = node.getInfogainSum().get(-1) / node.getNumSplitAttempts();
+    } else {
+        currentAverageMerit = node.getInfogainSum().get(node.splitTest.getAttsTestDependsOn()[0]) / node.getNumSplitAttempts();
+    }
+    double tieThreshold = EFDT.this.tieThresholdOption.getValue();
+    // compute the average deltaG
+    double deltaG = bestSuggestionAverageMerit - currentAverageMerit;
+    if (deltaG > hoeffdingBound || (hoeffdingBound < tieThreshold && deltaG > tieThreshold / 2)) {
+        System.err.println(numInstances);
+        AttributeSplitSuggestion splitDecision = bestSuggestion;
+        // if null split wins
+        if (splitDecision.splitTest == null) {
+            node.killSubtree(EFDT.this);
+            EFDTLearningNode replacement = (EFDTLearningNode) newLearningNode();
+            // transfer infogain history, split to replacement leaf
+            replacement.setInfogainSum(node.getInfogainSum());
+            if (node.getParent() != null) {
+                node.getParent().setChild(parentIndex, replacement);
+            } else {
+                assert (node.isRoot());
+                node.setRoot(true);
+            }
+        } else {
+            Node newSplit = newSplitNode(splitDecision.splitTest, node.getObservedClassDistribution(), splitDecision.numSplits());
+            // copy the attribute observers
+            ((EFDTSplitNode) newSplit).attributeObservers = node.attributeObservers;
+            // transfer infogain history, split to replacement split
+            newSplit.setInfogainSum(node.getInfogainSum());
+            if (node.splitTest == splitDecision.splitTest && node.splitTest.getClass() == NumericAttributeBinaryTest.class && (argmax(splitDecision.resultingClassDistributions[0]) == argmax(node.getChild(0).getObservedClassDistribution()) || argmax(splitDecision.resultingClassDistributions[1]) == argmax(node.getChild(1).getObservedClassDistribution()))) {
+                // change split but don't destroy the subtrees
+                for (int i = 0; i < splitDecision.numSplits(); i++) {
+                    ((EFDTSplitNode) newSplit).setChild(i, this.getChild(i));
+                }
+            } else {
+                // otherwise, torch the subtree and split on the new best attribute.
+                this.killSubtree(EFDT.this);
+                for (int i = 0; i < splitDecision.numSplits(); i++) {
+                    double[] j = splitDecision.resultingClassDistributionFromSplit(i);
+                    Node newChild = newLearningNode(splitDecision.resultingClassDistributionFromSplit(i));
+                    if (splitDecision.splitTest.getClass() == NominalAttributeBinaryTest.class || splitDecision.splitTest.getClass() == NominalAttributeMultiwayTest.class) {
+                        // deep copy
+                        newChild.usedNominalAttributes = new ArrayList<>(node.usedNominalAttributes);
+                        newChild.usedNominalAttributes.add(splitDecision.splitTest.getAttsTestDependsOn()[0]);
+                    // no  nominal attribute should be split on more than once in the path
+                    }
+                    ((EFDTSplitNode) newSplit).setChild(i, newChild);
+                }
+                EFDT.this.activeLeafNodeCount--;
+                EFDT.this.decisionNodeCount++;
+                EFDT.this.activeLeafNodeCount += splitDecision.numSplits();
+            }
+            if (parent == null) {
+                ((EFDTNode) newSplit).setRoot(true);
+                ((EFDTNode) newSplit).setParent(null);
+                EFDT.this.treeRoot = newSplit;
+            } else {
+                ((EFDTNode) newSplit).setRoot(false);
+                ((EFDTNode) newSplit).setParent(parent);
+                parent.setChild(parentIndex, newSplit);
+            }
+        }
+    }
+}

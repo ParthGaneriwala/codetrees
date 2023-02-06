@@ -1,0 +1,133 @@
+final Table SYSTEM_BESTROWIDENTIFIER(Session session) {
+    Table t = sysTables[SYSTEM_BESTROWIDENTIFIER];
+    if (t == null) {
+        t = createBlankTable(sysTableHsqlNames[SYSTEM_BESTROWIDENTIFIER]);
+        // not null
+        addColumn(t, "SCOPE", Type.SQL_SMALLINT);
+        // not null
+        addColumn(t, "COLUMN_NAME", SQL_IDENTIFIER);
+        // not null
+        addColumn(t, "DATA_TYPE", Type.SQL_SMALLINT);
+        // not null
+        addColumn(t, "TYPE_NAME", SQL_IDENTIFIER);
+        addColumn(t, "COLUMN_SIZE", Type.SQL_INTEGER);
+        addColumn(t, "BUFFER_LENGTH", Type.SQL_INTEGER);
+        addColumn(t, "DECIMAL_DIGITS", Type.SQL_SMALLINT);
+        // not null
+        addColumn(t, "PSEUDO_COLUMN", Type.SQL_SMALLINT);
+        addColumn(t, "TABLE_CAT", SQL_IDENTIFIER);
+        addColumn(t, "TABLE_SCHEM", SQL_IDENTIFIER);
+        // not null
+        addColumn(t, "TABLE_NAME", SQL_IDENTIFIER);
+        // not null
+        addColumn(t, "NULLABLE", Type.SQL_SMALLINT);
+        // not null
+        addColumn(t, "IN_KEY", Type.SQL_BOOLEAN);
+        // order: SCOPE
+        // for unique:  TABLE_CAT, TABLE_SCHEM, TABLE_NAME, COLUMN_NAME
+        // false PK, as TABLE_CAT and/or TABLE_SCHEM may be null
+        HsqlName name = HsqlNameManager.newInfoSchemaObjectName(sysTableHsqlNames[SYSTEM_BESTROWIDENTIFIER].name, false, SchemaObject.INDEX);
+        t.createPrimaryKeyConstraint(name, new int[] { 0, 8, 9, 10, 1 }, false);
+        return t;
+    }
+    PersistentStore store = session.sessionData.getRowStore(t);
+    // calculated column values
+    // { temp, transaction, session }
+    Integer scope;
+    Integer pseudo;
+    // -------------------------------------------
+    // required for restriction of results via
+    // DatabaseMetaData filter parameters, but
+    // not actually required to be included in
+    // DatabaseMetaData.getBestRowIdentifier()
+    // result set
+    // -------------------------------------------
+    // table calalog
+    String tableCatalog;
+    // table schema
+    String tableSchema;
+    // table name
+    String tableName;
+    // column participates in PK or AK?
+    Boolean inKey;
+    // -------------------------------------------
+    /**
+     * @todo -  Maybe include: - backing index (constraint) name?
+     * - column sequence in index (constraint)?
+     */
+    // -------------------------------------------
+    // Intermediate holders
+    Iterator tables;
+    Table table;
+    DITableInfo ti;
+    int[] cols;
+    Object[] row;
+    HsqlProperties p;
+    // Column number mappings
+    final int iscope = 0;
+    final int icolumn_name = 1;
+    final int idata_type = 2;
+    final int itype_name = 3;
+    final int icolumn_size = 4;
+    final int ibuffer_length = 5;
+    final int idecimal_digits = 6;
+    final int ipseudo_column = 7;
+    final int itable_cat = 8;
+    final int itable_schem = 9;
+    final int itable_name = 10;
+    final int inullable = 11;
+    final int iinKey = 12;
+    // Initialization
+    ti = new DITableInfo();
+    tables = database.schemaManager.databaseObjectIterator(SchemaObject.TABLE);
+    boolean translateDTI = database.getProperties().isPropertyTrue(HsqlDatabaseProperties.jdbc_translate_dti_types);
+    // Do it.
+    while (tables.hasNext()) {
+        table = (Table) tables.next();
+        /**
+         * @todo - requires access to the actual columns
+         */
+        if (table.isView() || !isAccessibleTable(session, table)) {
+            continue;
+        }
+        cols = table.getBestRowIdentifiers();
+        if (cols == null) {
+            continue;
+        }
+        ti.setTable(table);
+        inKey = ValuePool.getBoolean(table.isBestRowIdentifiersStrict());
+        tableCatalog = table.getCatalogName().name;
+        tableSchema = table.getSchemaName().name;
+        tableName = table.getName().name;
+        Type[] types = table.getColumnTypes();
+        scope = ti.getBRIScope();
+        pseudo = ti.getBRIPseudo();
+        for (int i = 0; i < cols.length; i++) {
+            ColumnSchema column = table.getColumn(i);
+            Type type = types[i];
+            if (translateDTI) {
+                if (type.isIntervalType()) {
+                    type = CharacterType.getCharacterType(Types.SQL_VARCHAR, type.displaySize());
+                } else if (type.isDateTimeTypeWithZone()) {
+                    type = ((DateTimeType) type).getDateTimeTypeWithoutZone();
+                }
+            }
+            row = t.getEmptyRowData();
+            row[iscope] = scope;
+            row[icolumn_name] = column.getName().name;
+            row[idata_type] = ValuePool.getInt(type.getJDBCTypeCode());
+            row[itype_name] = type.getNameString();
+            row[icolumn_size] = ValuePool.getInt(type.getJDBCPrecision());
+            row[ibuffer_length] = null;
+            row[idecimal_digits] = type.getJDBCScale();
+            row[ipseudo_column] = pseudo;
+            row[itable_cat] = tableCatalog;
+            row[itable_schem] = tableSchema;
+            row[itable_name] = tableName;
+            row[inullable] = ValuePool.getInt(column.getNullability());
+            row[iinKey] = inKey;
+            t.insertSys(store, row);
+        }
+    }
+    return t;
+}

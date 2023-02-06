@@ -1,0 +1,39 @@
+private void generatePredictions(SentenceContext ctx, TrellisSlice slice) {
+    // final int lmSequence[] = Experiment.getInstance().getLmIdSequence(forest);
+    FuturePredictions<TrellisItem> predictions = slice.getPredictions();
+    long overtFactors = slice.getOvertFactors();
+    Map<Key, OnDiskCompactProbTree> allProbTrees;
+    {
+        RequestBundle<Key, OnDiskCompactProbTree> currentRequests = ctx.getCurrentRequests();
+        try {
+            currentRequests.sync();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        allProbTrees = currentRequests.getResults();
+    }
+    for (Map.Entry<PredictionKey, FuturePrediction<TrellisItem>> entry : predictions.getPredictions().entrySet()) {
+        PredictionKey key = entry.getKey();
+        FuturePrediction<TrellisItem> prediction = entry.getValue();
+        ClusterId clusterID = new ClusterId();
+        OnDiskCompactProbTree probTree = computeProbTree(key.nodes, overtFactors, allProbTrees, clusterID);
+        if (probTree != null) {
+            probTree.normalize();
+            ArrayList<TrellisItem> prevLinks = prediction.getPrevLinks();
+            // SliceItem item = new SliceItem(ProbTree.makeProbTree(probTree).compact(), 0, clusterID);
+            TrellisItem item = new TrellisItem(ProbTree.makeProbTreeNew(probTree), 0, clusterID);
+            slice.curr2prev.put(item, prevLinks);
+            for (TrellisItem prevItem : prevLinks) {
+                item.addPrevProb(prevItem.getPrevProb() * prevItem.tree.getTotalProb());
+                ArrayList<TrellisItem> lst = slice.prev2curr.get(prevItem);
+                if (lst == null) {
+                    lst = new ArrayList<TrellisItem>(2);
+                    slice.prev2curr.put(prevItem, lst);
+                }
+                lst.add(item);
+            }
+            slice.insertItem(item);
+        }
+    }
+    slice.clearPredictions();
+}

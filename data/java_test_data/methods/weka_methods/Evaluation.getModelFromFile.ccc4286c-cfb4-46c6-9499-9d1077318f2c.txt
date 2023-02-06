@@ -1,0 +1,49 @@
+protected static Classifier getModelFromFile(String modelFileName, Instances template) throws Exception {
+    Classifier classifier = null;
+    // Do we have a model file or options in XML?
+    if (modelFileName.endsWith(".xml")) {
+        // try to load file as PMML first
+        try {
+            PMMLModel pmmlModel = PMMLFactory.getPMMLModel(modelFileName);
+            if (pmmlModel instanceof PMMLClassifier) {
+                classifier = ((PMMLClassifier) pmmlModel);
+            }
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("Failed to read model XML file " + modelFileName);
+        }
+    } else {
+        // Try to load (gzipped) serialized Java objects or KOML
+        InputStream is = new FileInputStream(modelFileName);
+        if (modelFileName.endsWith(".gz")) {
+            is = new GZIPInputStream(is);
+        }
+        if (!modelFileName.endsWith(".koml")) {
+            ObjectInputStream objectInputStream = SerializationHelper.getObjectInputStream(is);
+            classifier = (Classifier) objectInputStream.readObject();
+            // try and read a header (if present)
+            Instances savedStructure = null;
+            try {
+                savedStructure = (Instances) objectInputStream.readObject();
+            } catch (Exception ex) {
+            // don't make a fuss
+            }
+            if (savedStructure != null) {
+                // test for compatibility with template
+                if (!(classifier instanceof InputMappedClassifier) && !template.equalHeaders(savedStructure)) {
+                    throw new Exception("training and test set are not compatible\n" + template.equalHeadersMsg(savedStructure));
+                }
+            }
+            objectInputStream.close();
+        } else if (KOML.isPresent()) {
+            BufferedInputStream xmlInputStream = new BufferedInputStream(is);
+            classifier = (Classifier) KOML.read(xmlInputStream);
+            xmlInputStream.close();
+        } else {
+            throw new WekaException("KOML library is not present");
+        }
+    }
+    if (classifier == null) {
+        throw new IllegalArgumentException("Failed to classifier from model file " + modelFileName);
+    }
+    return classifier;
+}

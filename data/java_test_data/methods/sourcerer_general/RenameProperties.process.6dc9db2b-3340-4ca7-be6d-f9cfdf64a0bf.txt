@@ -1,0 +1,58 @@
+@Override
+public void process(Node externs, Node root) {
+    Preconditions.checkState(compiler.getLifeCycleStage().isNormalized());
+    NodeTraversal.traverse(compiler, externs, new ProcessExterns());
+    NodeTraversal.traverse(compiler, root, new ProcessProperties());
+    Set<String> reservedNames = new HashSet<String>(externedNames.size() + quotedNames.size());
+    reservedNames.addAll(externedNames);
+    reservedNames.addAll(quotedNames);
+    // as possible.
+    if (prevUsedPropertyMap != null) {
+        reusePropertyNames(reservedNames, propertyMap.values());
+    }
+    compiler.addToDebugLog("JS property assignments:");
+    if (affinityGraph != null) {
+        computeAffinityScores();
+    }
+    // Assign names, sorted by descending frequency to minimize code size.
+    Set<Property> propsByFreq = new TreeSet<Property>(FREQUENCY_COMPARATOR);
+    propsByFreq.addAll(propertyMap.values());
+    generateNames(propsByFreq, reservedNames);
+    // Update the string nodes.
+    boolean changed = false;
+    for (Node n : stringNodesToRename) {
+        String oldName = n.getString();
+        Property p = propertyMap.get(oldName);
+        if (p != null && p.newName != null) {
+            Preconditions.checkState(oldName.equals(p.oldName));
+            n.setString(p.newName);
+            changed = changed || !p.newName.equals(oldName);
+        }
+    }
+    // Update the call nodes.
+    for (Map.Entry<Node, Node> nodeEntry : callNodeToParentMap.entrySet()) {
+        Node parent = nodeEntry.getValue();
+        Node firstArg = nodeEntry.getKey().getFirstChild().getNext();
+        StringBuilder sb = new StringBuilder();
+        for (String oldName : firstArg.getString().split("[.]")) {
+            Property p = propertyMap.get(oldName);
+            String replacement;
+            if (p != null && p.newName != null) {
+                Preconditions.checkState(oldName.equals(p.oldName));
+                replacement = p.newName;
+            } else {
+                replacement = oldName;
+            }
+            if (sb.length() > 0) {
+                sb.append('.');
+            }
+            sb.append(replacement);
+        }
+        parent.replaceChild(nodeEntry.getKey(), Node.newString(sb.toString()));
+        changed = true;
+    }
+    if (changed) {
+        compiler.reportCodeChange();
+    }
+    compiler.setLifeCycleStage(LifeCycleStage.NORMALIZED_OBFUSCATED);
+}

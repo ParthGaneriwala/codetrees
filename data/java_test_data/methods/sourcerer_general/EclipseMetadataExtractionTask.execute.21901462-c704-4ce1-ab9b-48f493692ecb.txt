@@ -1,0 +1,79 @@
+@Override
+public void execute() throws BuildException {
+    assertParameters();
+    if (!input.exists()) {
+        throw new BuildException("Input file not found: " + input);
+    }
+    XmlInputDocument inputDocument;
+    try {
+        inputDocument = new XmlInputDocument(input);
+    } catch (XmlInputDocumentException e) {
+        throw new BuildException("Failed to establish input document", e);
+    }
+    XmlModuleLocatorCandidateFactory moduleLocatorsFactory = new XmlModuleLocatorCandidateFactory();
+    ModuleLocatorFactory directoryModuleLocatorFactory = new EclipseDirectoryBasedModuleLocatorFactory(input.getParentFile());
+    moduleLocatorsFactory.registerFactory(new DefaultQualifiedName(DefaultXmlNamespace.getInstance(), DIRECTORY), directoryModuleLocatorFactory);
+    List<Element> moduleLocatorElements = inputDocument.getModuleLocatorDeclarations();
+    ModuleLocator moduleLocator;
+    try {
+        moduleLocator = moduleLocatorsFactory.createModuleLocatorCompositeFromElements(moduleLocatorElements);
+    } catch (ModuleLocatorException e) {
+        throw new BuildException("Failed to create composite module locator", e);
+    }
+    try {
+        ModuleSetGatherer gatherer = new ModuleSetGatherer();
+        gatherer.gatherModules(inputDocument, moduleLocator);
+        ModuleGroupMetadataProvider moduleGroupMetadata = gatherer.buildProjectMetadataProvider();
+        ModuleGroup moduleGroup = new ModuleGroup(moduleGroupMetadata);
+        MutableElement modulesToBuildEl = new EtherealElement("modules-to-build");
+        for (Module module : moduleGroup.listModulesInTopographicalOrder()) {
+            MutableElement moduleEl = new EtherealElement(MODULE);
+            moduleEl.setAttribute("name", module.getName());
+            if (module == null) {
+                throw new BuildException("No known metadata for module: " + module.getName());
+            }
+            ModuleSetModule moduleProxy = (ModuleSetModule) module.getPeer();
+            MutableElement basedirEl = new EtherealElement("basedir");
+            basedirEl.addChild(new EtherealCharacterData(moduleProxy.getBaseDirectory().getCanonicalPath()));
+            moduleEl.addChild(basedirEl);
+            for (String facet : module.getFacets()) {
+                MutableElement facetElement = new EtherealElement("facet");
+                facetElement.addChild(new EtherealCharacterData(facet));
+                moduleEl.addChild(facetElement);
+            }
+            MutableElement depsEl = new EtherealElement(DEPENDENCIES);
+            MutableElement directDepsEl = new EtherealElement(DIRECT_DEPENDENCIES);
+            for (Dependency dep : module.getDirectDependencies()) {
+                directDepsEl.addChild(createDependencyElement(dep));
+            }
+            depsEl.addChild(directDepsEl);
+            MutableElement exposedDepsEl = new EtherealElement(EXPOSED_DEPENDENCIES);
+            for (Dependency dep : module.getExposedDependencies()) {
+                exposedDepsEl.addChild(createDependencyElement(dep));
+            }
+            depsEl.addChild(exposedDepsEl);
+            MutableElement allDepsEl = new EtherealElement(ALL_DEPENDENCIES);
+            for (Dependency dep : module.getAllDependencies()) {
+                allDepsEl.addChild(createDependencyElement(dep));
+            }
+            depsEl.addChild(allDepsEl);
+            moduleEl.addChild(depsEl);
+            modulesToBuildEl.addChild(moduleEl);
+        }
+        inputDocument.getRootElement().addChild(modulesToBuildEl);
+    } catch (Exception e) {
+        throw new BuildException("Failed to extend document", e);
+    }
+    FileOutputStream outStream;
+    try {
+        outStream = new FileOutputStream(output);
+    } catch (IOException e) {
+        throw new BuildException("Problem opening file for writing: " + output, e);
+    }
+    try {
+        new ElementSerializer(outStream).serialize(inputDocument.getRootElement());
+        outStream.close();
+    } catch (IOException e) {
+        throw new BuildException("Problem writing to file: " + output, e);
+    }
+}

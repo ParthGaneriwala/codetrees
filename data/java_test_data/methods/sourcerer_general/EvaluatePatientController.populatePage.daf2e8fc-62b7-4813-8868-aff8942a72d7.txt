@@ -1,0 +1,39 @@
+@RequestMapping(method = RequestMethod.GET)
+public String populatePage(@RequestParam("patientId") final Integer patientId, final HttpServletRequest request, final HttpServletResponse response) {
+    EvaluatorService evaluatorService = Context.getService(EvaluatorService.class);
+    IndexService indexService = Context.getService(IndexService.class);
+    Patient patient = Context.getPatientService().getPatient(patientId);
+    try {
+        File attachmentFile = new File(System.getProperty("java.io.tmpdir"), WebUtils.prepareFilename(patientId, Evaluator.FILE_TYPE_PDF));
+        FileOutputStream outputStream = new FileOutputStream(attachmentFile);
+        Document document = new Document();
+        PdfCopy copy = new PdfCopy(document, outputStream);
+        document.open();
+        Evaluator evaluator = new VelocityEvaluator();
+        SummaryService summaryService = Context.getService(SummaryService.class);
+        for (Summary summary : summaryService.getSummaries(patient)) {
+            double start = System.currentTimeMillis();
+            evaluator.evaluate(summary, patient, Boolean.TRUE);
+            indexService.saveIndex(indexService.generateIndex(patient, summary));
+            double elapsed = System.currentTimeMillis() - start;
+            log.info("Velocity evaluator running for " + elapsed + "ms (" + (elapsed / 1000) + "s)");
+            File outputDirectory = EvaluatorUtils.getOutputDirectory(summary);
+            File summaryFile = new File(outputDirectory, StringUtils.join(Arrays.asList(patientId, Evaluator.FILE_TYPE_PDF), "."));
+            try {
+                PdfReader reader = new PdfReader(new FileInputStream(summaryFile));
+                int pageCount = reader.getNumberOfPages();
+                for (int i = 1; i <= pageCount; i++) copy.addPage(copy.getImportedPage(reader, i));
+            } catch (Exception e) {
+                log.error("Failed adding summary for patient " + patientId + " with " + summaryFile.getName(), e);
+            }
+        }
+        ResultCacheInstance.getInstance().clearCache(patient);
+        document.close();
+        outputStream.close();
+        attachAndPurgeFile(response, attachmentFile);
+        return null;
+    } catch (Exception e) {
+        log.error("Failed generating attachment for patient " + patientId, e);
+    }
+    return "redirect:" + request.getHeader("Referer");
+}

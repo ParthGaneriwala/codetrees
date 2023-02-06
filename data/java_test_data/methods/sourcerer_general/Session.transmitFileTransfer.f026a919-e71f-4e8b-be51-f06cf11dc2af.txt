@@ -1,0 +1,70 @@
+// -----------------------------------------------------------------
+// Transmit a FILETRANSFER packet, to send a binary file to a friend.
+protected void transmitFileTransfer(String to, String message, String filename) throws FileTransferFailedException, IOException {
+    String cookie = cookieY + "; " + cookieT;
+    int fileSize = -1;
+    byte[] packet;
+    byte[] marker = { '2', '9', (byte) 0xc0, (byte) 0x80 };
+    // -----Load binary from file
+    DataInputStream dis = new DataInputStream(new FileInputStream(filename));
+    fileSize = dis.available();
+    if (fileSize <= 0)
+        throw new FileTransferFailedException("File transfer: missing or empty file");
+    byte[] fileData = new byte[fileSize];
+    dis.readFully(fileData);
+    dis.close();
+    // -----Create a Yahoo packet into 'packet'
+    PacketBodyBuffer body = new PacketBodyBuffer();
+    body.addElement("0", primaryID);
+    body.addElement("5", to);
+    body.addElement("28", fileSize + "");
+    body.addElement("27", new File(filename).getName());
+    body.addElement("14", message);
+    packet = body.getBuffer();
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    DataOutputStream dos = new DataOutputStream(baos);
+    dos.write(MAGIC, 0, 4);
+    dos.write(VERSION, 0, 4);
+    dos.writeShort((packet.length + 4) & 0xFFFF);
+    dos.writeShort(SERVICE_FILETRANSFER & 0xFFFF);
+    dos.writeInt((int) (status & 0xFFFFFFFF));
+    dos.writeInt((int) (sessionId & 0xFFFFFFFF));
+    dos.write(packet, 0, packet.length);
+    // Extra 4 bytes : marker before file data (?)
+    dos.write(marker, 0, 4);
+    packet = baos.toByteArray();
+    // -----Send to Yahoo using POST
+    String ftHost = Util.fileTransferHost();
+    String ftURL = "http://" + ftHost + FILE_TF_PORTPATH;
+    HTTPConnection conn = new HTTPConnection("POST", new URL(ftURL));
+    conn.println("Content-Length: " + (fileSize + packet.length));
+    conn.println("User-Agent: " + USER_AGENT);
+    conn.println("Host: " + ftHost);
+    conn.println("Cookie: " + cookie);
+    conn.println("");
+    // 0x46
+    conn.write(packet);
+    conn.write(fileData);
+    conn.flush();
+    // -----Read HTTP header
+    String in = conn.readLine(), head = in;
+    if (in != null) {
+        // FIX: this code just gobbles
+        byte[] buffer = new byte[4096];
+        // bytes - should read and parse!
+        while (conn.read(buffer) > 0) ;
+    }
+    /*while(in!=null && in.trim().length>0)  in=conn.readLine();
+		// -----Body
+		byte[] buff = new byte[4];
+		int len = conn.read(buff);
+		String packHead=="";
+		if(len>0 && buff[0]>0)
+		{	len = conn.read(buff);  // YHOO=fail, YMSG=success (?)
+			packHead=(char)buff[0]+(char)buff[1]+(char)buff[2]+(char)buff[3];
+		}  // FIX - should read rest of header
+		*/
+    conn.close();
+    if (head.indexOf(" 200 ") < 0)
+        throw new FileTransferFailedException("Server rejected upload");
+}

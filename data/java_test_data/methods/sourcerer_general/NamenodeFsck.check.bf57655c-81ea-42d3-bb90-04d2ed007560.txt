@@ -1,0 +1,143 @@
+private void check(FileStatus file, FsckResult res) throws IOException {
+    int minReplication = nn.namesystem.getMinReplication();
+    String path = file.getPath().toString();
+    boolean isOpen = false;
+    if (file.isDir()) {
+        FileStatus[] files = nn.namesystem.dir.getListing(path);
+        if (files == null) {
+            return;
+        }
+        if (showFiles) {
+            out.println(path + " <dir>");
+        }
+        res.totalDirs++;
+        for (int i = 0; i < files.length; i++) {
+            check(files[i], res);
+        }
+        return;
+    }
+    long fileLen = file.getLen();
+    LocatedBlocks blocks = nn.namesystem.getBlockLocations(path, 0, fileLen);
+    isOpen = blocks.isUnderConstruction();
+    if (isOpen && !showOpenFiles) {
+        // We collect these stats about open files to report with default options
+        res.totalOpenFilesSize += fileLen;
+        res.totalOpenFilesBlocks += blocks.locatedBlockCount();
+        res.totalOpenFiles++;
+        return;
+    }
+    res.totalFiles++;
+    res.totalSize += fileLen;
+    res.totalBlocks += blocks.locatedBlockCount();
+    if (showOpenFiles && isOpen) {
+        out.print(path + " " + fileLen + " bytes, " + blocks.locatedBlockCount() + " block(s), OPENFORWRITE: ");
+    } else if (showFiles) {
+        out.print(path + " " + fileLen + " bytes, " + blocks.locatedBlockCount() + " block(s): ");
+    } else {
+        out.print('.');
+    }
+    if (res.totalFiles % 100 == 0) {
+        out.println();
+        out.flush();
+    }
+    int missing = 0;
+    int corrupt = 0;
+    long missize = 0;
+    int underReplicatedPerFile = 0;
+    int misReplicatedPerFile = 0;
+    StringBuffer report = new StringBuffer();
+    int i = 0;
+    for (LocatedBlock lBlk : blocks.getLocatedBlocks()) {
+        Block block = lBlk.getBlock();
+        boolean isCorrupt = lBlk.isCorrupt();
+        String blkName = block.toString();
+        DatanodeInfo[] locs = lBlk.getLocations();
+        res.totalReplicas += locs.length;
+        short targetFileReplication = file.getReplication();
+        if (locs.length > targetFileReplication) {
+            res.excessiveReplicas += (locs.length - targetFileReplication);
+            res.numOverReplicatedBlocks += 1;
+        }
+        // Check if block is Corrupt
+        if (isCorrupt) {
+            corrupt++;
+            res.corruptBlocks++;
+            out.print("\n" + path + ": CORRUPT block " + block.getBlockName() + "\n");
+        }
+        if (locs.length >= minReplication)
+            res.numMinReplicatedBlocks++;
+        if (locs.length < targetFileReplication && locs.length > 0) {
+            res.missingReplicas += (targetFileReplication - locs.length);
+            res.numUnderReplicatedBlocks += 1;
+            underReplicatedPerFile++;
+            if (!showFiles) {
+                out.print("\n" + path + ": ");
+            }
+            out.println(" Under replicated " + block + ". Target Replicas is " + targetFileReplication + " but found " + locs.length + " replica(s).");
+        }
+        // verify block placement policy
+        int missingRacks = ReplicationTargetChooser.verifyBlockPlacement(lBlk, targetFileReplication, nn.getNetworkTopology());
+        if (missingRacks > 0) {
+            res.numMisReplicatedBlocks++;
+            misReplicatedPerFile++;
+            if (!showFiles) {
+                if (underReplicatedPerFile == 0)
+                    out.println();
+                out.print(path + ": ");
+            }
+            out.println(" Replica placement policy is violated for " + block + ". Block should be additionally replicated on " + missingRacks + " more rack(s).");
+        }
+        report.append(i + ". " + blkName + " len=" + block.getNumBytes());
+        if (locs.length == 0) {
+            report.append(" MISSING!");
+            res.addMissing(block.toString(), block.getNumBytes());
+            missing++;
+            missize += block.getNumBytes();
+        } else {
+            report.append(" repl=" + locs.length);
+            if (showLocations || showRacks) {
+                StringBuffer sb = new StringBuffer("[");
+                for (int j = 0; j < locs.length; j++) {
+                    if (j > 0) {
+                        sb.append(", ");
+                    }
+                    if (showRacks)
+                        sb.append(NodeBase.getPath(locs[j]));
+                    else
+                        sb.append(locs[j]);
+                }
+                sb.append(']');
+                report.append(" " + sb.toString());
+            }
+        }
+        report.append('\n');
+        i++;
+    }
+    if ((missing > 0) || (corrupt > 0)) {
+        if (!showFiles && (missing > 0)) {
+            out.print("\n" + path + ": MISSING " + missing + " blocks of total size " + missize + " B.");
+        }
+        res.corruptFiles++;
+        switch(fixing) {
+            case FIXING_NONE:
+                break;
+            case FIXING_MOVE:
+                if (!isOpen)
+                    lostFoundMove(file, blocks);
+                break;
+            case FIXING_DELETE:
+                if (!isOpen)
+                    nn.namesystem.deleteInternal(path, true, false);
+        }
+    }
+    if (showFiles) {
+        if (missing > 0) {
+            out.print(" MISSING " + missing + " blocks of total size " + missize + " B\n");
+        } else if (underReplicatedPerFile == 0 && misReplicatedPerFile == 0) {
+            out.print(" OK\n");
+        }
+        if (showBlocks) {
+            out.print(report.toString() + "\n");
+        }
+    }
+}

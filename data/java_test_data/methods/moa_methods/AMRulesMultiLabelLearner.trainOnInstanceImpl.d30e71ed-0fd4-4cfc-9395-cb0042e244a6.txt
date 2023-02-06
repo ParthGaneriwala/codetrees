@@ -1,0 +1,95 @@
+@Override
+public void trainOnInstanceImpl(MultiLabelInstance instance) {
+    /**
+     * AMRules Algorithm
+     *
+     * //For each rule in the rule set
+     * //If rule covers the instance
+     * //if the instance is not an anomaly
+     * //Update Change Detection Tests
+     * //Compute prediction error
+     * //Call PHTest
+     * //If change is detected then
+     * //Remove rule
+     * //Else
+     * //Update sufficient statistics of rule
+     * //If number of examples in rule  > Nmin
+     * //Expand rule
+     * //If ordered set then
+     * //break
+     * //If none of the rule covers the instance
+     * //Update sufficient statistics of default rule
+     * //If number of examples in default rule is multiple of Nmin
+     * //Expand default rule and add it to the set of rules
+     * //Reset the default rule
+     */
+    if (nAttributes == 0)
+        nAttributes = instance.numInputAttributes();
+    numInstances += instance.weight();
+    debug("Train", 3);
+    debug("Nº instance " + numInstances + " - " + instance.toString(), 3);
+    boolean rulesCoveringInstance = false;
+    ListIterator<MultiLabelRule> ruleIterator = this.ruleSet.listIterator();
+    while (ruleIterator.hasNext()) {
+        MultiLabelRule rule = ruleIterator.next();
+        if (rule.isCovering(instance) == true) {
+            rulesCoveringInstance = true;
+            if (!rule.updateAnomalyDetection(instance)) {
+                if (rule.updateChangeDetection(instance)) {
+                    debug("I) Drift Detected. Exa. : " + this.numInstances + " (" + rule.getWeightSeenSinceExpansion() + ") Remove Rule: " + rule.getRuleNumberID(), 1);
+                    ruleIterator.remove();
+                    // Rule expansion event
+                    rule.notifyAll(new ChangeDetectedMessage());
+                    // Just for statistics
+                    this.numChangesDetected += instance.weight();
+                } else {
+                    rule.trainOnInstance(instance);
+                    if (rule.getWeightSeenSinceExpansion() % this.gracePeriodOption.getValue() == 0.0) {
+                        if (rule.tryToExpand(this.splitConfidenceOption.getValue(), this.tieThresholdOption.getValue())) {
+                            // Need to be outside to make sure other rules are cleaned
+                            MultiLabelRule otherMultiLabelRule = rule.getNewRuleFromOtherOutputs();
+                            if (!dropOldRuleAfterExpansionOption.isSet() && rule.hasNewRuleFromOtherOutputs()) {
+                                rule.clearOtherOutputs();
+                                otherMultiLabelRule.setRuleNumberID(++ruleNumberID);
+                                setRuleOptions(otherMultiLabelRule);
+                                ruleIterator.add(otherMultiLabelRule);
+                                if (observer != null)
+                                    otherMultiLabelRule.addObserver(observer);
+                            }
+                            setRuleOptions(rule);
+                            debug("Rule Expanded:", 2);
+                            debug(rule.toString(), 2);
+                        }
+                    }
+                }
+            } else {
+                debug("Anomaly Detected: " + this.numInstances + " Rule: " + rule.getRuleNumberID(), 1);
+                // Just for statistics
+                this.numAnomaliesDetected += instance.weight();
+            }
+            if (!this.unorderedRulesOption.isSet())
+                break;
+        }
+    }
+    if (rulesCoveringInstance == false) {
+        defaultRule.trainOnInstance(instance);
+        if (defaultRule.getWeightSeenSinceExpansion() % this.gracePeriodOption.getValue() == 0.0) {
+            debug("Nr. examples " + defaultRule.getWeightSeenSinceExpansion(), 4);
+            if (defaultRule.tryToExpand(this.splitConfidenceOption.getValue(), this.tieThresholdOption.getValue()) == true) {
+                MultiLabelRule newDefaultRule = defaultRule.getNewRuleFromOtherBranch();
+                newDefaultRule.setRuleNumberID(++ruleNumberID);
+                setRuleOptions(newDefaultRule);
+                // Add expanded rule to ruleset
+                setRuleOptions(defaultRule);
+                ruleSet.add(this.defaultRule);
+                debug("Default rule expanded! New Rule:", 2);
+                debug(defaultRule.toString(), 2);
+                debug("New default rule:", 3);
+                debug(newDefaultRule.toString(), 3);
+                defaultRule = newDefaultRule;
+                if (observer != null)
+                    defaultRule.addObserver(observer);
+            }
+        }
+    }
+}

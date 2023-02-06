@@ -1,0 +1,41 @@
+public static void main(String[] args) throws IOException {
+    if (args.length != 1) {
+        System.out.println("Usage: IsolationRunner <path>/job.xml");
+        System.exit(1);
+    }
+    File jobFilename = new File(args[0]);
+    if (!jobFilename.exists() || !jobFilename.isFile()) {
+        System.out.println(jobFilename + " is not a valid job file.");
+        System.exit(1);
+    }
+    JobConf conf = new JobConf(new Path(jobFilename.toString()));
+    TaskAttemptID taskId = TaskAttemptID.forName(conf.get("mapred.task.id"));
+    boolean isMap = conf.getBoolean("mapred.task.is.map", true);
+    int partition = conf.getInt("mapred.task.partition", 0);
+    // setup the local and user working directories
+    FileSystem local = FileSystem.getLocal(conf);
+    LocalDirAllocator lDirAlloc = new LocalDirAllocator("mapred.local.dir");
+    File workDirName = new File(lDirAlloc.getLocalPathToRead(TaskTracker.getJobCacheSubdir() + Path.SEPARATOR + taskId.getJobID() + Path.SEPARATOR + taskId + Path.SEPARATOR + "work", conf).toString());
+    local.setWorkingDirectory(new Path(workDirName.toString()));
+    FileSystem.get(conf).setWorkingDirectory(conf.getWorkingDirectory());
+    // set up a classloader with the right classpath
+    ClassLoader classLoader = makeClassLoader(conf, workDirName);
+    Thread.currentThread().setContextClassLoader(classLoader);
+    conf.setClassLoader(classLoader);
+    Task task;
+    if (isMap) {
+        Path localSplit = new Path(new Path(jobFilename.toString()).getParent(), "split.dta");
+        DataInputStream splitFile = FileSystem.getLocal(conf).open(localSplit);
+        String splitClass = Text.readString(splitFile);
+        BytesWritable split = new BytesWritable();
+        split.readFields(splitFile);
+        splitFile.close();
+        task = new MapTask(jobFilename.toString(), taskId, partition, splitClass, split);
+    } else {
+        int numMaps = conf.getNumMapTasks();
+        fillInMissingMapOutputs(local, taskId, numMaps, conf);
+        task = new ReduceTask(jobFilename.toString(), taskId, partition, numMaps);
+    }
+    task.setConf(conf);
+    task.run(conf, new FakeUmbilical());
+}

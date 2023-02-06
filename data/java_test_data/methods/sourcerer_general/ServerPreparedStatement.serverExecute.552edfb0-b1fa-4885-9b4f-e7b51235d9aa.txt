@@ -1,0 +1,227 @@
+private com.mysql.jdbc.ResultSetInternalMethods serverExecute(int maxRowsToRetrieve, boolean createStreamingResultSet, Field[] metadataFromCache) throws SQLException {
+    synchronized (this.connection.getMutex()) {
+        MysqlIO mysql = this.connection.getIO();
+        if (mysql.shouldIntercept()) {
+            ResultSetInternalMethods interceptedResults = mysql.invokeStatementInterceptorsPre(this.originalSql, this, true);
+            if (interceptedResults != null) {
+                return interceptedResults;
+            }
+        }
+        if (this.detectedLongParameterSwitch) {
+            // Check when values were bound
+            boolean firstFound = false;
+            long boundTimeToCheck = 0;
+            for (int i = 0; i < this.parameterCount - 1; i++) {
+                if (this.parameterBindings[i].isLongData) {
+                    if (firstFound && boundTimeToCheck != this.parameterBindings[i].boundBeforeExecutionNum) {
+                        throw SQLError.createSQLException(Messages.getString(// $NON-NLS-1$
+                        "ServerPreparedStatement.11") + // $NON-NLS-1$
+                        Messages.getString("ServerPreparedStatement.12"), SQLError.SQL_STATE_DRIVER_NOT_CAPABLE, getExceptionInterceptor());
+                    } else {
+                        firstFound = true;
+                        boundTimeToCheck = this.parameterBindings[i].boundBeforeExecutionNum;
+                    }
+                }
+            }
+            // Okay, we've got all "newly"-bound streams, so reset
+            // server-side state to clear out previous bindings
+            serverResetStatement();
+        }
+        // Check bindings
+        for (int i = 0; i < this.parameterCount; i++) {
+            if (!this.parameterBindings[i].isSet) {
+                throw SQLError.createSQLException(Messages.getString("ServerPreparedStatement.13") + // $NON-NLS-1$
+                (i + 1) + Messages.getString("ServerPreparedStatement.14"), SQLError.SQL_STATE_ILLEGAL_ARGUMENT, // $NON-NLS-1$
+                getExceptionInterceptor());
+            }
+        }
+        // 
+        for (int i = 0; i < this.parameterCount; i++) {
+            if (this.parameterBindings[i].isLongData) {
+                serverLongData(i, this.parameterBindings[i]);
+            }
+        }
+        if (this.connection.getAutoGenerateTestcaseScript()) {
+            dumpExecuteForTestcase();
+        }
+        // 
+        // store the parameter values
+        // 
+        Buffer packet = mysql.getSharedSendPacket();
+        packet.clear();
+        packet.writeByte((byte) MysqlDefs.COM_EXECUTE);
+        packet.writeLong(this.serverStatementId);
+        boolean usingCursor = false;
+        if (this.connection.versionMeetsMinimum(4, 1, 2)) {
+            // d) The user has set a fetch size
+            if (this.resultFields != null && this.connection.isCursorFetchEnabled() && getResultSetType() == ResultSet.TYPE_FORWARD_ONLY && getResultSetConcurrency() == ResultSet.CONCUR_READ_ONLY && getFetchSize() > 0) {
+                packet.writeByte(MysqlDefs.OPEN_CURSOR_FLAG);
+                usingCursor = true;
+            } else {
+                // placeholder for flags
+                packet.writeByte((byte) 0);
+            }
+            // placeholder for parameter
+            packet.writeLong(1);
+        // iterations
+        }
+        /* Reserve place for null-marker bytes */
+        int nullCount = (this.parameterCount + 7) / 8;
+        // if (mysql.versionMeetsMinimum(4, 1, 2)) {
+        // nullCount = (this.parameterCount + 9) / 8;
+        // }
+        int nullBitsPosition = packet.getPosition();
+        for (int i = 0; i < nullCount; i++) {
+            packet.writeByte((byte) 0);
+        }
+        byte[] nullBitsBuffer = new byte[nullCount];
+        /* In case if buffers (type) altered, indicate to server */
+        packet.writeByte(this.sendTypesToServer ? (byte) 1 : (byte) 0);
+        if (this.sendTypesToServer) {
+            /*
+				 * Store types of parameters in first in first package that is
+				 * sent to the server.
+				 */
+            for (int i = 0; i < this.parameterCount; i++) {
+                packet.writeInt(this.parameterBindings[i].bufferType);
+            }
+        }
+        // 
+        for (int i = 0; i < this.parameterCount; i++) {
+            if (!this.parameterBindings[i].isLongData) {
+                if (!this.parameterBindings[i].isNull) {
+                    storeBinding(packet, this.parameterBindings[i], mysql);
+                } else {
+                    nullBitsBuffer[i / 8] |= (1 << (i & 7));
+                }
+            }
+        }
+        // 
+        // Go back and write the NULL flags
+        // to the beginning of the packet
+        // 
+        int endPosition = packet.getPosition();
+        packet.setPosition(nullBitsPosition);
+        packet.writeBytesNoNull(nullBitsBuffer);
+        packet.setPosition(endPosition);
+        long begin = 0;
+        boolean logSlowQueries = this.connection.getLogSlowQueries();
+        boolean gatherPerformanceMetrics = this.connection.getGatherPerformanceMetrics();
+        if (this.profileSQL || logSlowQueries || gatherPerformanceMetrics) {
+            begin = mysql.getCurrentTimeNanosOrMillis();
+        }
+        resetCancelledState();
+        CancelTask timeoutTask = null;
+        try {
+            if (this.connection.getEnableQueryTimeouts() && this.timeoutInMillis != 0 && this.connection.versionMeetsMinimum(5, 0, 0)) {
+                timeoutTask = new CancelTask(this);
+                this.connection.getCancelTimer().schedule(timeoutTask, this.timeoutInMillis);
+            }
+            Buffer resultPacket = mysql.sendCommand(MysqlDefs.COM_EXECUTE, null, packet, false, null, 0);
+            long queryEndTime = 0L;
+            if (logSlowQueries || gatherPerformanceMetrics || this.profileSQL) {
+                queryEndTime = mysql.getCurrentTimeNanosOrMillis();
+            }
+            if (timeoutTask != null) {
+                timeoutTask.cancel();
+                this.connection.getCancelTimer().purge();
+                if (timeoutTask.caughtWhileCancelling != null) {
+                    throw timeoutTask.caughtWhileCancelling;
+                }
+                timeoutTask = null;
+            }
+            synchronized (this.cancelTimeoutMutex) {
+                if (this.wasCancelled) {
+                    SQLException cause = null;
+                    if (this.wasCancelledByTimeout) {
+                        cause = new MySQLTimeoutException();
+                    } else {
+                        cause = new MySQLStatementCancelledException();
+                    }
+                    resetCancelledState();
+                    throw cause;
+                }
+            }
+            boolean queryWasSlow = false;
+            if (logSlowQueries || gatherPerformanceMetrics) {
+                long elapsedTime = queryEndTime - begin;
+                if (logSlowQueries) {
+                    if (this.useAutoSlowLog) {
+                        queryWasSlow = elapsedTime > this.connection.getSlowQueryThresholdMillis();
+                    } else {
+                        queryWasSlow = this.connection.isAbonormallyLongQuery(elapsedTime);
+                        this.connection.reportQueryTime(elapsedTime);
+                    }
+                }
+                if (queryWasSlow) {
+                    StringBuffer mesgBuf = new StringBuffer(48 + this.originalSql.length());
+                    mesgBuf.append(Messages.getString(// $NON-NLS-1$
+                    "ServerPreparedStatement.15"));
+                    mesgBuf.append(mysql.getSlowQueryThreshold());
+                    mesgBuf.append(Messages.getString(// $NON-NLS-1$
+                    "ServerPreparedStatement.15a"));
+                    mesgBuf.append(elapsedTime);
+                    mesgBuf.append(Messages.getString(// $NON-NLS-1$
+                    "ServerPreparedStatement.16"));
+                    mesgBuf.append("as prepared: ");
+                    mesgBuf.append(this.originalSql);
+                    mesgBuf.append("\n\n with parameters bound:\n\n");
+                    mesgBuf.append(asSql(true));
+                    this.eventSink.consumeEvent(new ProfilerEvent(ProfilerEvent.TYPE_SLOW_QUERY, // $NON-NLS-1$
+                    "", // $NON-NLS-1$
+                    this.currentCatalog, // $NON-NLS-1$
+                    this.connection.getId(), getId(), 0, System.currentTimeMillis(), elapsedTime, mysql.getQueryTimingUnits(), null, new Throwable(), mesgBuf.toString()));
+                }
+                if (gatherPerformanceMetrics) {
+                    this.connection.registerQueryExecutionTime(elapsedTime);
+                }
+            }
+            this.connection.incrementNumberOfPreparedExecutes();
+            if (this.profileSQL) {
+                this.eventSink = ProfilerEventHandlerFactory.getInstance(this.connection);
+                this.eventSink.consumeEvent(new ProfilerEvent(ProfilerEvent.TYPE_EXECUTE, // $NON-NLS-1$
+                "", // $NON-NLS-1$
+                this.currentCatalog, this.connectionId, this.statementId, -1, System.currentTimeMillis(), (int) (mysql.getCurrentTimeNanosOrMillis() - begin), mysql.getQueryTimingUnits(), null, new Throwable(), truncateQueryToLog(asSql(true))));
+            }
+            com.mysql.jdbc.ResultSetInternalMethods rs = mysql.readAllResults(this, maxRowsToRetrieve, this.resultSetType, this.resultSetConcurrency, createStreamingResultSet, this.currentCatalog, resultPacket, true, this.fieldCount, metadataFromCache);
+            if (mysql.shouldIntercept()) {
+                ResultSetInternalMethods interceptedResults = mysql.invokeStatementInterceptorsPost(this.originalSql, this, rs, true, null);
+                if (interceptedResults != null) {
+                    rs = interceptedResults;
+                }
+            }
+            if (this.profileSQL) {
+                long fetchEndTime = mysql.getCurrentTimeNanosOrMillis();
+                this.eventSink.consumeEvent(new ProfilerEvent(ProfilerEvent.TYPE_FETCH, // $NON-NLS-1$
+                "", // $NON-NLS-1$
+                this.currentCatalog, // $NON-NLS-1$
+                this.connection.getId(), getId(), 0, /* FIXME rs.resultId */
+                System.currentTimeMillis(), (fetchEndTime - queryEndTime), mysql.getQueryTimingUnits(), null, new Throwable(), null));
+            }
+            if (queryWasSlow && this.connection.getExplainSlowQueries()) {
+                String queryAsString = asSql(true);
+                mysql.explainSlowQuery(queryAsString.getBytes(), queryAsString);
+            }
+            if (!createStreamingResultSet && this.serverNeedsResetBeforeEachExecution) {
+                // clear any long data...
+                serverResetStatement();
+            }
+            this.sendTypesToServer = false;
+            this.results = rs;
+            if (mysql.hadWarnings()) {
+                mysql.scanForAndThrowDataTruncation();
+            }
+            return rs;
+        } catch (SQLException sqlEx) {
+            if (mysql.shouldIntercept()) {
+                mysql.invokeStatementInterceptorsPost(this.originalSql, this, null, true, sqlEx);
+            }
+            throw sqlEx;
+        } finally {
+            if (timeoutTask != null) {
+                timeoutTask.cancel();
+                this.connection.getCancelTimer().purge();
+            }
+        }
+    }
+}

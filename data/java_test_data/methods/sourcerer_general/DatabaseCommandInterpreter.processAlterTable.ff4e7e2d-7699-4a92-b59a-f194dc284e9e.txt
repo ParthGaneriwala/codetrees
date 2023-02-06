@@ -1,0 +1,106 @@
+private void processAlterTable() throws HsqlException {
+    String tableName = tokenizer.getName();
+    String schema = session.getSchemaNameForWrite(tokenizer.getLongNameFirst());
+    Table t = database.schemaManager.getUserTable(session, tableName, schema);
+    String token;
+    if (t.isView()) {
+        throw Trace.error(Trace.NOT_A_TABLE);
+    }
+    session.setScripting(true);
+    token = tokenizer.getSimpleToken();
+    switch(Token.get(token)) {
+        case Token.RENAME:
+            {
+                processAlterTableRename(t);
+                return;
+            }
+        case Token.ADD:
+            {
+                HsqlName cname = null;
+                if (tokenizer.isGetThis(Token.T_CONSTRAINT)) {
+                    token = tokenizer.getName();
+                    String constraintSchema = tokenizer.getLongNameFirst();
+                    if (constraintSchema != null) {
+                        constraintSchema = session.getSchemaNameForWrite(tokenizer.getLongNameFirst());
+                        if (!t.getSchemaName().equals(constraintSchema)) {
+                            throw Trace.error(Trace.INVALID_SCHEMA_NAME_NO_SUBCLASS, constraintSchema);
+                        }
+                    }
+                    cname = database.nameManager.newHsqlName(token, tokenizer.wasQuotedIdentifier());
+                }
+                token = tokenizer.getString();
+                if (tokenizer.wasQuotedIdentifier() && tokenizer.wasSimpleName()) {
+                    tokenizer.back();
+                    processAlterTableAddColumn(t);
+                    return;
+                }
+                if (!tokenizer.wasSimpleToken()) {
+                    throw Trace.error(Trace.UNEXPECTED_TOKEN, token);
+                }
+                switch(Token.get(token)) {
+                    case Token.FOREIGN:
+                        tokenizer.getThis(Token.T_KEY);
+                        processAlterTableAddForeignKeyConstraint(t, cname);
+                        return;
+                    case Token.UNIQUE:
+                        processAlterTableAddUniqueConstraint(t, cname);
+                        return;
+                    case Token.CHECK:
+                        processAlterTableAddCheckConstraint(t, cname);
+                        return;
+                    case Token.PRIMARY:
+                        tokenizer.getThis(Token.T_KEY);
+                        processAlterTableAddPrimaryKey(t, cname);
+                        return;
+                    default:
+                        if (cname != null) {
+                            throw Trace.error(Trace.UNEXPECTED_TOKEN, token);
+                        }
+                        tokenizer.back();
+                    case Token.COLUMN:
+                        processAlterTableAddColumn(t);
+                        return;
+                }
+            }
+        case Token.DROP:
+            {
+                token = tokenizer.getString();
+                if (tokenizer.wasQuotedIdentifier() && tokenizer.wasSimpleName()) {
+                    tokenizer.back();
+                    processAlterTableDropColumn(t);
+                    return;
+                }
+                if (!tokenizer.wasSimpleToken()) {
+                    throw Trace.error(Trace.UNEXPECTED_TOKEN, token);
+                }
+                switch(Token.get(token)) {
+                    case Token.PRIMARY:
+                        tokenizer.getThis(Token.T_KEY);
+                        if (t.hasPrimaryKey()) {
+                            processAlterTableDropConstraint(t, t.getPrimaryConstraint().getName().name);
+                        } else {
+                            throw Trace.error(Trace.CONSTRAINT_NOT_FOUND, Trace.TABLE_HAS_NO_PRIMARY_KEY, new Object[] { "PRIMARY KEY", t.getName().name });
+                        }
+                        return;
+                    case Token.CONSTRAINT:
+                        processAlterTableDropConstraint(t);
+                        return;
+                    default:
+                        tokenizer.back();
+                    case Token.COLUMN:
+                        processAlterTableDropColumn(t);
+                        return;
+                }
+            }
+        case Token.ALTER:
+            {
+                tokenizer.isGetThis(Token.T_COLUMN);
+                processAlterColumn(t);
+                return;
+            }
+        default:
+            {
+                throw Trace.error(Trace.UNEXPECTED_TOKEN, token);
+            }
+    }
+}

@@ -1,0 +1,49 @@
+public void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+    final UnixUserGroupInformation ugi = getUGI(request);
+    final PrintWriter out = response.getWriter();
+    final XMLOutputter doc = new XMLOutputter(out, "UTF-8");
+    try {
+        final Map<String, String> root = buildRoot(request, doc);
+        final String path = root.get("path");
+        final boolean recur = "yes".equals(root.get("recursive"));
+        final Pattern filter = Pattern.compile(root.get("filter"));
+        final Pattern exclude = Pattern.compile(root.get("exclude"));
+        ClientProtocol nnproxy = createNameNodeProxy(ugi);
+        doc.declaration();
+        doc.startTag("listing");
+        for (Map.Entry<String, String> m : root.entrySet()) {
+            doc.attribute(m.getKey(), m.getValue());
+        }
+        FileStatus base = nnproxy.getFileInfo(path);
+        if ((base != null) && base.isDir()) {
+            writeInfo(base, doc);
+        }
+        Stack<String> pathstack = new Stack<String>();
+        pathstack.push(path);
+        while (!pathstack.empty()) {
+            String p = pathstack.pop();
+            try {
+                for (FileStatus i : nnproxy.getListing(p)) {
+                    if (exclude.matcher(i.getPath().getName()).matches() || !filter.matcher(i.getPath().getName()).matches()) {
+                        continue;
+                    }
+                    if (recur && i.isDir()) {
+                        pathstack.push(i.getPath().toUri().getPath());
+                    }
+                    writeInfo(i, doc);
+                }
+            } catch (RemoteException re) {
+                re.writeXml(p, doc);
+            }
+        }
+    } catch (PatternSyntaxException e) {
+        out.println(e.toString());
+    } finally {
+        if (doc != null) {
+            doc.endDocument();
+        }
+        if (out != null) {
+            out.close();
+        }
+    }
+}

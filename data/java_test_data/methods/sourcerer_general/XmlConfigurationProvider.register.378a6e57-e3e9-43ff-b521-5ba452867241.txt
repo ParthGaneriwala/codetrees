@@ -1,0 +1,73 @@
+public void register(ContainerBuilder containerBuilder, LocatableProperties props) throws ConfigurationException {
+    LOG.info("Parsing configuration file [" + configFileName + "]");
+    Map<String, Node> loadedBeans = new HashMap<String, Node>();
+    for (Document doc : documents) {
+        Element rootElement = doc.getDocumentElement();
+        NodeList children = rootElement.getChildNodes();
+        int childSize = children.getLength();
+        for (int i = 0; i < childSize; i++) {
+            Node childNode = children.item(i);
+            if (childNode instanceof Element) {
+                Element child = (Element) childNode;
+                final String nodeName = child.getNodeName();
+                if (nodeName.equals("bean")) {
+                    String type = child.getAttribute("type");
+                    String name = child.getAttribute("name");
+                    String impl = child.getAttribute("class");
+                    String onlyStatic = child.getAttribute("static");
+                    String scopeStr = child.getAttribute("scope");
+                    boolean optional = "true".equals(child.getAttribute("optional"));
+                    Scope scope = Scope.SINGLETON;
+                    if ("default".equals(scopeStr)) {
+                        scope = Scope.DEFAULT;
+                    } else if ("request".equals(scopeStr)) {
+                        scope = Scope.REQUEST;
+                    } else if ("session".equals(scopeStr)) {
+                        scope = Scope.SESSION;
+                    } else if ("singleton".equals(scopeStr)) {
+                        scope = Scope.SINGLETON;
+                    } else if ("thread".equals(scopeStr)) {
+                        scope = Scope.THREAD;
+                    }
+                    if (!TextUtils.stringSet(name)) {
+                        name = Container.DEFAULT_NAME;
+                    }
+                    try {
+                        Class cimpl = ClassLoaderUtil.loadClass(impl, getClass());
+                        Class ctype = cimpl;
+                        if (TextUtils.stringSet(type)) {
+                            ctype = ClassLoaderUtil.loadClass(type, getClass());
+                        }
+                        if ("true".equals(onlyStatic)) {
+                            // Force loading of class to detect no class def found exceptions
+                            cimpl.getDeclaredClasses();
+                            containerBuilder.injectStatics(cimpl);
+                        } else {
+                            if (containerBuilder.contains(ctype, name)) {
+                                Location loc = LocationUtils.getLocation(loadedBeans.get(ctype.getName() + name));
+                                throw new ConfigurationException("Bean type " + ctype + " with the name " + name + " has already been loaded by " + loc, child);
+                            }
+                            // Force loading of class to detect no class def found exceptions
+                            cimpl.getDeclaredConstructors();
+                            if (LOG.isDebugEnabled()) {
+                                LOG.debug("Loaded type:" + type + " name:" + name + " impl:" + impl);
+                            }
+                            containerBuilder.factory(ctype, name, new LocatableFactory(name, ctype, cimpl, scope, childNode), scope);
+                        }
+                        loadedBeans.put(ctype.getName() + name, child);
+                    } catch (Throwable ex) {
+                        if (!optional) {
+                            throw new ConfigurationException("Unable to load bean: type:" + type + " class:" + impl, ex, childNode);
+                        } else {
+                            LOG.debug("Unable to load optional class: " + ex);
+                        }
+                    }
+                } else if (nodeName.equals("constant")) {
+                    String name = child.getAttribute("name");
+                    String value = child.getAttribute("value");
+                    props.setProperty(name, value, childNode);
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,62 @@
+@SuppressWarnings("nls")
+private OperatorInfo genGroupByPlanReduceSinkOperator(QBParseInfo parseInfo, OperatorInfo input, CommonTree distinctText, TreeSet<String> ks) throws SemanticException {
+    RowResolver inputRS = input.getRowResolver();
+    RowResolver outputRS = new RowResolver();
+    outputRS.setIsExprResolver(true);
+    ArrayList<exprNodeDesc> reduceKeys = new ArrayList<exprNodeDesc>();
+    // Spray on distinctText first
+    if (distinctText != null) {
+        reduceKeys.add(genExprNodeDesc(distinctText, parseInfo.getAlias(), inputRS));
+        String text = distinctText.toStringTree();
+        assert (outputRS.get("", text) == null);
+        outputRS.put("", text, new ColumnInfo(Utilities.ReduceField.KEY.toString() + "." + Integer.valueOf(reduceKeys.size() - 1).toString(), String.class, false));
+    } else {
+        // dummy key
+        reduceKeys.add(new exprNodeConstantDesc(0));
+    }
+    // copy the input row resolver
+    ArrayList<exprNodeDesc> reduceValues = new ArrayList<exprNodeDesc>();
+    Iterator<String> keysIter = inputRS.getTableNames().iterator();
+    while (keysIter.hasNext()) {
+        String key = keysIter.next();
+        HashMap<String, ColumnInfo> map = inputRS.getFieldMap(key);
+        Iterator<String> fNamesIter = map.keySet().iterator();
+        while (fNamesIter.hasNext()) {
+            String field = fNamesIter.next();
+            ColumnInfo valueInfo = inputRS.get(key, field);
+            if (outputRS.get(key, field) == null) {
+                reduceValues.add(new exprNodeColumnDesc(valueInfo.getType(), valueInfo.getInternalName()));
+                outputRS.put(key, field, new ColumnInfo(Utilities.ReduceField.VALUE.toString() + "." + Integer.valueOf(reduceValues.size() - 1).toString(), valueInfo.getType(), valueInfo.getIsVirtual()));
+            }
+        }
+    }
+    for (String dest : ks) {
+        List<CommonTree> grpByExprs = getGroupByForClause(parseInfo, dest);
+        // send all the group by expressions
+        for (int i = 0; i < grpByExprs.size(); ++i) {
+            CommonTree grpbyExpr = grpByExprs.get(i);
+            String text = grpbyExpr.toStringTree();
+            if (outputRS.get("", text) == null) {
+                exprNodeDesc grpbyExprNode = genExprNodeDesc(grpbyExpr, parseInfo.getAlias(), inputRS);
+                reduceValues.add(grpbyExprNode);
+                outputRS.put("", text, new ColumnInfo(Utilities.ReduceField.VALUE.toString() + "." + Integer.valueOf(reduceValues.size() - 1).toString(), grpbyExprNode.getTypeInfo(), false));
+            }
+        }
+        // send all the aggregation expressions
+        HashMap<String, CommonTree> aggregationTrees = parseInfo.getAggregationExprsForClause(dest);
+        for (Map.Entry<String, CommonTree> entry : aggregationTrees.entrySet()) {
+            CommonTree value = entry.getValue();
+            // 0 is function name
+            for (int i = 1; i < value.getChildCount(); i++) {
+                CommonTree parameter = (CommonTree) value.getChild(i);
+                String text = parameter.toStringTree();
+                if (outputRS.get("", text) == null) {
+                    exprNodeDesc pNode = genExprNodeDesc(parameter, parseInfo.getAlias(), inputRS);
+                    reduceValues.add(pNode);
+                    outputRS.put("", text, new ColumnInfo(Utilities.ReduceField.VALUE.toString() + "." + Integer.valueOf(reduceValues.size() - 1).toString(), pNode.getTypeInfo(), false));
+                }
+            }
+        }
+    }
+    return new OperatorInfo(OperatorFactory.getAndMakeChild(PlanUtils.getReduceSinkDesc(reduceKeys, reduceValues, distinctText == null ? -1 : 1), new RowSchema(outputRS.getColumnInfos()), input.getOp()), outputRS);
+}

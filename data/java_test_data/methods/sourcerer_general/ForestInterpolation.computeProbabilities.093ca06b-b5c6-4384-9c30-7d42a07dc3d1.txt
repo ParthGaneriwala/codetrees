@@ -1,0 +1,69 @@
+private double[][] computeProbabilities(final long word, final int split, ClusteredContext[] contexts) {
+    // unique clusters by model
+    final Long2DoubleMap[] cluster2probByModel = new Long2DoubleMap[nrModels];
+    for (int i = 0; i < nrModels; ++i) {
+        cluster2probByModel[i] = new Long2DoubleMap();
+    }
+    for (ClusteredContext ctx : contexts) {
+        for (int i = 0; i < nrModels; ++i) {
+            cluster2probByModel[i].addAndGet(ctx.clusters[i], 0);
+        }
+    }
+    JobManager manager = JobManager.getInstance();
+    JobGroup group = manager.createJobGroup("compute probabilities");
+    final Word2ClustersCounts word2ClustersCounts = dataModelCounts.wordCounts.get(new FactorTuple(word));
+    final CompactReadOnlyInt2IntHashMap[][] clusterCounts = word2ClustersCounts.getClusterCounts();
+    for (int lmNum = 0; lmNum < nrModels; ++lmNum) {
+        final int _lmNum = lmNum;
+        Long2DoubleMap cluster2prob = cluster2probByModel[lmNum];
+        final BinaryTree<HistoryTreePayload>[] nodes = forest.getModels().get(lmNum).getNodes();
+        for (Long2DoubleMap.Iterator it = cluster2prob.iterator(); it.hasNext(); ) {
+            final Long2DoubleMap.Entry e = it.next();
+            final int clusterid = (int) it.getKey();
+            Runnable run = new Runnable() {
+
+                @Override
+                public void run() {
+                    BinaryTree<HistoryTreePayload> node = nodes[clusterid];
+                    double currentWeight = 1.0;
+                    double prob = 0.0;
+                    while (node != null) {
+                        HistoryTreePayload payload = node.getPayload();
+                        int clusterCount = 0;
+                        long clusterTotalCount = 0;
+                        for (int dataId = 0; dataId < nrDataFiles; ++dataId) {
+                            if (dataId == split)
+                                continue;
+                            clusterCount += clusterCounts[dataId][_lmNum].get(payload.clusterid);
+                            clusterTotalCount += dataModelCounts.clusterCounts[dataId][_lmNum][payload.clusterid];
+                        }
+                        if (clusterCount > 0) {
+                            double clusterProb = (double) clusterCount / clusterTotalCount;
+                            if (Double.isNaN(clusterProb)) {
+                                System.err.print("");
+                            }
+                            prob += clusterProb * currentWeight * payload.lambda;
+                        }
+                        currentWeight *= (1.0 - payload.lambda);
+                        node = node.getParent();
+                    }
+                    e.setValue(prob);
+                }
+            };
+            Job job = new Job(run, "");
+            manager.addJob(group, job);
+            group.join(manager.getNumWorkers());
+        }
+    }
+    group.join();
+    final double[][] probs = new double[contexts.length][];
+    for (int i = 0; i < contexts.length; ++i) {
+        double[] contextProbs = new double[nrModels];
+        probs[i] = contextProbs;
+        int[] clusters = contexts[i].clusters;
+        for (int lmNum = 0; lmNum < nrModels; ++lmNum) {
+            contextProbs[lmNum] = cluster2probByModel[lmNum].get(clusters[lmNum]);
+        }
+    }
+    return probs;
+}

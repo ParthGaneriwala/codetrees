@@ -1,0 +1,52 @@
+private Stage patternStageWithFullpath(Mapping varMap, ExpressionSet constraints, Triple[] givenTriples) {
+    int i;
+    List stages = new ArrayList();
+    List patternsToDo = new ArrayList();
+    for (i = 0; i < givenTriples.length; i++) patternsToDo.add(new Integer(i));
+    DBPattern[] source = createDBPatterns(varMap, givenTriples);
+    // 
+    while (patternsToDo.size() > 0) {
+        DBPattern src = findCheapPattern(varMap, patternsToDo, source);
+        // now we have a pattern for the next stage.
+        // list of VarDesc
+        List varList = new ArrayList();
+        // constraints
+        ExpressionSet evalCons = new ExpressionSet();
+        // to eval
+        // list of DBPattern
+        List queryPatterns = new ArrayList();
+        queryPatterns.add(src);
+        boolean pushQueryIntoSQL = false;
+        // fastpath is only supported for patterns over one table.
+        if (src.isSingleSource()) {
+            src.addFreeVars(varList);
+            boolean didJoin = attemptJoiningOthers(patternsToDo, source, src, varList, queryPatterns);
+            // see if any constraints can be pushed down
+            if (didJoin)
+                pushQueryIntoSQL = true;
+            else {
+                for (i = 0; i < varList.size(); i++) {
+                    VarDesc vx = (VarDesc) varList.get(i);
+                    /*/ UNCOMMENT THE LINES BELOW TO ENABLE CONSTRAINT EVALUATION WITHIN THE DB. */
+                    if ((vx.isArgVar == false) && findConstraints(constraints, evalCons, vx))
+                        pushQueryIntoSQL = true;
+                /* UNCOMMENT THE LINES ABOVE TO ENABLE CONSTRAINT EVALUATION WITHIN THE DB. */
+                }
+            }
+            if (pushQueryIntoSQL) {
+                // add result vars to reslist for query
+                for (i = 0; i < varList.size(); i++) {
+                    VarDesc vx = (VarDesc) varList.get(i);
+                    if (vx.isArgVar == false)
+                        vx.bindToVarMap(varMap);
+                }
+            }
+        } else if (!src.hasSource())
+            pushQueryIntoSQL = true;
+        // hack to handle the case when no graphs match the pattern
+        Stage newStage = pushQueryIntoSQL ? new DBQueryStage(graph, src.hasSource() ? src.singleSource() : null, varList, queryPatterns, evalCons) : super.patternStage(varMap, constraints, new Triple[] { src.pattern });
+        // stages[stageCount++] = newStage;
+        stages.add(newStage);
+    }
+    return stages.size() == 1 ? (Stage) stages.get(0) : new StageSequence(stages);
+}

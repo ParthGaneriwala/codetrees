@@ -1,0 +1,84 @@
+private void serverPrepare(String sql) throws SQLException {
+    synchronized (this.connection.getMutex()) {
+        MysqlIO mysql = this.connection.getIO();
+        if (this.connection.getAutoGenerateTestcaseScript()) {
+            dumpPrepareForTestcase();
+        }
+        try {
+            long begin = 0;
+            if (StringUtils.startsWithIgnoreCaseAndWs(sql, "LOAD DATA")) {
+                // $NON-NLS-1$
+                this.isLoadDataQuery = true;
+            } else {
+                this.isLoadDataQuery = false;
+            }
+            if (this.connection.getProfileSql()) {
+                begin = System.currentTimeMillis();
+            }
+            String characterEncoding = null;
+            String connectionEncoding = this.connection.getEncoding();
+            if (!this.isLoadDataQuery && this.connection.getUseUnicode() && (connectionEncoding != null)) {
+                characterEncoding = connectionEncoding;
+            }
+            Buffer prepareResultPacket = mysql.sendCommand(MysqlDefs.COM_PREPARE, sql, null, false, characterEncoding, 0);
+            if (this.connection.versionMeetsMinimum(4, 1, 1)) {
+                // 4.1.1 and newer use the first byte
+                // as an 'ok' or 'error' flag, so move
+                // the buffer pointer past it to
+                // start reading the statement id.
+                prepareResultPacket.setPosition(1);
+            } else {
+                // 4.1.0 doesn't use the first byte as an
+                // 'ok' or 'error' flag
+                prepareResultPacket.setPosition(0);
+            }
+            this.serverStatementId = prepareResultPacket.readLong();
+            this.fieldCount = prepareResultPacket.readInt();
+            this.parameterCount = prepareResultPacket.readInt();
+            this.parameterBindings = new BindValue[this.parameterCount];
+            for (int i = 0; i < this.parameterCount; i++) {
+                this.parameterBindings[i] = new BindValue();
+            }
+            this.connection.incrementNumberOfPrepares();
+            if (this.profileSQL) {
+                this.eventSink.consumeEvent(new ProfilerEvent(ProfilerEvent.TYPE_PREPARE, // $NON-NLS-1$
+                "", // $NON-NLS-1$
+                this.currentCatalog, this.connectionId, this.statementId, -1, System.currentTimeMillis(), mysql.getCurrentTimeNanosOrMillis() - begin, mysql.getQueryTimingUnits(), null, new Throwable(), truncateQueryToLog(sql)));
+            }
+            if (this.parameterCount > 0) {
+                if (this.connection.versionMeetsMinimum(4, 1, 2) && !mysql.isVersion(5, 0, 0)) {
+                    this.parameterFields = new Field[this.parameterCount];
+                    Buffer metaDataPacket = mysql.readPacket();
+                    int i = 0;
+                    while (!metaDataPacket.isLastDataPacket() && (i < this.parameterCount)) {
+                        this.parameterFields[i++] = mysql.unpackField(metaDataPacket, false);
+                        metaDataPacket = mysql.readPacket();
+                    }
+                }
+            }
+            if (this.fieldCount > 0) {
+                this.resultFields = new Field[this.fieldCount];
+                Buffer fieldPacket = mysql.readPacket();
+                int i = 0;
+                // Read in the result set column information
+                while (!fieldPacket.isLastDataPacket() && (i < this.fieldCount)) {
+                    this.resultFields[i++] = mysql.unpackField(fieldPacket, false);
+                    fieldPacket = mysql.readPacket();
+                }
+            }
+        } catch (SQLException sqlEx) {
+            if (this.connection.getDumpQueriesOnException()) {
+                StringBuffer messageBuf = new StringBuffer(this.originalSql.length() + 32);
+                messageBuf.append("\n\nQuery being prepared when exception was thrown:\n\n");
+                messageBuf.append(this.originalSql);
+                sqlEx = ConnectionImpl.appendMessageToException(sqlEx, messageBuf.toString(), getExceptionInterceptor());
+            }
+            throw sqlEx;
+        } finally {
+            // Leave the I/O channel in a known state...there might be
+            // packets out there
+            // that we're not interested in
+            this.connection.getIO().clearInputStream();
+        }
+    }
+}

@@ -1,0 +1,150 @@
+@Override
+public synchronized void acceptDataSet(VisualizableErrorEvent e) {
+    if (m_env == null) {
+        m_env = Environment.getSystemWide();
+    }
+    if (!GraphicsEnvironment.isHeadless()) {
+        if (m_visPanel == null) {
+            m_visPanel = new VisualizePanel();
+        }
+        m_masterPlot = e.getDataSet();
+        try {
+            m_visPanel.setMasterPlot(m_masterPlot);
+        } catch (Exception ex) {
+            System.err.println("Problem setting up visualization (ModelPerformanceChart)");
+            ex.printStackTrace();
+        }
+        m_visPanel.validate();
+        m_visPanel.repaint();
+    } else {
+        m_headlessEvents = new ArrayList<EventObject>();
+        m_headlessEvents.add(e);
+    }
+    if (m_imageListeners.size() > 0 && !m_processingHeadlessEvents) {
+        // configure the renderer (if necessary)
+        setupOffscreenRenderer();
+        m_offscreenPlotData = new ArrayList<Instances>();
+        Instances predictedI = e.getDataSet().getPlotInstances();
+        if (predictedI.classAttribute().isNominal()) {
+            // split the classes out into individual series.
+            // add a new attribute to hold point sizes - correctly
+            // classified instances get default point size (2);
+            // misclassified instances get point size (5).
+            // WekaOffscreenChartRenderer can take advantage of this
+            // information - other plugin renderers may or may not
+            // be able to use it
+            ArrayList<Attribute> atts = new ArrayList<Attribute>();
+            for (int i = 0; i < predictedI.numAttributes(); i++) {
+                atts.add((Attribute) predictedI.attribute(i).copy());
+            }
+            atts.add(new Attribute("@@size@@"));
+            Instances newInsts = new Instances(predictedI.relationName(), atts, predictedI.numInstances());
+            newInsts.setClassIndex(predictedI.classIndex());
+            for (int i = 0; i < predictedI.numInstances(); i++) {
+                double[] vals = new double[newInsts.numAttributes()];
+                for (int j = 0; j < predictedI.numAttributes(); j++) {
+                    vals[j] = predictedI.instance(i).value(j);
+                }
+                // default shape size
+                vals[vals.length - 1] = 2;
+                Instance ni = new DenseInstance(1.0, vals);
+                newInsts.add(ni);
+            }
+            // predicted class attribute is always actualClassIndex - 1
+            Instances[] classes = new Instances[newInsts.numClasses()];
+            for (int i = 0; i < newInsts.numClasses(); i++) {
+                classes[i] = new Instances(newInsts, 0);
+                classes[i].setRelationName(newInsts.classAttribute().value(i));
+            }
+            Instances errors = new Instances(newInsts, 0);
+            int actualClass = newInsts.classIndex();
+            for (int i = 0; i < newInsts.numInstances(); i++) {
+                Instance current = newInsts.instance(i);
+                classes[(int) current.classValue()].add((Instance) current.copy());
+                if (current.value(actualClass) != current.value(actualClass - 1)) {
+                    Instance toAdd = (Instance) current.copy();
+                    // larger shape for an error
+                    toAdd.setValue(toAdd.numAttributes() - 1, 5);
+                    // swap predicted and actual class value so
+                    // that the color plotted for the error series
+                    // is that of the predicted class
+                    double actualClassV = toAdd.value(actualClass);
+                    double predictedClassV = toAdd.value(actualClass - 1);
+                    toAdd.setValue(actualClass, predictedClassV);
+                    toAdd.setValue(actualClass - 1, actualClassV);
+                    errors.add(toAdd);
+                }
+            }
+            errors.setRelationName("Errors");
+            m_offscreenPlotData.add(errors);
+            for (Instances classe : classes) {
+                m_offscreenPlotData.add(classe);
+            }
+        } else {
+            // numeric class - have to make a new set of instances
+            // with the point sizes added as an additional attribute
+            ArrayList<Attribute> atts = new ArrayList<Attribute>();
+            for (int i = 0; i < predictedI.numAttributes(); i++) {
+                atts.add((Attribute) predictedI.attribute(i).copy());
+            }
+            atts.add(new Attribute("@@size@@"));
+            Instances newInsts = new Instances(predictedI.relationName(), atts, predictedI.numInstances());
+            int[] shapeSizes = e.getDataSet().getShapeSize();
+            for (int i = 0; i < predictedI.numInstances(); i++) {
+                double[] vals = new double[newInsts.numAttributes()];
+                for (int j = 0; j < predictedI.numAttributes(); j++) {
+                    vals[j] = predictedI.instance(i).value(j);
+                }
+                vals[vals.length - 1] = shapeSizes[i];
+                Instance ni = new DenseInstance(1.0, vals);
+                newInsts.add(ni);
+            }
+            newInsts.setRelationName(predictedI.classAttribute().name());
+            m_offscreenPlotData.add(newInsts);
+        }
+        List<String> options = new ArrayList<String>();
+        String additional = "-color=" + predictedI.classAttribute().name() + ",-hasErrors";
+        if (m_additionalOptions != null && m_additionalOptions.length() > 0) {
+            additional += "," + m_additionalOptions;
+            try {
+                additional = m_env.substitute(additional);
+            } catch (Exception ex) {
+            }
+        }
+        String[] optionsParts = additional.split(",");
+        for (String p : optionsParts) {
+            options.add(p.trim());
+        }
+        // if (predictedI.classAttribute().isNumeric()) {
+        options.add("-shapeSize=@@size@@");
+        // }
+        String xAxis = m_xAxis;
+        try {
+            xAxis = m_env.substitute(xAxis);
+        } catch (Exception ex) {
+        }
+        String yAxis = m_yAxis;
+        try {
+            yAxis = m_env.substitute(yAxis);
+        } catch (Exception ex) {
+        }
+        String width = m_width;
+        String height = m_height;
+        int defWidth = 500;
+        int defHeight = 400;
+        try {
+            width = m_env.substitute(width);
+            height = m_env.substitute(height);
+            defWidth = Integer.parseInt(width);
+            defHeight = Integer.parseInt(height);
+        } catch (Exception ex) {
+        }
+        try {
+            BufferedImage osi = m_offscreenRenderer.renderXYScatterPlot(defWidth, defHeight, m_offscreenPlotData, xAxis, yAxis, options);
+            ImageEvent ie = new ImageEvent(this, osi);
+            notifyImageListeners(ie);
+        } catch (Exception e1) {
+            e1.printStackTrace();
+        }
+    }
+}

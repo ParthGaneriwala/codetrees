@@ -1,0 +1,103 @@
+@Override
+public /*
+	 * Currently handles collisions by 1) moving everything on the map 2)
+	 * collecting all colliding physical objects 3) moving the physical objects
+	 * back to their original position 4) applying a force opposite the
+	 * direction of motion to simulate a bounce
+	 * 
+	 * What I want to accomplish later 1) calculate normal vectors based on
+	 * region rather than invert direction vector 2) take colliding objects and
+	 * place them where they are touching, rather than just prevent them from
+	 * moving at all 3) vary bounce forces by inertia
+	 */
+void update(TimeNotificationMessage msg) {
+    synchronized (this) {
+        if (locked) {
+            timeQueue += msg.getElapsedTime();
+            return;
+        }
+        locked = true;
+    }
+    float REPELANT_FORCE_MAGNITUDE = 10;
+    // Apply all radial forces
+    while (!forceQueue.isEmpty()) {
+        RadialForce currForce = forceQueue.remove();
+        CircularRegion regionOfEffect = new CircularRegion(currForce.getOrigin(), currForce.getEffectRadius());
+        // Determine resultant forces and apply them to PhysicalObjects
+        float FORCE_DIMINISH = 5;
+        Iterable<PhysicalObject> effectedPhysObjs = gameMap.getPhysicalObjectsWithinRegion(regionOfEffect);
+        for (Iterator<PhysicalObject> physObjIter = effectedPhysObjs.iterator(); physObjIter.hasNext(); ) {
+            // Get next physical object in region
+            PhysicalObject currPhysObj = physObjIter.next();
+            // Calculate the resultant force on the physical object
+            Point2D origin = currForce.getOrigin();
+            Point2D head = currPhysObj.getLocation();
+            Vector2D posDiff = new Vector2D(origin, head);
+            Force resultantForce = new Force(posDiff);
+            resultantForce = resultantForce.scaleForce((currForce.getEffectRadius() - posDiff.getMagnitude()) / FORCE_DIMINISH);
+            // Apply force to physical object
+            currPhysObj.feelForce(resultantForce);
+        }
+    }
+    // Move all physical objects
+    float elapsedTime = (float) ((timeQueue + msg.getElapsedTime()) % .1);
+    timeQueue = 0;
+    if (DEBUG)
+        System.out.println("change in time: " + msg.getElapsedTime());
+    Map<PhysicalObject, Memento<PhysicalObject>> prevPosMementoMap = new HashMap<PhysicalObject, Memento<PhysicalObject>>();
+    Map<PhysicalObject, Memento<PhysicalObject>> collisionPosMementoMap = new HashMap<PhysicalObject, Memento<PhysicalObject>>();
+    Iterable<PhysicalObject> allPhysObjs = gameMap.getAllPhysicalObjects();
+    for (Iterator<PhysicalObject> physObjIter = allPhysObjs.iterator(); physObjIter.hasNext(); ) {
+        // Get next physical object
+        PhysicalObject currPhysObj = physObjIter.next();
+        if (DEBUG) {
+            System.out.println("");
+            System.out.println("Physics Engine:  moving physical object");
+            System.out.println(" start pos: " + currPhysObj.getLocation());
+            System.out.println(" start vel: " + currPhysObj.getVelocity());
+            System.out.println(" start acc: " + currPhysObj.getAcceleration());
+        }
+        // Save physical objects position before move;
+        prevPosMementoMap.put(currPhysObj, currPhysObj.getMovementMemento());
+        if (DEBUG)
+            System.out.println("Physics Engine: moving now.");
+        currPhysObj.move(elapsedTime);
+        if (DEBUG)
+            System.out.println(" end pos: " + currPhysObj.getLocation());
+        // Create a PhysicalObjectMover for currPhysObj
+        PhysicalObjectMover mover = new PhysicalObjectMover(currPhysObj, elapsedTime);
+        // Move currPhysObj and look for collisions
+        mover.visitMap(gameMap);
+        // if(mover.moved()) {
+        if (mover.collided()) {
+            if (DEBUGCOLLISION) {
+                System.out.println("Physics Engine: " + currPhysObj + " is colliding.");
+            }
+            collisionPosMementoMap.put(currPhysObj, currPhysObj.getMovementMemento());
+        } else {
+            applyFriction(currPhysObj, elapsedTime);
+        // System.out.println("Physics Engine: " + currPhysObj +
+        // " is not colliding...applying friction.");
+        // System.out.println("");
+        }
+    // }else{
+    // System.out.println("[PhysicsEngine] - there is an error in our movement system..."
+    // +
+    // "for some reason our MovementVisitors are not moving when they should.");
+    // }
+    // }
+    }
+    // Deal with collisions
+    Set<PhysicalObject> collidingPhysObjs = collisionPosMementoMap.keySet();
+    for (Iterator<PhysicalObject> physObjIter = collidingPhysObjs.iterator(); physObjIter.hasNext(); ) {
+        PhysicalObject collidingPhysObj = physObjIter.next();
+        collidingPhysObj.restoreMovement(prevPosMementoMap.get(collidingPhysObj));
+        collidingPhysObj.killMotion();
+    // Vector2D dirOfMotion =
+    // collidingPhysObj.getVelocity().normalize();
+    // Force repelantForce = new
+    // Force(dirOfMotion.scale(-1*REPELANT_FORCE_MAGNITUDE));
+    // collidingPhysObj.feelForce(repelantForce);
+    }
+    locked = false;
+}

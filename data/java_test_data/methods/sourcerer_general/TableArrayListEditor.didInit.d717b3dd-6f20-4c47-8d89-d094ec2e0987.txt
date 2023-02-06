@@ -1,0 +1,219 @@
+// documentation inherited
+@Override
+protected void didInit() {
+    super.didInit();
+    // determine the column model
+    final Class<?> ctype = _property.getComponentType();
+    boolean showHeader = true;
+    if (is2DArray()) {
+        // actual columns will be created on update
+        _columns = new Column[0];
+    } else if (isTableCellType(ctype)) {
+        _columns = new Column[] { new Column() {
+
+            public String getName() {
+                return null;
+            }
+
+            public String getPathComponent() {
+                return "";
+            }
+
+            public Class<?> getColumnClass() {
+                return ClassUtil.objectEquivalentOf(ctype);
+            }
+
+            public Object getColumnValue(int row) {
+                return getValue(row);
+            }
+
+            public void setColumnValue(int row, Object value) {
+                setValue(row, value);
+            }
+
+            public int getWidth() {
+                return _property.getAnnotation().width();
+            }
+        } };
+        showHeader = false;
+    } else {
+        Property[] properties = Introspector.getProperties(ctype);
+        if (!_property.getAnnotation().nullable()) {
+            ArrayList<Column> columns = new ArrayList<Column>();
+            final MessageBundle msgs = _msgmgr.getBundle(Introspector.getMessageBundle(ctype));
+            for (final Property property : properties) {
+                if (!property.getAnnotation().column()) {
+                    continue;
+                }
+                columns.add(new Column() {
+
+                    public String getName() {
+                        return getLabel(property.getName(), msgs);
+                    }
+
+                    public String getPathComponent() {
+                        return "." + property.getName();
+                    }
+
+                    public Class<?> getColumnClass() {
+                        return ClassUtil.objectEquivalentOf(property.getType());
+                    }
+
+                    public Object getColumnValue(int row) {
+                        return property.get(getValue(row));
+                    }
+
+                    public void setColumnValue(int row, Object value) {
+                        property.set(getValue(row), value);
+                    }
+
+                    public int getWidth() {
+                        return property.getAnnotation().width();
+                    }
+                });
+            }
+            _columns = columns.toArray(new Column[columns.size()]);
+        }
+        int ncols = (_columns == null) ? 0 : _columns.length;
+        if (ncols == 0) {
+            _columns = new Column[] { new Column() {
+
+                public String getName() {
+                    return "";
+                }
+
+                public String getPathComponent() {
+                    return "";
+                }
+
+                public Class<?> getColumnClass() {
+                    return String.class;
+                }
+
+                public boolean isEditable() {
+                    return false;
+                }
+
+                public Object getColumnValue(int row) {
+                    Object value = getValue(row);
+                    return getLabel(value == null ? null : value.getClass());
+                }
+
+                public void setColumnValue(int row, Object value) {
+                // no-op
+                }
+
+                public int getWidth() {
+                    return 20;
+                }
+            } };
+            showHeader = false;
+        }
+        Class<?>[] types = _property.getComponentSubtypes();
+        _opanel = new ObjectPanel(_ctx, _property.getComponentTypeLabel(), types, _lineage, _object, ncols > 0);
+        _opanel.addChangeListener(this);
+    }
+    JPanel outer = new JPanel();
+    outer.setBackground(null);
+    _content.add(outer);
+    JPanel panel = new JPanel(new BorderLayout());
+    panel.setBackground(null);
+    outer.add(panel);
+    panel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
+    _table = new JTable(this);
+    if (showHeader) {
+        _table.getTableHeader().setReorderingAllowed(false);
+        panel.add(_table.getTableHeader(), BorderLayout.NORTH);
+    }
+    updateColumnWidths();
+    panel.add(_table, BorderLayout.CENTER);
+    if (is2DArray()) {
+        _table.setColumnSelectionAllowed(true);
+        _table.setSelectionMode(ListSelectionModel.SINGLE_INTERVAL_SELECTION);
+    } else {
+        _table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+    }
+    _table.getSelectionModel().addListSelectionListener(this);
+    _table.getColumnModel().getSelectionModel().addListSelectionListener(this);
+    // hacky transferable lets us move rows around in the array
+    _table.setDragEnabled(true);
+    final DataFlavor cflavor = new DataFlavor(IntTuple.class, null);
+    _table.setTransferHandler(new TransferHandler() {
+
+        public int getSourceActions(JComponent comp) {
+            return MOVE;
+        }
+
+        public boolean canImport(JComponent comp, DataFlavor[] flavors) {
+            return ListUtil.containsRef(flavors, cflavor);
+        }
+
+        public boolean importData(JComponent comp, Transferable t) {
+            try {
+                IntTuple selection = (IntTuple) t.getTransferData(cflavor);
+                if (selection.left == -1) {
+                    moveColumn(selection.right);
+                } else if (selection.right == -1) {
+                    moveValue(selection.left);
+                } else {
+                    moveCell(selection.left, selection.right);
+                }
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        protected Transferable createTransferable(JComponent c) {
+            final IntTuple selection = getSelection();
+            if (selection == null) {
+                return null;
+            }
+            // set the selection mode depending on the selection type
+            if (is2DArray()) {
+                if (selection.left == -1) {
+                    _table.setRowSelectionAllowed(false);
+                } else if (selection.right == -1) {
+                    _table.setColumnSelectionAllowed(false);
+                }
+            }
+            return new Transferable() {
+
+                public Object getTransferData(DataFlavor flavor) {
+                    return selection;
+                }
+
+                public DataFlavor[] getTransferDataFlavors() {
+                    return new DataFlavor[] { cflavor };
+                }
+
+                public boolean isDataFlavorSupported(DataFlavor flavor) {
+                    return flavor == cflavor;
+                }
+            };
+        }
+
+        protected void exportDone(JComponent source, Transferable data, int action) {
+            // restore the selection mode
+            if (is2DArray()) {
+                _table.setCellSelectionEnabled(true);
+            }
+        }
+    });
+    JPanel bpanel = new JPanel();
+    bpanel.setBackground(null);
+    _content.add(bpanel);
+    bpanel.add(_add = new JButton(is2DArray() ? getActionLabel("new", "row") : _msgs.get("m.new")));
+    _add.addActionListener(this);
+    if (is2DArray()) {
+        bpanel.add(_addColumn = new JButton(getActionLabel("new", "column")));
+        _addColumn.addActionListener(this);
+    }
+    bpanel.add(_copy = new JButton(_msgs.get("m.copy")));
+    _copy.addActionListener(this);
+    bpanel.add(_delete = new JButton(_msgs.get("m.delete")));
+    _delete.addActionListener(this);
+    if (_opanel != null) {
+        _content.add(_opanel);
+    }
+}

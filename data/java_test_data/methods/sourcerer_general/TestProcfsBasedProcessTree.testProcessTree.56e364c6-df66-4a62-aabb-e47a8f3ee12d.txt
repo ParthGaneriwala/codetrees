@@ -1,0 +1,61 @@
+public void testProcessTree() {
+    try {
+        if (!ProcfsBasedProcessTree.isAvailable()) {
+            System.out.println("ProcfsBasedProcessTree is not available on this system. Not testing");
+            return;
+        }
+    } catch (Exception e) {
+        LOG.info(StringUtils.stringifyException(e));
+        return;
+    }
+    // create shell script
+    Random rm = new Random();
+    File tempFile = new File(this.getName() + "_shellScript_" + rm.nextInt() + ".sh");
+    tempFile.deleteOnExit();
+    shellScript = tempFile.getName();
+    // create pid file
+    tempFile = new File(this.getName() + "_pidFile_" + rm.nextInt() + ".pid");
+    tempFile.deleteOnExit();
+    pidFile = tempFile.getName();
+    // write to shell-script
+    try {
+        FileWriter fWriter = new FileWriter(shellScript);
+        fWriter.write("# rogue task\n" + "sleep 10\n" + "echo hello\n" + "if [ $1 -ne 0 ]\n" + "then\n" + " sh " + shellScript + " $(($1-1))\n" + "fi");
+        fWriter.close();
+    } catch (IOException ioe) {
+        LOG.info("Error: " + ioe);
+        return;
+    }
+    Thread t = new RogueTaskThread();
+    t.start();
+    String pid = getRogueTaskPID();
+    LOG.info("Root process pid: " + pid);
+    ProcfsBasedProcessTree p = new ProcfsBasedProcessTree(pid);
+    // initialize
+    p = p.getProcessTree();
+    try {
+        while (true) {
+            LOG.info("ProcessTree: " + p.toString());
+            long mem = p.getCumulativeVmem();
+            LOG.info("Memory usage: " + mem + "kB.");
+            if (mem > memoryLimit) {
+                p.destroy();
+                break;
+            }
+            Thread.sleep(PROCESSTREE_RECONSTRUCTION_INTERVAL);
+            // reconstruct
+            p = p.getProcessTree();
+        }
+    } catch (InterruptedException ie) {
+        LOG.info("Interrupted.");
+    }
+    // processtree should should be gone
+    assertEquals(false, p.isAlive());
+    // Not able to join thread sometimes when forking with large N.
+    try {
+        t.join(2000);
+        LOG.info("RogueTaskThread successfully joined.");
+    } catch (InterruptedException ie) {
+        LOG.info("Interrupted while joining RogueTaskThread.");
+    }
+}

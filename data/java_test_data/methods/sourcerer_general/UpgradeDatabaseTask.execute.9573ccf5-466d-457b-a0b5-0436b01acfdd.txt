@@ -1,0 +1,77 @@
+public void execute() throws BuildException {
+    String fsEval = System.getProperty("file.separator");
+    if ("\\".equals(fsEval)) {
+        fsEval = "\\\\";
+        servletJar = StringUtils.replace(servletJar, "\\", "\\\\");
+        fileLibrary = StringUtils.replace(fileLibrary, "\\", "\\\\");
+    }
+    System.out.println("Beginning database task...");
+    try {
+        // Load the application prefs
+        prefs.loadProperties(fileLibrary);
+        // Create a Connection Pool to facilitate connections
+        ConnectionPool sqlDriver = new ConnectionPool();
+        sqlDriver.setDebug(true);
+        sqlDriver.setTestConnections(false);
+        sqlDriver.setAllowShrinking(true);
+        sqlDriver.setMaxConnections(10);
+        sqlDriver.setMaxIdleTime(60000);
+        sqlDriver.setMaxDeadTime(300000);
+        // Cache a list of databases to upgrade
+        ArrayList<HashMap> siteList = new ArrayList<HashMap>();
+        // Prepare the database
+        ConnectionElement ce = new ConnectionElement(url, user, password);
+        ce.setDriver(driver);
+        // Set the database to update
+        if (1 == 1) {
+            HashMap<String, String> siteInfo = new HashMap<String, String>();
+            siteInfo.put("url", url);
+            siteInfo.put("dbName", specificDatabase);
+            siteInfo.put("user", user);
+            siteInfo.put("password", password);
+            siteInfo.put("driver", driver);
+            if ((specificDatabase == null || "".equals(specificDatabase)) || (specificDatabase.equals(siteInfo.get("dbName")))) {
+                siteList.add(siteInfo);
+            }
+        }
+        // Iterate over the databases to upgrade and run the correct
+        // sql code and bean shell scripts
+        Iterator i = siteList.iterator();
+        while (i.hasNext()) {
+            HashMap siteInfo = (HashMap) i.next();
+            ce = new ConnectionElement((String) siteInfo.get("url"), (String) siteInfo.get("user"), (String) siteInfo.get("password"));
+            ce.setDriver((String) siteInfo.get("driver"));
+            System.out.println("");
+            if (baseFilePath == null) {
+                baseFilePath = "";
+            }
+            String thisDbName = (String) siteInfo.get("dbName");
+            // Connect to the database
+            Connection db = sqlDriver.getConnection(ce, true);
+            // Run any scripts
+            if ("all".equals(baseFile)) {
+                // Look for scripts to run
+                InputStream is = new File("src/main/webapp/WEB-INF/database/database_versions.txt").toURL().openStream();
+                ArrayList<String> versionList = UpgradeUtils.retrieveDatabaseVersions(is);
+                for (String version : versionList) {
+                    if (!UpgradeUtils.isInstalled(db, version)) {
+                        System.out.println("Executing database version: " + version);
+                        executeTxtFile(db, version + ".txt", fsEval, thisDbName);
+                        UpgradeUtils.addVersion(db, version);
+                    }
+                }
+            } else if (baseFile.indexOf(".txt") > -1) {
+                // try a single .txt
+                executeTxtFile(db, baseFile, fsEval, thisDbName);
+            } else {
+                // assume it is a .bsh or .sql
+                executeFile(db, baseFile, fsEval, thisDbName);
+            }
+            sqlDriver.free(db);
+        }
+        // Close the connections
+        sqlDriver.closeAllConnections();
+    } catch (Exception e) {
+        throw new BuildException("Script Error: " + e.getMessage());
+    }
+}

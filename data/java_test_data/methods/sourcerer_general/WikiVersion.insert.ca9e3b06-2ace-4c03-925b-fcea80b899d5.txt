@@ -1,0 +1,56 @@
+public static boolean insert(Connection db, Wiki previousWiki, Wiki updatedWiki) throws SQLException {
+    boolean commit = db.getAutoCommit();
+    try {
+        // Determine changes
+        String changes = null;
+        try {
+            Revision revision = Diff.diff(ToString.stringToArray(previousWiki.getContent()), ToString.stringToArray(updatedWiki.getContent()), null);
+            changes = revision.toString();
+        } catch (Exception e) {
+            try {
+                Revision revision = Diff.diff(ToString.stringToArray(previousWiki.getContent()), ToString.stringToArray(updatedWiki.getContent()), new SimpleDiff());
+                changes = revision.toString();
+            } catch (Exception e2) {
+                com.concursive.connect.web.modules.wiki.utils.Diff diff = new com.concursive.connect.web.modules.wiki.utils.Diff();
+                changes = diff.doDiff(previousWiki.getContent(), updatedWiki.getContent());
+            }
+        }
+        // Count the changes
+        DiffCounter counter = new DiffCounter();
+        WikiUtils.countDiff(counter, changes);
+        // Insert version
+        if (commit) {
+            db.setAutoCommit(false);
+        }
+        StringBuffer sql = new StringBuffer();
+        sql.append("INSERT INTO project_wiki_version " + "(wiki_id, content, lines_total, size, enteredby, lines_added, lines_changed, lines_deleted) ");
+        sql.append("VALUES (?, ?, ?, ?, ?, ?, ?, ?) ");
+        int i = 0;
+        // Insert the page
+        PreparedStatement pst = db.prepareStatement(sql.toString());
+        pst.setInt(++i, updatedWiki.getId());
+        pst.setString(++i, changes);
+        pst.setInt(++i, StringUtils.countLines(updatedWiki.getContent()));
+        pst.setInt(++i, updatedWiki.getContent().length());
+        pst.setInt(++i, updatedWiki.getModifiedBy());
+        pst.setInt(++i, counter.getAdded());
+        pst.setInt(++i, counter.getChanged());
+        pst.setInt(++i, counter.getDeleted());
+        pst.execute();
+        pst.close();
+        if (commit) {
+            db.commit();
+        }
+    // id = DatabaseUtils.getCurrVal(db, "project_wiki_version_version_id_seq", id);
+    } catch (SQLException e) {
+        if (commit) {
+            db.rollback();
+        }
+        throw new SQLException(e.getMessage());
+    } finally {
+        if (commit) {
+            db.setAutoCommit(true);
+        }
+    }
+    return true;
+}

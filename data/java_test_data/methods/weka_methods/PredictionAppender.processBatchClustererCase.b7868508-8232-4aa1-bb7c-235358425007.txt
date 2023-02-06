@@ -1,0 +1,67 @@
+protected void processBatchClustererCase(Data data, Instances trainingData, Instances testData) throws WekaException {
+    if (isStopRequested()) {
+        getStepManager().interrupted();
+        return;
+    }
+    weka.clusterers.Clusterer clusterer = (weka.clusterers.Clusterer) data.getPayloadElement(StepManager.CON_BATCH_CLUSTERER);
+    int setNum = (Integer) data.getPayloadElement(StepManager.CON_AUX_DATA_SET_NUM);
+    int maxSetNum = (Integer) data.getPayloadElement(StepManager.CON_AUX_DATA_MAX_SET_NUM);
+    String relationNameModifier = "_set_" + setNum + "_of_" + maxSetNum;
+    if (m_appendProbabilities && !(clusterer instanceof DensityBasedClusterer)) {
+        throw new WekaException("Only DensityBasedClusterers can append probabilities.");
+    }
+    try {
+        getStepManager().processing();
+        boolean clusterLabel = !m_appendProbabilities || !(clusterer instanceof DensityBasedClusterer);
+        Instances newTrainInstances = trainingData != null ? makeOutputDataClusterer(trainingData, clusterer, !clusterLabel, relationNameModifier) : null;
+        Instances newTestInstances = testData != null ? makeOutputDataClusterer(testData, clusterer, !clusterLabel, relationNameModifier) : null;
+        if (newTrainInstances != null && getStepManager().numOutgoingConnectionsOfType(StepManager.CON_TRAININGSET) > 0) {
+            for (int i = 0; i < newTrainInstances.numInstances(); i++) {
+                if (clusterLabel) {
+                    predictLabelClusterer(clusterer, newTrainInstances.instance(i), trainingData.instance(i));
+                } else {
+                    predictProbabilitiesClusterer((DensityBasedClusterer) clusterer, newTrainInstances.instance(i), trainingData.instance(i));
+                }
+            }
+            if (isStopRequested()) {
+                getStepManager().interrupted();
+                return;
+            }
+            Data outTrain = new Data(StepManager.CON_TRAININGSET);
+            outTrain.setPayloadElement(StepManager.CON_TRAININGSET, newTrainInstances);
+            outTrain.setPayloadElement(StepManager.CON_AUX_DATA_SET_NUM, setNum);
+            outTrain.setPayloadElement(StepManager.CON_AUX_DATA_MAX_SET_NUM, maxSetNum);
+            getStepManager().outputData(outTrain);
+        }
+        if (newTestInstances != null && (getStepManager().numOutgoingConnectionsOfType(StepManager.CON_TESTSET) > 0 || getStepManager().numOutgoingConnectionsOfType(StepManager.CON_DATASET) > 0)) {
+            for (int i = 0; i < newTestInstances.numInstances(); i++) {
+                if (clusterLabel) {
+                    predictLabelClusterer(clusterer, newTestInstances.instance(i), testData.instance(i));
+                } else {
+                    predictProbabilitiesClusterer((DensityBasedClusterer) clusterer, newTestInstances.instance(i), testData.instance(i));
+                }
+            }
+            if (isStopRequested()) {
+                getStepManager().interrupted();
+                return;
+            }
+            if (getStepManager().numOutgoingConnectionsOfType(StepManager.CON_TESTSET) > 0) {
+                Data outTest = new Data(StepManager.CON_TESTSET);
+                outTest.setPayloadElement(StepManager.CON_TESTSET, newTestInstances);
+                outTest.setPayloadElement(StepManager.CON_AUX_DATA_SET_NUM, setNum);
+                outTest.setPayloadElement(StepManager.CON_AUX_DATA_MAX_SET_NUM, maxSetNum);
+                getStepManager().outputData(outTest);
+            }
+            if (getStepManager().numIncomingConnectionsOfType(StepManager.CON_DATASET) > 0) {
+                Data outData = new Data(StepManager.CON_DATASET);
+                outData.setPayloadElement(StepManager.CON_DATASET, newTestInstances);
+                outData.setPayloadElement(StepManager.CON_AUX_DATA_SET_NUM, setNum);
+                outData.setPayloadElement(StepManager.CON_AUX_DATA_MAX_SET_NUM, maxSetNum);
+                getStepManager().outputData(outData);
+            }
+        }
+        getStepManager().finished();
+    } catch (Exception ex) {
+        throw new WekaException(ex);
+    }
+}

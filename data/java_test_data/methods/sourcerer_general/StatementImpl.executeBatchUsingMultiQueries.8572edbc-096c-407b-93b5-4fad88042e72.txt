@@ -1,0 +1,91 @@
+private int[] executeBatchUsingMultiQueries(boolean multiQueriesEnabled, int nbrCommands, int individualStatementTimeout) throws SQLException {
+    MySQLConnection locallyScopedConn = this.connection;
+    if (!multiQueriesEnabled) {
+        locallyScopedConn.getIO().enableMultiQueries();
+    }
+    java.sql.Statement batchStmt = null;
+    CancelTask timeoutTask = null;
+    try {
+        int[] updateCounts = new int[nbrCommands];
+        for (int i = 0; i < nbrCommands; i++) {
+            updateCounts[i] = -3;
+        }
+        int commandIndex = 0;
+        StringBuffer queryBuf = new StringBuffer();
+        batchStmt = locallyScopedConn.createStatement();
+        if (locallyScopedConn.getEnableQueryTimeouts() && individualStatementTimeout != 0 && locallyScopedConn.versionMeetsMinimum(5, 0, 0)) {
+            timeoutTask = new CancelTask((StatementImpl) batchStmt);
+            locallyScopedConn.getCancelTimer().schedule(timeoutTask, individualStatementTimeout);
+        }
+        int counter = 0;
+        int numberOfBytesPerChar = 1;
+        String connectionEncoding = locallyScopedConn.getEncoding();
+        if (StringUtils.startsWithIgnoreCase(connectionEncoding, "utf")) {
+            numberOfBytesPerChar = 3;
+        } else if (CharsetMapping.isMultibyteCharset(connectionEncoding)) {
+            numberOfBytesPerChar = 2;
+        }
+        int escapeAdjust = 1;
+        batchStmt.setEscapeProcessing(this.doEscapeProcessing);
+        if (this.doEscapeProcessing) {
+            escapeAdjust = 2;
+        /* We assume packet _could_ grow by this amount, as we're not
+				                     sure how big statement will end up after
+				                     escape processing */
+        }
+        SQLException sqlEx = null;
+        int argumentSetsInBatchSoFar = 0;
+        for (commandIndex = 0; commandIndex < nbrCommands; commandIndex++) {
+            String nextQuery = (String) this.batchedArgs.get(commandIndex);
+            if (((((queryBuf.length() + nextQuery.length()) * numberOfBytesPerChar) + 1 + /* for semicolon */
+            MysqlIO.HEADER_LENGTH) * escapeAdjust) + 32 > this.connection.getMaxAllowedPacket()) {
+                try {
+                    batchStmt.execute(queryBuf.toString(), Statement.RETURN_GENERATED_KEYS);
+                } catch (SQLException ex) {
+                    sqlEx = handleExceptionForBatch(commandIndex, argumentSetsInBatchSoFar, updateCounts, ex);
+                }
+                counter = processMultiCountsAndKeys((StatementImpl) batchStmt, counter, updateCounts);
+                queryBuf = new StringBuffer();
+                argumentSetsInBatchSoFar = 0;
+            }
+            queryBuf.append(nextQuery);
+            queryBuf.append(";");
+            argumentSetsInBatchSoFar++;
+        }
+        if (queryBuf.length() > 0) {
+            try {
+                batchStmt.execute(queryBuf.toString(), Statement.RETURN_GENERATED_KEYS);
+            } catch (SQLException ex) {
+                sqlEx = handleExceptionForBatch(commandIndex - 1, argumentSetsInBatchSoFar, updateCounts, ex);
+            }
+            counter = processMultiCountsAndKeys((StatementImpl) batchStmt, counter, updateCounts);
+        }
+        if (timeoutTask != null) {
+            if (timeoutTask.caughtWhileCancelling != null) {
+                throw timeoutTask.caughtWhileCancelling;
+            }
+            timeoutTask.cancel();
+            locallyScopedConn.getCancelTimer().purge();
+            timeoutTask = null;
+        }
+        if (sqlEx != null) {
+            throw new java.sql.BatchUpdateException(sqlEx.getMessage(), sqlEx.getSQLState(), sqlEx.getErrorCode(), updateCounts);
+        }
+        return (updateCounts != null) ? updateCounts : new int[0];
+    } finally {
+        if (timeoutTask != null) {
+            timeoutTask.cancel();
+            locallyScopedConn.getCancelTimer().purge();
+        }
+        resetCancelledState();
+        try {
+            if (batchStmt != null) {
+                batchStmt.close();
+            }
+        } finally {
+            if (!multiQueriesEnabled) {
+                locallyScopedConn.getIO().disableMultiQueries();
+            }
+        }
+    }
+}

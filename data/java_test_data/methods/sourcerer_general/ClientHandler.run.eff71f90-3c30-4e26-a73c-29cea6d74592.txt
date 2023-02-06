@@ -1,0 +1,117 @@
+@Override
+public void run() {
+    try {
+        Packet p = null;
+        objectOut = new ObjectOutputStream(incomingSocket.getOutputStream());
+        objectOut.flush();
+        objectIn = new ObjectInputStream(incomingSocket.getInputStream());
+        isConnected = true;
+        System.out.println("SERVER :: Now connected to: " + getIPAddress());
+        mainloop: while (true) {
+            if (disconnect)
+                break mainloop;
+            p = (Packet) objectIn.readObject();
+            if (Application.enableDebug)
+                System.out.println("SERVER :: " + p);
+            switch(p.getType()) {
+                case INIT:
+                    String newName = (String) p.getData();
+                    sendPacket(new Packet(PacketType.CLIENT_ID, id));
+                    // name check
+                    if (server.isResumed()) {
+                        ClientHandler test = server.getClient(newName);
+                        if (server.getMap().getPlayer(newName) == null || (test != null && test.getClientID() != id)) {
+                            sendPacket(new Packet(PacketType.BAD_NAME, "The name \"" + newName + "\" does not exist in the game file"));
+                            server.removeClient(id);
+                            break mainloop;
+                        }
+                    } else {
+                        ClientHandler test = server.getClient(newName);
+                        if (test != null) {
+                            sendPacket(new Packet(PacketType.BAD_NAME, "The name \"" + newName + "\" is already playing"));
+                            server.removeClient(id);
+                            break mainloop;
+                        }
+                    }
+                    name = newName;
+                    Packet pp = new Packet(PacketType.CLIENT_INFO, new ClientInfo(id, name), id, name);
+                    server.relayPacket(pp, true);
+                    server.updateClient(this);
+                    isInitiated = true;
+                    break;
+                case MAP:
+                    Packet mapPacket = new Packet(PacketType.MAP, server.getMap().getLines());
+                    sendPacket(mapPacket);
+                    break;
+                case HAS_MAP:
+                    hasMap = true;
+                    if (server.isResumed())
+                        server.resumeSignalReady();
+                    break;
+                case GAME_START:
+                    server.setInGame(true);
+                    // while (!server.mapsSent());
+                    server.relayPacket(p);
+                    break;
+                case SHIP:
+                    server.getMap().addRemoteShip((Ship) p.getData(), p.getClientName(), p.getClientID());
+                    server.relayPacket(p, true);
+                    break;
+                case DONE_SETUP:
+                    server.signalReady(p);
+                    break;
+                case SHIP_MOVE:
+                    ShipMoveEvent mev = (ShipMoveEvent) p.getData();
+                    Ship ship = server.getMap().getShipAtLocation(mev.getStart(), true, false);
+                    if (ship != null && ship.isValidMove(mev.getDestination(), mev.getDirection(), server.getMap())) {
+                        ship.moveTo(mev.getDestination());
+                        ship.setDirection(mev.getDirection());
+                        server.relayPacket(p);
+                        PowerUp pu = server.getMap().checkForPowerUp(ship);
+                        if (pu != null)
+                            pu.activate(ship);
+                    } else {
+                        System.err.println("SERVER :: Client " + name + "(" + id + ") broadcasted illegal move!");
+                    }
+                    break;
+                case SHOT:
+                    ShotData dat = server.getMap().handleShot((Shot) p.getData());
+                    server.sendPacket(p.getClientID(), new Packet(PacketType.SHOT_DATA, dat));
+                    server.relayPacket(p);
+                    break;
+                case FORCE_SAVE:
+                    server.saveGame();
+                    break;
+                case GAME_OVER:
+                    server.relayPacket(p);
+                    break mainloop;
+                default:
+                    // send to everyone
+                    if (p != null)
+                        server.relayPacket(p);
+                    break;
+            }
+        }
+    } catch (Exception e) {
+        System.err.println("SERVER :: Exception in ClientHandler.  IP: " + getIPAddress());
+        e.printStackTrace();
+        try // probably disconnected
+        {
+            System.out.println("SERVER :: Disconnect from " + name + " (" + id + ") @ " + getIPAddress());
+            server.removeClient(id);
+            server.relayPacket(new Packet(PacketType.PLAYER_DISCONNECT, new ClientInfo(id, name)));
+            server.saveGame();
+        } catch (IOException e1) {
+            System.err.println("SERVER :: Could not send player disconnect packet for: " + name + " (" + id + ")");
+        }
+    } finally {
+        try {
+            System.out.println("SERVER :: Closing connection to " + name + "(" + id + ") @ " + getIPAddress());
+            objectIn.close();
+            objectOut.close();
+            incomingSocket.close();
+        } catch (IOException e) {
+            System.err.println("SERVER :: Could not close I/O streams or socket");
+        }
+    }
+}

@@ -1,0 +1,53 @@
+@Override
+public boolean routeMessageReceived(RouteMessage routeMessage, SmSession smSession) {
+    if (routeMessage.containExtension(SearchCompletedExtension.ELEMENTNAME, SearchCompletedExtension.NAMESPACE)) {
+        String node = routeMessage.getToUserNode();
+        List<RouteMessage> messages = blockedMessages.removeAll(node);
+        for (RouteMessage mess : messages) {
+            smSession.write(mess);
+        }
+        return true;
+    }
+    SearchRouteExtension searchExtension = (SearchRouteExtension) routeMessage.getRouteExtension(SearchRouteExtension.ELEMENTNAME, SearchRouteExtension.NAMESPACE);
+    if (searchExtension != null) {
+        // put message to blockMessages
+        routeMessage.removeRouteExtension(searchExtension);
+        XmlStanza stanza = routeMessage.getXmlStanza();
+        if (!routeMessage.isExtensionEmpty() || stanza != null) {
+            RouteMessage blockedMessage = new RouteMessage(searchExtension.getFromc2s(), routeMessage.getStreamId());
+            blockedMessage.setToUserNode(routeMessage.getToUserNode());
+            blockedMessage.setXmlStanza(stanza);
+            for (RouteExtension extension : routeMessage.getAllRouteExtension()) {
+                blockedMessage.addRouteExtension(extension);
+            }
+            blockedMessages.put(routeMessage.getToUserNode(), blockedMessage);
+        }
+        int total = searchExtension.getTotal();
+        if (total != newAddedSmSessionCount.get()) {
+            routeMessage.removeRouteExtension(searchExtension);
+            sendMessage(routeMessage);
+            return true;
+        } else {
+            RouteMessage searchMessage = new RouteMessage("router", routeMessage.getStreamId());
+            searchExtension.incrementTimes();
+            searchMessage.setToUserNode(routeMessage.getToUserNode());
+            searchMessage.addRouteExtension(searchExtension);
+            SmSession smSession2 = null;
+            if (searchExtension.getTimes() > searchExtension.getTotal()) {
+                String startNode = searchExtension.getStartNode();
+                smSession2 = smSessions.get(startNode);
+            } else {
+                smSession2 = getNextSmSession(routeMessage.getToUserNode(), searchExtension);
+            }
+            if (smSession2 == null || !smSession2.isConnected()) {
+                // SM Module may be breakdown, research
+                routeMessage.removeRouteExtension(searchExtension);
+                sendMessage(routeMessage);
+                return true;
+            } else {
+                smSession2.write(searchMessage);
+            }
+        }
+    }
+    return false;
+}

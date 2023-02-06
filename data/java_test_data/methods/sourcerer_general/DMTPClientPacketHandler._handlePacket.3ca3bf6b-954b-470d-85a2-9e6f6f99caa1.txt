@@ -1,0 +1,272 @@
+private Packet[] _handlePacket(String ipAddr, Packet packet) throws PacketParseException {
+    /* make sure we have a defined device */
+    if (!packet.isIdentType()) {
+        // we must have a Device ID for anything other that an identification
+        // type packet.  The following attempts to get the device id and throws
+        // an exception if the device has not yet been defined.
+        this.getDeviceId();
+    }
+    /* handle event packets separately */
+    if (packet.isEventType()) {
+        /* create Event */
+        Event evData = null;
+        try {
+            evData = new Event(ipAddr, packet);
+            // count total events
+            this.eventTotalCount++;
+            // count event in this block
+            this.eventBlockCount++;
+        } catch (PacketParseException ppe) {
+            // NAK_FORMAT_NOT_RECOGNIZED?
+            throw ppe;
+        }
+        /* check for errors */
+        if (this.eventErrorPacket == null) {
+            // no errors received during this block, so far
+            int err = this._handleEvent(evData);
+            if (err == ServerErrors.NAK_OK) {
+                // this event insertion was successful
+                this.lastValidEvent = evData;
+            } else if (err == ServerErrors.NAK_DUPLICATE_EVENT) {
+                // this record already exists (not a critical error)
+                // duplicate events are quietly ignored
+                this.lastValidEvent = evData;
+            } else {
+                // A critical error occurred inserting this event.
+                // One of the following:
+                // ServerErrors.NAK_EXCESSIVE_EVENTS
+                // ServerErrors.NAK_EVENT_ERROR
+                Print.logError("Event insertion [" + StringTools.toHexString(err, 16) + "] " + ServerErrors.getErrorDescription(err));
+                long seq = evData.getSequence();
+                int seqLen = evData.getSequenceLength();
+                PacketParseException ppe = null;
+                if ((seq >= 0L) && (seqLen > 0)) {
+                    Payload p = new Payload();
+                    p.writeULong(seq, seqLen);
+                    byte[] errData = p.getBytes();
+                    // sequence
+                    ppe = new PacketParseException(err, packet, errData);
+                } else {
+                    // errData ok
+                    ppe = new PacketParseException(err, packet);
+                }
+                this.eventErrorPacket = ppe.createServerErrorPacket();
+            }
+        } else {
+        // ignore this event
+        }
+        return null;
+    }
+    /* handle specific packet type */
+    Payload payload = packet.getPayload(true);
+    switch(packet.getPacketType()) {
+        /* client is done talking and is waiting for server response */
+        case Packet.PKT_CLIENT_EOB_DONE:
+        case Packet.PKT_CLIENT_EOB_MORE:
+            {
+                // send responses, or close
+                boolean clientHasMore = (packet.getPacketType() == Packet.PKT_CLIENT_EOB_MORE);
+                java.util.List<Packet> resp = new Vector<Packet>();
+                // check checksum (if binary encoding)
+                if (this.encoding == Encoding.ENCODING_BINARY) {
+                    if (packet.getPayloadLength() == 0) {
+                    // checksum not specified
+                    // Print.logInfo("Client checksum not specified");
+                    } else if (packet.getPayloadLength() == 2) {
+                        if (!this.fletcher.isValid()) {
+                            Print.logError("Fletcher checksum is INVALID!!");
+                            // errData ok
+                            throw new PacketParseException(ServerErrors.NAK_BLOCK_CHECKSUM, packet);
+                        }
+                    } else {
+                        // errData ok
+                        throw new PacketParseException(ServerErrors.NAK_PACKET_PAYLOAD, packet);
+                    }
+                }
+                this.fletcher.reset();
+                // acknowledge sent events
+                if (this.lastValidEvent != null) {
+                    // at least 1 event has been received
+                    Packet ackPkt = Packet.createServerPacket(Packet.PKT_SERVER_ACK);
+                    int seqLen = this.lastValidEvent.getSequenceLength();
+                    if (seqLen > 0) {
+                        long seq = this.lastValidEvent.getSequence();
+                        ackPkt.getPayload(true).writeLong(seq, seqLen);
+                    }
+                    resp.add(ackPkt);
+                    this.eventBlockCount = 0;
+                    this.lastValidEvent = null;
+                }
+                // send any event parsing error packet
+                if (this.eventErrorPacket != null) {
+                    resp.add(this.eventErrorPacket);
+                    this.eventErrorPacket = null;
+                }
+                // clear any previously transmitted PendingPackets
+                this._clearPendingPackets();
+                // send any pending configuration packets
+                // TODO: do we want to skip sending pending packets if we have an error?
+                boolean serverSentPending = false;
+                if (this.sendPending) {
+                    // until we know that we have no more pending packets
+                    this.pendingPackets = this.getDeviceId().getPendingPackets();
+                    if (this.pendingPackets != null) {
+                        // will not be null
+                        Packet[] p = this.pendingPackets.getPackets();
+                        Print.logInfo("Adding PendingPacket's to response [cnt=" + p.length + "]");
+                        ListTools.toList(p, resp);
+                        serverSentPending = true;
+                    // TODO: Need to record that pending-packets are being (or have been) sent.
+                    // this._clearPendingPackets();
+                    } else {
+                    // no more pending packets to send
+                    // Comment this line to contually check for PendingPackets
+                    // this.sendPending = false;
+                    }
+                }
+                // end-of-block / end-of-transmission
+                if (clientHasMore || serverSentPending || this.expectEventTemplate) {
+                    // If 'serverSentPending' is true, we need to allow the client to respond
+                    Packet eobPkt = Packet.createServerPacket(Packet.PKT_SERVER_EOB_DONE);
+                    resp.add(eobPkt);
+                    if (this.expectEventTemplate) {
+                        // The client is given one opportunity for providing the event template
+                        // (this section will be exectued at-most once per session, and only if duplex)
+                        this.expectEventTemplate = false;
+                    }
+                } else {
+                    Packet eotPkt = Packet.createServerPacket(Packet.PKT_SERVER_EOT);
+                    resp.add(eotPkt);
+                    // success
+                    this._setTerminateSession();
+                // we're done communicating with this client
+                }
+                return (Packet[]) ListTools.toArray(resp, Packet.class);
+            }
+        /* client sent Unique-ID */
+        case Packet.PKT_CLIENT_UNIQUE_ID:
+            {
+                // lookup unique id
+                try {
+                    // typically this should be 6 bytes, but we attempt to read 20 in case
+                    // the client wishes to provide additional information.
+                    byte[] uniqId = payload.readBytes(20);
+                    this.loadUniqueID(ipAddr, uniqId);
+                } catch (PacketParseException ppe) {
+                    ppe.setTerminate();
+                    throw ppe;
+                }
+                break;
+            }
+        /* client sent Account-ID */
+        case Packet.PKT_CLIENT_ACCOUNT_ID:
+            {
+                // lookup account
+                try {
+                    String acctName = payload.readString(20);
+                    this.loadAccountId(ipAddr, acctName);
+                } catch (PacketParseException ppe) {
+                    ppe.setTerminate();
+                    throw ppe;
+                }
+                break;
+            }
+        /* client sent Device-ID */
+        case Packet.PKT_CLIENT_DEVICE_ID:
+            {
+                // lookup device
+                try {
+                    String devName = payload.readString(20);
+                    if (this.accountId != null) {
+                        // normal Account/Device name lookup
+                        this.loadDeviceId(ipAddr, devName);
+                    } else {
+                        // an Account was not specified, try 'devName' as a Unique ID
+                        this.loadUniqueID(ipAddr, StringTools.getBytes(devName));
+                    }
+                } catch (PacketParseException ppe) {
+                    ppe.setTerminate();
+                    throw ppe;
+                }
+                break;
+            }
+        /* client sent property value */
+        case Packet.PKT_CLIENT_PROPERTY_VALUE:
+            {
+                int propKey = (int) payload.readULong(2);
+                byte[] propVal = payload.readBytes(255);
+                // save property value sent by client, for later analysis
+                this.getDeviceId().handleProperty(propKey, propVal);
+                break;
+            }
+        /* client sent format definition template */
+        case Packet.PKT_CLIENT_FORMAT_DEF_24:
+            {
+                // number of templates received
+                this.formatRecvTemplate++;
+                // validate type
+                int custType = (int) payload.readULong(1);
+                Payload p = new Payload();
+                p.writeULong(custType, 1);
+                if (!Packet.isCustomEventType(custType)) {
+                    byte[] errData = p.getBytes();
+                    // formatType
+                    throw new PacketParseException(ServerErrors.NAK_FORMAT_DEFINITION_INVALID, packet, errData);
+                }
+                // validate that the payload size can accomodate the specified number of fields
+                int numFlds = (int) payload.readULong(1);
+                if (!payload.isValidReadLength(numFlds * 3)) {
+                    // not enough data to fill all specified field templates
+                    byte[] errData = p.getBytes();
+                    // formatType
+                    throw new PacketParseException(ServerErrors.NAK_FORMAT_DEFINITION_INVALID, packet, errData);
+                }
+                // parse field templates
+                PayloadTemplate.Field[] field = new PayloadTemplate.Field[numFlds];
+                int accumLen = 0;
+                for (int i = 0; i < field.length; i++) {
+                    long fldMask = payload.readULong(3);
+                    field[i] = new PayloadTemplate.Field(fldMask);
+                    if (!field[i].isValidType()) {
+                        byte[] errData = p.getBytes();
+                        // formatType
+                        throw new PacketParseException(ServerErrors.NAK_FORMAT_DEFINITION_INVALID, packet, errData);
+                    }
+                    accumLen += field[i].getLength();
+                    if (accumLen > Packet.MAX_PAYLOAD_LENGTH) {
+                        byte[] errData = p.getBytes();
+                        // formatType
+                        throw new PacketParseException(ServerErrors.NAK_FORMAT_DEFINITION_INVALID, packet, errData);
+                    }
+                }
+                PayloadTemplate payloadTemp = new PayloadTemplate(custType, field);
+                this.getDeviceId().addClientPayloadTemplate(payloadTemp);
+                break;
+            }
+        /* client sent diagnostic information */
+        case Packet.PKT_CLIENT_DIAGNOSTIC:
+            {
+                // log diagnostic
+                int diagCode = (int) payload.readULong(2);
+                byte[] diagData = payload.readBytes(255);
+                this.getDeviceId().handleDiagnostic(diagCode, diagData);
+                break;
+            }
+        /* client sent error code */
+        case Packet.PKT_CLIENT_ERROR:
+            {
+                // handle error
+                int errCode = (int) payload.readULong(2);
+                byte[] errData = payload.readBytes(255);
+                this.getDeviceId().handleError(errCode, errData);
+                return this._handleError(packet);
+            }
+        /* unknown/unsupported client packet */
+        default:
+            {
+                // errData ok
+                throw new PacketParseException(ServerErrors.NAK_PACKET_TYPE, packet);
+            }
+    }
+    return null;
+}

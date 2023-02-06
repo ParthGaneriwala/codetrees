@@ -1,0 +1,48 @@
+public synchronized void refreshIndex() throws Exception {
+    Collection allWikis = WikiBase.getDataHandler().getVirtualWikiList(null);
+    Topic topic;
+    for (Iterator iterator = allWikis.iterator(); iterator.hasNext(); ) {
+        long start = System.currentTimeMillis();
+        int count = 0;
+        VirtualWiki virtualWiki = (VirtualWiki) iterator.next();
+        FSDirectory directory = FSDirectory.getDirectory(this.getSearchIndexPath(virtualWiki.getName()));
+        KeywordAnalyzer keywordAnalyzer = new KeywordAnalyzer();
+        IndexWriter writer = null;
+        // FIXME - move synchronization to the writer instance for this directory
+        try {
+            writer = new IndexWriter(directory, new StandardAnalyzer(), true);
+            Collection topicNames = WikiBase.getDataHandler().getAllTopicNames(virtualWiki.getName());
+            for (Iterator iter = topicNames.iterator(); iter.hasNext(); ) {
+                String topicName = (String) iter.next();
+                topic = WikiBase.getDataHandler().lookupTopic(virtualWiki.getName(), topicName, false, null);
+                Document standardDocument = createStandardDocument(topic);
+                writer.addDocument(standardDocument);
+                // FIXME - parsing all documents will be intolerably slow with even a
+                // moderately large Wiki
+                ParserOutput parserOutput = ParserUtil.parserOutput(topic.getTopicContent(), virtualWiki.getName(), topicName);
+                Document keywordDocument = createKeywordDocument(topic, parserOutput.getLinks());
+                writer.addDocument(keywordDocument, keywordAnalyzer);
+                count++;
+            }
+        } catch (Exception ex) {
+            logger.severe("Failure while refreshing search index", ex);
+        } finally {
+            try {
+                if (writer != null) {
+                    writer.optimize();
+                }
+            } catch (Exception e) {
+                logger.severe("Exception during optimize", e);
+            }
+            try {
+                if (writer != null) {
+                    writer.close();
+                }
+            } catch (Exception e) {
+                logger.severe("Exception during close", e);
+            }
+        }
+        directory.close();
+        logger.info("Rebuilt search index for " + virtualWiki.getName() + " (" + count + " documents) in " + ((System.currentTimeMillis() - start) / 1000.000) + " seconds");
+    }
+}

@@ -1,0 +1,179 @@
+protected static boolean establishWekaHome() {
+    if (m_wekaHomeEstablished) {
+        return true;
+    }
+    // This is to have some control over the order of certain plugins
+    try {
+        PluginManager.addFromProperties(WekaPackageManager.class.getClassLoader().getResourceAsStream("weka/PluginManager.props"), true);
+    } catch (Exception ex) {
+        log(Logger.Level.WARNING, "[WekaPackageManager] unable to read weka/PluginManager.props");
+    }
+    // look to see if WEKA_HOME has been defined as an environment
+    // variable
+    Environment env = Environment.getSystemWide();
+    String wh = env.getVariableValue("WEKA_HOME");
+    if (wh != null) {
+        WEKA_HOME = new File(wh);
+        PACKAGES_DIR = new File(wh + File.separator + "packages");
+        PROPERTIES_DIR = new File(wh + File.separator + PROPERTIES_DIR_NAME);
+        NATIVE_LIBS_DIR = new File(wh + File.separator + NATIVE_LIBS_DIR_NAME);
+    } else {
+        env.addVariableSystemWide("WEKA_HOME", WEKA_HOME.toString());
+    }
+    String nativePath = System.getProperty("java.library.path", "");
+    if (!nativePath.contains(NATIVE_LIBS_DIR.toString())) {
+        nativePath += File.pathSeparator + NATIVE_LIBS_DIR.toString();
+        System.setProperty("java.library.path", nativePath);
+    }
+    boolean ok = true;
+    if (!WEKA_HOME.exists()) {
+        // create it for the user
+        if (!WEKA_HOME.mkdir()) {
+            System.err.println("Unable to create WEKA_HOME (" + WEKA_HOME.getAbsolutePath() + ")");
+            ok = false;
+        }
+    }
+    if (!PACKAGES_DIR.exists()) {
+        // create the packages dir
+        if (!PACKAGES_DIR.mkdir()) {
+            System.err.println("Unable to create packages directory (" + PACKAGES_DIR.getAbsolutePath() + ")");
+            ok = false;
+        }
+    }
+    if (!NATIVE_LIBS_DIR.exists()) {
+        if (!NATIVE_LIBS_DIR.mkdir()) {
+            System.err.println("Unable to create native libs directory (" + NATIVE_LIBS_DIR.getAbsolutePath() + ")");
+        }
+    }
+    m_wekaHomeEstablished = ok;
+    PACKAGE_MANAGER.setPackageHome(PACKAGES_DIR);
+    m_doNotLoadList = getDoNotLoadList();
+    try {
+        // setup the backup mirror first
+        // establishMirror();
+        // user-supplied repository URL takes precedence over anything else
+        String repURL = env.getVariableValue("weka.core.wekaPackageRepositoryURL");
+        if (repURL == null || repURL.length() == 0) {
+            // See if there is a URL named in
+            // $WEKA_HOME/props/PackageRepository.props
+            File repPropsFile = new File(PROPERTIES_DIR.toString() + File.separator + "PackageRepository.props");
+            if (repPropsFile.exists()) {
+                Properties repProps = new Properties();
+                repProps.load(new FileInputStream(repPropsFile));
+                repURL = repProps.getProperty("weka.core.wekaPackageRepositoryURL");
+            }
+        }
+        if (repURL == null || repURL.length() == 0) {
+            repURL = PRIMARY_REPOSITORY;
+        } else {
+            log(weka.core.logging.Logger.Level.INFO, "[WekaPackageManager] weka.core.WekaPackageRepositoryURL = " + repURL);
+            // System.err.println("[WekaPackageManager]
+            // weka.core.WekaPackageRepositoryURL = "
+            // + repURL);
+            USER_SET_REPO = true;
+        }
+        REP_URL = new URL(repURL);
+        PACKAGE_MANAGER.setPackageRepositoryURL(REP_URL);
+    } catch (MalformedURLException ex) {
+        ex.printStackTrace();
+    } catch (IOException ex) {
+        ex.printStackTrace();
+    }
+    PACKAGE_MANAGER.setBaseSystemName("weka");
+    PACKAGE_MANAGER.setBaseSystemVersion(weka.core.Version.VERSION);
+    // Now check the cache and establish it if necessary
+    File cacheDir = new File(WEKA_HOME.toString() + File.separator + "repCache");
+    try {
+        String tempCacheString = "file://" + cacheDir.toString();
+        // sanitize URI and fix slashes (for Windows)
+        tempCacheString = tempCacheString.replace(" ", "%20");
+        tempCacheString = tempCacheString.replace('\\', '/');
+        if (tempCacheString.startsWith("file://") && !tempCacheString.startsWith("file:///")) {
+            tempCacheString = tempCacheString.substring(7);
+            tempCacheString = "file:///" + tempCacheString;
+        }
+        URI tempURI = new URI(tempCacheString);
+        // System.err.println(" -- " + tempURI.toString());
+        CACHE_URL = tempURI.toURL();
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+    File packagesList = new File(cacheDir.getAbsolutePath() + File.separator + PACKAGE_LIST_FILENAME);
+    if (!cacheDir.exists()) {
+        if (!cacheDir.mkdir()) {
+            System.err.println("Unable to create repository cache directory (" + cacheDir.getAbsolutePath() + ")");
+            log(weka.core.logging.Logger.Level.WARNING, "Unable to create repository cache directory (" + cacheDir.getAbsolutePath() + ")");
+            CACHE_URL = null;
+        } else {
+            // refreshCache();
+            INITIAL_CACHE_BUILD_NEEDED = true;
+        }
+    }
+    if (!packagesList.exists()) {
+        INITIAL_CACHE_BUILD_NEEDED = true;
+    }
+    // Package manager general properties
+    // Set via system props first
+    String offline = env.getVariableValue("weka.packageManager.offline");
+    if (offline != null) {
+        m_offline = offline.equalsIgnoreCase("true");
+    }
+    String loadPackages = env.getVariableValue("weka.packageManager.loadPackages");
+    if (loadPackages == null) {
+        // try legacy
+        loadPackages = env.getVariableValue("weka.core.loadPackages");
+    }
+    if (loadPackages != null) {
+        m_loadPackages = loadPackages.equalsIgnoreCase("true");
+    }
+    // load any general package manager properties from props file
+    File generalProps = new File(PROPERTIES_DIR.toString() + File.separator + PACKAGE_MANAGER_PROPS_FILE_NAME);
+    if (generalProps.exists()) {
+        Properties gProps = new Properties();
+        try {
+            gProps.load(new FileInputStream(generalProps));
+            // this one takes precedence over the legacy one
+            String repURL = gProps.getProperty("weka.core.wekaPackageRepositoryURL");
+            if (repURL != null && repURL.length() > 0) {
+                REP_URL = new URL(repURL);
+                PACKAGE_MANAGER.setPackageRepositoryURL(REP_URL);
+            }
+            offline = gProps.getProperty("weka.packageManager.offline");
+            if (offline != null && offline.length() > 0) {
+                m_offline = offline.equalsIgnoreCase("true");
+            }
+            loadPackages = gProps.getProperty("weka.packageManager.loadPackages");
+            if (loadPackages == null) {
+                // try legacy
+                loadPackages = env.getVariableValue("weka.core.loadPackages");
+            }
+            if (loadPackages != null) {
+                m_loadPackages = loadPackages.equalsIgnoreCase("true");
+            }
+            String pluginManagerDisableList = gProps.getProperty("weka.pluginManager.disable");
+            if (pluginManagerDisableList != null && pluginManagerDisableList.length() > 0) {
+                List<String> disable = new ArrayList<String>();
+                String[] parts = pluginManagerDisableList.split(",");
+                for (String s : parts) {
+                    disable.add(s.trim());
+                }
+                PluginManager.addToDisabledList(disable);
+            }
+        } catch (FileNotFoundException e) {
+            e.printStackTrace();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+    if (INITIAL_CACHE_BUILD_NEEDED && m_offline) {
+        m_noPackageMetaDataAvailable = true;
+    }
+    // Pass a valid http URL to the setProxyAuthentication()
+    // method to ensure that a proxy or direct connection
+    // is configured initially. This will prevent this method from
+    // trying to configure the ProxySelector and proxy
+    // via the file-based CACHE_URL somewhere down the track
+    PACKAGE_MANAGER.setPackageRepositoryURL(REP_URL);
+    PACKAGE_MANAGER.setProxyAuthentication(REP_URL);
+    return ok;
+}

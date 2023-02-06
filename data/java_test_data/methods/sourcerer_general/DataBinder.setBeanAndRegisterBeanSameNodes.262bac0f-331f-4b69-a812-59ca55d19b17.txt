@@ -1,0 +1,119 @@
+void setBeanAndRegisterBeanSameNodes(Component comp, Object val, Binding binding, String path, boolean autoConvert, Object rawval, List loadOnSaveInfos, String triggerEventName) {
+    Object orgVal = null;
+    Object bean = null;
+    BindingNode currentNode = _pathTree;
+    // wether this setting change the reference
+    boolean refChanged = false;
+    String beanid = null;
+    final List nodeids = parseExpression(path, ".");
+    final List nodes = new ArrayList(nodeids.size());
+    final Iterator it = nodeids.iterator();
+    if (it != null && it.hasNext()) {
+        beanid = (String) it.next();
+        currentNode = (BindingNode) currentNode.getKidNode(beanid);
+        if (currentNode == null) {
+            throw new UiException("Cannot find the specified databind bean expression:" + path);
+        }
+        nodes.add(currentNode);
+        bean = lookupBean(comp, beanid);
+    } else {
+        throw new UiException("Incorrect format of databind bean expression:" + path);
+    }
+    if (!it.hasNext()) {
+        // assign back to where bean is stored
+        orgVal = bean;
+        if (Objects.equals(orgVal, val)) {
+            // same value, no need to do anything
+            return;
+        }
+        if (existsBean(beanid)) {
+            setBean(beanid, val);
+        } else if (!setZScriptVariable(comp, beanid, val)) {
+            comp.getSpaceOwner().setAttribute(beanid, val, true);
+        }
+        refChanged = true;
+    } else {
+        if (bean == null) {
+            // no bean to set value, skip
+            return;
+        }
+        // minus first and last beanid in path
+        int sz = nodeids.size() - 2;
+        for (; bean != null && it.hasNext() && sz > 0; --sz) {
+            beanid = (String) it.next();
+            currentNode = (BindingNode) currentNode.getKidNode(beanid);
+            if (currentNode == null) {
+                throw new UiException("Cannot find the specified databind bean expression:" + path);
+            }
+            nodes.add(currentNode);
+            try {
+                bean = Fields.get(bean, beanid);
+            } catch (NoSuchMethodException ex) {
+                // feature#1766905 Binding to Map
+                if (bean instanceof Map) {
+                    bean = ((Map) bean).get(beanid);
+                } else {
+                    throw UiException.Aide.wrap(ex);
+                }
+            }
+        }
+        if (bean == null) {
+            // no bean to set value, skip
+            return;
+        }
+        beanid = (String) it.next();
+        try {
+            orgVal = Fields.get(bean, beanid);
+            if (Objects.equals(orgVal, val)) {
+                // same value, no need to do anything
+                return;
+            }
+            Fields.set(bean, beanid, val, autoConvert);
+        } catch (NoSuchMethodException ex) {
+            // feature#1766905 Binding to Map
+            if (bean instanceof Map) {
+                ((Map) bean).put(beanid, val);
+            } else {
+                throw UiException.Aide.wrap(ex);
+            }
+        } catch (ModificationException ex) {
+            throw UiException.Aide.wrap(ex);
+        }
+        if (!isPrimitive(val) && !isPrimitive(orgVal)) {
+            // val is a bean (null is not primitive)
+            currentNode = (BindingNode) currentNode.getKidNode(beanid);
+            if (currentNode == null) {
+                throw new UiException("Cannot find the specified databind bean expression:" + path);
+            }
+            nodes.add(currentNode);
+            bean = orgVal;
+            refChanged = true;
+        }
+    }
+    if (val != null) {
+        if (refChanged && !binding.isLoadable() && binding.isSavable()) {
+            // the sameNodes should change accordingly.
+            registerBeanNode(val, currentNode);
+        }
+        // select one Listitem, we have to force such association.
+        if (rawval instanceof Component) {
+            Binding varbinding = getBinding((Component) rawval, "_var");
+            if (varbinding != null) {
+                registerBeanNode(val, currentNode);
+                getBeanAndRegisterBeanSameNodes((Component) rawval, varbinding.getExpression());
+            }
+        }
+    }
+    // register "onLoadSave" listener to this component if have not done so.
+    if (!comp.isListenerAvailable("onLoadOnSave", true)) {
+        comp.addEventListener("onLoadOnSave", _listener);
+    }
+    Object[] loadOnSaveInfo = new Object[] { this, currentNode, binding, (refChanged ? val : bean), Boolean.valueOf(refChanged), nodes, comp, triggerEventName };
+    if (loadOnSaveInfos != null) {
+        loadOnSaveInfos.add(loadOnSaveInfo);
+    } else if (isLoadOnSave()) {
+        // feature#2990932, allow disable load-on-save mechanism
+        // do loadOnSave immediately
+        Events.postEvent(new Event("onLoadOnSave", comp, loadOnSaveInfo));
+    }
+}

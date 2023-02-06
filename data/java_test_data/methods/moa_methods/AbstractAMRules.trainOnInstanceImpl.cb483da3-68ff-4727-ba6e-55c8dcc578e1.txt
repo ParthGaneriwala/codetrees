@@ -1,0 +1,82 @@
+@Override
+public void trainOnInstanceImpl(Instance instance) {
+    /**
+     * AMRules Algorithm
+     *
+     * //For each rule in the rule set
+     * //If rule covers the instance
+     * //if the instance is not an anomaly
+     * //Update Change Detection Tests
+     * //Compute prediction error
+     * //Call PHTest
+     * //If change is detected then
+     * //Remove rule
+     * //Else
+     * //Update sufficient statistics of rule
+     * //If number of examples in rule  > Nmin
+     * //Expand rule
+     * //If ordered set then
+     * //break
+     * //If none of the rule covers the instance
+     * //Update sufficient statistics of default rule
+     * //If number of examples in default rule is multiple of Nmin
+     * //Expand default rule and add it to the set of rules
+     * //Reset the default rule
+     */
+    numInstances += instance.weight();
+    debug("Train", 3);
+    debug("Nº instance " + numInstances + " - " + instance.toString(), 3);
+    boolean rulesCoveringInstance = false;
+    Iterator<Rule> ruleIterator = this.ruleSet.iterator();
+    while (ruleIterator.hasNext()) {
+        Rule rule = ruleIterator.next();
+        if (rule.isCovering(instance) == true) {
+            rulesCoveringInstance = true;
+            if (isAnomaly(instance, rule) == false) {
+                // Update Change Detection Tests
+                // Use adaptive mode error
+                double error = rule.computeError(instance);
+                boolean changeDetected = rule.getLearningNode().updateChangeDetection(error);
+                if (changeDetected == true) {
+                    debug("I) Drift Detected. Exa. : " + this.numInstances + " (" + rule.getInstancesSeen() + ") Remove Rule: " + rule.getRuleNumberID(), 1);
+                    ruleIterator.remove();
+                    // Just for statistics
+                    this.numChangesDetected += instance.weight();
+                } else {
+                    rule.updateStatistics(instance);
+                    if (rule.getInstancesSeen() % this.gracePeriodOption.getValue() == 0.0) {
+                        if (rule.tryToExpand(this.splitConfidenceOption.getValue(), this.tieThresholdOption.getValue())) {
+                            rule.split();
+                            debug("Rule Expanded:", 2);
+                            debug(rule.printRule(), 2);
+                        }
+                    }
+                }
+            } else {
+                debug("Anomaly Detected: " + this.numInstances + " Rule: " + rule.getRuleNumberID(), 1);
+                // Just for statistics
+                this.numAnomaliesDetected += instance.weight();
+            }
+            if (!this.unorderedRulesOption.isSet())
+                break;
+        }
+    }
+    if (rulesCoveringInstance == false) {
+        defaultRule.updateStatistics(instance);
+        if (defaultRule.getInstancesSeen() % this.gracePeriodOption.getValue() == 0.0) {
+            debug("Nr. examples " + defaultRule.getInstancesSeen(), 4);
+            if (defaultRule.tryToExpand(this.splitConfidenceOption.getValue(), this.tieThresholdOption.getValue()) == true) {
+                // other branch
+                Rule newDefaultRule = newRule(defaultRule.getRuleNumberID(), defaultRule.getLearningNode(), defaultRule.getLearningNode().getStatisticsOtherBranchSplit());
+                defaultRule.split();
+                defaultRule.setRuleNumberID(++ruleNumberID);
+                this.ruleSet.add(this.defaultRule);
+                debug("Default rule expanded! New Rule:", 2);
+                debug(defaultRule.printRule(), 2);
+                debug("New default rule:", 3);
+                debug(newDefaultRule.printRule(), 3);
+                defaultRule = newDefaultRule;
+            }
+        }
+    }
+}

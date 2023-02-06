@@ -1,0 +1,81 @@
+public BufferedImage filterRenderedImage(RenderedImage src) {
+    // //
+    if (src instanceof BufferedImage)
+        return filter((BufferedImage) src, null);
+    // //
+    // 
+    // Create the destination image
+    // 
+    // //
+    final BufferedImage dest = new BufferedImage(src.getWidth(), src.getHeight(), BufferedImage.TYPE_BYTE_INDEXED, icm);
+    final WritableRaster destWr = dest.getRaster();
+    // //
+    if (src.getNumXTiles() == 1 && src.getNumYTiles() == 1) {
+        final int minTileX = src.getMinTileX();
+        final int minTileY = src.getMinTileY();
+        final Raster sourceR = src.getTile(minTileX, minTileY);
+        rasterOp.filter(sourceR.createChild(src.getMinX(), src.getMinY(), src.getWidth(), src.getHeight(), 0, 0, null), destWr);
+        return dest;
+    }
+    // //
+    // 
+    // Collecting info about the source image
+    // 
+    // //
+    final int numBands = src.getSampleModel().getNumBands();
+    final int[] rgba = new int[numBands];
+    final boolean sourceHasAlpha = (numBands % 2 == 0);
+    final int alphaBand = sourceHasAlpha ? numBands - 1 : -1;
+    final EfficientInverseColorMapComputation invCM = rasterOp.getInvCM();
+    final int minx_ = src.getMinX();
+    final int miny_ = src.getMinY();
+    final int srcW_ = src.getWidth();
+    final int srcH_ = src.getHeight();
+    final int maxx_ = minx_ + srcW_;
+    final int maxy_ = miny_ + srcH_;
+    final int minTileX = src.getMinTileX();
+    final int minTileY = src.getMinTileY();
+    final int tileW = src.getTileWidth();
+    final int tileH = src.getTileHeight();
+    final int maxTileX = minTileX + src.getNumXTiles();
+    final int maxTileY = minTileY + src.getNumYTiles();
+    int xx = 0;
+    int dstTempX = 0;
+    int dstTempY = 0;
+    for (int ty = minTileY; ty < maxTileY; ty++) {
+        dstTempX = 0;
+        int actualWidth = 0;
+        int actualHeight = 0;
+        for (int tx = minTileX; tx < maxTileX; tx++) {
+            xx = 0;
+            // get the source raster
+            final Raster r = src.getTile(tx, ty);
+            int minx = r.getMinX();
+            int miny = r.getMinY();
+            minx = minx < minx_ ? minx_ : minx;
+            miny = miny < miny_ ? miny_ : miny;
+            int maxx = minx + tileW;
+            int maxy = miny + tileH;
+            maxx = maxx > maxx_ ? maxx_ : maxx;
+            maxy = maxy > maxy_ ? maxy_ : maxy;
+            actualWidth = maxx - minx;
+            actualHeight = maxy - miny;
+            for (int j = miny; j < maxy; j++) {
+                for (int i = minx; i < maxx; i++) {
+                    r.getPixel(i, j, rgba);
+                    if (!sourceHasAlpha || !hasAlpha || (sourceHasAlpha && hasAlpha && rgba[alphaBand] >= this.alphaThreshold)) {
+                        int val = invCM.getIndexNearest(rgba[0] & 0xff, rgba[1] & 0xff, rgba[2]);
+                        if (hasAlpha && val >= transparencyIndex)
+                            val++;
+                        destWr.setSample(dstTempX + xx % actualWidth, dstTempY + xx / actualWidth, 0, (byte) (val & 0xff));
+                    } else
+                        destWr.setSample(dstTempX + xx % actualWidth, dstTempY + xx / actualWidth, 0, transparencyIndex);
+                    xx++;
+                }
+            }
+            dstTempX += actualWidth;
+        }
+        dstTempY += actualHeight;
+    }
+    return dest;
+}

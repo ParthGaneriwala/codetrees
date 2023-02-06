@@ -1,0 +1,44 @@
+public void updateReduceOutputPerMap(String jobID, String taskID, int mapId, int[] stat) {
+    Boolean retry = false;
+    int backoff = 1000;
+    String domainName;
+    if (taskID.hashCode() < 0)
+        domainName = dbManagerDomain + (-taskID.hashCode()) % Global.numSDBDomain;
+    else
+        domainName = dbManagerDomain + (taskID.hashCode()) % Global.numSDBDomain;
+    long updateCompletedTime = perf.getStartTime();
+    int size = stat.length > MAXSTATPERROW ? MAXSTATPERROW + 2 : stat.length + 2;
+    ReplaceableAttribute[] attributes = new ReplaceableAttribute[size];
+    int i = 0;
+    do {
+        int start = i;
+        // add jobID attribute to easily identify and delete if needed
+        attributes[0] = new ReplaceableAttribute("jobid", jobID, true);
+        // add who updated the attribute for debugging purpose
+        attributes[1] = new ReplaceableAttribute("writtenby", taskID + "_map" + mapId, true);
+        // SimpleDB limits 256 attributes per item, have to split into multiple rows for large # of Qs
+        for (; i < stat.length && i < start + MAXSTATPERROW; i++) {
+            attributes[i % MAXSTATPERROW + 2] = new ReplaceableAttribute("reduceQ" + i, Integer.toString(stat[i]), true);
+        }
+        // upload to SimpleDB
+        do {
+            // assume success
+            retry = false;
+            try {
+                // row name contains jobID so that multiple jobs could run at the same time without violating the 256 attributes per row limit
+                PutAttributesRequest request = new PutAttributesRequest().withItemName(jobID + "_" + taskID + "_map" + mapId + "_" + Math.round(i / MAXSTATPERROW)).withAttribute(attributes);
+                PutAttributesResponse response = service.putAttributes(request.withDomainName(domainName));
+            } catch (AmazonSimpleDBException ex) {
+                logger.warn("Fail to update completed reduce. Will retry. " + ex.getMessage());
+                // signal need to retry
+                retry = true;
+                try {
+                    Thread.sleep(backoff + (new Random()).nextInt(2000));
+                } catch (Exception ex2) {
+                }
+                backoff *= 2;
+            }
+        } while (retry);
+    } while (i < stat.length);
+    perf.stopTimer("dbUpdateCompletedReduce", updateCompletedTime);
+}

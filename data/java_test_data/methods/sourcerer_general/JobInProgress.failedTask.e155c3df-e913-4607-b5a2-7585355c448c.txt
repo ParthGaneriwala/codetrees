@@ -1,0 +1,114 @@
+private void failedTask(TaskInProgress tip, TaskAttemptID taskid, TaskStatus status, TaskTrackerStatus taskTrackerStatus, boolean wasRunning, boolean wasComplete, JobTrackerInstrumentation metrics) {
+    // check if the TIP is already failed
+    boolean wasFailed = tip.isFailed();
+    // Mark the taskid as FAILED or KILLED
+    tip.incompleteSubTask(taskid, taskTrackerStatus, this.status);
+    boolean isRunning = tip.isRunning();
+    boolean isComplete = tip.isComplete();
+    // update running  count on task failure.
+    if (wasRunning && !isRunning) {
+        if (tip.isCleanupTask()) {
+            launchedCleanup = false;
+        } else if (tip.isSetupTask()) {
+            launchedSetup = false;
+        } else if (tip.isMapTask()) {
+            runningMapTasks -= 1;
+            // if the tip is not complete i.e if the tip still needs to be run
+            if (!isComplete) {
+                retireMap(tip);
+                failMap(tip);
+            }
+        } else {
+            runningReduceTasks -= 1;
+            // is not complete
+            if (!isComplete) {
+                retireReduce(tip);
+                failReduce(tip);
+            }
+        }
+    }
+    // the case when the map was complete but the task tracker went down.
+    if (wasComplete && !isComplete) {
+        if (tip.isMapTask()) {
+            // Put the task back in the cache. This will help locality for cases
+            // where we have a different TaskTracker from the same rack/switch
+            // asking for a task.
+            // We bother about only those TIPs that were successful
+            // earlier (wasComplete and !isComplete)
+            // (since they might have been removed from the cache of other
+            // racks/switches, if the input split blocks were present there too)
+            failMap(tip);
+            finishedMapTasks -= 1;
+        }
+    }
+    // update job history
+    String taskTrackerName = taskTrackerStatus.getHost();
+    long finishTime = status.getFinishTime();
+    String taskType = tip.isCleanupTask() ? Values.CLEANUP.name() : tip.isSetupTask() ? Values.SETUP.name() : tip.isMapTask() ? Values.MAP.name() : Values.REDUCE.name();
+    if (status.getIsMap()) {
+        JobHistory.MapAttempt.logStarted(status.getTaskID(), status.getStartTime(), status.getTaskTracker(), taskTrackerStatus.getHttpPort(), taskType);
+        if (status.getRunState() == TaskStatus.State.FAILED) {
+            JobHistory.MapAttempt.logFailed(status.getTaskID(), finishTime, taskTrackerName, status.getDiagnosticInfo(), taskType);
+        } else {
+            JobHistory.MapAttempt.logKilled(status.getTaskID(), finishTime, taskTrackerName, status.getDiagnosticInfo(), taskType);
+        }
+    } else {
+        JobHistory.ReduceAttempt.logStarted(status.getTaskID(), status.getStartTime(), status.getTaskTracker(), taskTrackerStatus.getHttpPort(), taskType);
+        if (status.getRunState() == TaskStatus.State.FAILED) {
+            JobHistory.ReduceAttempt.logFailed(status.getTaskID(), finishTime, taskTrackerName, status.getDiagnosticInfo(), taskType);
+        } else {
+            JobHistory.ReduceAttempt.logKilled(status.getTaskID(), finishTime, taskTrackerName, status.getDiagnosticInfo(), taskType);
+        }
+    }
+    // the failed task goes to the end of the list.
+    if (!tip.isCleanupTask() && !tip.isSetupTask()) {
+        if (tip.isMapTask()) {
+            failedMapTasks++;
+        } else {
+            failedReduceTasks++;
+        }
+    }
+    // 
+    if (status.getRunState() == TaskStatus.State.FAILED) {
+        addTrackerTaskFailure(taskTrackerStatus.getTrackerName());
+    }
+    // 
+    // Let the JobTracker know that this task has failed
+    // 
+    jobtracker.markCompletedTaskAttempt(status.getTaskTracker(), taskid);
+    // We do it once per TIP and that too for the task that fails the TIP
+    if (!wasFailed && tip.isFailed()) {
+        // 
+        // Allow upto 'mapFailuresPercent' of map tasks to fail or
+        // 'reduceFailuresPercent' of reduce tasks to fail
+        // 
+        boolean killJob = tip.isCleanupTask() || tip.isSetupTask() ? true : tip.isMapTask() ? ((++failedMapTIPs * 100) > (mapFailuresPercent * numMapTasks)) : ((++failedReduceTIPs * 100) > (reduceFailuresPercent * numReduceTasks));
+        if (killJob) {
+            LOG.info("Aborting job " + profile.getJobID());
+            JobHistory.Task.logFailed(tip.getTIPId(), taskType, status.getFinishTime(), status.getDiagnosticInfo());
+            if (tip.isCleanupTask()) {
+                // kill the other tip
+                if (tip.isMapTask()) {
+                    cleanup[1].kill();
+                } else {
+                    cleanup[0].kill();
+                }
+                terminateJob(JobStatus.FAILED);
+            } else {
+                if (tip.isSetupTask()) {
+                    // kill the other tip
+                    killSetupTip(!tip.isMapTask());
+                }
+                fail();
+            }
+        }
+        // 
+        if (!tip.isCleanupTask() && !tip.isSetupTask()) {
+            if (tip.isMapTask()) {
+                jobCounters.incrCounter(Counter.NUM_FAILED_MAPS, 1);
+            } else {
+                jobCounters.incrCounter(Counter.NUM_FAILED_REDUCES, 1);
+            }
+        }
+    }
+}

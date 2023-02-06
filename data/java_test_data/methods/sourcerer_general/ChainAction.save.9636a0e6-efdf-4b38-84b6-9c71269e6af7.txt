@@ -1,0 +1,84 @@
+public ActionForward save(ActionMapping mapping, ActionForm form, HttpServletRequest request, HttpServletResponse response) throws Exception {
+    boolean isNewChain = true;
+    if (log.isDebugEnabled()) {
+        log.debug("Entering 'save' method");
+    }
+    ActionMessages errors = form.validate(mapping, request);
+    if (!errors.isEmpty()) {
+        saveErrors(request, errors);
+        return mapping.findForward("failure");
+    }
+    // Extract attributes and parameters we will need
+    ActionMessages messages = new ActionMessages();
+    ChainForm chainForm = (ChainForm) form;
+    if (!StringUtils.isEmpty(chainForm.getChainId())) {
+        isNewChain = false;
+    }
+    Chain chain = new Chain();
+    // Exceptions are caught by ActionExceptionHandler
+    // all we need to persist is the parent object
+    BeanUtils.copyProperties(chain, chainForm);
+    ChainManager mgr = (ChainManager) getBean("chainManager");
+    ChainFlowManager flowMgr = (ChainFlowManager) getBean("chainFlowManager");
+    chain.initAudit(this.getLoginUser());
+    try {
+        if (isNewChain) {
+            Chain c = mgr.getChainByName(chainForm.getName());
+            if (c != null) {
+                errors.add(ActionMessages.GLOBAL_MESSAGE, new ActionMessage("errors.existing.chain", chainForm.getName()));
+                saveErrors(request, errors);
+                updateFormBean(mapping, request, chainForm);
+                return mapping.findForward("failure");
+            }
+            mgr.saveChain(chain);
+        } else {
+            Chain c = mgr.getChain(Long.toString(chain.getChainId()));
+            // mgr.getChainByName(chain.getName());
+            if (c.getName().equals(chain.getName())) {
+                c.setDescription(chainForm.getDescription());
+                mgr.saveChain(c);
+            } else {
+                Chain ctemp = mgr.getChainByName(chain.getName());
+                if (ctemp != null) {
+                    errors.add(ActionMessages.GLOBAL_MESSAGE, new ActionMessage("errors.existing.chain", chainForm.getName()));
+                    saveErrors(request, errors);
+                    updateFormBean(mapping, request, chainForm);
+                    return mapping.findForward("failure");
+                } else {
+                    c.setName(chain.getName());
+                    c.setDescription(chain.getDescription());
+                    mgr.saveChain(c);
+                }
+            }
+        }
+        if (isNewChain) {
+            ChainFlow flow = getStartFlow(chain);
+            flow.initAudit(this.getLoginUser());
+            flowMgr.saveChainFlow(flow);
+        }
+    } catch (Exception e) {
+        log.warn(e.getMessage());
+        errors.add(ActionMessages.GLOBAL_MESSAGE, new ActionMessage("errors.chain.save", e.getMessage()));
+        saveErrors(request, errors);
+        // BeanUtils.copyProperties(chainForm, convert(chain));
+        updateFormBean(mapping, request, chainForm);
+        return mapping.findForward("failure");
+    }
+    BeanUtils.copyProperties(chainForm, convert(chain));
+    updateFormBean(mapping, request, chainForm);
+    if (!StringUtils.equals(request.getParameter("from"), "list")) {
+        // add success messages
+        messages.add(ActionMessages.GLOBAL_MESSAGE, new ActionMessage("chain.saved"));
+        saveMessages(request.getSession(), messages);
+    } else {
+        // add success messages
+        if (isNewChain) {
+            messages.add(ActionMessages.GLOBAL_MESSAGE, new ActionMessage("chain.added", chain.getName()));
+            saveMessages(request.getSession(), messages);
+        } else {
+            messages.add(ActionMessages.GLOBAL_MESSAGE, new ActionMessage("chain.updated", chain.getName()));
+            saveMessages(request, messages);
+        }
+    }
+    return mapping.findForward("success");
+}

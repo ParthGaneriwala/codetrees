@@ -1,0 +1,89 @@
+StatementSchema compileCreateProcedureOrFunction() {
+    int routineType;
+    boolean isAggregate = false;
+    if (token.tokenType == Tokens.AGGREGATE) {
+        isAggregate = true;
+        read();
+        if (token.tokenType == Tokens.PROCEDURE) {
+            throw super.unexpectedToken();
+        }
+    }
+    routineType = token.tokenType == Tokens.PROCEDURE ? SchemaObject.PROCEDURE : SchemaObject.FUNCTION;
+    HsqlName name;
+    read();
+    name = readNewSchemaObjectName(routineType, false);
+    Routine routine = new Routine(routineType);
+    routine.setName(name);
+    routine.setAggregate(isAggregate);
+    readThis(Tokens.OPENBRACKET);
+    if (token.tokenType == Tokens.CLOSEBRACKET) {
+        read();
+    } else {
+        while (true) {
+            ColumnSchema newcolumn = readRoutineParameter(routine, true);
+            routine.addParameter(newcolumn);
+            if (token.tokenType == Tokens.COMMA) {
+                read();
+            } else {
+                readThis(Tokens.CLOSEBRACKET);
+                break;
+            }
+        }
+    }
+    if (routineType != SchemaObject.PROCEDURE) {
+        readThis(Tokens.RETURNS);
+        if (token.tokenType == Tokens.TABLE) {
+            read();
+            TableDerived table = new TableDerived(database, name, TableBase.FUNCTION_TABLE);
+            readThis(Tokens.OPENBRACKET);
+            for (int i = 0; ; i++) {
+                ColumnSchema newcolumn = readRoutineParameter(routine, false);
+                if (newcolumn.getName() == null) {
+                    throw super.unexpectedToken();
+                }
+                table.addColumn(newcolumn);
+                if (token.tokenType == Tokens.COMMA) {
+                    read();
+                } else {
+                    readThis(Tokens.CLOSEBRACKET);
+                    break;
+                }
+            }
+            table.createPrimaryKey();
+            routine.setReturnTable(table);
+        } else {
+            Type type = readTypeDefinition(true);
+            routine.setReturnType(type);
+        }
+    }
+    readRoutineCharacteristics(routine);
+    if (token.tokenType == Tokens.EXTERNAL) {
+        if (routine.getLanguage() != Routine.LANGUAGE_JAVA) {
+            throw unexpectedToken();
+        }
+        read();
+        readThis(Tokens.NAME);
+        checkIsValue(Types.SQL_CHAR);
+        routine.setMethodURL((String) token.tokenValue);
+        read();
+        if (token.tokenType == Tokens.PARAMETER) {
+            read();
+            readThis(Tokens.STYLE);
+            readThis(Tokens.JAVA);
+        }
+    } else {
+        startRecording();
+        Statement statement = compileSQLProcedureStatementOrNull(routine, null);
+        if (statement == null) {
+            throw unexpectedToken();
+        }
+        Token[] tokenisedStatement = getRecordedStatement();
+        String sql = Token.getSQL(tokenisedStatement);
+        statement.setSQL(sql);
+        routine.setProcedure(statement);
+    }
+    Object[] args = new Object[] { routine };
+    String sql = getLastPart();
+    StatementSchema cs = new StatementSchema(sql, StatementTypes.CREATE_ROUTINE, args);
+    return cs;
+}

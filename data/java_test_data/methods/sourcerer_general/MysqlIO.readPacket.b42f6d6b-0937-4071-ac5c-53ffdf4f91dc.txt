@@ -1,0 +1,64 @@
+protected final Buffer readPacket() throws SQLException {
+    try {
+        int lengthRead = readFully(this.mysqlInput, this.packetHeaderBuf, 0, 4);
+        if (lengthRead < 4) {
+            forceClose();
+            // $NON-NLS-1$
+            throw new IOException(Messages.getString("MysqlIO.1"));
+        }
+        int packetLength = (this.packetHeaderBuf[0] & 0xff) + ((this.packetHeaderBuf[1] & 0xff) << 8) + ((this.packetHeaderBuf[2] & 0xff) << 16);
+        if (packetLength > this.maxAllowedPacket) {
+            throw new PacketTooBigException(packetLength, this.maxAllowedPacket);
+        }
+        if (this.traceProtocol) {
+            StringBuffer traceMessageBuf = new StringBuffer();
+            // $NON-NLS-1$
+            traceMessageBuf.append(Messages.getString("MysqlIO.2"));
+            traceMessageBuf.append(packetLength);
+            // $NON-NLS-1$
+            traceMessageBuf.append(Messages.getString("MysqlIO.3"));
+            traceMessageBuf.append(StringUtils.dumpAsHex(this.packetHeaderBuf, 4));
+            this.connection.getLog().logTrace(traceMessageBuf.toString());
+        }
+        byte multiPacketSeq = this.packetHeaderBuf[3];
+        if (!this.packetSequenceReset) {
+            if (this.enablePacketDebug && this.checkPacketSequence) {
+                checkPacketSequencing(multiPacketSeq);
+            }
+        } else {
+            this.packetSequenceReset = false;
+        }
+        this.readPacketSequence = multiPacketSeq;
+        // Read data
+        byte[] buffer = new byte[packetLength + 1];
+        int numBytesRead = readFully(this.mysqlInput, buffer, 0, packetLength);
+        if (numBytesRead != packetLength) {
+            throw new IOException("Short read, expected " + packetLength + " bytes, only read " + numBytesRead);
+        }
+        buffer[packetLength] = 0;
+        Buffer packet = new Buffer(buffer);
+        packet.setBufLength(packetLength + 1);
+        if (this.traceProtocol) {
+            StringBuffer traceMessageBuf = new StringBuffer();
+            // $NON-NLS-1$
+            traceMessageBuf.append(Messages.getString("MysqlIO.4"));
+            traceMessageBuf.append(getPacketDumpToLog(packet, packetLength));
+            this.connection.getLog().logTrace(traceMessageBuf.toString());
+        }
+        if (this.enablePacketDebug) {
+            enqueuePacketForDebugging(false, false, 0, this.packetHeaderBuf, packet);
+        }
+        if (this.connection.getMaintainTimeStats()) {
+            this.lastPacketReceivedTimeMs = System.currentTimeMillis();
+        }
+        return packet;
+    } catch (IOException ioEx) {
+        throw SQLError.createCommunicationsException(this.connection, this.lastPacketSentTimeMs, this.lastPacketReceivedTimeMs, ioEx, getExceptionInterceptor());
+    } catch (OutOfMemoryError oom) {
+        try {
+            this.connection.realClose(false, false, true, oom);
+        } finally {
+            throw oom;
+        }
+    }
+}

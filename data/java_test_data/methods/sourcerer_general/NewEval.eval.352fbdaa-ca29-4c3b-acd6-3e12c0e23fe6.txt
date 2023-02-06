@@ -1,0 +1,150 @@
+public int eval(Board b, int alpha, int beta) {
+    int nwPieces = BitUtils.countBits(b.white);
+    int nbPieces = BitUtils.countBits(b.black);
+    int nwKings = BitUtils.countBits(b.white & b.kings);
+    int nbKings = BitUtils.countBits(b.black & b.kings);
+    int empty = ~(b.black | b.white);
+    // ********* Material ********
+    // Strength in numbers?
+    int eval = MEN * (nwPieces - nbPieces);
+    eval += KINGS * (nwKings - nbKings);
+    // Advantage of having one or more kings when opponent doesn't
+    if (nbKings == 0 && nwKings > 0)
+        eval += BONUS;
+    else if (nwKings == 0 && nbKings > 0)
+        eval -= BONUS;
+    // Lazy evaluation goes here!! Requires values for alpha beta
+    if (eval + LAZY_EVAL < alpha)
+        return eval;
+    if (eval - LAZY_EVAL > beta)
+        return eval;
+    // ******** Positional *******
+    int wKings = b.white & b.kings;
+    int bKings = b.black & b.kings;
+    int wPawns = b.white ^ wKings;
+    int bPawns = b.black ^ bKings;
+    // Opening/early midgame should be first 4-10 moves, so
+    // number of pieces should be around 16-20, here it is 16
+    // Endgame = 8 or less pieces
+    // notEndgame is 1 there are more than 8 pieces
+    // Since there is at most 24 pieces, totalpieces+7 is at most 31. If we
+    // divide this by 16 notEndGame is 1 if totalPieces > 8
+    int totalPieces = nwPieces + nbPieces;
+    int opening = totalPieces >>> 4;
+    int notEndgame = (totalPieces + 7) >>> 4;
+    // CENTRAL CONTROL
+    eval += (BitUtils.countBits(b.white & CENTER) - BitUtils.countBits(b.black & CENTER)) * CENTRALCONTROL;
+    // Extra for DYKES in beginning (14w 19b) /threatens double corners
+    eval += opening * (((wPawns & 0x00002000) >>> 13) - ((bPawns & 0x00040000) >>> 18)) * DYKE;
+    // BACK ROW important in opening/midgame, should be
+    // adjusted so that double corner & square to the right of single
+    // corner are worth a bit more. Right now, the double corner
+    // is worth waaaaay more than the single on...
+    // 
+    // OK redid this so there are no ifs...
+    // 
+    // if(white has more than 4 pieces)
+    eval += notEndgame * WHITE_BACKROW[((wPawns & BACKROW_WHITE) >>> 29)];
+    // if(det fortfarande är viktigt för svart)
+    eval -= notEndgame * BLACK_BACKROW[((bPawns & BACKROW_BLACK))];
+    // Passive pieces protecting/attacking double corners.
+    eval += opening * A_LINES * (BitUtils.countBits(DD & b.white) - BitUtils.countBits(DD & b.black));
+    // ******* Mobility *******
+    // 
+    // TRAPPED KING (is no good)
+    // 
+    // Not sure about checking for endgame, but might speed it up...
+    // One should still reward mobile kings though...
+    int mobileBlackKings = nbKings;
+    int mobileWhiteKings = nwKings;
+    if (bKings != 0) {
+        // Single corner king, looks better if there is a piece in 21
+        if ((bKings & 0x10000000) != 0 && (b.white & 0x20000000) != 0) {
+            // Black king trapped, good for white
+            eval += TRAPPEDKING - (NOTTHATBAD * ((~empty & 0x00100000) >>> 20));
+            --mobileBlackKings;
+        }
+        // Single corner king on its way out, still not good
+        if ((bKings & 0x01000000) != 0) {
+            eval += ((~empty & 0x00100000) >>> 20) * ((b.white & 0x20000000) >>> 29) * HALFTRAPPEDKING;
+            --mobileBlackKings;
+        }
+        // Kings on other backrow squares
+        if ((bKings & 0x20000000) != 0 && ((b.white & 0x50000000) & (empty & 0x00200000)) > 0x00200000) {
+            eval += HALFTRAPPEDKING;
+            --mobileBlackKings;
+        }
+        if ((bKings & 0x40000000) != 0 && ((b.white & 0xA0000000) & (empty & 0x00400000)) > 0x00400000) {
+            eval += HALFTRAPPEDKING;
+            --mobileBlackKings;
+        }
+        // Trapped double corner king
+        if ((bKings & 0x80000000) != 0 && ((b.white & 0x48000000) & (empty & 0x00800000)) > 0x00800000) {
+            eval += HALFTRAPPEDKING;
+            --mobileBlackKings;
+        }
+    }
+    if (wKings != 0) {
+        // Single corner king, looks better if there is a piece in 12
+        if ((wKings & 0x0000008) != 0 && (b.black & 0x00000004) != 0) {
+            // White king trapped, good for black
+            eval -= TRAPPEDKING - (NOTTHATBAD * ((~empty & 0x00000800) >>> 11));
+            --mobileWhiteKings;
+        }
+        // Single corner king on its way out, still not good
+        if ((wKings & 0x00000080) != 0) {
+            eval -= ((~empty & 0x00000800) >>> 11) * ((b.black & 0x00000004) >>> 2) * HALFTRAPPEDKING;
+            --mobileWhiteKings;
+        }
+        // Kings on other backrow squares
+        if ((wKings & 0x00000004) != 0 && ((b.black & 0x0000000A) & (empty & 0x00000400)) > 0x00000400) {
+            eval -= HALFTRAPPEDKING;
+            --mobileWhiteKings;
+        }
+        if ((wKings & 0x00000002) != 0 && ((b.black & 0x00000005) & (empty & 0x00000200)) > 0x00000200) {
+            eval -= HALFTRAPPEDKING;
+            --mobileWhiteKings;
+        }
+        // Trapped double corner king
+        if ((wKings & 0x00000001) != 0 && ((b.black & 0x00000012) & (empty & 0x00000100)) > 0x00000100) {
+            eval -= HALFTRAPPEDKING;
+            --mobileWhiteKings;
+        }
+    }
+    // REWARD MOBILE KINGS
+    eval += MOBILE_KING * (mobileWhiteKings - mobileBlackKings);
+    // Dogholes & Dusthole - NB: Black in the hole is good for white &
+    // white in the hole is good for black, hence blackHole-whiteHole!
+    // 
+    // DOGHOLES (5w 28b)
+    int blackHole = (((bPawns & 0x08000000) >>> 27) & ((b.white & 0x80000000) >>> 31));
+    int whiteHole = (((wPawns & 0x00000010) >>> 4) & (b.black & 0x00000001));
+    eval += (blackHole - whiteHole) * DOGHOLE;
+    // DUSTHOLES(12w 21b)
+    blackHole = 1 & (bPawns >>> 20) & (((b.white & 0x30000000) + 0x30000000) >>> 30);
+    whiteHole = 1 & (wPawns >>> 11) & (((b.black & 0x0000000C) + 0x0000000C) >>> 4);
+    eval += (blackHole - whiteHole) * DUSTHOLE;
+    // /******** Other *******
+    eval += (b.blackToMove ? -TURN : TURN);
+    // RUNAWAYS
+    // Checks 2 rows from king
+    // Value is KINGS-turns to get there x 2 (2)*TURN*2=>38
+    // 
+    // White
+    int threatenedSquares = ((b.black & 0x0000000E) << 4) & (empty >>> 3);
+    int runawaysL = ((wPawns & 0x00000F00) >>> 4) & (empty & ~threatenedSquares);
+    threatenedSquares = ((b.black & 0x00000007) << 5) & (empty >>> 4);
+    int runawaysR = ((wPawns & 0x00000700) >>> 3) & (empty & ~threatenedSquares);
+    int oneStep = (wPawns & 0x000000F0 & (empty << 4)) | (wPawns & 0x000000E0 & (empty << 5));
+    eval += (RUNAWAYS - (TURN * 2)) * BitUtils.countBits(oneStep | runawaysL | runawaysR);
+    eval -= (TURN * 2) * BitUtils.countBits(~oneStep & (runawaysL | runawaysR));
+    // Black
+    threatenedSquares = ((b.white & 0xE0000000) >>> 5) & (empty << 4);
+    runawaysL = ((bPawns & 0x00E00000) << 3) & (empty & ~threatenedSquares);
+    threatenedSquares = ((b.white & 0x70000000) >>> 4) & (empty << 3);
+    runawaysR = ((bPawns & 0x00F00000) << 4) & (empty & ~threatenedSquares);
+    oneStep = (bPawns & 0x0F000000 & (empty >>> 4)) | (bPawns & 0x07000000 & (empty >>> 5));
+    eval -= (RUNAWAYS - (TURN * 2)) * BitUtils.countBits(oneStep | runawaysL | runawaysR);
+    eval += (TURN * 2) * BitUtils.countBits(~oneStep & (runawaysL | runawaysR));
+    return eval;
+}

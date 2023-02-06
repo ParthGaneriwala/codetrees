@@ -1,0 +1,93 @@
+public Instances applyCostMatrix(Instances data, Random random) throws Exception {
+    double sumOfWeightFactors = 0, sumOfMissClassWeights, sumOfWeights;
+    double[] weightOfInstancesInClass, weightFactor, weightOfInstances;
+    if (data.classIndex() < 0) {
+        throw new Exception("Class index is not set!");
+    }
+    if (size() != data.numClasses()) {
+        throw new Exception("Misclassification cost matrix has wrong format!");
+    }
+    // are there any non-fixed, per-instance costs defined in the matrix?
+    if (replaceStrings(data)) {
+        // could reweight in the two class case
+        if (data.classAttribute().numValues() > 2) {
+            throw new Exception("Can't resample/reweight instances using " + "non-fixed cost values when there are more " + "than two classes!");
+        } else {
+            // Store new weights
+            weightOfInstances = new double[data.numInstances()];
+            for (int i = 0; i < data.numInstances(); i++) {
+                Instance inst = data.instance(i);
+                int classValIndex = (int) inst.classValue();
+                double factor = 1.0;
+                Object element = (classValIndex == 0) ? getCell(classValIndex, 1) : getCell(classValIndex, 0);
+                if (element instanceof Double) {
+                    factor = ((Double) element).doubleValue();
+                } else {
+                    factor = ((InstanceExpression) element).evaluate(inst);
+                }
+                weightOfInstances[i] = inst.weight() * factor;
+            /*
+           * System.err.println("Multiplying " +
+           * inst.classAttribute().value((int)inst.classValue()) +" by factor "
+           * + factor);
+           */
+            }
+            // Change instances weight or do resampling
+            if (random != null) {
+                return data.resampleWithWeights(random, weightOfInstances);
+            } else {
+                Instances instances = new Instances(data);
+                for (int i = 0; i < data.numInstances(); i++) {
+                    instances.instance(i).setWeight(weightOfInstances[i]);
+                }
+                return instances;
+            }
+        }
+    }
+    weightFactor = new double[data.numClasses()];
+    weightOfInstancesInClass = new double[data.numClasses()];
+    for (int j = 0; j < data.numInstances(); j++) {
+        weightOfInstancesInClass[(int) data.instance(j).classValue()] += data.instance(j).weight();
+    }
+    sumOfWeights = Utils.sum(weightOfInstancesInClass);
+    // normalize the matrix if not already
+    for (int i = 0; i < m_size; i++) {
+        if (!Utils.eq(((Double) getCell(i, i)).doubleValue(), 0)) {
+            CostMatrix normMatrix = new CostMatrix(this);
+            normMatrix.normalize();
+            return normMatrix.applyCostMatrix(data, random);
+        }
+    }
+    for (int i = 0; i < data.numClasses(); i++) {
+        // Using Kai Ming Ting's formula for deriving weights for
+        // the classes and Breiman's heuristic for multiclass
+        // problems.
+        sumOfMissClassWeights = 0;
+        for (int j = 0; j < data.numClasses(); j++) {
+            if (Utils.sm(((Double) getCell(i, j)).doubleValue(), 0)) {
+                throw new Exception("Neg. weights in misclassification " + "cost matrix!");
+            }
+            sumOfMissClassWeights += ((Double) getCell(i, j)).doubleValue();
+        }
+        weightFactor[i] = sumOfMissClassWeights * sumOfWeights;
+        sumOfWeightFactors += sumOfMissClassWeights * weightOfInstancesInClass[i];
+    }
+    for (int i = 0; i < data.numClasses(); i++) {
+        weightFactor[i] /= sumOfWeightFactors;
+    }
+    // Store new weights
+    weightOfInstances = new double[data.numInstances()];
+    for (int i = 0; i < data.numInstances(); i++) {
+        weightOfInstances[i] = data.instance(i).weight() * weightFactor[(int) data.instance(i).classValue()];
+    }
+    // Change instances weight or do resampling
+    if (random != null) {
+        return data.resampleWithWeights(random, weightOfInstances);
+    } else {
+        Instances instances = new Instances(data);
+        for (int i = 0; i < data.numInstances(); i++) {
+            instances.instance(i).setWeight(weightOfInstances[i]);
+        }
+        return instances;
+    }
+}

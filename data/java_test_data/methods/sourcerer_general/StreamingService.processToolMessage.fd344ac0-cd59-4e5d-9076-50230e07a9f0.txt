@@ -1,0 +1,92 @@
+/**
+ * Processes an incoming message.
+ * @param m  LEADMessage
+ * @return
+ */
+public boolean processToolMessage(LEADMessage m) {
+    streamingComposite = (StreamingComposite) getPanel();
+    if (getPanel() == null && !isPrivate())
+        return false;
+    if ((m.getContent() instanceof GroupPresenceMessage)) {
+        /* Replies to the client the same 'GroupPresenceMessage'... */
+        GroupPresenceMessage gpmsg = (GroupPresenceMessage) m.getContent();
+        if (gpmsg.getEvent().compareTo(GroupPresenceMessage.ENTRY) == 0) {
+            /* Adds the new connected Client with (FALSE value) ==> 
+				 * the client waits to receive the correct first cmdID message, that is
+				 * contained in the following GroupPresenceMessage Reply... */
+            connectedClients.put(gpmsg.getUsername(), new Boolean(false));
+            // XXX
+            streamingComposite.updateMediaSourceComboItems();
+            String firstCmdID = (new Long(lastCmdID.longValue() + 1)).toString();
+            String idVal = new String(gpmsg.getId());
+            String userVal = new String(gpmsg.getUsername());
+            System.out.println("\n VALORI GPM: \n" + "\nID:" + idVal + "\n USERVAL:" + userVal + "\n\n");
+            GroupPresenceMessage gpmsgReply = new GroupPresenceMessage(idVal, userVal, firstCmdID);
+            final LEADMessage msg = new LEADMessage(this, (LEADServer.getInstance().getIdentifier()), gpmsgReply);
+            msg.setBroadcast(!isPrivate());
+            try {
+                getMessageSender().sendMessage(msg);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            if (streamingComposite.getToggleSharedSeeking().isChecked()) {
+                // $NON-NLS-1$
+                streamingController.flashPlayer.CallFunction("ToggleSharedSeeking");
+                streamingComposite.getToggleSharedSeeking().setChecked(false);
+            }
+            streamingComposite.toolStatusBar.showProgressMsg("Synchronizing Streamings...");
+            String curPosition = streamingController.flashPlayer.getCurrentPosition();
+            StreamingControlMessage initMsg = new StreamingControlMessage((streamingController.getLastStartStrmngCntrlMsg()));
+            initMsg.setUsername(ConstantsUtils.TEACHER);
+            initMsg.setCmdID(firstCmdID);
+            if (initMsg.getProtocol().startsWith("http"))
+                initMsg.setPosition("0");
+            else
+                initMsg.setPosition(curPosition);
+            initMsg.setStreamStatus(streamingController.flashPlayer.getNetStreamStatus());
+            try {
+                sendStreamingControlMessage(initMsg);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            System.out.println("\n *************** New Client Connected & Replied: \n " + gpmsgReply + "\n\n");
+            System.out.flush();
+            return true;
+        } else if (gpmsg.getEvent().compareTo(GroupPresenceMessage.EXIT) == 0) {
+            // Updates 'connectedClients' list, removing the clients entry...
+            Boolean res = connectedClients.remove(gpmsg.getUsername());
+            System.out.println("\n\n <<<<<<<<<<<<<< Client DISCONNECTED: " + res + " >>>>>>>>>>>>>> \n\n ");
+            System.out.println("\n $$$$$$$$$$$$$$ Connected CLIENTs : \n" + connectedClients + "\n\n");
+            System.out.flush();
+            return true;
+        }
+    }
+    if (m.getContent() instanceof StreamingControlMessage) {
+        StreamingControlMessage message = (StreamingControlMessage) m.getContent();
+        // Debug line...
+        System.out.println("\n=======> ProcessToolMessage: \n" + message);
+        System.out.flush();
+        int clientsCount = LEADServer.getInstance().getPresenceManager().getNumberOfConnectedClients();
+        if (((message.getUsername().compareTo(ConstantsUtils.TEACHER)) != 0))
+            clientsReplyCount += 1;
+        long msgCmdID = Long.parseLong(message.getCmdID());
+        boolean isPerformed = true;
+        if (PerformedCmdID.containsKey(msgCmdID))
+            isPerformed = (PerformedCmdID.get(msgCmdID).booleanValue());
+        else if (msgCmdID >= lastCmdID.longValue())
+            isPerformed = false;
+        System.out.println("\n LAST CMD ID= " + lastCmdID.longValue() + "\n");
+        System.out.flush();
+        boolean cond1 = ((((clientsReplyCount == clientsCount) && (!isPerformed)) || (clientsCount == 0) || (isSessionReloading) || (isReplayer)) && (msgCmdID >= lastCmdID.longValue()));
+        boolean cond2 = (((message.getStreamingCmd().compareTo("InitFlashPlayer") == 0) || (message.getStreamingCmd().compareTo("InitStudentBroadcast") == 0)) && (message.getUsername().compareTo(clientBroadCaster) == 0) && (msgCmdID >= lastCmdID.longValue()));
+        if (cond1 || cond2) {
+            streamingController.execControlMessage(message);
+            return true;
+        } else {
+            System.out.println("\n Streaming Control Msg DROPPED:\n LastCmdId: " + lastCmdID + " e isPERFORMEDlist: \n" + PerformedCmdID + " \n\n Dropped Msg: " + message + "*********************** \n");
+            System.out.flush();
+            return false;
+        }
+    }
+    return false;
+}

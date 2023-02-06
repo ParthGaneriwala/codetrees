@@ -1,0 +1,113 @@
+public T parse() throws Exception {
+    // read in the tokens
+    int token;
+    int lastToken = OperatorStreamTokenizer.TT_NOTHING;
+    while ((token = _strtok.nextToken()) != StreamTokenizer.TT_EOF) {
+        switch(token) {
+            case StreamTokenizer.TT_NUMBER:
+                handle(_strtok.nval);
+                break;
+            case '\'':
+            case '\"':
+                handle(_strtok.sval);
+                break;
+            case StreamTokenizer.TT_WORD:
+                // function calls are followed by a left parenthesis;
+                // array indices by a left bracket
+                String sval = _strtok.sval;
+                int ntoken = _strtok.nextToken();
+                _strtok.pushBack();
+                if (ntoken == '(') {
+                    _operation.push(new FunctionCall(sval));
+                } else if (ntoken == '[') {
+                    _operation.push(new ArrayIndex(sval));
+                } else {
+                    handle(new Identifier(sval));
+                }
+                break;
+            case ',':
+                try {
+                    while (!_operation.peek().equals('(')) {
+                        handle(_operation.pop());
+                    }
+                } catch (EmptyStackException e) {
+                    throw new Exception("Misplaced separator or mismatched parentheses.");
+                }
+                // increment the function's arity
+                int size = _operation.size();
+                Object fn = (size < 2) ? null : _operation.get(size - 2);
+                if (!(fn instanceof FunctionCall)) {
+                    throw new Exception("Misplaced separator.");
+                }
+                ((FunctionCall) fn).arity++;
+                break;
+            case OperatorStreamTokenizer.TT_OPERATOR:
+                Operator op = OPERATORS.get(_strtok.sval);
+                if (op == null) {
+                    throw new Exception("Invalid operator " + _strtok.sval);
+                }
+                if (op.arity == 2 && lastToken != StreamTokenizer.TT_NUMBER && lastToken != StreamTokenizer.TT_WORD && lastToken != '\'' && lastToken != '\"' && lastToken != ')' && lastToken != ']') {
+                    // check for a unary alternate
+                    op = UNARY_ALTERNATES.get(_strtok.sval);
+                    if (op == null) {
+                        throw new Exception("Too few operands for " + _strtok.sval);
+                    }
+                }
+                while (!_operation.isEmpty()) {
+                    Object top = _operation.peek();
+                    if (!(top instanceof Operator)) {
+                        break;
+                    }
+                    Operator otop = (Operator) top;
+                    if ((op.rightAssociative ? (op.precedence <= otop.precedence) : (op.precedence < otop.precedence))) {
+                        break;
+                    }
+                    handle(_operation.pop());
+                }
+                _operation.push(op);
+                break;
+            case '(':
+            case '[':
+                _operation.push((char) token);
+                break;
+            case ')':
+            case ']':
+                Character left;
+                Class<?> clazz;
+                if (token == ')') {
+                    left = '(';
+                    clazz = FunctionCall.class;
+                } else {
+                    left = '[';
+                    clazz = ArrayIndex.class;
+                }
+                try {
+                    Object top;
+                    while (!(top = _operation.pop()).equals(left)) {
+                        handle(top);
+                    }
+                    if (!_operation.isEmpty() && clazz.isInstance(_operation.peek())) {
+                        top = _operation.pop();
+                        if (top instanceof FunctionCall && lastToken != '(') {
+                            ((FunctionCall) top).arity++;
+                        }
+                        handle(top);
+                    }
+                } catch (EmptyStackException e) {
+                    throw new Exception("Mismatched " + (char) token);
+                }
+                break;
+        }
+        lastToken = token;
+    }
+    // process the remaining operators on the stack
+    while (!_operation.isEmpty()) {
+        Object top = _operation.pop();
+        if (top.equals('(') || top.equals('[')) {
+            throw new Exception("Mismatched " + top);
+        }
+        handle(top);
+    }
+    // the result should now be on the top of the output stack
+    return _output.isEmpty() ? null : _output.pop();
+}

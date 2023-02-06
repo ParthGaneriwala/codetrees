@@ -1,0 +1,52 @@
+protected void findStaticResource(String name, HttpServletRequest request, HttpServletResponse response) throws IOException {
+    if (!name.endsWith(".class")) {
+        for (String pathPrefix : pathPrefixes) {
+            InputStream is = findInputStream(name, pathPrefix);
+            if (is != null) {
+                Calendar cal = Calendar.getInstance();
+                // check for if-modified-since, prior to any other headers
+                long ifModifiedSince = 0;
+                try {
+                    ifModifiedSince = request.getDateHeader("If-Modified-Since");
+                } catch (Exception e) {
+                    LOG.warn("Invalid If-Modified-Since header value: '" + request.getHeader("If-Modified-Since") + "', ignoring");
+                }
+                long lastModifiedMillis = lastModifiedCal.getTimeInMillis();
+                long now = cal.getTimeInMillis();
+                cal.add(Calendar.DAY_OF_MONTH, 1);
+                long expires = cal.getTimeInMillis();
+                if (ifModifiedSince > 0 && ifModifiedSince <= lastModifiedMillis) {
+                    // not modified, content is not sent - only basic headers and status SC_NOT_MODIFIED
+                    response.setDateHeader("Expires", expires);
+                    response.setStatus(HttpServletResponse.SC_NOT_MODIFIED);
+                    is.close();
+                    return;
+                }
+                // set the content-type header
+                String contentType = getContentType(name);
+                if (contentType != null) {
+                    response.setContentType(contentType);
+                }
+                if (serveStaticBrowserCache) {
+                    // set heading information for caching static content
+                    response.setDateHeader("Date", now);
+                    response.setDateHeader("Expires", expires);
+                    response.setDateHeader("Retry-After", expires);
+                    response.setHeader("Cache-Control", "public");
+                    response.setDateHeader("Last-Modified", lastModifiedMillis);
+                } else {
+                    response.setHeader("Cache-Control", "no-cache");
+                    response.setHeader("Pragma", "no-cache");
+                    response.setHeader("Expires", "-1");
+                }
+                try {
+                    copy(is, response.getOutputStream());
+                } finally {
+                    is.close();
+                }
+                return;
+            }
+        }
+    }
+    response.sendError(HttpServletResponse.SC_NOT_FOUND);
+}

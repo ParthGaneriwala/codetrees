@@ -1,0 +1,99 @@
+@Override
+public void input(double prediction) {
+    // In MOA, 1.0=false, 0.0=true.
+    if (!this.isInitialized) {
+        initialize();
+        this.isInitialized = true;
+    }
+    if (rddmDrift) {
+        resetLearning();
+        if (lastWarnPos != -1) {
+            firstPos = lastWarnPos;
+            numStoredInstances = lastPos - firstPos + 1;
+            if (numStoredInstances <= 0) {
+                numStoredInstances += minSizeStableConcept;
+            }
+        }
+        pos = firstPos;
+        for (i = 0; i < numStoredInstances; i++) {
+            m_p = m_p + (storedPredictions[pos] - m_p) / m_n;
+            m_s = Math.sqrt(m_p * (1 - m_p) / m_n);
+            if (this.isChangeDetected && (m_n > minNumInstances) && (m_p + m_s < m_psmin)) {
+                m_pmin = m_p;
+                m_smin = m_s;
+                m_psmin = m_p + m_s;
+            }
+            m_n++;
+            pos = (pos + 1) % minSizeStableConcept;
+        }
+        lastWarnPos = -1;
+        lastWarnInst = -1;
+        rddmDrift = false;
+        this.isChangeDetected = false;
+    }
+    // Adds prediction at the end of the window.
+    lastPos = (lastPos + 1) % minSizeStableConcept;
+    storedPredictions[lastPos] = (byte) prediction;
+    if (numStoredInstances < minSizeStableConcept) {
+        // The window grows.
+        numStoredInstances++;
+    } else {
+        // The window is full.
+        // Start of the window moves.
+        firstPos = (firstPos + 1) % minSizeStableConcept;
+        if (lastWarnPos == lastPos) {
+            lastWarnPos = -1;
+        }
+    }
+    m_p = m_p + (prediction - m_p) / m_n;
+    m_s = Math.sqrt(m_p * (1 - m_p) / m_n);
+    instNum++;
+    m_n++;
+    this.estimation = m_p;
+    this.isWarningZone = false;
+    if (m_n <= minNumInstances) {
+        return;
+    }
+    if (m_p + m_s < m_psmin) {
+        m_pmin = m_p;
+        m_smin = m_s;
+        m_psmin = m_p + m_s;
+    }
+    if (m_p + m_s > m_pmin + driftLevel * m_smin) {
+        // DDM Drift
+        this.isChangeDetected = true;
+        rddmDrift = true;
+        if (lastWarnInst == -1) {
+            // DDM Drift without previous warning
+            firstPos = lastPos;
+            numStoredInstances = 1;
+        }
+        return;
+    }
+    if (m_p + m_s > m_pmin + warningLevel * m_smin) {
+        // Warning level for warnLimit consecutive instances will force drifts
+        if ((lastWarnInst != -1) && (lastWarnInst + warnLimit <= instNum)) {
+            this.isChangeDetected = true;
+            rddmDrift = true;
+            firstPos = lastPos;
+            numStoredInstances = 1;
+            lastWarnPos = -1;
+            lastWarnInst = -1;
+            return;
+        }
+        // Warning Zone
+        this.isWarningZone = true;
+        if (lastWarnInst == -1) {
+            lastWarnInst = instNum;
+            lastWarnPos = lastPos;
+        }
+    } else {
+        // Neither DDM Drift nor Warning - disregard false warnings
+        lastWarnInst = -1;
+        lastWarnPos = -1;
+    }
+    if (m_n > maxSizeConcept && (!isWarningZone)) {
+        // RDDM Drift
+        rddmDrift = true;
+    }
+}

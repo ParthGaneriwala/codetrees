@@ -1,0 +1,45 @@
+@Override
+public List<ValueMirror> getOrLoadValueFromRefs(List<? extends PropertyReference> propertyRefs) throws MethodIsBlockingException {
+    ValueMirror[] result = new ValueMirror[propertyRefs.size()];
+    Map<Long, Integer> refToRequestIndex = new HashMap<Long, Integer>();
+    List<PropertyReference> needsLoading = new ArrayList<PropertyReference>();
+    for (int i = 0; i < propertyRefs.size(); i++) {
+        PropertyReference property = propertyRefs.get(i);
+        DataWithRef dataWithRef = property.getValueObject();
+        Long ref = dataWithRef.ref();
+        RefWithDisplayData dataWithDisplayData = dataWithRef.getWithDisplayData();
+        ValueMirror mirror;
+        if (dataWithDisplayData == null) {
+            mirror = getSafe(refToMirror, ref);
+        } else {
+            mirror = ValueMirror.create(dataWithDisplayData, loadableStringFactory);
+        }
+        if (mirror == null) {
+            // We don't have the data (enough) right now. We are requesting them from server.
+            // There might be simultaneous request for the same value, which is a normal though
+            // undesired case.
+            Integer requestPos = getSafe(refToRequestIndex, ref);
+            if (requestPos == null) {
+                refToRequestIndex.put(ref, needsLoading.size());
+                needsLoading.add(property);
+            }
+        } else {
+            result[i] = mirror;
+        }
+    }
+    if (!needsLoading.isEmpty()) {
+        List<Long> refIds = getRefIdFromReferences(needsLoading);
+        List<ValueMirror> loadedMirrors = loadValuesFromRemote(refIds);
+        assert refIds.size() == loadedMirrors.size();
+        for (int i = 0; i < propertyRefs.size(); i++) {
+            if (result[i] == null) {
+                PropertyReference property = propertyRefs.get(i);
+                DataWithRef dataWithRef = property.getValueObject();
+                Long ref = dataWithRef.ref();
+                int pos = getSafe(refToRequestIndex, ref);
+                result[i] = loadedMirrors.get(pos);
+            }
+        }
+    }
+    return Arrays.asList(result);
+}

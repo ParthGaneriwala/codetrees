@@ -1,0 +1,60 @@
+public static GameSettings getSettings(ConfigShowMode configShowMode, URL settingsDialogImageOverride) {
+    final PropertiesGameSettings settings = new PropertiesGameSettings("properties.cfg");
+    settings.load();
+    // 
+    if ((settings.isNew() && configShowMode == ConfigShowMode.ShowIfNoConfig) || configShowMode == ConfigShowMode.AlwaysShow) {
+        URL dialogImage = settingsDialogImageOverride;
+        if (dialogImage == null) {
+            String dflt = settings.getDefaultSettingsWidgetImage();
+            if (dflt != null) {
+                try {
+                    dialogImage = ConsoleSettingsProvider.class.getResource(dflt);
+                } catch (Exception e) {
+                    logger.log(Level.SEVERE, "Resource lookup of '" + dflt + "' failed.  Proceeding.");
+                }
+            }
+        }
+        if (dialogImage == null) {
+            logger.fine("No dialog image loaded");
+        } else {
+            logger.fine("Using dialog image '" + dialogImage + "'");
+        }
+        final URL dialogImageRef = dialogImage;
+        final AtomicReference<LWJGLPropertiesDialog> dialogRef = new AtomicReference<LWJGLPropertiesDialog>();
+        final Stack<Runnable> mainThreadTasks = new Stack<Runnable>();
+        try {
+            if (EventQueue.isDispatchThread()) {
+                dialogRef.set(new LWJGLPropertiesDialog(settings, dialogImageRef, mainThreadTasks));
+            } else {
+                EventQueue.invokeLater(new Runnable() {
+
+                    public void run() {
+                        dialogRef.set(new LWJGLPropertiesDialog(settings, dialogImageRef, mainThreadTasks));
+                    }
+                });
+            }
+        } catch (Exception e) {
+            logger.logp(Level.SEVERE, ConsoleSettingsProvider.class.toString(), "AbstractGame.getAttributes()", "Exception", e);
+            return settings;
+        }
+        LWJGLPropertiesDialog dialogCheck = dialogRef.get();
+        while (dialogCheck == null || dialogCheck.isVisible()) {
+            try {
+                // check worker queue for work
+                while (!mainThreadTasks.isEmpty()) {
+                    mainThreadTasks.pop().run();
+                }
+                // go back to sleep for a while
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                logger.warning("Error waiting for dialog system, using defaults.");
+            }
+            dialogCheck = dialogRef.get();
+        }
+        if (dialogCheck != null && dialogCheck.isCancelled()) {
+            logger.logp(Level.SEVERE, ConsoleSettingsProvider.class.toString(), "AbstractGame.getAttributes()", "Dialog Check null or cancelled");
+            System.exit(0);
+        }
+    }
+    return settings;
+}

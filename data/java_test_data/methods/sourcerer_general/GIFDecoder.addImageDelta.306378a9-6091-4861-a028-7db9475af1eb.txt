@@ -1,0 +1,80 @@
+void addImageDelta(GIFImageDescriptor gifID, AdaptiveRasterImage in, AdaptiveRasterImage out) throws JimiException {
+    int row;
+    byte[] buf;
+    setOptions(out);
+    boolean first = baseJI_ == null;
+    if (// no base yet.
+    baseJI_ == null) {
+        // set width/height based on screen descriptor
+        // use color model from first frame of image.
+        baseJI_ = createAdaptiveRasterImage(gifFH_.screenWidth, gifFH_.screenHeight, in.getColorModel());
+        setOptions(baseJI_);
+        // allocate
+        baseJI_.setPixels();
+        // force image to background color if global color table
+        if ((gifFH_.packed & GIFFileHeader.CT_GLOBAL) != 0)
+            baseJI_.setChannel(gifFH_.backgroundColor);
+        // set coverage for all data due to way base JI is used for deltas
+        baseJI_.addFullCoverage();
+    }
+    disposePreviousDelta();
+    // examine GIFGraphicExt for information
+    if (gifGraphicExt_ != null) {
+        // pickup if delay set and the disposal method if set.
+        disposal_ = (gifGraphicExt_.packed & GIFGraphicExt.GCE_DISPOSAL) >> GIFGraphicExt.GCE_DISPOSAL_BITOFFSET;
+        imageDelay_ = gifGraphicExt_.delayTime;
+    }
+    // Get delta settings for saveForNextDelta()
+    xOffset_ = gifID.left;
+    yOffset_ = gifID.top;
+    dWidth_ = gifID.width;
+    dHeight_ = gifID.height;
+    saveForNextDelta();
+    // apply new delta
+    buf = new byte[dWidth_];
+    int rowOut = yOffset_;
+    for (int rowIn = 0; rowIn < dHeight_; ++rowIn) {
+        in.getChannel(0, rowIn, buf, 0);
+        // handle transparency
+        if (first || (gifGraphicExt_ == null) || (gifGraphicExt_.packed & GIFGraphicExt.GCE_TRANSPARENT) == 0) {
+            baseJI_.setChannel(0, xOffset_, rowOut, dWidth_, 1, buf, 0, 0);
+        } else {
+            int transIndex = gifGraphicExt_.colorIndex;
+            int lastIndex = 0;
+            boolean hasPixels = false;
+            for (int currentIndex = 0; currentIndex < buf.length; currentIndex++) {
+                if (buf[currentIndex] == transIndex || (currentIndex == buf.length - 1)) {
+                    if (hasPixels) {
+                        baseJI_.setChannel(0, xOffset_ + lastIndex, rowOut, currentIndex - lastIndex, 1, buf, lastIndex, 0);
+                        hasPixels = false;
+                    }
+                } else {
+                    if (!hasPixels) {
+                        lastIndex = currentIndex;
+                        hasPixels = true;
+                    }
+                }
+            }
+        }
+        // no coverage set here becuase the baseJI_ is always marked fully covered
+        ++rowOut;
+    }
+    // ensure that ColorModel is set on baseJI_ to that of in.
+    baseJI_.setColorModel(in.getColorModel());
+    // set any properties for this image
+    if (comment_ != null) {
+        comment_ = null;
+    }
+    // copy baseJI_ to out.
+    buf = new byte[baseJI_.getWidth()];
+    out.setSize(baseJI_.getWidth(), baseJI_.getHeight());
+    out.setColorModel(baseJI_.getColorModel());
+    setOptions(out);
+    out.setPixels();
+    for (row = 0; row < baseJI_.getHeight(); ++row) {
+        baseJI_.getChannel(0, row, buf, 0);
+        out.setChannel(0, row, buf);
+    // coverage not set here, because full coverage is set for entire image
+    // at a higher level in calling stack.
+    }
+}

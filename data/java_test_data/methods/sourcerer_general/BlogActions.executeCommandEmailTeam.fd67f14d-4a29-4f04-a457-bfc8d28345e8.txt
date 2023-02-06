@@ -1,0 +1,61 @@
+public String executeCommandEmailTeam(ActionContext context) {
+    Connection db = null;
+    // Parameters
+    String projectId = context.getRequest().getParameter("pid");
+    String newsId = context.getRequest().getParameter("id");
+    try {
+        db = getConnection(context);
+        // Load the project
+        Project thisProject = retrieveAuthorizedProject(Integer.parseInt(projectId), context);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-news-add")) {
+            return "PermissionError";
+        }
+        // Load the article and send the email
+        BlogPost post = new BlogPost(db, Integer.parseInt(newsId), thisProject.getId());
+        if (1 == 1) {
+            ApplicationPrefs prefs = getApplicationPrefs(context);
+            SMTPMessage mail = SMTPMessageFactory.createSMTPMessageInstance(prefs.getPrefs());
+            mail.setFrom(this.getPref(context, "EMAILADDRESS"));
+            mail.setType("text/html");
+            mail.setSubject("[" + thisProject.getTitle() + "] Blog Post");
+            // Populate the message template
+            Template template = getFreemarkerConfiguration(context).getTemplate("blog_notification-html.ftl");
+            Map bodyMappings = new HashMap();
+            bodyMappings.put("project", thisProject);
+            bodyMappings.put("post", post);
+            bodyMappings.put("author", UserUtils.loadUser(post.getEnteredBy()));
+            bodyMappings.put("link", new HashMap());
+            ((Map) bodyMappings.get("link")).put("site", getServerUrl(context));
+            ((Map) bodyMappings.get("link")).put("blog", getLink(context, "show/" + thisProject.getUniqueId() + "/blog"));
+            ((Map) bodyMappings.get("link")).put("post", getLink(context, "show/" + thisProject.getUniqueId() + "/post/" + post.getId()));
+            ((Map) bodyMappings.get("link")).put("settings", getLink(context, "show/" + thisProject.getUniqueId() + "/members"));
+            // Send to those members that requested notifications
+            TeamMemberList members = new TeamMemberList();
+            members.setProjectId(thisProject.getId());
+            members.setWithNotificationsSet(Constants.TRUE);
+            members.buildList(db);
+            for (TeamMember thisMember : members) {
+                User recipient = UserUtils.loadUser(thisMember.getUserId());
+                if (StringUtils.hasText(recipient.getEmail())) {
+                    // Tailor the email to the recipient
+                    bodyMappings.put("recipient", UserUtils.loadUser(thisMember.getUserId()));
+                    // Parse and send
+                    StringWriter inviteBodyTextWriter = new StringWriter();
+                    template.process(bodyMappings, inviteBodyTextWriter);
+                    mail.setBody(inviteBodyTextWriter.toString());
+                    mail.setTo(recipient.getEmail());
+                    mail.send();
+                }
+            }
+        }
+        context.getRequest().setAttribute("project", thisProject);
+        context.getRequest().setAttribute("IncludeSection", "news_email_ok");
+        context.getRequest().setAttribute("pid", projectId);
+        return "EmailTeamOK";
+    } catch (Exception errorMessage) {
+        context.getRequest().setAttribute("Error", errorMessage);
+        return ("SystemError");
+    } finally {
+        this.freeConnection(context, db);
+    }
+}

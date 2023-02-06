@@ -1,0 +1,61 @@
+public String doView(RenderRequest request, RenderResponse response) throws Exception {
+    // The JSP to show upon success
+    String defaultView = VIEW_PAGE;
+    ApplicationPrefs prefs = PortalUtils.getApplicationPrefs(request);
+    // General Display Preferences
+    request.setAttribute(TITLE, request.getPreferences().getValue(PREF_TITLE, "Wiki"));
+    // Determine the project container to use
+    Project project = findProject(request);
+    // Check the user's permissions
+    User user = PortalUtils.getUser(request);
+    if (!ProjectUtils.hasAccess(project.getId(), user, "project-wiki-view")) {
+        throw new PortletException("Unauthorized to view in this project");
+    }
+    // Determine the record to show
+    String subject = PortalUtils.getPageView(request);
+    // Load the record
+    Connection db = useConnection(request);
+    Wiki wiki = WikiList.queryBySubject(db, subject, project.getId());
+    request.setAttribute(WIKI, wiki);
+    // Load wiki image library dimensions (@todo cache)
+    HashMap<String, ImageInfo> imageList = WikiUtils.buildImageInfo(db, project.getId());
+    request.setAttribute(WIKI_IMAGE_LIST, imageList);
+    if (wiki.getId() > -1) {
+        // Load comments
+        WikiCommentList commentList = new WikiCommentList();
+        commentList.setWikiId(wiki.getId());
+        commentList.buildList(db);
+        request.setAttribute(WIKI_COMMENT_LIST, commentList);
+        // Convert the wiki to html for this user
+        // @note the context is used instead of the full URL
+        WikiToHTMLContext wikiContext = new WikiToHTMLContext(wiki, imageList, user.getId(), false, request.getContextPath());
+        String wikiHtml = WikiToHTMLUtils.getHTML(wikiContext, db);
+        request.setAttribute(WIKI_HTML, wikiHtml);
+        // Load this user's rating of the wiki
+        String userRating = String.valueOf(Rating.queryUserRating(db, user.getId(), wiki.getId(), Wiki.TABLE, Wiki.PRIMARY_KEY));
+        request.setAttribute(WIKI_USER_RATING, userRating);
+        // This portlet can provide data to other portlets
+        for (String event : PortalUtils.getDashboardPortlet(request).getGenerateDataEvents()) {
+            PortalUtils.setGeneratedData(request, event, wikiContext);
+        }
+    }
+    // Load the states
+    ProjectItemList stateList = new ProjectItemList();
+    stateList.setProjectId(project.getId());
+    stateList.setEnabled(Constants.TRUE);
+    stateList.setIncludeId(wiki.getStateId());
+    stateList.buildList(db, ProjectItemList.WIKI_STATE);
+    request.setAttribute(WIKI_STATE_LIST, stateList);
+    // Establish a trailMap per project
+    TrailMap trailMap = (TrailMap) request.getPortletSession().getAttribute("trailMap" + project.getId());
+    if (trailMap == null) {
+        trailMap = new TrailMap();
+        request.getPortletSession().setAttribute("trailMap" + project.getId(), trailMap);
+    }
+    trailMap.addItem(subject);
+    request.setAttribute(WIKI_TRAIL_MAP, trailMap);
+    // Record that this record has been viewed
+    PortalUtils.processSelectHook(request, wiki);
+    // JSP view
+    return defaultView;
+}

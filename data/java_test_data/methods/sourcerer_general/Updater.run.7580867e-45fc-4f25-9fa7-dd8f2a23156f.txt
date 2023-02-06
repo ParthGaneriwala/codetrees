@@ -1,0 +1,80 @@
+public void run() {
+    status = Status.PROCESSING;
+    try {
+        if (in.build == null) {
+            status = Status.ERROR;
+            log("No version found");
+            return;
+        }
+        int build = Integer.parseInt(in.build);
+        commit = getConnection();
+        Statement stmt = commit.createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_UPDATABLE);
+        ResultSet rs = stmt.executeQuery("select val, id, name from settings where name = 'build' and id = 'build'");
+        if (!rs.first()) {
+            status = Status.ERROR;
+            log("Version not found in database");
+            rs.close();
+            stmt.close();
+            commit.close();
+            return;
+        } else if (build > rs.getInt(1)) {
+            int current = rs.getInt(1) + 1;
+            File file = null;
+            Runnable update;
+            rollback = getConnection();
+            rollback.setAutoCommit(false);
+            // Cycle through the version differences
+            for (int i = current; i <= build; i++) {
+                file = new File(in.path + "/WEB-INF/sql/" + i + ".sql");
+                if (file.exists())
+                    updateDB(file);
+                try {
+                    update = (Runnable) Class.forName("com.sinkluge.updates.versions." + i).newInstance();
+                    update.run();
+                } catch (ClassNotFoundException e) {
+                // Do nothing, there isn't an update class
+                }
+                rollback.commit();
+                log("Updated Contrack to build " + i);
+                if (!in.testMode) {
+                    rs.updateInt(1, i);
+                    rs.updateRow();
+                    in.build = Integer.toString(i);
+                }
+            }
+            status = Status.COMPLETE;
+            stmt.close();
+        } else {
+            log("No new updates needed");
+            rs.close();
+            stmt.close();
+            status = Status.COMPLETE;
+        }
+    } catch (ClassCastException e) {
+        handleException("Update class does not implement java.lang.Runnable", e);
+    } catch (SQLException e) {
+        handleException("SQL Exception", e);
+    } catch (InstantiationException e) {
+        handleException("", e);
+    } catch (IllegalAccessException e) {
+        handleException("", e);
+    } catch (IOException e) {
+        handleException("Error Opening file", e);
+    } catch (NamingException e) {
+        handleException("Error finding database connection " + e.getExplanation(), e);
+    } finally {
+        try {
+            if (rollback != null && !rollback.isClosed()) {
+                rollback.close();
+                rollback = null;
+            }
+            if (commit != null && !commit.isClosed()) {
+                commit.close();
+                commit = null;
+            }
+        } catch (SQLException e) {
+            log("Failed to clean up/commit " + e.getMessage(), e);
+            status = Status.ERROR;
+        }
+    }
+}

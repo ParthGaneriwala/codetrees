@@ -1,0 +1,105 @@
+public boolean initApp(AppProperties props) {
+    m_props = props;
+    // setPreferredSize(new java.awt.Dimension(800, 600));
+    // support for different component orientation languages.
+    applyComponentOrientation(ComponentOrientation.getOrientation(Locale.getDefault()));
+    // Database start
+    try {
+        session = AppViewConnection.createSession(m_props);
+    } catch (BasicException e) {
+        JMessageDialog.showMessage(this, new MessageInf(MessageInf.SGN_DANGER, e.getMessage(), e));
+        return false;
+    }
+    m_dlSystem = (DataLogicSystem) getBean("com.openbravo.pos.forms.DataLogicSystemCreate");
+    // Create or upgrade the database if database version is not the expected
+    String sDBVersion = readDataBaseVersion();
+    if (!AppLocal.APP_VERSION.equals(sDBVersion)) {
+        // Create or upgrade database
+        String sScript = sDBVersion == null ? m_dlSystem.getInitScript() + "-create.sql" : m_dlSystem.getInitScript() + "-upgrade-" + sDBVersion + ".sql";
+        if (JRootApp.class.getResource(sScript) == null) {
+            // Upgrade script does not exist.
+            JMessageDialog.showMessage(this, new MessageInf(MessageInf.SGN_DANGER, AppLocal.getIntString("message.noupdatescript")));
+            session.close();
+            return false;
+        } else {
+            // Create or upgrade script exists.
+            if (JOptionPane.showConfirmDialog(this, AppLocal.getIntString(sDBVersion == null ? "message.createdatabase" : "message.updatedatabase"), AppLocal.getIntString("message.title"), JOptionPane.YES_NO_OPTION, JOptionPane.QUESTION_MESSAGE) == JOptionPane.YES_OPTION) {
+                try {
+                    BatchSentence bsentence = new BatchSentenceResource(session, sScript);
+                    bsentence.putParameter("APP_ID", Matcher.quoteReplacement(AppLocal.APP_ID));
+                    bsentence.putParameter("APP_NAME", Matcher.quoteReplacement(AppLocal.APP_NAME));
+                    bsentence.putParameter("APP_VERSION", Matcher.quoteReplacement(AppLocal.APP_VERSION));
+                    java.util.List l = bsentence.list();
+                    if (l.size() > 0) {
+                        JMessageDialog.showMessage(this, new MessageInf(MessageInf.SGN_WARNING, AppLocal.getIntString("Database.ScriptWarning"), l.toArray(new Throwable[l.size()])));
+                    }
+                } catch (BasicException e) {
+                    JMessageDialog.showMessage(this, new MessageInf(MessageInf.SGN_DANGER, AppLocal.getIntString("Database.ScriptError"), e));
+                    session.close();
+                    return false;
+                }
+            } else {
+                session.close();
+                return false;
+            }
+        }
+    }
+    // Cargamos las propiedades de base de datos
+    m_propsdb = m_dlSystem.getResourceAsProperties(m_props.getHost() + "/properties");
+    // creamos la caja activa si esta no existe
+    try {
+        String sActiveCashIndex = m_propsdb.getProperty("activecash");
+        Object[] valcash = m_dlSystem.findActiveCash(sActiveCashIndex);
+        if (valcash == null || !m_props.getHost().equals(valcash[0])) {
+            // no la encuentro o no es de mi host por tanto creo una...
+            setActiveCash(UUID.randomUUID().toString(), 1, new Date(), null);
+            // creamos la caja activa
+            m_dlSystem.execInsertCash(new Object[] { getActiveCashIndex(), m_props.getHost(), getActiveCashSequence(), getActiveCashDateStart(), getActiveCashDateEnd() });
+        } else {
+            setActiveCash(sActiveCashIndex, (Integer) valcash[1], (Date) valcash[2], (Date) valcash[3]);
+        }
+    } catch (BasicException e) {
+        // Casco. Sin caja no hay pos
+        MessageInf msg = new MessageInf(MessageInf.SGN_NOTICE, AppLocal.getIntString("message.cannotclosecash"), e);
+        msg.show(this);
+        session.close();
+        return false;
+    }
+    // Leo la localizacion de la caja (Almacen).
+    m_sInventoryLocation = m_propsdb.getProperty("location");
+    if (m_sInventoryLocation == null) {
+        m_sInventoryLocation = "0";
+        m_propsdb.setProperty("location", m_sInventoryLocation);
+        m_dlSystem.setResourceAsProperties(m_props.getHost() + "/properties", m_propsdb);
+    }
+    // Inicializo la impresora...
+    m_TP = new DeviceTicket(m_props);
+    // Inicializamos
+    m_TTP = new TicketParser(getDeviceTicket(), m_dlSystem);
+    printerStart();
+    // Inicializamos la bascula
+    m_Scale = new DeviceScale(m_props);
+    // Inicializamos la scanpal
+    m_Scanner = DeviceScannerFactory.createInstance(m_props);
+    // Leemos los recursos basicos
+    BufferedImage imgicon = m_dlSystem.getResourceAsImage("Window.Logo");
+    m_jLblTitle.setIcon(imgicon == null ? null : new ImageIcon(imgicon));
+    m_jLblTitle.setText(m_dlSystem.getResourceAsText("Window.Title"));
+    String sWareHouse;
+    try {
+        sWareHouse = m_dlSystem.findLocationName(m_sInventoryLocation);
+    } catch (BasicException e) {
+        // no he encontrado el almacen principal
+        sWareHouse = null;
+    }
+    // Show Hostname, Warehouse and URL in taskbar
+    String url;
+    try {
+        url = session.getURL();
+    } catch (SQLException e) {
+        url = "";
+    }
+    m_jHost.setText("<html>" + m_props.getHost() + " - " + sWareHouse + "<br>" + url);
+    showLogin();
+    return true;
+}

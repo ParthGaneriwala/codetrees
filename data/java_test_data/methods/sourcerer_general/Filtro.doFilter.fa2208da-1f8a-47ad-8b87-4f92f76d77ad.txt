@@ -1,0 +1,95 @@
+public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException {
+    long tempo = System.currentTimeMillis();
+    HttpServletResponse httpResponse = (HttpServletResponse) response;
+    HttpServletRequest httpRequest = (HttpServletRequest) request;
+    RequestWrapper requestWrapper = null;
+    String uri = httpRequest.getRequestURI();
+    int fim = uri.lastIndexOf("/");
+    String pgName = uri.substring(fim + 1);
+    logger.debug("uri = '" + uri + "' pgName=" + pgName);
+    int nBarras = contarQtdChar('/', uri);
+    /*
+		 * nao filtrar itens fora do CMS08/
+		 * eg. /CMS08/adm/qq.action nao deve ser filtrado
+		 * /CMS08/qq.jsp deve ser filtrado
+		 */
+    if (nBarras > 2) {
+        if (uri.startsWith(nomeDaAplicacao + "/adm/")) {
+            // se estiver no adm nao filtrar
+            chain.doFilter(request, response);
+        } else {
+            // verificar se existe pagina com o uri solicitado
+            boolean tratouPagina = tratarPaginaPorUri(httpRequest, httpResponse);
+            if (!tratouPagina) {
+                // nao tratou pela uri da pagina "pagina.uri"
+                // nao filtrar
+                chain.doFilter(request, response);
+            }
+        }
+    } else {
+        PrintWriter out = response.getWriter();
+        ResponseWrapper wrapper = new ResponseWrapper(httpResponse);
+        if (usarSEO && (pgName.startsWith(PG_PREFIXO) || pgName.equals("index.action"))) {
+            gerarPagina(httpRequest, requestWrapper, response, httpResponse, wrapper, fim, uri, out);
+        } else if (usarSEO && pgName.equals("")) {
+            // Pagina principal
+            response.setContentType("text/html");
+            Gerenciador gerenciador = new Gerenciador(httpRequest, httpResponse);
+            out = httpResponse.getWriter();
+            String html = alterarLinks(gerenciador.gerarPaginaHtml());
+            out.write(html);
+        } else if (usarSEO && pgName.startsWith("arq-")) {
+            response.setContentType("text/html");
+            uri = uri.substring(fim + 5, uri.lastIndexOf('.'));
+            logger.debug("uri = " + uri);
+            String[] par = uri.split("-");
+            Long nuConteudo = Long.parseLong(par[par.length - 1]);
+            Gerenciador gerenciador = new Gerenciador(httpRequest, httpResponse);
+            out = httpResponse.getWriter();
+            String html = alterarLinks(gerenciador.gerarPaginaHtmlArquivo(nuConteudo, par[0], par[1]));
+            out.write(html);
+        } else if (usarSEO && pgName.startsWith("item-")) {
+            // item-titulo-nuPadrao-nuItem-nuPagina.htm
+            response.setContentType("text/html");
+            uri = uri.substring(fim + 6, uri.lastIndexOf('.'));
+            logger.debug("url = " + uri + " item aberto");
+            String[] par = uri.split("-");
+            Long nuPadraoApresentacao = Long.parseLong(par[par.length - 3]);
+            Long nuItemConteudo = Long.parseLong(par[par.length - 2]);
+            Long nuPagina = Long.parseLong(par[par.length - 1]);
+            Gerenciador gerenciador = new Gerenciador(httpRequest, httpResponse);
+            out = httpResponse.getWriter();
+            String html = gerenciador.gerarPaginaHtml(nuPagina, nuPadraoApresentacao, nuItemConteudo);
+            out.write(alterarLinks(html));
+        } else if (usarSEO && pgName.startsWith("arqs-")) {
+            response.setContentType("text/html");
+            uri = uri.substring(fim + 6, uri.lastIndexOf('.'));
+            logger.debug("uri = " + uri);
+            String[] par = uri.split("-");
+            Long nuConteudo = Long.parseLong(par[par.length - 1]);
+            Gerenciador gerenciador = new Gerenciador(httpRequest, httpResponse);
+            out = httpResponse.getWriter();
+            out.write(gerenciador.gerarPaginaHtmlArquivo(nuConteudo));
+        } else {
+            // verificar pelo nome das paginas
+            boolean tratouPagina = tratarPaginaPorUri(httpRequest, httpResponse);
+            if (!tratouPagina) {
+                // nao tratou pela uri da pagina "pagina.uri"
+                chain.doFilter(request, wrapper);
+                String wrapperString = wrapper.toString();
+                if (wrapperString.contains("<html")) {
+                    // Ja possui uma tag html entao nao passar pelo gerenciador
+                    out.write(wrapperString);
+                } else {
+                    // passar pelo gerenciador
+                    response.setContentType("text/html");
+                    Gerenciador gerenciador = new Gerenciador(httpRequest, httpResponse);
+                    gerenciador.setChainHtml(wrapperString);
+                    out = httpResponse.getWriter();
+                    out.write(gerenciador.gerarPaginaHtml());
+                }
+            }
+        }
+    }
+    logger.info("tempo = " + (System.currentTimeMillis() - tempo));
+}

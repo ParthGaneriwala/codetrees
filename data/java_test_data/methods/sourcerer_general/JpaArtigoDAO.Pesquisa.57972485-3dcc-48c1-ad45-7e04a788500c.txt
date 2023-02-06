@@ -1,0 +1,110 @@
+public Collection Pesquisa(int porId, String expressao, int start, int range) {
+    Collection col = new ArrayList();
+    try {
+        // Calcula o filtro
+        String filter = " and (";
+        // Faz o split das palavras para a busca
+        String[] words = expressao.split(" ");
+        // Completa a ejbql com a busca por título do artigo
+        for (int i = 0; i < words.length; i++) {
+            filter += " tbartigo.artNmTitulo like '%" + words[i] + "%' or";
+        }
+        // Completa a ejbql com a busca pelo corpo do artigo
+        for (int i = 0; i < words.length; i++) {
+            filter += " tbartigo.artDsCompleto like '%" + words[i] + "%' or";
+        }
+        // Completa a ejbql com a busca pelas palavras chave do artigo
+        for (int i = 0; i < words.length; i++) {
+            filter += " tbpalavraschave.pchNmPalavraChave like '%" + words[i] + "%' ";
+            if (i < words.length - 1) {
+                filter += " or";
+            }
+        }
+        filter += ")";
+        // Obtém os Ids dos artigos.
+        // Como a tabela artigo tem um atributo do tipo CLOB, infelizmente ele não pode ser utilizado
+        // junto com alguma query que gere um DISTINCT pois esses tipos de dados não permitem isso.
+        // o JPA toplink, até a versão v2 build25 gera um DISTINCT automaticamente quando existe join
+        // na query. Logo, temos que obter os IDs apenas, para depois executar um SELECT sem joins para
+        // obter os dados dos artigos desejados.
+        String hqlSelect = " select tbartigo.artId from TbArtigo as tbartigo" + // + " join tbartigo.tbSecaoArtigoCollection tbsecaoartigo"
+        " left outer join tbartigo.tbPalavrasChaveCollection tbpalavraschave" + " where tbartigo.tbSecaoArtigoCollection.tbSecao.tbPortal.porId = :porId" + filter;
+        // Retorna a lista com os itens solicitados
+        List resultListArtIds = em.createQuery(hqlSelect).setParameter("porId", porId).setFirstResult(start).setMaxResults(range).getResultList();
+        // Monta string com os IDs
+        StringBuffer parameters = new StringBuffer();
+        for (Iterator it = resultListArtIds.iterator(); it.hasNext(); ) {
+            parameters.append(((Integer) it.next()).toString());
+            if (it.hasNext())
+                parameters.append(",");
+        }
+        // Retorna o total possível de itens, desconsiderando o range solicitado ==================================
+        String hqlSelectCount = " select distinct count(tbartigo.artId) from TbArtigo as tbartigo" + // + " join tbartigo.tbSecaoArtigoCollection tbsecaoartigo"
+        " left outer join tbartigo.tbPalavrasChaveCollection tbpalavraschave" + " where tbartigo.tbSecaoArtigoCollection.tbSecao.tbPortal.porId = :porId" + filter;
+        Long results = (Long) em.createQuery(hqlSelectCount).setParameter("porId", porId).getSingleResult();
+        if (results == null) {
+            results = new Long(0);
+        }
+        // ==========================================================================================================
+        List resultList2 = null;
+        if (parameters.length() > 0) {
+            hqlSelect = " select tbartigo from TbArtigo as tbartigo" + " where tbartigo.artId in (" + parameters.toString() + ")" + " order by tbartigo.artDtPublicacao DESC";
+            resultList2 = em.createQuery(hqlSelect).getResultList();
+        }
+        // Copia dados para o VO
+        if (resultList2 != null) {
+            for (Iterator iter = resultList2.iterator(); iter.hasNext(); ) {
+                TbArtigo element = (TbArtigo) iter.next();
+                ArtigoSecaoRelMidiaArtigoSecaoArtigoVO artigoSecaoRelMidiaArtigoSecaoArtigoVO = new ArtigoSecaoRelMidiaArtigoSecaoArtigoVO();
+                artigoSecaoRelMidiaArtigoSecaoArtigoVO.setResults(results.longValue());
+                ArtigoVO artigoVO = new ArtigoVO();
+                try {
+                    BeanUtils.copyProperties(artigoVO, element);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+                artigoSecaoRelMidiaArtigoSecaoArtigoVO.setArtigoVO(artigoVO);
+                // Um artigo pode estar associada a N seções.
+                // Aqui estamos pegando a primeira apenas e ignorando as outras.
+                // Já que o objetivo é buscar um artigo, ele será visto por alguma seção, seja qual for.
+                TbSecaoArtigo tbSecaoArtigo = (TbSecaoArtigo) element.getTbSecaoArtigoCollection().iterator().next();
+                TbSecao tbSecao = tbSecaoArtigo.getTbSecao();
+                SecaoArtigoVO secaoArtigoVO = new SecaoArtigoVO();
+                secaoArtigoVO.setSarArtId(element.getArtId());
+                secaoArtigoVO.setSarSecId(tbSecao.getSecId());
+                try {
+                    BeanUtils.copyProperties(secaoArtigoVO, tbSecaoArtigo);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+                artigoSecaoRelMidiaArtigoSecaoArtigoVO.setSecaoArtigoVO(secaoArtigoVO);
+                SecaoVO secaoVO = new SecaoVO();
+                secaoVO.setSecPorId(tbSecao.getSecId());
+                secaoVO.setSecPagId(tbSecao.getTbPagina().getPagId());
+                try {
+                    BeanUtils.copyProperties(secaoVO, tbSecao);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+                artigoSecaoRelMidiaArtigoSecaoArtigoVO.setSecaoVO(secaoVO);
+                for (Iterator it = element.getTbRelMidiaArtigoCollection().iterator(); it.hasNext(); ) {
+                    TbRelMidiaArtigo tbRelMidiaArtigo = (TbRelMidiaArtigo) it.next();
+                    if ((tbRelMidiaArtigo.getRmaIcTipo().byteValue() == UtilsDAO.C_RMA_IC_TP_TRUE) && (tbRelMidiaArtigo.getRmaIcPrincipal().booleanValue() == true)) {
+                        RelMidiaArtigoVO relMidiaArtigoVO = new RelMidiaArtigoVO();
+                        relMidiaArtigoVO.setRmaArtId(element.getArtId());
+                        try {
+                            BeanUtils.copyProperties(relMidiaArtigoVO, tbRelMidiaArtigo);
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
+                        artigoSecaoRelMidiaArtigoSecaoArtigoVO.setRelMidiaArtigoVO(relMidiaArtigoVO);
+                    }
+                }
+                col.add(artigoSecaoRelMidiaArtigoSecaoArtigoVO);
+            }
+        }
+    } catch (Exception e) {
+        throw new EJBException(e);
+    }
+    return col;
+}

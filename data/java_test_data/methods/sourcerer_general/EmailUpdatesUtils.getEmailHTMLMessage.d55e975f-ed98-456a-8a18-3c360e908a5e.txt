@@ -1,0 +1,102 @@
+public static String getEmailHTMLMessage(Connection db, ApplicationPrefs prefs, Configuration configuration, EmailUpdatesQueue queue, Timestamp min, Timestamp max) throws Exception {
+    // User who needs to be sent an email
+    User user = UserUtils.loadUser(queue.getEnteredBy());
+    Project website = ProjectUtils.loadProject("main-profile");
+    int emailUpdatesSchedule = -1;
+    String title = "";
+    if (queue.getScheduleOften()) {
+        emailUpdatesSchedule = TeamMember.EMAIL_OFTEN;
+        title = website.getTitle() + " recent updates";
+    } else if (queue.getScheduleDaily()) {
+        emailUpdatesSchedule = TeamMember.EMAIL_DAILY;
+        title = website.getTitle() + " daily update";
+    } else if (queue.getScheduleWeekly()) {
+        emailUpdatesSchedule = TeamMember.EMAIL_WEEKLY;
+        title = website.getTitle() + " weekly update";
+    } else if (queue.getScheduleMonthly()) {
+        emailUpdatesSchedule = TeamMember.EMAIL_MONTHLY;
+        title = website.getTitle() + " monthly update";
+    }
+    if (emailUpdatesSchedule == -1) {
+        // unexpected case; throw exception
+        throw new Exception("The queue does not have a valid schedule type!");
+    }
+    if (URLFactory.createURL(prefs.getPrefs()) == null) {
+        throw new Exception("The server URL is not specified. Please contact the system administrator to configure the remote server's URL!");
+    }
+    // Populate the message template
+    freemarker.template.Template template = configuration.getTemplate("scheduled_activity_updates_email_body-html.ftl");
+    Map bodyMappings = new HashMap();
+    bodyMappings.put("title", title);
+    bodyMappings.put("link", new HashMap());
+    ((Map) bodyMappings.get("link")).put("settings", URLFactory.createURL(prefs.getPrefs()) + "/show/" + user.getProfileUniqueId());
+    // Load the RSS config file to determine the objects for display
+    String fileName = "scheduled_emails_en_US.xml";
+    URL resource = EmailUpdatesUtils.class.getResource("/" + fileName);
+    LOG.debug("Schedule emails config file: " + resource.toString());
+    XMLUtils library = new XMLUtils(resource);
+    String purpose = prefs.get(ApplicationPrefs.PURPOSE);
+    LOG.debug("Purpose: " + purpose);
+    Element emailElement = XMLUtils.getElement(library.getDocumentElement(), "email", "events", "site," + purpose);
+    if (emailElement == null) {
+        emailElement = XMLUtils.getElement(library.getDocumentElement(), "email", "events", "site");
+    }
+    if (emailElement != null) {
+        LinkedHashMap categories = new LinkedHashMap();
+        PagedListInfo info = new PagedListInfo();
+        String limit = emailElement.getAttribute("limit");
+        info.setItemsPerPage(limit);
+        int activityCount = 0;
+        // Determine the website's site-chatter data to email for this user (if any)
+        ProjectHistoryList chatter = new ProjectHistoryList();
+        chatter.setProjectId(website.getId());
+        chatter.setLinkObject(ProjectHistoryList.SITE_CHATTER_OBJECT);
+        chatter.setRangeStart(min);
+        chatter.setRangeEnd(max);
+        chatter.setPagedListInfo(info);
+        chatter.setForMemberEmailUpdates(user.getId(), emailUpdatesSchedule);
+        LinkedHashMap map = chatter.getList(db, user.getId(), URLFactory.createURL(prefs.getPrefs()));
+        activityCount += map.size();
+        if (map.size() != 0) {
+            categories.put("Chatter", map);
+        }
+        // Determine the types of events to display based on the config file
+        ArrayList<Element> eventElements = new ArrayList<Element>();
+        XMLUtils.getAllChildren(emailElement, "event", eventElements);
+        // set all the requested types based on the types we allow for the query..
+        ArrayList<String> types = new ArrayList<String>();
+        for (Element eventElement : eventElements) {
+            String type = XMLUtils.getNodeText(eventElement);
+            types.add(type);
+        }
+        LOG.debug("Event Types: " + types);
+        // Load the categories
+        ProjectCategoryList categoryList = new ProjectCategoryList();
+        categoryList.setTopLevelOnly(true);
+        categoryList.setEnabled(Constants.TRUE);
+        categoryList.buildList(db);
+        for (ProjectCategory category : categoryList) {
+            ProjectHistoryList activities = new ProjectHistoryList();
+            activities.setProjectCategoryId(category.getId());
+            activities.setRangeStart(min);
+            activities.setRangeEnd(max);
+            activities.setObjectPreferences(types);
+            activities.setPagedListInfo(info);
+            activities.setForMemberEmailUpdates(user.getId(), emailUpdatesSchedule);
+            LinkedHashMap activityMap = activities.getList(db, user.getId(), URLFactory.createURL(prefs.getPrefs()));
+            activityCount += activityMap.size();
+            if (activityMap.size() != 0) {
+                categories.put(category.getLabel(), activityMap);
+            }
+        }
+        if (activityCount == 0) {
+            // Don't send an email update
+            return null;
+        }
+        bodyMappings.put("categories", categories);
+    }
+    // Parse and return
+    StringWriter emailBodyTextWriter = new StringWriter();
+    template.process(bodyMappings, emailBodyTextWriter);
+    return emailBodyTextWriter.toString();
+}

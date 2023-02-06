@@ -1,0 +1,93 @@
+public String executeCommandResendInvitation(ActionContext context) {
+    Connection db = null;
+    try {
+        // Parameters
+        int projectId = Integer.parseInt(context.getRequest().getParameter("pid"));
+        int userId = Integer.parseInt(context.getRequest().getParameter("id"));
+        Key key = (Key) context.getServletContext().getAttribute("TEAM.KEY");
+        db = getConnection(context);
+        // Project permissions
+        Project thisProject = retrieveAuthorizedProject(projectId, context);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-team-edit")) {
+            return "PermissionError";
+        }
+        if (!"true".equals(getPref(context, "INVITE")) && !getUser(context).getAccessInvite()) {
+            return "PermissionError";
+        }
+        context.getRequest().setAttribute("project", thisProject);
+        context.getRequest().setAttribute("IncludeSection", "team_invite_status");
+        context.getRequest().setAttribute("pid", String.valueOf(projectId));
+        ApplicationPrefs prefs = (ApplicationPrefs) context.getServletContext().getAttribute("applicationPrefs");
+        // Process the invitation
+        InvitationList invitations = new InvitationList();
+        User thisUser = UserUtils.loadUser(userId);
+        TeamMember thisMember = new TeamMember(db, projectId, userId);
+        Invitation thisInvitation = new Invitation(thisUser);
+        invitations.add(thisInvitation);
+        // Initialize the message template
+        Template inviteSubject = null;
+        Template inviteBody = null;
+        // Set the data model
+        Map subjectMappings = new HashMap();
+        Map bodyMappings = new HashMap();
+        bodyMappings.put("site", new HashMap());
+        ((Map) bodyMappings.get("site")).put("title", prefs.get("TITLE"));
+        bodyMappings.put("project", thisProject);
+        bodyMappings.put("user", getUser(context));
+        bodyMappings.put("link", new HashMap());
+        bodyMappings.put("invite", new HashMap());
+        bodyMappings.put("optional", new HashMap());
+        ((Map) bodyMappings.get("invite")).put("firstName", thisUser.getFirstName());
+        ((Map) bodyMappings.get("invite")).put("lastName", thisUser.getLastName());
+        ((Map) bodyMappings.get("invite")).put("name", thisUser.getNameFirstLast());
+        ((Map) bodyMappings.get("optional")).put("message", thisMember.getCustomInvitationMessage() != null ? StringUtils.toHtmlValue(thisMember.getCustomInvitationMessage(), false, true) : "");
+        if (thisUser.getRegistered()) {
+            // User IS registered with site
+            inviteSubject = getFreemarkerConfiguration(context).getTemplate("project_invitation_email_subject-text.ftl");
+            inviteBody = getFreemarkerConfiguration(context).getTemplate("project_invitation_email_body-html.ftl");
+            ((Map) bodyMappings.get("link")).put("info", getServerUrl(context));
+            ((Map) bodyMappings.get("link")).put("invitations", getServerUrl(context) + "/show/" + thisUser.getProfileProject().getUniqueId());
+        } else {
+            // User IS NOT registered
+            inviteSubject = getFreemarkerConfiguration(context).getTemplate("project_invitation_for_new_user_email_subject-text.ftl");
+            inviteBody = getFreemarkerConfiguration(context).getTemplate("project_invitation_for_new_user_email_body-html.ftl");
+            String data = URLEncoder.encode(PrivateString.encrypt(key, "id=" + thisUser.getId() + ",pid=" + thisProject.getId()), "UTF-8");
+            ((Map) bodyMappings.get("link")).put("accept", getServerUrl(context) + "/LoginAccept.do?data=" + data);
+            ((Map) bodyMappings.get("link")).put("reject", getServerUrl(context) + "/LoginReject.do?data=" + data);
+            ((Map) bodyMappings.get("link")).put("info", getServerUrl(context));
+        }
+        // Send the message
+        SMTPMessage message = SMTPMessageFactory.createSMTPMessageInstance(prefs.getPrefs());
+        message.setFrom(prefs.get("EMAILADDRESS"));
+        message.addReplyTo(getUser(context).getEmail(), getUser(context).getNameFirstLast());
+        message.addTo(thisUser.getEmail());
+        // Set the subject from the template
+        StringWriter inviteSubjectTextWriter = new StringWriter();
+        inviteSubject.process(subjectMappings, inviteSubjectTextWriter);
+        message.setSubject(inviteSubjectTextWriter.toString());
+        // Set the body from the template
+        StringWriter inviteBodyTextWriter = new StringWriter();
+        inviteBody.process(bodyMappings, inviteBodyTextWriter);
+        message.setBody(inviteBodyTextWriter.toString());
+        // Send the invitations
+        message.setType("text/html");
+        int result = message.send();
+        if (result == 0) {
+            // Record that message was delivered
+            thisMember.setStatus(TeamMember.STATUS_PENDING);
+            thisInvitation.setSentMail(true);
+        } else {
+            // Record that message was not delivered
+            thisMember.setStatus(TeamMember.STATUS_MAILERROR);
+            thisInvitation.setSentMail(false);
+        }
+        thisMember.updateStatus(db);
+        context.getRequest().setAttribute("invitationList", invitations);
+    } catch (Exception errorMessage) {
+        context.getRequest().setAttribute("Error", errorMessage);
+        return ("SystemError");
+    } finally {
+        freeConnection(context, db);
+    }
+    return "ResendInvitationOK";
+}

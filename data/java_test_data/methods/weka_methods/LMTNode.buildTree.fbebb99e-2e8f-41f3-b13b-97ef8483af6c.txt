@@ -1,0 +1,69 @@
+public void buildTree(Instances data, SimpleLinearRegression[][] higherRegressions, double totalInstanceWeight, double higherNumParameters, Instances numericDataHeader) throws Exception {
+    // save some stuff
+    m_totalInstanceWeight = totalInstanceWeight;
+    // no need to copy the data here
+    m_train = data;
+    m_isLeaf = true;
+    m_sons = null;
+    m_numInstances = m_train.numInstances();
+    m_numClasses = m_train.numClasses();
+    // init
+    m_numericDataHeader = numericDataHeader;
+    m_numericData = getNumericData(m_train);
+    if (higherRegressions == null) {
+        m_regressions = initRegressions();
+    } else {
+        m_regressions = higherRegressions;
+    }
+    m_numParameters = higherNumParameters;
+    m_numRegressions = 0;
+    // build logistic model
+    if (m_numInstances >= m_numFoldsBoosting) {
+        if (m_fixedNumIterations > 0) {
+            performBoosting(m_fixedNumIterations);
+        } else if (getUseAIC()) {
+            performBoostingInfCriterion();
+        } else {
+            performBoostingCV();
+        }
+    }
+    m_numParameters += m_numRegressions;
+    // store performance of model at this node
+    Evaluation eval = new Evaluation(m_train);
+    eval.evaluateModel(this, m_train);
+    m_numIncorrectModel = eval.incorrect();
+    boolean grow;
+    // split node if more than minNumInstances...
+    if (m_numInstances > m_minNumInstances) {
+        // residuals
+        if (m_modelSelection instanceof ResidualModelSelection) {
+            // need ps/Ys/Zs/weights
+            double[][] probs = getProbs(getFs(m_numericData));
+            double[][] trainYs = getYs(m_train);
+            double[][] dataZs = getZs(probs, trainYs);
+            double[][] dataWs = getWs(probs, trainYs);
+            m_localModel = ((ResidualModelSelection) m_modelSelection).selectModel(m_train, dataZs, dataWs);
+        } else {
+            m_localModel = m_modelSelection.selectModel(m_train);
+        }
+        // ... and valid split found
+        grow = (m_localModel.numSubsets() > 1);
+    } else {
+        grow = false;
+    }
+    if (grow) {
+        // create and build children of node
+        m_isLeaf = false;
+        Instances[] localInstances = m_localModel.split(m_train);
+        // don't need data anymore, so clean up
+        cleanup();
+        m_sons = new LMTNode[m_localModel.numSubsets()];
+        for (int i = 0; i < m_sons.length; i++) {
+            m_sons[i] = new LMTNode(m_modelSelection, m_fixedNumIterations, m_fastRegression, m_errorOnProbabilities, m_minNumInstances, getWeightTrimBeta(), getUseAIC(), m_nominalToBinary, m_numDecimalPlaces);
+            m_sons[i].buildTree(localInstances[i], copyRegressions(m_regressions), m_totalInstanceWeight, m_numParameters, m_numericDataHeader);
+            localInstances[i] = null;
+        }
+    } else {
+        cleanup();
+    }
+}

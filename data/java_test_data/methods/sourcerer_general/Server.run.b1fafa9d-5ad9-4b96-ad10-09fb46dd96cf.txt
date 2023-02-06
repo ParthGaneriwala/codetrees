@@ -1,0 +1,63 @@
+private void run() {
+    StopWatch sw;
+    ThreadGroup tg;
+    String tgName;
+    printWithThread("run() entered");
+    print("Initiating startup sequence...");
+    printProperties();
+    sw = new StopWatch();
+    setServerError(null);
+    try {
+        // Faster init first:
+        // It is huge waste to fully open the databases, only
+        // to find that the socket address is already in use
+        openServerSocket();
+    } catch (Exception e) {
+        setServerError(e);
+        printError("run()/openServerSocket(): ");
+        printStackTrace(e);
+        shutdown(true);
+        return;
+    }
+    tgName = "HSQLDB Connections @" + Integer.toString(this.hashCode(), 16);
+    tg = new ThreadGroup(tgName);
+    tg.setDaemon(false);
+    serverConnectionThreadGroup = tg;
+    // already open.
+    if (!openDatabases()) {
+        setServerError(null);
+        printError("Shutting down because there are no open databases");
+        shutdown(true);
+        return;
+    }
+    // At this point, we have a valid server socket and
+    // a valid hosted database set, so its OK to start
+    // listening for connections.
+    setState(ServerConstants.SERVER_STATE_ONLINE);
+    print(sw.elapsedTimeToMessage("Startup sequence completed"));
+    printServerOnlineMessage();
+    try {
+        /*
+             * This loop is necessary for UNIX w/ Sun Java 1.3 because
+             * in that case the socket.close() elsewhere will not
+             * interrupt this accept().
+             */
+        while (true) {
+            try {
+                handleConnection(socket.accept());
+            } catch (java.io.InterruptedIOException iioe) {
+            }
+        }
+    } catch (IOException ioe) {
+        if (getState() == ServerConstants.SERVER_STATE_ONLINE) {
+            setServerError(ioe);
+            printError(this + ".run()/handleConnection(): ");
+            printStackTrace(ioe);
+        }
+    } catch (Throwable t) {
+        printWithThread(t.toString());
+    } finally {
+        // or maybe getServerError() != null?
+        shutdown(false);
+    }
+}

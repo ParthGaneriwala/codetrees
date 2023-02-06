@@ -1,0 +1,49 @@
+@Override
+public boolean routeMessageReceived(RouterManager routerManager, RouteMessage routeMessage, SmSession smSession) {
+    if (routeMessage.containExtension(SearchCompletedExtension.ELEMENTNAME, SearchCompletedExtension.NAMESPACE)) {
+        String node = routeMessage.getToUserNode();
+        List<Object> messages = blockedMessages.removeAll(node);
+        for (Object obj : messages) {
+            if (obj instanceof RouteMessage) {
+                smSession.write((RouteMessage) obj);
+            }
+        }
+        return true;
+    }
+    SearchRouteExtension searchExtension = (SearchRouteExtension) routeMessage.getRouteExtension(SearchRouteExtension.ELEMENTNAME, SearchRouteExtension.NAMESPACE);
+    if (searchExtension != null) {
+        // put message to blockMessages
+        if (!blockedMessages.containsKey(routeMessage.getToUserNode())) {
+            blockedMessages.put(routeMessage.getToUserNode(), System.currentTimeMillis());
+        }
+        int total = searchExtension.getTotal();
+        // hash ring changed
+        String circleId = searchExtension.getHashCircleId();
+        if (total != newAddedSmSessionCount.get() || !hashCircleId.equals(circleId)) {
+            routeMessage.removeRouteExtension(searchExtension);
+            sendMessage(routeMessage);
+        } else {
+            RouteMessage searchMessage = new RouteMessage(routeMessage.getTo(), routeMessage.getStreamId());
+            searchExtension.incrementTimes();
+            searchMessage.setToUserNode(routeMessage.getToUserNode());
+            searchMessage.setXmlStanza(routeMessage.getXmlStanza());
+            searchMessage.addRouteExtension(searchExtension);
+            SmSession smSession2 = null;
+            if (searchExtension.getTimes() > searchExtension.getTotal()) {
+                String startNode = searchExtension.getStartNode();
+                smSession2 = smSessions.get(startNode);
+            } else {
+                smSession2 = getNextSmSession(routeMessage.getToUserNode(), searchExtension);
+            }
+            if (smSession2 == null || !smSession2.isConnected()) {
+                // SM Module may be breakdown, research
+                routeMessage.removeRouteExtension(searchExtension);
+                sendMessage(routeMessage);
+            } else {
+                smSession2.write(searchMessage);
+            }
+        }
+        return true;
+    }
+    return false;
+}

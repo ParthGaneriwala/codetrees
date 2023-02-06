@@ -1,0 +1,102 @@
+public void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+    UserService userService = UserServiceFactory.getUserService();
+    User user = userService.getCurrentUser();
+    String content = req.getParameter("content");
+    String amount = req.getParameter("amount");
+    String reason = req.getParameter("reason");
+    String rec_token = req.getParameter("rec_token");
+    String email = req.getParameter("email");
+    String eventid = req.getParameter("eventid");
+    String evententryid = req.getParameter("evententryid");
+    String website = req.getParameter("website");
+    String name = req.getParameter("name");
+    String event_date = req.getParameter("event_date");
+    String time = req.getParameter("time");
+    String location = req.getParameter("location");
+    String return_link = req.getParameter("return_link");
+    String recurring_times = req.getParameter("recurring_times");
+    String recurring_price_per_period = req.getParameter("recurring_price_per_period");
+    String recurring_period = req.getParameter("recurring_period");
+    // eventid
+    // evententryid
+    Date date = new Date();
+    Customer customer = new Customer(user, content, date, amount, reason, rec_token);
+    customer.setEmail(email);
+    customer.setEventid(eventid);
+    customer.setWebsite(website);
+    customer.setEvententryid(evententryid);
+    customer.setName(name);
+    customer.setEvent_date(event_date);
+    customer.setTime(time);
+    customer.setLocation(location);
+    customer.setReturn_link(return_link);
+    // set both for redundancy. only support one charge for recurrence
+    // override amount for recurring charge.
+    amount = recurring_price_per_period;
+    customer.setRecurring_price_per_period(recurring_price_per_period);
+    customer.setAmount(recurring_price_per_period);
+    customer.setTimes(recurring_times);
+    customer.setPeriod(recurring_period);
+    // customer.setCallerReference(NAME + customer.getId());
+    PersistenceManager pm = PMF.get().getPersistenceManager();
+    try {
+        pm.makePersistent(customer);
+    } finally {
+        pm.close();
+    }
+    String requestURL = null;
+    String error = null;
+    try {
+        String accessKeyId = PropertyBundle.getProperty(PropertyKeys.AWS_ACCESS_KEY);
+        String secretAccessKey = PropertyBundle.getProperty(PropertyKeys.AWS_SECRET_KEY);
+        String CHECKOUT_SERVER = CheckoutPropertyBundle.getProperty(CheckoutPropertyKeys.CHECKOUT_SERVER_NAME);
+        // System.out.println("XXX: " + PropertyBundle.getProperty(PropertyKeys.MAX_ERROR_RETRY));
+        // String CHECKOUT_SERVER = PropertyBundle.getProperty("CHECKOUT_SERVER");
+        // AmazonFPSCBUIUtils obj = new AmazonFPSCBUIUtils(AwsAccessKey, AwsSecretKey);
+        AmazonFPSCBUIUtils obj = new AmazonFPSCBUIUtils(accessKeyId, secretAccessKey);
+        obj.setMandatoryParams("Recurring", CHECKOUT_SERVER + "/CustomerRecurringToken");
+        customer.setCallerReference(NAME + customer.getId());
+        pm = PMF.get().getPersistenceManager();
+        try {
+            pm.makePersistent(customer);
+        } finally {
+            pm.close();
+        }
+        obj.setCallerReference(NAME + customer.getId());
+        obj.setTransactionAmount(amount);
+        // obj.setTransactionAmount("100");
+        obj.setPaymentReason(reason);
+        String recurringPeriod = null;
+        // obj.add("validityExpiry", Long.toString(System.currentTimeMillis()/1000 + (365*24*60*60))); // expire in one year.
+        // obj.add("validityExpiry", Long.toString(System.currentTimeMillis()/1000 + (1*24*60*60))); // expire in one day.
+        Calendar now = Calendar.getInstance();
+        // buffer the end time by a few hours because the cron job only runs once an hour currently.
+        now.add(Calendar.HOUR_OF_DAY, +(2));
+        if ("MONTHLY".equals(recurring_period)) {
+            recurringPeriod = "1 Month";
+            now.add(Calendar.MONTH, +(Integer.parseInt(recurring_times)));
+        } else if ("SEMI_MONTHLY".equals(recurring_period)) {
+            recurringPeriod = "14 Days";
+            now.add(Calendar.DAY_OF_MONTH, +(14 * Integer.parseInt(recurring_times)));
+        } else if ("DAILY".equals(recurring_period)) {
+            recurringPeriod = "1 Day";
+            now.add(Calendar.DATE, +(Integer.parseInt(recurring_times)));
+        } else if ("HOURLY".equals(recurring_period)) {
+            recurringPeriod = "1 Hour";
+            now.add(Calendar.HOUR_OF_DAY, +(Integer.parseInt(recurring_times)));
+        }
+        obj.add("validityExpiry", Long.toString(now.getTimeInMillis() / 1000));
+        // obj.add("recurringPeriod", "1 Hour");
+        obj.add("recurringPeriod", recurringPeriod);
+        // obj.add("recipientToken", "M2LD42KZJR5CCGGE33EH3DRD4HFEKBI3NGLK124TAHVLAMA9NQQ7KESGNNTHQRQT");
+        obj.add("recipientToken", rec_token);
+        requestURL = obj.getURL();
+        System.out.println("Request URL is ::  " + requestURL);
+    } catch (Exception e) {
+        error = e.getMessage();
+    }
+    if (requestURL != null)
+        resp.sendRedirect(requestURL);
+    else
+        resp.sendRedirect("/message.jsp?msg=" + error);
+}

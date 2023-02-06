@@ -1,0 +1,76 @@
+void partition(SentenceContext ctx) {
+    long realStartTime = Timing.nanoTime();
+    TrellisSlice currentSlice = null;
+    currentSlice = ctx.getSliceByOffset(-1);
+    TrellisItem[] currentItems = currentSlice.getElements().toArray(new TrellisItem[0]);
+    if (currentItems.length == 0) {
+        System.err.printf("no elements at %d in %s\n", currentSlice.getTime(), ctx.getTrellis());
+        return;
+    }
+    Arrays.sort(currentItems, itemComparator);
+    // int itemsSize = Math.max(forest.getOrder()-1, 1);
+    double bestProb = currentItems[0].getPrevProb() * currentItems[0].tree.getTotalProb();
+    // ArrayList<LinkQueue> itemLists = new ArrayList<LinkQueue>(itemsSize);
+    LinkedList<TrellisItem> currItems = new LinkedList<TrellisItem>();
+    int itemNum = 0;
+    for (TrellisItem currentItem : currentItems) {
+        ++itemNum;
+        if (currentItem.getPrevProb() * currentItem.tree.getTotalProb() < bestProb * PRUNING_THRESHOLD) {
+            // System.out.println("pruned!");
+            break;
+        }
+        currItems.add(currentItem);
+    }
+    /*
+		for(int i=2; i<forest.getOrder()-1; ++i) {
+			// null out empty queues
+			// items in the current slice (-1) have already null queue
+			TrellisSlice s = ctx.getSliceByOffset(-i);
+		}
+		*/
+    int numProbs = 0;
+    long startTime = Timing.nanoTime();
+    ctx.setCurrentRequests(new RequestBundle<Key, OnDiskCompactProbTree>(storage));
+    final Context overtContext = new Context(forest.getOvertOrder());
+    for (int i = 0; i < overtContext.data.length; ++i) {
+        overtContext.data[i] = ctx.getTrellis().getSliceByOffset(i + 1 - forest.getOvertOrder()).getOvertFactors();
+    }
+    // new decoding
+    while (currItems.size() > 0) {
+        TrellisItem headItem = currItems.remove();
+        newPartition(ctx, overtContext, headItem, currItems);
+    }
+    long afterPartionTime = Timing.nanoTime();
+    int numPredictions = currentSlice.getNext().getPredictions().getPredictions().size();
+    generatePredictions(ctx, currentSlice.getNext());
+    long afterPredictionsTime = Timing.nanoTime();
+    // now merge the elements
+    /*		
+		MutableInteger mergeIterationCount = new MutableInteger();
+		int mergedCount = 0;
+
+		for(int timeOffset = 0; timeOffset > 2 - forest.getHiddenOrder(); --timeOffset) {
+			TrellisSlice nextSlice = ctx.getSliceByOffset(timeOffset);
+			for(TrellisItem item : nextSlice.getElements()) {
+				mergedCount += tryToMerge(nextSlice.getPreviousItems(item), mergeIterationCount);
+			} 
+			//nextSlice.checkLinks();
+		}
+		
+		long afterMergeTime = Timing.nanoTime();
+*/
+    {
+        TrellisSlice nextSlice = currentSlice.getNext();
+        double maxScale = nextSlice.getMaxScale();
+        if (maxScale != 1.0) {
+            nextSlice.scale(1.0 / maxScale);
+            ctx.addLogScale(Math.log10(maxScale));
+        }
+    }
+    if (debug > 0) {
+        System.out.printf("[%d] : prep time %fs, %d iterations in %fs, %d predictions in %fs.\n", currentSlice.getNext().getTime(), ((double) (startTime - realStartTime)) / 1000000000, numProbs, ((double) (afterPartionTime - startTime)) / 1000000000, numPredictions, ((double) (afterPredictionsTime - afterPartionTime)) / 1000000000);
+    }
+    timingData.setTotalPrologTime(timingData.getTotalPrologTime() + startTime - realStartTime);
+    timingData.setTotalPartitionTime(timingData.getTotalPartitionTime() + afterPartionTime - startTime);
+    TimingData.totalPredictionTime.addAndGet(afterPredictionsTime - afterPartionTime);
+}

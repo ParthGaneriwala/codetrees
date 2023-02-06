@@ -1,0 +1,113 @@
+protected void postProcessPage(HttpServletRequest request, Object command, Errors errors, int page) throws Exception {
+    BusinessAssociatorView associatorView = (BusinessAssociatorView) command;
+    request.removeAttribute("readonly");
+    if (request.getParameter("_target0") != null) {
+        logger.debug("Cancel Button...");
+        logger.debug("----->resetting the complaint from session.");
+        Complaint complaint = (Complaint) request.getSession().getAttribute("initialcomplaint");
+        associatorView = (BusinessAssociatorView) convertComplaintToView(complaint, associatorView);
+        logger.debug("view reset to: " + associatorView.getBusiness().getBusinessName());
+        associatorView.getBusiness().setId(null);
+    }
+    if (page == 0 && request.getParameter("_target1") != null) {
+        logger.debug("Submitting search from Step1 to Step2...");
+    }
+    if (page == 1 && request.getParameter("_target2") != null) {
+        logger.debug("Search result page to Google Search...");
+    }
+    if (page == 1 && request.getParameter("_target3") != null) {
+        validatePage(associatorView, errors, page, request);
+        request.setAttribute("pageFrom", "1");
+        logger.debug("\n----> adding new business?: " + associatorView.isExistingBusiness());
+        if (associatorView.isExistingBusiness() && associatorView.getBusiness().getId() != null) {
+            logger.debug("Step2 to Associate Existing Business...");
+            request.setAttribute("readonly", "true");
+            Business business = businessManager.get(associatorView.getBusiness().getId());
+            if (business != null) {
+                associatorView.setBusinessCategoryId(business.getBusinessCatLkp().getId());
+            }
+        } else {
+            logger.debug("Search Result to Enter New Business...");
+            request.removeAttribute("readonly");
+            associatorView = (BusinessAssociatorView) convertComplaintToView((Complaint) WebUtils.getSessionAttribute(request, "initialcomplaint"), associatorView);
+            associatorView.getBusiness().setBusinessCatLkp(new BusinessCatLkp(Long.valueOf(0), ""));
+        // associatorView.setBusinessCatLkp(null);
+        }
+    }
+    if (page == 2 && request.getParameter("_target3") != null) {
+        logger.debug("Adding New Google Business: " + associatorView.getBusiness().getBusinessName());
+        request.setAttribute("pageFrom", "2");
+        if (request.getParameter("_target3").equals("Enter New Business")) {
+            logger.debug("target from google: " + request.getParameter("_target3"));
+            associatorView = (BusinessAssociatorView) convertComplaintToView((Complaint) WebUtils.getSessionAttribute(request, "initialcomplaint"), associatorView);
+            associatorView.setBusinessCategoryId(Long.valueOf(0));
+        }
+        if (StringUtils.equals(request.getParameter("_target3"), "Use selected business")) {
+            logger.debug("here is the business from associator: " + associatorView.getBusiness().getBusinessName());
+            logger.debug("here is the business from the form param: " + request.getParameter("businessName"));
+            Business gb = new Business();
+            gb.setActive(true);
+            gb.setParentAsContact(false);
+            gb.setInViolation(false);
+            gb.setBusinessName(request.getParameter("businessName"));
+            gb.getAddress().setAddress1(request.getParameter("businessAddress1"));
+            gb.getAddress().setCity(request.getParameter("businessCity"));
+            gb.getAddress().setStateId(request.getParameter("businessState"));
+            logger.debug("Here is the phone from associatorView: " + request.getParameter("businessPhone"));
+            String phone = StringUtils.deleteWhitespace(request.getParameter("businessPhone"));
+            StringUtils.remove(phone, " ");
+            logger.debug("Here is the phone from Google: " + phone);
+            gb.setBusinessPhone(phone);
+            gb.setBusinessCatLkp(null);
+            /*
+				 * String zip= new YahooZipLocator().getZipCode(gb);
+				 * if(StringUtils.isNotBlank(zip)){
+				 * gb.setBusinessZip(StringUtils.substringBefore(zip, "-"));
+				 * gb.setBusinessZipExt(StringUtils.substringAfter(zip, "-")); }
+				 */
+            associatorView.setBusiness(gb);
+            associatorView.setBusinessCategoryId(Long.valueOf(0));
+        }
+    }
+    // google page: back button
+    if (page == 2 && request.getParameter("_target1") != null) {
+        logger.debug("Back Button from Google Page...");
+        if (associatorView.getBusiness().getId() == null) {
+            Complaint complaint = (Complaint) request.getSession().getAttribute("initialcomplaint");
+            associatorView = (BusinessAssociatorView) convertComplaintToView(complaint, associatorView);
+        }
+    }
+    if (page == 3 && request.getParameter("_target4") != null) {
+        logger.debug("Submitting Business from Step4 to Step5...");
+        validatePage(associatorView, errors, page, request);
+        if (associatorView.getBusinessCategoryId().intValue() != 0) {
+            logger.debug("associatorView.busCatId: " + associatorView.getBusinessCategoryId());
+            associatorView.getBusiness().setBusinessCatLkp(new BusinessCatLkp(optionsBeanManager.findById(Constants.BUS_CAT_BEAN, associatorView.getBusinessCategoryId())));
+        }
+        if (associatorView.getBusiness().getAddress().getCountyId() == null || associatorView.getBusiness().getAddress().getCountyId() != associatorView.getCountyId()) {
+            associatorView.getBusiness().getAddress().setCountyId(associatorView.getBusiness().getAddress().getCountyId());
+        }
+        BusinessAssociatorView sessionView = (BusinessAssociatorView) WebUtils.getSessionAttribute(request, "initialBusiness");
+        if (!StringUtils.equals(associatorView.getCountyId(), sessionView.getCountyId())) {
+            emailManager.sendMail(Constants.TPEP_COMPLAINT, associatorView.getCountyId());
+        }
+        associatorView.getBusiness().setActive(true);
+        associatorView.getBusiness().setParentAsContact(false);
+        associatorView.getBusiness().setInViolation(false);
+        associatorView.getBusiness().getAddress().setStateId("OR");
+    }
+    // back button from page 5 to 4
+    if (page == 4 && request.getParameter("_target3") != null) {
+        logger.debug("Back Button from Step5 to Step4...");
+    }
+    if (page == 4 && request.getParameter("_target5") != null) {
+        logger.debug("Submitting From Step5 to Step6...");
+        validatePage(associatorView, errors, page, request);
+        if (associatorView.getNatureOfComplaintId() != null && associatorView.getNatureOfComplaintId() > 0) {
+            associatorView.setNatureOfComplaintText(optionsBeanManager.findById(Constants.COMPLAINT_NATURE_BEAN, associatorView.getNatureOfComplaintId()).getValue());
+        }
+        if (associatorView.getNonActionableId() != null && associatorView.getNonActionableId() > 0) {
+            associatorView.setNonActionableText(optionsBeanManager.findById(Constants.NON_ACTIONABLE_BEAN, associatorView.getNonActionableId()).getValue());
+        }
+    }
+}

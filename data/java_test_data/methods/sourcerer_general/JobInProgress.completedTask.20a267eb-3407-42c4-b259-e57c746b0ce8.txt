@@ -1,0 +1,86 @@
+public synchronized boolean completedTask(TaskInProgress tip, TaskStatus status, JobTrackerInstrumentation metrics) {
+    TaskAttemptID taskid = status.getTaskID();
+    int oldNumAttempts = tip.getActiveTasks().size();
+    // speculative tasks as _complete_.
+    if (tip.isComplete()) {
+        // Mark this task as KILLED
+        tip.alreadyCompletedTask(taskid);
+        // Let the JobTracker cleanup this taskid if the job isn't running
+        if (this.status.getRunState() != JobStatus.RUNNING) {
+            jobtracker.markCompletedTaskAttempt(status.getTaskTracker(), taskid);
+        }
+        return false;
+    }
+    LOG.info("Task '" + taskid + "' has completed " + tip.getTIPId() + " successfully.");
+    // Mark the TIP as complete
+    tip.completed(taskid);
+    resourceEstimator.updateWithCompletedTask(status, tip);
+    // Update jobhistory
+    TaskTrackerStatus ttStatus = this.jobtracker.getTaskTracker(status.getTaskTracker());
+    String trackerHostname = jobtracker.getNode(ttStatus.getHost()).toString();
+    String taskType = tip.isCleanupTask() ? Values.CLEANUP.name() : tip.isSetupTask() ? Values.SETUP.name() : tip.isMapTask() ? Values.MAP.name() : Values.REDUCE.name();
+    if (status.getIsMap()) {
+        JobHistory.MapAttempt.logStarted(status.getTaskID(), status.getStartTime(), status.getTaskTracker(), ttStatus.getHttpPort(), taskType);
+        JobHistory.MapAttempt.logFinished(status.getTaskID(), status.getFinishTime(), trackerHostname, taskType, status.getStateString(), status.getCounters());
+    } else {
+        JobHistory.ReduceAttempt.logStarted(status.getTaskID(), status.getStartTime(), status.getTaskTracker(), ttStatus.getHttpPort(), taskType);
+        JobHistory.ReduceAttempt.logFinished(status.getTaskID(), status.getShuffleFinishTime(), status.getSortFinishTime(), status.getFinishTime(), trackerHostname, taskType, status.getStateString(), status.getCounters());
+    }
+    JobHistory.Task.logFinished(tip.getTIPId(), taskType, tip.getExecFinishTime(), status.getCounters());
+    int newNumAttempts = tip.getActiveTasks().size();
+    if (tip.isSetupTask()) {
+        // setup task has finished. kill the extra setup tip
+        killSetupTip(!tip.isMapTask());
+        // Job can start running now.
+        this.status.setSetupProgress(1.0f);
+        this.status.setRunState(JobStatus.RUNNING);
+        JobHistory.JobInfo.logStarted(profile.getJobID());
+    } else if (tip.isCleanupTask()) {
+        // cleanup task has finished. Kill the extra cleanup tip
+        if (tip.isMapTask()) {
+            // kill the reduce tip
+            cleanup[1].kill();
+        } else {
+            cleanup[0].kill();
+        }
+        // if the job is failed, then mark the job failed.
+        if (jobFailed) {
+            terminateJob(JobStatus.FAILED);
+        }
+        // if the job is killed, then mark the job killed.
+        if (jobKilled) {
+            terminateJob(JobStatus.KILLED);
+        } else {
+            jobComplete(metrics);
+        }
+        // The job has been killed/failed/successful
+        // JobTracker should cleanup this task
+        jobtracker.markCompletedTaskAttempt(status.getTaskTracker(), taskid);
+    } else if (tip.isMapTask()) {
+        runningMapTasks -= 1;
+        // check if this was a sepculative task
+        if (oldNumAttempts > 1) {
+            speculativeMapTasks -= (oldNumAttempts - newNumAttempts);
+        }
+        finishedMapTasks += 1;
+        metrics.completeMap(taskid);
+        // remove the completed map from the resp running caches
+        retireMap(tip);
+        if ((finishedMapTasks + failedMapTIPs) == (numMapTasks)) {
+            this.status.setMapProgress(1.0f);
+        }
+    } else {
+        runningReduceTasks -= 1;
+        if (oldNumAttempts > 1) {
+            speculativeReduceTasks -= (oldNumAttempts - newNumAttempts);
+        }
+        finishedReduceTasks += 1;
+        metrics.completeReduce(taskid);
+        // remove the completed reduces from the running reducers set
+        retireReduce(tip);
+        if ((finishedReduceTasks + failedReduceTIPs) == (numReduceTasks)) {
+            this.status.setReduceProgress(1.0f);
+        }
+    }
+    return true;
+}

@@ -1,0 +1,37 @@
+public static void main(String[] args) throws Exception {
+    // set up an instance of Wikipedia
+    Wikipedia wikipedia = Wikipedia.getInstanceFromArguments(args);
+    // use a text processor, so that terms and items in wikipedia will both be case-folded before being compared.
+    TextProcessor tp = new CaseFolder();
+    File stopwordFile = new File("/research/wikipediaminer/data/stopwords.txt");
+    // cache tables that will be used extensively
+    File dataDirectory = new File("/research/wikipediaminer/data/en/20080727");
+    ProgressNotifier pn = new ProgressNotifier(5);
+    TIntHashSet ids = wikipedia.getDatabase().getValidPageIds(dataDirectory, 2, pn);
+    wikipedia.getDatabase().cachePages(dataDirectory, ids, pn);
+    wikipedia.getDatabase().cacheAnchors(dataDirectory, tp, ids, 2, pn);
+    wikipedia.getDatabase().cacheInLinks(dataDirectory, ids, pn);
+    wikipedia.getDatabase().cacheGenerality(dataDirectory, ids, pn);
+    // gather article sets for training and testing
+    ArticleSet trainSet = new ArticleSet(new File("data/articleSets/trainingIds.csv"));
+    ArticleSet testSet = new ArticleSet(new File("data/articleSets/testIds_wikify.csv"));
+    // use relatedness cache, so we won't repeat these calculations unnecessarily
+    // new RelatednessCache() ;
+    RelatednessCache rc = null;
+    // use a pre-trained disambiguator
+    Disambiguator disambiguator = new Disambiguator(wikipedia, tp, 0.01, 0.01, 25);
+    disambiguator.loadClassifier(new File("data/models/disambig.model"));
+    // connect disambiguator to a new topic detector
+    TopicDetector topicDetector = new TopicDetector(wikipedia, disambiguator, stopwordFile, true, false);
+    // train a new link detector
+    LinkDetector linkDetector = new LinkDetector(wikipedia);
+    linkDetector.train(trainSet, ArticleCleaner.ALL, "LinkDetection_Training", topicDetector, rc);
+    // build link detection classifier
+    Classifier classifier = new Bagging();
+    classifier.setOptions(Utils.splitOptions("-P 10 -S 1 -I 10 -W weka.classifiers.trees.J48 -- -U -M 2"));
+    linkDetector.buildClassifier(classifier);
+    linkDetector.saveClassifier(new File("data/models/linkDetect.model"));
+    // test
+    Result<Integer> r = linkDetector.test(testSet, ArticleCleaner.ALL, topicDetector, rc);
+    System.out.println(r);
+}

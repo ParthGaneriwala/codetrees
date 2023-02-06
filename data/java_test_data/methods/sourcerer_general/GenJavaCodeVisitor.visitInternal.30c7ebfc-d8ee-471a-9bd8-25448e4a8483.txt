@@ -1,0 +1,48 @@
+@Override
+protected void visitInternal(ForNode node) {
+    String varName = node.getLocalVarName();
+    String nodeId = node.getId();
+    TranslateToJavaExprVisitor ttjev = translateToJavaExprVisitorFactory.create(localVarTranslations);
+    // Get the Java expression text for the init/limit/increment values.
+    List<ExprRootNode<ExprNode>> rangeArgs = Lists.newArrayList(node.getRangeArgs());
+    String incrementJavaExprText = (rangeArgs.size() == 3) ? genIntegerValue(ttjev.exec(rangeArgs.remove(2))) : "1";
+    String initJavaExprText = (rangeArgs.size() == 2) ? genIntegerValue(ttjev.exec(rangeArgs.remove(0))) : "0";
+    String limitJavaExprText = genIntegerValue(ttjev.exec(rangeArgs.get(0)));
+    // If any of the Java exprs for init/limit/increment isn't an integer, precompute its value.
+    String initCode;
+    if (INTEGER.matcher(initJavaExprText).matches()) {
+        initCode = initJavaExprText;
+    } else {
+        initCode = varName + "Init" + nodeId;
+        javaCodeBuilder.appendLine("int ", initCode, " = ", initJavaExprText, ";");
+    }
+    String limitCode;
+    if (INTEGER.matcher(limitJavaExprText).matches()) {
+        limitCode = limitJavaExprText;
+    } else {
+        limitCode = varName + "Limit" + nodeId;
+        javaCodeBuilder.appendLine("int ", limitCode, " = ", limitJavaExprText, ";");
+    }
+    String incrementCode;
+    if (INTEGER.matcher(incrementJavaExprText).matches()) {
+        incrementCode = incrementJavaExprText;
+    } else {
+        incrementCode = varName + "Increment" + nodeId;
+        javaCodeBuilder.appendLine("int ", incrementCode, " = ", incrementJavaExprText, ";");
+    }
+    // The start of the Java 'for' loop.
+    String incrementStmt = (incrementCode.equals("1")) ? varName + nodeId + "++" : varName + nodeId + " += " + incrementCode;
+    javaCodeBuilder.appendLine("for (int ", varName, nodeId, " = ", initCode, "; ", varName, nodeId, " < ", limitCode, "; ", incrementStmt, ") {");
+    javaCodeBuilder.increaseIndent();
+    // Add a new localVarTranslations frame and populate it with the translations from this node.
+    Map<String, JavaExpr> newLocalVarTranslationsFrame = Maps.newHashMap();
+    newLocalVarTranslationsFrame.put(varName, new JavaExpr("new com.google.template.soy.data.restricted.IntegerData(" + varName + nodeId + ")", IntegerData.class, Integer.MAX_VALUE));
+    localVarTranslations.push(newLocalVarTranslationsFrame);
+    // Generate the code for the loop body.
+    visitChildren(node);
+    // Remove the localVarTranslations frame that we added above.
+    localVarTranslations.pop();
+    // The end of the Java 'for' loop.
+    javaCodeBuilder.decreaseIndent();
+    javaCodeBuilder.appendLine("}");
+}

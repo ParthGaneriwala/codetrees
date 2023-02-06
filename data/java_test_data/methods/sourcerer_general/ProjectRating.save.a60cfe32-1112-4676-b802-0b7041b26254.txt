@@ -1,0 +1,56 @@
+public static synchronized boolean save(Connection db, ProjectRating projectRating) throws SQLException {
+    if (!isValid(projectRating)) {
+        return false;
+    }
+    Exception errorMessage = null;
+    boolean commit = db.getAutoCommit();
+    try {
+        if (commit) {
+            db.setAutoCommit(false);
+        }
+        int existingVote = Rating.queryUserRating(db, projectRating.getEnteredBy(), projectRating.getProjectId(), "projects", "project_id");
+        int newVote = projectRating.getRating();
+        // Determine if an update or insert is required
+        if (existingVote == -1) {
+            insertRating(db, projectRating);
+        } else {
+            updateRating(db, projectRating);
+        }
+        if (existingVote != newVote) {
+            // Update the project rating count and value
+            PreparedStatement pst = db.prepareStatement("UPDATE projects " + " SET rating_count = rating_count + ?, rating_value = rating_value + ?, " + " rating_avg = ((rating_value + ?) / (rating_count + ?)) " + " WHERE project_id = ? ");
+            int i = 0;
+            if (existingVote == -1) {
+                pst.setInt(++i, 1);
+                pst.setInt(++i, newVote);
+                pst.setInt(++i, newVote);
+                pst.setInt(++i, 1);
+            } else {
+                pst.setInt(++i, 0);
+                pst.setInt(++i, newVote - existingVote);
+                pst.setInt(++i, newVote - existingVote);
+                pst.setInt(++i, 0);
+            }
+            pst.setInt(++i, projectRating.getProjectId());
+            pst.execute();
+            pst.close();
+        }
+        if (commit) {
+            db.commit();
+        }
+        CacheUtils.invalidateValue(Constants.SYSTEM_PROJECT_CACHE, projectRating.getProjectId());
+    } catch (Exception e) {
+        errorMessage = e;
+        if (commit) {
+            db.rollback();
+        }
+    } finally {
+        if (commit) {
+            db.setAutoCommit(true);
+        }
+    }
+    if (errorMessage != null) {
+        throw new SQLException(errorMessage.getMessage());
+    }
+    return true;
+}

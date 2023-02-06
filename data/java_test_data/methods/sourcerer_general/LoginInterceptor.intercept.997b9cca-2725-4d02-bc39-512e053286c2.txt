@@ -1,0 +1,141 @@
+public String intercept(ActionInvocation invocation) throws Exception {
+    // Get the action context from the invocation so we can access the
+    // HttpServletRequest and HttpSession objects.
+    final ActionContext context = invocation.getInvocationContext();
+    HttpServletRequest request = (HttpServletRequest) context.get(HTTP_REQUEST);
+    HttpServletResponse response = (HttpServletResponse) context.get(HTTP_RESPONSE);
+    HttpSession session = request.getSession(true);
+    // Tratamento do JSESSIONID, incompatibilicade com o webvox
+    {
+        if (session == null)
+            return "login";
+        response.addCookie(new Cookie("JSESSIONID", session.getId()));
+    }
+    String pagOrigem = request.getHeader("Referer");
+    if (context.getName().equals("voltar")) {
+        response.sendRedirect(session.getAttribute("PagOrigem").toString());
+        return "";
+    }
+    session.setAttribute("PagOrigem", pagOrigem);
+    String acao = getActionName(request);
+    logger.debug("acao='" + acao + "'");
+    if (acao.equals("instalar")) {
+        // chama o instalador
+        invocation.invokeActionOnly();
+    }
+    // Is there a "user" object stored in the user's HttpSession?
+    Usuario usuario = (Usuario) session.getAttribute(USER_HANDLE);
+    if (usuario == null) {
+        // Nao mostra a tela de login no pedaco do ajax.
+        if (acao.equals("autoCompletar") || acao.equals("verMensagemStatusEda")) {
+            return ActionSupport.INPUT;
+        }
+        // Permite executar o cadastar Newsletter dentro de adm sem login
+        if (acao.equals("cadastrarDestinatario"))
+            invocation.invoke();
+        // Permite executar o lembrar senha dentro de adm sem login
+        if (acao.equals("lembrarSenhaGerenciador"))
+            invocation.invoke();
+        // Is the user attempting to log in right now?
+        String loginAttempt = request.getParameter(LOGIN_ATTEMPT);
+        if (loginAttempt != null && !loginAttempt.equals("")) {
+            // e joga na sessao caso esteja com login e senha corretos
+            if (processLoginAttempt(request, session)) {
+                // The login succeeded send them the login-success page.
+                usuario = (Usuario) session.getAttribute(USER_HANDLE);
+                logDao.addLog(usuario, "Usu&aacute;rio logado com sucesso.");
+                boolean loginDireto = false;
+                if (usuario.getListSitio().size() == 0) {
+                    loginDireto = true;
+                } else if (usuario.getListSitio().size() == 1) {
+                    Sitio sitio = ((Usuario) session.getAttribute(USER_HANDLE)).getListSitio().get(0);
+                    Privilegio privilegioAtual = privilegioDao.select(usuario, sitio);
+                    usuario.setPerfil(privilegioAtual.getPerfil());
+                    usuario.setSetor(privilegioAtual.getSetor());
+                    session.setAttribute(USER_HANDLE, usuario);
+                    session.setAttribute(Super.SITIO_LOGADO, sitio);
+                    loginDireto = true;
+                } else if (usuario.getListSitio().size() > 0) {
+                    // ver se a url casa com algum sitio
+                    for (Sitio sitio : usuario.getListSitio()) {
+                        if (sitio.getUrl() != null) {
+                            String[] urlsSitio = sitio.getUrl().split(",");
+                            for (int i = 0; i < urlsSitio.length; i++) {
+                                String urlAtual = urlsSitio[i];
+                                if (urlAtual != null && request.getRequestURL().toString().startsWith(urlAtual)) {
+                                    Privilegio privilegioAtual = privilegioDao.select(usuario, sitio);
+                                    usuario.setPerfil(privilegioAtual.getPerfil());
+                                    usuario.setSetor(privilegioAtual.getSetor());
+                                    session.setAttribute(USER_HANDLE, usuario);
+                                    session.setAttribute(Super.SITIO_LOGADO, sitio);
+                                    loginDireto = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (loginDireto)
+                            break;
+                    }
+                }
+                if (loginDireto) {
+                    // tenta seguir a url solicitada
+                    String referer = (String) request.getSession().getAttribute(URL_SOLICITADA);
+                    request.getSession().removeAttribute(URL_SOLICITADA);
+                    if (referer != null) {
+                        String action = referer;
+                        if (action.contains(".action")) {
+                            try {
+                                action = action.substring(0, action.indexOf(".action"));
+                                action = action.substring(action.lastIndexOf("/") + 1);
+                                if (!action.equals("logout") && securityManager.podeExecutarAcao(usuario, action)) {
+                                    response.sendRedirect(referer);
+                                }
+                            } catch (Exception e) {
+                            }
+                        }
+                    }
+                    return "login-direct";
+                } else {
+                    // TODO Implementar o seguir apos a tela de escolha do sitio
+                    logger.debug("Usuario logado, escolher sitio. Total de sites = " + usuario.getListSitio().size());
+                    return "login-success";
+                }
+            } else {
+                // The login failed. Set an error if we can on the action.
+                Object action = invocation.getAction();
+                if (action instanceof com.opensymphony.xwork2.ValidationAware) {
+                    ((com.opensymphony.xwork2.ValidationAware) action).addActionError(mensagem);
+                    usuario = null;
+                    logDao.addLog(usuario, mensagem + "[ " + request.getParameter(USERNAME) + " ] ");
+                }
+            }
+        }
+        // salva a url solicitada para seguir apos sucesso no login
+        try {
+            // Ignora se nao for get
+            if (request.getMethod().toUpperCase().equals("GET")) {
+                String url = request.getRequestURL().toString();
+                if (url.contains(".action")) {
+                    String qs = request.getQueryString();
+                    if (qs != null) {
+                        url += "?" + qs;
+                    }
+                    request.getSession().setAttribute(URL_SOLICITADA, url);
+                }
+            }
+        } catch (Exception e) {
+        }
+        // and we need to send the login form.
+        return "login";
+    } else {
+        if (acao.equals("logout")) {
+            session.removeAttribute(USER_HANDLE);
+        }
+        if (this.securityManager.podeExecutarAcao(usuario, acao)) {
+            return invocation.invoke();
+        } else {
+            // Ele n�o pode executar a acao
+            return "ilegal-action";
+        }
+    }
+}

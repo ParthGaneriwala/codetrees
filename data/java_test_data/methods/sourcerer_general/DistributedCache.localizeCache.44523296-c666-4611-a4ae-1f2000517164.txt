@@ -1,0 +1,73 @@
+// the method which actually copies the caches locally and unjars/unzips them
+private static Path localizeCache(Configuration conf, URI cache, long confFileStamp, CacheStatus cacheStatus, FileStatus fileStatus, boolean isArchive, Path currentWorkDir, boolean honorSymLinkConf) throws IOException {
+    boolean doSymlink = honorSymLinkConf && getSymlink(conf);
+    if (cache.getFragment() == null) {
+        doSymlink = false;
+    }
+    FileSystem fs = getFileSystem(cache, conf);
+    String link = currentWorkDir.toString() + Path.SEPARATOR + cache.getFragment();
+    File flink = new File(link);
+    if (ifExistsAndFresh(conf, fs, cache, confFileStamp, cacheStatus, fileStatus)) {
+        if (isArchive) {
+            if (doSymlink) {
+                if (!flink.exists())
+                    FileUtil.symLink(cacheStatus.localLoadPath.toString(), link);
+            }
+            return cacheStatus.localLoadPath;
+        } else {
+            if (doSymlink) {
+                if (!flink.exists())
+                    FileUtil.symLink(cacheFilePath(cacheStatus.localLoadPath).toString(), link);
+            }
+            return cacheFilePath(cacheStatus.localLoadPath);
+        }
+    } else {
+        // return null
+        if (cacheStatus.refcount > 1 && (cacheStatus.currentStatus == true))
+            throw new IOException("Cache " + cacheStatus.localLoadPath.toString() + " is in use and cannot be refreshed");
+        FileSystem localFs = FileSystem.getLocal(conf);
+        localFs.delete(cacheStatus.localLoadPath, true);
+        Path parchive = new Path(cacheStatus.localLoadPath, new Path(cacheStatus.localLoadPath.getName()));
+        if (!localFs.mkdirs(cacheStatus.localLoadPath)) {
+            throw new IOException("Mkdirs failed to create directory " + cacheStatus.localLoadPath.toString());
+        }
+        String cacheId = cache.getPath();
+        fs.copyToLocalFile(new Path(cacheId), parchive);
+        if (isArchive) {
+            String tmpArchive = parchive.toString().toLowerCase();
+            File srcFile = new File(parchive.toString());
+            File destDir = new File(parchive.getParent().toString());
+            if (tmpArchive.endsWith(".jar")) {
+                RunJar.unJar(srcFile, destDir);
+            } else if (tmpArchive.endsWith(".zip")) {
+                FileUtil.unZip(srcFile, destDir);
+            } else if (isTarFile(tmpArchive)) {
+                FileUtil.unTar(srcFile, destDir);
+            }
+        // else will not do anyhting
+        // and copy the file into the dir as it is
+        }
+        // do chmod here
+        try {
+            FileUtil.chmod(parchive.toString(), "+x");
+        } catch (InterruptedException e) {
+            LOG.warn("Exception in chmod" + e.toString());
+        }
+        // update cacheStatus to reflect the newly cached file
+        cacheStatus.currentStatus = true;
+        cacheStatus.mtime = getTimestamp(conf, cache);
+    }
+    if (isArchive) {
+        if (doSymlink) {
+            if (!flink.exists())
+                FileUtil.symLink(cacheStatus.localLoadPath.toString(), link);
+        }
+        return cacheStatus.localLoadPath;
+    } else {
+        if (doSymlink) {
+            if (!flink.exists())
+                FileUtil.symLink(cacheFilePath(cacheStatus.localLoadPath).toString(), link);
+        }
+        return cacheFilePath(cacheStatus.localLoadPath);
+    }
+}

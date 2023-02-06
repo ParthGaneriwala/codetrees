@@ -1,0 +1,50 @@
+private String wikifyAndGatherTopics(String source, int sourceMode, double minProbability, int repeatMode, String bannedTopics, String baseColor, String linkColor, boolean showTooltips, SortedVector<Topic> detectedTopics) throws IOException, Exception {
+    if (source == null || source.trim().equals(""))
+        return "";
+    if (sourceMode < SOURCE_URL || sourceMode > SOURCE_WIKI)
+        sourceMode = resolveSourceMode(source);
+    Vector<Article> bannedTopicList = resolveTopicList(bannedTopics);
+    DocumentPreprocessor dp;
+    DocumentTagger dt;
+    if (sourceMode == SOURCE_WIKI) {
+        dp = new WikiPreprocessor(wms.wikipedia);
+        dt = new MyWikiTagger(linkColor, baseColor);
+    } else {
+        dp = new HtmlPreprocessor();
+        dt = new MyHtmlTagger(linkColor, baseColor, showTooltips);
+    }
+    String markup = source;
+    if (sourceMode == SOURCE_URL) {
+        if (!source.startsWith("http://"))
+            source = "http://" + source;
+        markup = null;
+        try {
+            markup = getHtml(source);
+        } catch (Exception e) {
+            throw new IOException();
+        }
+        if (markup == null)
+            throw new IOException();
+    }
+    PreprocessedDocument doc = dp.preprocess(markup);
+    for (Article bt : bannedTopicList) doc.banTopic(bt.getId());
+    // TODO: find smarter way to resolve this hack, which stops wikifier from detecting "Space (punctuation)" ;
+    doc.banTopic(143856);
+    SortedVector<Topic> allTopics = linkDetector.getWeightedTopics(topicDetector.getTopics(doc, null));
+    SortedVector<Topic> bestTopics = new SortedVector<Topic>();
+    for (Topic t : allTopics) {
+        if (t.getWeight() >= minProbability)
+            bestTopics.add(t, true);
+        detectedTopics.add(t, true);
+    }
+    String taggedText = dt.tag(doc, bestTopics, repeatMode);
+    if (sourceMode == SOURCE_URL) {
+        taggedText = taggedText.replaceAll("(?i)<html", "<base href=\"" + source + "\" target=\"_top\"/><html");
+        if (showTooltips) {
+            taggedText = taggedText.replaceAll("(?i)</head", "<link type=\"text/css\" rel=\"stylesheet\" href=\"" + wms.context.getInitParameter("server_path") + "wikifier/tooltips/styles.css\"/>\n</head");
+            taggedText = taggedText.replaceAll("(?i)</head", "<script type=\"text/javascript\" src=\"" + wms.context.getInitParameter("server_path") + "wikifier/tooltips/script.js\"></script>\n</head");
+            taggedText = taggedText.replaceAll("(?i)</body", "<div class=\"wms.wikipediaminerTooltip\" id=\"wmtt\"></div>\n</body");
+        }
+    }
+    return taggedText;
+}

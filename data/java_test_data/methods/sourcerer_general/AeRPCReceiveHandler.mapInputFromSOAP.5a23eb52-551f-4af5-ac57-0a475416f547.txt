@@ -1,0 +1,59 @@
+protected IAeMessageData mapInputFromSOAP(IAeProcessPlan aPlan, AeExtendedMessageContext aContext, SOAPEnvelope aEnv) throws AeBusinessProcessException {
+    String opName = null;
+    try {
+        // Get the WSDL definition for the service
+        QName portTypeQName = getMyRolePortTypeQName(aPlan, aContext);
+        AeBPELExtendedWSDLDef defFromService = AeWSDLDefHelper.getWSDLDefinitionForPortType(aPlan, portTypeQName);
+        // For an RPC SOAP request there should only be a single body element
+        if (aEnv.getBodyElements().size() < 1)
+            // $NON-NLS-1$
+            throw new AeBusinessProcessException(AeMessages.getString("AeBpelRPCHandler.ERROR_0"));
+        MessageContext axisContext = (MessageContext) aContext.getProperty(MessageContext.class.getName());
+        // Get the request body from the SOAP envelope
+        RPCElement reqBody = findFirstRPCElement(aEnv);
+        // Find the proper operation based on the SOAP request operation
+        Operation operation = null;
+        PortType portType = defFromService.getPortType(portTypeQName);
+        for (Iterator iter = portType.getOperations().iterator(); iter.hasNext() && operation == null; ) {
+            Operation op = (Operation) iter.next();
+            if (op.getName().equals(reqBody.getMethodName()))
+                operation = op;
+        }
+        // This is an error if we could not find the operation
+        if (operation == null)
+            // $NON-NLS-1$
+            throw new AeBusinessProcessException(AeMessages.format("AeBpelRPCHandler.ERROR_1", reqBody.getMethodName()));
+        opName = operation.getName();
+        if (AeUtil.isNullOrEmpty(aContext.getOperation())) {
+            aContext.setOperation(operation.getName());
+        }
+        // Create the input message and fill in the parameter data for the request
+        QName inMsg = operation.getInput().getMessage().getQName();
+        IAeMessageData inputMsg = AeMessageDataFactory.instance().createMessageData(inMsg);
+        // get the def that has the messages
+        AeBPELExtendedWSDLDef inputMessageDef = AeWSDLDefHelper.getWSDLDefinitionForMsg(aPlan, operation.getInput().getMessage().getQName());
+        if (inputMessageDef == null) {
+            // $NON-NLS-1$
+            throw new AeBusinessProcessException(AeMessages.format("AeBpelRPCHandler.ERROR_7", inMsg));
+        }
+        AeBPELExtendedWSDLDef outputMessageDef = null;
+        if (operation.getOutput() != null) {
+            outputMessageDef = AeWSDLDefHelper.getWSDLDefinitionForMsg(aPlan, operation.getOutput().getMessage().getQName());
+            if (outputMessageDef == null) {
+                // $NON-NLS-1$
+                throw new AeBusinessProcessException(AeMessages.format("AeBpelRPCHandler.ERROR_7", operation.getOutput().getMessage().getQName()));
+            }
+            aContext.setProperty(AE_CONTEXT_KEY_WSDL_OUTPUT, outputMessageDef);
+        }
+        AeMessageContextTypeMapper msgContextTypeMapper = new AeMessageContextTypeMapper(axisContext);
+        AeTypeMappingHelper typeMappingHelper = new AeTypeMappingHelper(inputMessageDef, outputMessageDef, operation);
+        typeMappingHelper.setEncoded((Use) aContext.getProperty(Use.class.getName()) == Use.ENCODED);
+        typeMappingHelper.registerTypes(msgContextTypeMapper);
+        extractMessageParts(reqBody, operation, inputMsg);
+        return inputMsg;
+    } catch (Exception e) {
+        // $NON-NLS-1$
+        AeException.logError(e, AeMessages.format("AeBpelRPCHandler.ERROR_3", opName));
+        throw new AeBusinessProcessException(e.getLocalizedMessage());
+    }
+}

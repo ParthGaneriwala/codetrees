@@ -1,0 +1,66 @@
+CompiledStatement compileInsertStatement() throws HsqlException {
+    clearParameters();
+    tokenizer.getThis(Token.T_INTO);
+    HsqlArrayList columnNames;
+    boolean[] columnCheckList;
+    int[] columnMap;
+    int len;
+    String token = tokenizer.getName();
+    String schema = session.getSchemaName(tokenizer.getLongNameFirst());
+    Table table = database.schemaManager.getTable(session, token, schema);
+    checkTableWriteAccess(table, UserManager.INSERT);
+    columnNames = null;
+    columnCheckList = null;
+    columnMap = table.getColumnMap();
+    len = table.getColumnCount();
+    int brackets = parseOpenBrackets();
+    token = tokenizer.getString();
+    if (brackets == 1 && !tokenizer.wasThis(Token.T_SELECT)) {
+        brackets = 0;
+        tokenizer.back();
+        columnNames = getColumnNames(database, table, tokenizer, false);
+        if (columnNames.size() > len) {
+            throw Trace.error(Trace.COLUMN_COUNT_DOES_NOT_MATCH);
+        }
+        len = columnNames.size();
+        columnCheckList = table.getNewColumnCheckList();
+        columnMap = new int[len];
+        for (int i = 0; i < len; i++) {
+            int ci = table.getColumnNr((String) columnNames.get(i));
+            columnMap[i] = ci;
+            columnCheckList[ci] = true;
+        }
+        token = tokenizer.getSimpleToken();
+    } else if (!tokenizer.wasSimpleToken()) {
+        tokenizer.throwUnexpected();
+    }
+    int command = Token.get(token);
+    switch(command) {
+        case Token.VALUES:
+            {
+                Expression[] acve = new Expression[len];
+                getInsertColumnValueExpressions(table, acve, len);
+                CompiledStatement cs = new CompiledStatement(session.currentSchema, table, columnMap, acve, columnCheckList, getSortedSubqueries(), getParameters());
+                return cs;
+            }
+        case Token.OPENBRACKET:
+            {
+                brackets = parseOpenBrackets() + 1;
+                tokenizer.getThis(Token.T_SELECT);
+            }
+        case Token.SELECT:
+            {
+                // accept ORDER BY or ORDRY BY with LIMIT
+                Select select = parseSelect(brackets, true, false, true, true);
+                if (len != select.iResultLen) {
+                    throw Trace.error(Trace.COLUMN_COUNT_DOES_NOT_MATCH);
+                }
+                CompiledStatement cs = new CompiledStatement(session, database, session.currentSchema, table, columnMap, columnCheckList, select, getSortedSubqueries(), getParameters());
+                return cs;
+            }
+        default:
+            {
+                throw Trace.error(Trace.UNEXPECTED_TOKEN, token);
+            }
+    }
+}

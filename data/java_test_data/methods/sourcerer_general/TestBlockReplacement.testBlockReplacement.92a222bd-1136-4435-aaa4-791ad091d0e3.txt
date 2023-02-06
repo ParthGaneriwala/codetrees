@@ -1,0 +1,82 @@
+public void testBlockReplacement() throws IOException {
+    final Configuration CONF = new Configuration();
+    final String[] INITIAL_RACKS = { "/RACK0", "/RACK1", "/RACK2" };
+    final String[] NEW_RACKS = { "/RACK2" };
+    final short REPLICATION_FACTOR = (short) 3;
+    final int DEFAULT_BLOCK_SIZE = 1024;
+    final Random r = new Random();
+    CONF.setLong("dfs.block.size", DEFAULT_BLOCK_SIZE);
+    CONF.setInt("io.bytes.per.checksum", DEFAULT_BLOCK_SIZE / 2);
+    CONF.setLong("dfs.blockreport.intervalMsec", 500);
+    cluster = new MiniDFSCluster(CONF, REPLICATION_FACTOR, true, INITIAL_RACKS);
+    try {
+        cluster.waitActive();
+        FileSystem fs = cluster.getFileSystem();
+        Path fileName = new Path("/tmp.txt");
+        // create a file with one block
+        DFSTestUtil.createFile(fs, fileName, DEFAULT_BLOCK_SIZE, REPLICATION_FACTOR, r.nextLong());
+        DFSTestUtil.waitReplication(fs, fileName, REPLICATION_FACTOR);
+        // get all datanodes
+        InetSocketAddress addr = new InetSocketAddress("localhost", cluster.getNameNodePort());
+        DFSClient client = new DFSClient(addr, CONF);
+        List<LocatedBlock> locatedBlocks = client.namenode.getBlockLocations("/tmp.txt", 0, DEFAULT_BLOCK_SIZE).getLocatedBlocks();
+        assertEquals(1, locatedBlocks.size());
+        LocatedBlock block = locatedBlocks.get(0);
+        DatanodeInfo[] oldNodes = block.getLocations();
+        assertEquals(oldNodes.length, 3);
+        Block b = block.getBlock();
+        // add a new datanode to the cluster
+        cluster.startDataNodes(CONF, 1, true, null, NEW_RACKS);
+        cluster.waitActive();
+        DatanodeInfo[] datanodes = client.datanodeReport(DatanodeReportType.ALL);
+        // find out the new node
+        DatanodeInfo newNode = null;
+        for (DatanodeInfo node : datanodes) {
+            Boolean isNewNode = true;
+            for (DatanodeInfo oldNode : oldNodes) {
+                if (node.equals(oldNode)) {
+                    isNewNode = false;
+                    break;
+                }
+            }
+            if (isNewNode) {
+                newNode = node;
+                break;
+            }
+        }
+        assertTrue(newNode != null);
+        DatanodeInfo source = null;
+        ArrayList<DatanodeInfo> proxies = new ArrayList<DatanodeInfo>(2);
+        for (DatanodeInfo node : datanodes) {
+            if (node != newNode) {
+                if (node.getNetworkLocation().equals(newNode.getNetworkLocation())) {
+                    source = node;
+                } else {
+                    proxies.add(node);
+                }
+            }
+        }
+        assertTrue(source != null && proxies.size() == 2);
+        // start to replace the block
+        // case 1: proxySource does not contain the block
+        LOG.info("Testcase 1: Proxy " + newNode.getName() + " does not contain the block " + b.getBlockName());
+        assertFalse(replaceBlock(b, source, newNode, proxies.get(0)));
+        // case 2: destination contains the block
+        LOG.info("Testcase 2: Destination " + proxies.get(1).getName() + " contains the block " + b.getBlockName());
+        assertFalse(replaceBlock(b, source, proxies.get(0), proxies.get(1)));
+        // case 3: correct case
+        LOG.info("Testcase 3: Proxy=" + source.getName() + " source=" + proxies.get(0).getName() + " destination=" + newNode.getName());
+        assertTrue(replaceBlock(b, source, proxies.get(0), newNode));
+        // block locations should contain two proxies and newNode
+        checkBlocks(new DatanodeInfo[] { newNode, proxies.get(0), proxies.get(1) }, fileName.toString(), DEFAULT_BLOCK_SIZE, REPLICATION_FACTOR, client);
+        // case 4: proxies.get(0) is not a valid del hint
+        LOG.info("Testcase 4: invalid del hint " + proxies.get(0).getName());
+        assertTrue(replaceBlock(b, proxies.get(1), proxies.get(0), source));
+        /* block locations should contain two proxies,
+       * and either of source or newNode
+       */
+        checkBlocks(proxies.toArray(new DatanodeInfo[proxies.size()]), fileName.toString(), DEFAULT_BLOCK_SIZE, REPLICATION_FACTOR, client);
+    } finally {
+        cluster.shutdown();
+    }
+}

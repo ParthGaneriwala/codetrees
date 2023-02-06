@@ -1,0 +1,51 @@
+@Override
+protected Result evaluate(final LogicContext context, final Integer patientId, final Map<String, Object> parameters) throws LogicException {
+    Result result = new Result();
+    // see if we can get the reference encounter
+    Date referenceDate = null;
+    if (parameters.containsKey(EvaluableConstants.ENCOUNTER_TYPE)) {
+        parameters.put(EvaluableConstants.ENCOUNTER_FETCH_SIZE, 1);
+        EncounterWithRestrictionRule encounterWithRestrictionRule = new EncounterWithStringRestrictionRule();
+        Result encounterResults = encounterWithRestrictionRule.eval(context, patientId, parameters);
+        if (CollectionUtils.isNotEmpty(encounterResults))
+            referenceDate = encounterResults.getResultDate();
+    }
+    ObsWithRestrictionRule obsWithRestrictionRule = new ObsWithStringRestrictionRule();
+    // get the list of all problem resolved
+    parameters.put(EvaluableConstants.OBS_FETCH_ORDER, FetchOrdering.ORDER_ASCENDING.getValue());
+    parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.PROBLEM_RESOLVED, EvaluableNameConstants.PROBLEM_ADDED));
+    Result problemResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+    // get the problem resolved concept
+    Concept resolvedConcept = CacheUtils.getConcept(EvaluableNameConstants.PROBLEM_RESOLVED);
+    // search for the unresolved problem list
+    Concept concept = CacheUtils.getConcept(EvaluableNameConstants.PROBLEM_LIST_FOR_CLINICAL_SUMMARY);
+    Collection<ConceptSet> conceptSets = (concept == null ? new HashSet<ConceptSet>() : concept.getConceptSets());
+    // process the unresolved problems
+    List<Concept> unresolvedConcepts = new ArrayList<Concept>();
+    for (ConceptSet conceptSet : conceptSets) unresolvedConcepts.add(conceptSet.getConcept());
+    // create a map of problems added to the system
+    Integer counter = 0;
+    Map<Concept, Result> addedMap = new HashMap<Concept, Result>();
+    while (counter < problemResults.size()) {
+        Result problemResult = problemResults.get(counter++);
+        if (OpenmrsUtil.compareWithNullAsLatest(referenceDate, problemResult.getResultDate()) == 1) {
+            Obs obs = (Obs) problemResult.getResultObject();
+            if (OpenmrsUtil.nullSafeEquals(obs.getConcept(), resolvedConcept) && OpenmrsUtil.collectionContains(unresolvedConcepts, obs.getValueCoded()))
+                addedMap.remove(obs.getValueCoded());
+            // add the added into the map
+            Result addedMapEntry = addedMap.get(problemResult.toConcept());
+            if (CollectionUtils.isEmpty(addedMapEntry)) {
+                addedMapEntry = new Result();
+                addedMap.put(problemResult.toConcept(), addedMapEntry);
+            }
+            addedMapEntry.add(problemResult);
+        }
+    }
+    // format it to list of list of problem added
+    for (Concept addedMapConcept : addedMap.keySet()) {
+        Result addedMapEntry = addedMap.get(addedMapConcept);
+        Collections.reverse(addedMapEntry);
+        result.add(addedMapEntry);
+    }
+    return result;
+}

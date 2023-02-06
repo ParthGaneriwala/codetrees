@@ -1,0 +1,116 @@
+Object executeRegExp(Context cx, Scriptable scopeObj, RegExpImpl res, String str, int[] indexp, int matchType) {
+    REGlobalData gData = new REGlobalData();
+    int start = indexp[0];
+    char[] charArray = str.toCharArray();
+    int end = charArray.length;
+    if (start > end)
+        start = end;
+    // 
+    // Call the recursive matcher to do the real work.
+    // 
+    boolean matches = matchRegExp(gData, re, charArray, start, end, res.multiline);
+    if (!matches) {
+        if (matchType != PREFIX)
+            return null;
+        return Undefined.instance;
+    }
+    int index = gData.cp;
+    int i = index;
+    indexp[0] = i;
+    int matchlen = i - (start + gData.skipped);
+    int ep = index;
+    index -= matchlen;
+    Object result;
+    Scriptable obj;
+    if (matchType == TEST) {
+        /*
+             * Testing for a match and updating cx.regExpImpl: don't allocate
+             * an array object, do return true.
+             */
+        result = Boolean.TRUE;
+        obj = null;
+    } else {
+        /*
+             * The array returned on match has element 0 bound to the matched
+             * string, elements 1 through re.parenCount bound to the paren
+             * matches, an index property telling the length of the left context,
+             * and an input property referring to the input string.
+             */
+        Scriptable scope = getTopLevelScope(scopeObj);
+        result = ScriptRuntime.newObject(cx, scope, "Array", null);
+        obj = (Scriptable) result;
+        String matchstr = new String(charArray, index, matchlen);
+        obj.put(0, obj, matchstr);
+    }
+    if (re.parenCount == 0) {
+        res.parens = null;
+        res.lastParen = SubString.emptySubString;
+    } else {
+        SubString parsub = null;
+        int num;
+        res.parens = new SubString[re.parenCount];
+        for (num = 0; num < re.parenCount; num++) {
+            int cap_index = gData.parens_index(num);
+            String parstr;
+            if (cap_index != -1) {
+                int cap_length = gData.parens_length(num);
+                parsub = new SubString(charArray, cap_index, cap_length);
+                res.parens[num] = parsub;
+                if (matchType == TEST)
+                    continue;
+                parstr = parsub.toString();
+                obj.put(num + 1, obj, parstr);
+            } else {
+                if (matchType != TEST)
+                    obj.put(num + 1, obj, Undefined.instance);
+            }
+        }
+        res.lastParen = parsub;
+    }
+    if (!(matchType == TEST)) {
+        /*
+             * Define the index and input properties last for better for/in loop
+             * order (so they come after the elements).
+             */
+        obj.put("index", obj, Integer.valueOf(start + gData.skipped));
+        obj.put("input", obj, str);
+    }
+    if (res.lastMatch == null) {
+        res.lastMatch = new SubString();
+        res.leftContext = new SubString();
+        res.rightContext = new SubString();
+    }
+    res.lastMatch.charArray = charArray;
+    res.lastMatch.index = index;
+    res.lastMatch.length = matchlen;
+    res.leftContext.charArray = charArray;
+    if (cx.getLanguageVersion() == Context.VERSION_1_2) {
+        /*
+             * JS1.2 emulated Perl4.0.1.8 (patch level 36) for global regexps used
+             * in scalar contexts, and unintentionally for the string.match "list"
+             * psuedo-context.  On "hi there bye", the following would result:
+             *
+             * Language     while(/ /g){print("$`");}   s/ /$`/g
+             * perl4.036    "hi", "there"               "hihitherehi therebye"
+             * perl5        "hi", "hi there"            "hihitherehi therebye"
+             * js1.2        "hi", "there"               "hihitheretherebye"
+             *
+             * Insofar as JS1.2 always defined $` as "left context from the last
+             * match" for global regexps, it was more consistent than perl4.
+             */
+        res.leftContext.index = start;
+        res.leftContext.length = gData.skipped;
+    } else {
+        /*
+             * For JS1.3 and ECMAv2, emulate Perl5 exactly:
+             *
+             * js1.3        "hi", "hi there"            "hihitherehi therebye"
+             */
+        res.leftContext.index = 0;
+        res.leftContext.length = start + gData.skipped;
+    }
+    res.rightContext.charArray = charArray;
+    res.rightContext.index = ep;
+    res.rightContext.length = end - ep;
+    return result;
+}

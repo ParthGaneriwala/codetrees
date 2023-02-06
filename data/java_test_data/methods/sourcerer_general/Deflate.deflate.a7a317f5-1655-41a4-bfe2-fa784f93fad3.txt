@@ -1,0 +1,129 @@
+int deflate(ZStream strm, int flush) {
+    int old_flush;
+    if (flush > Z_FINISH || flush < 0) {
+        return Z_STREAM_ERROR;
+    }
+    if (strm.next_out == null || (strm.next_in == null && strm.avail_in != 0) || (status == FINISH_STATE && flush != Z_FINISH)) {
+        strm.msg = z_errmsg[Z_NEED_DICT - (Z_STREAM_ERROR)];
+        return Z_STREAM_ERROR;
+    }
+    if (strm.avail_out == 0) {
+        strm.msg = z_errmsg[Z_NEED_DICT - (Z_BUF_ERROR)];
+        return Z_BUF_ERROR;
+    }
+    // just in case
+    this.strm = strm;
+    old_flush = last_flush;
+    last_flush = flush;
+    // Write the zlib header
+    if (status == INIT_STATE) {
+        int header = (Z_DEFLATED + ((w_bits - 8) << 4)) << 8;
+        int level_flags = ((level - 1) & 0xff) >> 1;
+        if (level_flags > 3)
+            level_flags = 3;
+        header |= (level_flags << 6);
+        if (strstart != 0)
+            header |= PRESET_DICT;
+        header += 31 - (header % 31);
+        status = BUSY_STATE;
+        putShortMSB(header);
+        // Save the adler32 of the preset dictionary:
+        if (strstart != 0) {
+            putShortMSB((int) (strm.adler >>> 16));
+            putShortMSB((int) (strm.adler & 0xffff));
+        }
+        strm.adler = strm._adler.adler32(0, null, 0, 0);
+    }
+    // Flush as much pending output as possible
+    if (pending != 0) {
+        strm.flush_pending();
+        if (strm.avail_out == 0) {
+            // System.out.println("  avail_out==0");
+            // Since avail_out is 0, deflate will be called again with
+            // more output space, but possibly with both pending and
+            // avail_in equal to zero. There won't be anything to do,
+            // but this is not an error situation so make sure we
+            // return OK instead of BUF_ERROR at next call of deflate:
+            last_flush = -1;
+            return Z_OK;
+        }
+    // Make sure there is something to do and avoid duplicate
+    // consecutive
+    // flushes. For repeated and useless calls with Z_FINISH, we keep
+    // returning Z_STREAM_END instead of Z_BUFF_ERROR.
+    } else if (strm.avail_in == 0 && flush <= old_flush && flush != Z_FINISH) {
+        strm.msg = z_errmsg[Z_NEED_DICT - (Z_BUF_ERROR)];
+        return Z_BUF_ERROR;
+    }
+    // User must not provide more input after the first FINISH:
+    if (status == FINISH_STATE && strm.avail_in != 0) {
+        strm.msg = z_errmsg[Z_NEED_DICT - (Z_BUF_ERROR)];
+        return Z_BUF_ERROR;
+    }
+    // Start a new block or continue the current one.
+    if (strm.avail_in != 0 || lookahead != 0 || (flush != Z_NO_FLUSH && status != FINISH_STATE)) {
+        int bstate = -1;
+        switch(config_table[level].func) {
+            case STORED:
+                bstate = deflate_stored(flush);
+                break;
+            case FAST:
+                bstate = deflate_fast(flush);
+                break;
+            case SLOW:
+                bstate = deflate_slow(flush);
+                break;
+            default:
+        }
+        if (bstate == FinishStarted || bstate == FinishDone) {
+            status = FINISH_STATE;
+        }
+        if (bstate == NeedMore || bstate == FinishStarted) {
+            if (strm.avail_out == 0) {
+                // avoid BUF_ERROR next call, see above
+                last_flush = -1;
+            }
+            return Z_OK;
+        // If flush != Z_NO_FLUSH && avail_out == 0, the next call
+        // of deflate should use the same flush parameter to make sure
+        // that the flush is complete. So we don't have to output an
+        // empty block here, this will be done at next call. This also
+        // ensures that for a very small output buffer, we emit at most
+        // one empty block.
+        }
+        if (bstate == BlockDone) {
+            if (flush == Z_PARTIAL_FLUSH) {
+                _tr_align();
+            } else {
+                // FULL_FLUSH or SYNC_FLUSH
+                _tr_stored_block(0, 0, false);
+                // as a special marker by inflate_sync().
+                if (flush == Z_FULL_FLUSH) {
+                    // state.head[s.hash_size-1]=0;
+                    for (int i = 0; i < hash_size; /*-1*/
+                    i++) // forget history
+                    head[i] = 0;
+                }
+            }
+            strm.flush_pending();
+            if (strm.avail_out == 0) {
+                // avoid BUF_ERROR at next call, see above
+                last_flush = -1;
+                return Z_OK;
+            }
+        }
+    }
+    if (flush != Z_FINISH)
+        return Z_OK;
+    if (noheader != 0)
+        return Z_STREAM_END;
+    // Write the zlib trailer (adler32)
+    putShortMSB((int) (strm.adler >>> 16));
+    putShortMSB((int) (strm.adler & 0xffff));
+    strm.flush_pending();
+    // If avail_out is zero, the application will call deflate again
+    // to flush the rest.
+    // write the trailer only once!
+    noheader = -1;
+    return pending != 0 ? Z_OK : Z_STREAM_END;
+}

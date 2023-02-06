@@ -1,0 +1,200 @@
+public FooState runPlay(OffPlay offplay, DefPlay defplay) {
+    FooState FS = new FooState();
+    if (isClosing())
+        return FS;
+    FS.offyards = offplay.runPlay();
+    FS.playdesc.append(offplay.name + " vs " + defplay.name + CR);
+    // compare offensive and defensive schemes
+    if (offplay.name.startsWith("Screen") && defplay.blitz) {
+        if (FS.offyards < 0)
+            FS.offyards = offplay.runPlay() + 5;
+        if (FS.offyards > 0 && FS.offyards < 25)
+            FS.offyards *= 3;
+    }
+    if (!offplay.pass && defplay.name.startsWith("Prevent")) {
+        if (FS.offyards < 0)
+            FS.offyards += 10;
+    }
+    if (!offplay.pass && defplay.blitz) {
+        if (FS.offyards < 0)
+            FS.offyards = offplay.runPlay();
+    }
+    boolean OutBound = rndPct(offplay.probout);
+    boolean Fumble = rndPct(1);
+    // dynamic variables
+    boolean passplay = offplay.pass;
+    boolean PassComp = false;
+    boolean PassInt = false;
+    float probcmp = offplay.probcmp;
+    float probint = (offplay.probint + defplay.intpct) / 2;
+    // compare skillz
+    if (offplay.pass) {
+        int passfact = MiscUtil.randInt(66);
+        float passadd = passfact * (teams[offense].skillz[Team.PASS] * SKILLVAR);
+        float passsub = passfact * (teams[opp(offense)].skillz[Team.PASSDEF] * SKILLVAR);
+        // System.out.println(passadd + "," + passsub);
+        if (passadd != passsub)
+            probcmp += probcmp * ((float) (passadd - passsub) / 100);
+    } else if (FS.offyards > 0) {
+        int rushfact = MiscUtil.randInt(100);
+        float rushadd = rushfact * (teams[offense].skillz[Team.RUN] * SKILLVAR);
+        float rushsub = rushfact * (teams[opp(offense)].skillz[Team.RUNDEF] * SKILLVAR);
+        // System.out.println(rushadd + "," + rushsub);
+        if (rushadd != rushsub) {
+            float rushpct = (float) (rushadd - rushsub) / 100;
+            // System.out.println("Pct: " + rushpct);
+            float rushdiff = ((float) FS.offyards * rushpct);
+            // System.out.println("Diff: " + rushdiff);
+            FS.offyards += Math.round(rushdiff);
+        }
+    }
+    // System.out.println("Pass %: " + probcmp);
+    if (Math.abs(defplay.depth - FS.offyards) <= defplay.range) {
+        if (passplay) {
+            probcmp -= defplay.passloss;
+            // less yards off a zone
+            if (defplay.zone)
+                FS.offyards -= teams[opp(offense)].skillz[Team.PASSDEF];
+        } else
+            FS.offyards = (int) Math.floor(FS.offyards - (FS.offyards * (defplay.runloss * .01)));
+    } else if (FS.offyards > 0) {
+        if (passplay)
+            probcmp += defplay.passgain;
+        else
+            FS.offyards += (int) (FS.offyards * (defplay.rungain * .01));
+    }
+    // spam("yards after: " + FS.offyards);
+    if (passplay && rndPct(defplay.sackpct)) {
+        FS.playdesc.append("Sack!" + CR);
+        FS.result = SACK;
+        FS.offyards = -MiscUtil.randInt(15);
+        passplay = false;
+    }
+    if (passplay) {
+        if (probcmp > 95)
+            probcmp = 95;
+        else if (probcmp < 5)
+            probcmp = 5;
+        PassComp = rndPct(probcmp);
+        PassInt = rndPct(probint);
+    }
+    // establish result precidence
+    if (ball + FS.offyards >= FIELDLEN) {
+        FS.offyards = FIELDLEN - ball;
+        FS.result = TD;
+    }
+    if (ball + FS.offyards < 1) {
+        FS.offyards = -ball;
+        FS.result = SAFETY;
+    }
+    if (Fumble)
+        FS.result = FUMBLE;
+    if (PassInt)
+        FS.result = INT;
+    if (passplay && !PassComp)
+        FS.result = INC;
+    else {
+        // true for everything except an incompletion
+        String s = "";
+        if (OutBound && FS.result != TD && FS.result != SAFETY) {
+            s = "Out of bounds... ";
+        } else if (FS.result != TD && FS.result != SAFETY) {
+            if (FS.offyards > 0)
+                s = "Tackle made... ";
+            FS.clockstp = false;
+        }
+        if (passplay) {
+            FS.playdesc.append(s + "Pass complete for " + FS.offyards + " yards." + CR);
+            FS.clockstp = false;
+        } else {
+            if (FS.offyards > 0)
+                FS.playdesc.append(s + FS.offyards + " yards on the run." + CR);
+            else if (FS.offyards == 0)
+                FS.playdesc.append("No gain." + CR);
+            else
+                FS.playdesc.append(-FS.offyards + " yard loss." + CR);
+        }
+    }
+    // check for penalty
+    Penalty P = checkPen(FS);
+    if (P != null) {
+        FS.result = PENALTY;
+        FS.clockstp = true;
+        if (P.addyards) {
+            FS.offyards += trimPen(P, ball + FS.offyards);
+        } else
+            FS.offyards = trimPen(P, ball);
+        if (P.offensive) {
+            teams[offense].pens++;
+            teams[offense].penyards -= P.yards;
+        } else {
+            teams[opp(offense)].pens++;
+            teams[opp(offense)].penyards += P.yards;
+        }
+    }
+    // do some stats
+    if (passplay && FS.result != PENALTY) {
+        teams[offense].passatts++;
+        if (FS.result != INC) {
+            teams[offense].passyrds += FS.offyards;
+            teams[offense].passcmps++;
+        }
+    } else if (!passplay && FS.result < SACK) {
+        teams[offense].rushatts++;
+        teams[offense].rushyrds += FS.offyards;
+    }
+    // do final results
+    switch(FS.result) {
+        case // TODO: do runback
+        INT:
+            teams[offense].passints++;
+            ball += FS.offyards;
+            if (// weak
+            ball <= 0)
+                // weak
+                ball = 1;
+            else if (ball >= FIELDLEN)
+                ball = FIELDLEN - 20;
+            turnover("Intercepted!");
+            break;
+        case // TODO: do (less than INT) runback
+        FUMBLE:
+            teams[offense].fumbles++;
+            ball += FS.offyards;
+            if (ball <= 0)
+                ball = 1;
+            else if (ball >= FIELDLEN)
+                ball = FIELDLEN - 20;
+            turnover("Fumble!");
+            break;
+        case TD:
+            if (passplay)
+                teams[offense].passtds++;
+            else
+                teams[offense].rushtds++;
+            break;
+        case SAFETY:
+            teams[opp(offense)].safeties++;
+            break;
+        case // fall through
+        INC:
+            FS.offyards = 0;
+            FS.playdesc.append("Pass incomplete." + CR);
+        default:
+            if (FS.result == SACK)
+                teams[opp(offense)].sacks++;
+            ball += FS.offyards;
+            togo -= FS.offyards;
+            if (// HACK
+            togo <= 0 || down < 1 || (FS.result == PENALTY && P.autofirst)) {
+                down = 1;
+                togo = 10;
+                teams[offense].fstdowns++;
+                FS.playdesc.append("1st down." + CR);
+            } else if ((FS.result != PENALTY || !P.redodown) && ++down > 4) {
+                FS.clockstp = true;
+                turnover("Turnover on downs.");
+            }
+    }
+    return FS;
+}

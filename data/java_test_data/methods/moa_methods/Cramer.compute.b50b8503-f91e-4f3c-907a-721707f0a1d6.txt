@@ -1,0 +1,91 @@
+private CramerTest compute(CramerTest RVAL, double[][] daten, int replicates, String sim, boolean justStatistic, int kernel, double maxM, int k) {
+    // lookup<-matrix(rep(0,(RVAL$m+RVAL$n)^2),ncol=(RVAL$m+RVAL$n))
+    double[][] lookup = new double[RVAL.m + RVAL.n][RVAL.m + RVAL.n];
+    // for (i in 2:(RVAL$m+RVAL$n)) for (j in 1:(i-1)) { lookup[i,j]<-sum((daten[i,]-daten[j,])^2); lookup[j,i]<-lookup[i,j]; }
+    for (int i = 1; i < RVAL.m + RVAL.n; i++) {
+        for (int j = 0; j <= i - 1; j++) {
+            lookup[i][j] = this.subtractRows(daten, i, j);
+            lookup[j][i] = lookup[i][j];
+        }
+    }
+    // lookup<-eval(call(kernel,lookup))
+    this.kernel(kernel, lookup);
+    if (justStatistic) {
+        RVAL.statistic = this.cramerStatistic(RVAL.m, RVAL.n, lookup);
+    } else if (sim.equals("eigenvalue")) {
+        /* To be implemented! */
+        Boot boot = new Boot();
+        RVAL.statistic = boot.t0;
+        RVAL.pValue = 1 - this.rank(boot.t0, boot.t) / (replicates + 1);
+        double[] toSort = this.linearize(boot.t);
+        Arrays.sort(toSort);
+        RVAL.critValue = toSort[(int) Math.round(RVAL.confLevel * RVAL.replicates)];
+        if (RVAL.statistic > RVAL.critValue) {
+            RVAL.result = 1;
+        }
+        RVAL.hypdistX = toSort;
+        RVAL.hypdistFx = this.createVector(replicates);
+    } else {
+        // RVAL$statistic<-.cramer.statistic(daten,1:(RVAL$m+RVAL$n),RVAL$m,RVAL$n,lookup)
+        RVAL.statistic = this.cramerStatistic(RVAL.m, RVAL.n, lookup);
+        // N<-RVAL$m+RVAL$n
+        int N = RVAL.m + RVAL.n;
+        // C1<-rep(0,N)
+        double[] C1 = new double[N];
+        // for (i in 1:N) for (j in 1:N) C1[i]<-C1[i]+lookup[i,j]
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N; j++) {
+                C1[i] += lookup[i][j];
+            }
+        }
+        // C1<-C1/N
+        this.divide(C1, N);
+        // C2<-0
+        double C2 = 0;
+        // for (i in 1:N) for (j in 1:N) C2<-C2+lookup[i,j]
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N; j++) {
+                C2 += lookup[i][j];
+            }
+        }
+        // C2<-C2/N^2
+        C2 /= (N * N);
+        // B<-matrix(rep(0,N^2),ncol=N)
+        double[][] B = new double[N][N];
+        // for (i in 1:N) for (j in 1:N) B[i,j]<-C1[i]+C1[j]-C2-lookup[i,j]
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N; j++) {
+                B[i][j] = C1[i] + C1[j] - C2 - lookup[i][j];
+            }
+        }
+        // B<-B/N
+        this.divide(B, N);
+        // RVAL$ev<-eigen(B,FALSE)
+        Matrix matrix = new Matrix(B);
+        EigenvalueDecomposition evd = matrix.eig();
+        double[] lambdasquare = evd.getRealEigenvalues();
+        Arrays.sort(lambdasquare);
+        this.reverse(lambdasquare);
+        RVAL.ev = lambdasquare;
+        // kritwert<-.cramer.kritwertfft(Re((RVAL$ev)$values),conf.level,maxM,K)
+        Kritwert kw = this.kritwertfft(lambdasquare, RVAL.confLevel, maxM, k);
+        // RVAL$p.value<-1-(kritwert$hypdist.Fx)[which.min(abs((kritwert$hypdist.x)[1:(3*length(kritwert$hypdist.x)/4)]-RVAL$statistic))];
+        double[] temp = Arrays.copyOf(kw.x, 3 * kw.x.length / 4);
+        temp = this.plus(temp, -RVAL.statistic);
+        for (int i = 0; i < temp.length; i++) {
+            temp[i] = Math.abs(temp[i]);
+        }
+        RVAL.pValue = 1 - kw.Fx[this.whichMin(temp)];
+        // RVAL$crit.value<-kritwert$quantile
+        RVAL.critValue = kw.quantile;
+        // RVAL$hypdist.x<-kritwert$hypdist.x
+        RVAL.hypdistX = kw.x;
+        // RVAL$hypdist.Fx<-kritwert$hypdist.Fx
+        RVAL.hypdistFx = kw.Fx;
+        // if (RVAL$statistic>RVAL$crit.value) RVAL$result<-1
+        if (RVAL.statistic > RVAL.critValue) {
+            RVAL.result = 1.0;
+        }
+    }
+    return RVAL;
+}

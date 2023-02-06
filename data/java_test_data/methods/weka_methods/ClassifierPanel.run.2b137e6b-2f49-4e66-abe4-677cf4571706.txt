@@ -1,0 +1,285 @@
+@Override
+public void run() {
+    // Copy the current state of things
+    m_Log.statusMessage("Setting up...");
+    Classifier classifierToUse = classifier;
+    StringBuffer outBuff = m_History.getNamedBuffer(name);
+    DataSource source = null;
+    Instances userTestStructure = null;
+    ClassifierErrorsPlotInstances plotInstances = null;
+    CostMatrix costMatrix = null;
+    if (m_EvalWRTCostsBut.isSelected()) {
+        costMatrix = new CostMatrix((CostMatrix) m_CostMatrixEditor.getValue());
+    }
+    boolean outputConfusion = m_OutputConfusionBut.isSelected();
+    boolean outputPerClass = m_OutputPerClassBut.isSelected();
+    boolean outputSummary = true;
+    boolean outputEntropy = m_OutputEntropyBut.isSelected();
+    boolean saveVis = m_StorePredictionsBut.isSelected();
+    boolean outputPredictionsText = (m_ClassificationOutputEditor.getValue().getClass() != Null.class);
+    String grph = null;
+    Evaluation eval = null;
+    try {
+        boolean incrementalLoader = (m_TestLoader instanceof IncrementalConverter);
+        if (m_TestLoader != null && m_TestLoader.getStructure() != null) {
+            m_TestLoader.reset();
+            if (classifierToUse instanceof BatchPredictor && ((BatchPredictor) classifierToUse).implementsMoreEfficientBatchPrediction() && m_TestLoader instanceof ArffLoader) {
+                ((ArffLoader) m_TestLoader).setRetainStringVals(true);
+            }
+            source = new DataSource(m_TestLoader);
+            userTestStructure = source.getStructure();
+            userTestStructure.setClassIndex(m_TestClassIndex);
+        }
+        // Check the test instance compatibility
+        if (source == null) {
+            throw new Exception("No user test set has been specified");
+        }
+        if (trainHeader != null) {
+            if (!trainHeader.equalHeaders(userTestStructure)) {
+                if (!(classifierToUse instanceof weka.classifiers.misc.InputMappedClassifier)) {
+                    boolean wrapClassifier = false;
+                    if (!Utils.getDontShowDialog("weka.gui.explorer.ClassifierPanel.AutoWrapInInputMappedClassifier")) {
+                        JCheckBox dontShow = new JCheckBox("Do not show this message again");
+                        Object[] stuff = new Object[2];
+                        stuff[0] = "Data used to train model and test set are not compatible.\n" + "Would you like to automatically wrap the classifier in\n" + "an \"InputMappedClassifier\" before proceeding?.\n";
+                        stuff[1] = dontShow;
+                        int result = JOptionPane.showConfirmDialog(ClassifierPanel.this, stuff, "ClassifierPanel", JOptionPane.YES_OPTION);
+                        if (result == JOptionPane.YES_OPTION) {
+                            wrapClassifier = true;
+                        }
+                        if (dontShow.isSelected()) {
+                            String response = (wrapClassifier) ? "yes" : "no";
+                            Utils.setDontShowDialogResponse("weka.gui.explorer.ClassifierPanel.AutoWrapInInputMappedClassifier", response);
+                        }
+                    } else {
+                        // What did the user say - do they want to autowrap or not?
+                        String response = Utils.getDontShowDialogResponse("weka.gui.explorer.ClassifierPanel.AutoWrapInInputMappedClassifier");
+                        if (response != null && response.equalsIgnoreCase("yes")) {
+                            wrapClassifier = true;
+                        }
+                    }
+                    if (wrapClassifier) {
+                        weka.classifiers.misc.InputMappedClassifier temp = new weka.classifiers.misc.InputMappedClassifier();
+                        temp.setClassifier(classifierToUse);
+                        temp.setModelHeader(trainHeader);
+                        temp.setTestStructure(userTestStructure);
+                        classifierToUse = temp;
+                    } else {
+                        throw new Exception("Train and test set are not compatible\n" + trainHeader.equalHeadersMsg(userTestStructure));
+                    }
+                }
+            }
+        } else {
+            if (classifierToUse instanceof PMMLClassifier) {
+                // set the class based on information in the mining schema
+                Instances miningSchemaStructure = ((PMMLClassifier) classifierToUse).getMiningSchema().getMiningSchemaAsInstances();
+                String className = miningSchemaStructure.classAttribute().name();
+                Attribute classMatch = userTestStructure.attribute(className);
+                if (classMatch == null) {
+                    throw new Exception("Can't find a match for the PMML target field " + className + " in the " + "test instances!");
+                }
+                userTestStructure.setClass(classMatch);
+            } else {
+                userTestStructure.setClassIndex(userTestStructure.numAttributes() - 1);
+            }
+        }
+        if (m_Log instanceof TaskLogger) {
+            ((TaskLogger) m_Log).taskStarted();
+        }
+        m_Log.statusMessage("Evaluating on test data...");
+        m_Log.logMessage("Re-evaluating classifier (" + name + ") on test set");
+        eval = new Evaluation(userTestStructure, costMatrix);
+        eval.setMetricsToDisplay(m_selectedEvalMetrics);
+        // set up the structure of the plottable instances for
+        // visualization if selected
+        // if (saveVis) {
+        plotInstances = ExplorerDefaults.getClassifierErrorsPlotInstances();
+        plotInstances.setInstances(trainHeader != null ? trainHeader : userTestStructure);
+        plotInstances.setClassifier(classifierToUse);
+        plotInstances.setClassIndex(trainHeader != null ? trainHeader.classIndex() : userTestStructure.classIndex());
+        plotInstances.setSaveForVisualization(saveVis);
+        plotInstances.setEvaluation(eval);
+        outBuff.append("\n=== Re-evaluation on test set ===\n\n");
+        outBuff.append("User supplied test set\n");
+        outBuff.append("Relation:     " + userTestStructure.relationName() + '\n');
+        if (incrementalLoader) {
+            outBuff.append("Instances:     unknown (yet). Reading incrementally\n");
+        } else {
+            outBuff.append("Instances:    " + source.getDataSet().numInstances() + "\n");
+        }
+        outBuff.append("Attributes:   " + userTestStructure.numAttributes() + "\n\n");
+        if (trainHeader == null && !(classifierToUse instanceof weka.classifiers.pmml.consumer.PMMLClassifier)) {
+            outBuff.append("NOTE - if test set is not compatible then results are " + "unpredictable\n\n");
+        }
+        AbstractOutput classificationOutput = null;
+        if (outputPredictionsText) {
+            classificationOutput = (AbstractOutput) m_ClassificationOutputEditor.getValue();
+            classificationOutput.setHeader(userTestStructure);
+            classificationOutput.setBuffer(outBuff);
+        }
+        // make adjustments if the classifier is an InputMappedClassifier
+        eval = setupEval(eval, classifierToUse, trainHeader != null ? trainHeader : userTestStructure, costMatrix, plotInstances, classificationOutput, false);
+        eval.useNoPriors();
+        plotInstances.setUp();
+        if (outputPredictionsText) {
+            printPredictionsHeader(outBuff, classificationOutput, "user test set");
+        }
+        int batchSize = 100;
+        Instances batchInst = null;
+        if (classifierToUse instanceof BatchPredictor && ((BatchPredictor) classifierToUse).implementsMoreEfficientBatchPrediction()) {
+            batchInst = new Instances(userTestStructure, 0);
+            String batchSizeS = ((BatchPredictor) classifierToUse).getBatchSize();
+            if (batchSizeS != null && batchSizeS.length() > 0) {
+                try {
+                    batchSizeS = Environment.getSystemWide().substitute(batchSizeS);
+                } catch (Exception ex) {
+                }
+                try {
+                    batchSize = Integer.parseInt(batchSizeS);
+                } catch (NumberFormatException e) {
+                // just go with the default
+                }
+            }
+        }
+        Instance instance;
+        int jj = 0;
+        while (source.hasMoreElements(userTestStructure)) {
+            instance = source.nextElement(userTestStructure);
+            if (classifierToUse instanceof BatchPredictor && ((BatchPredictor) classifierToUse).implementsMoreEfficientBatchPrediction()) {
+                batchInst.add(instance);
+                if (batchInst.numInstances() == batchSize) {
+                    Instances toPred = new Instances(batchInst);
+                    for (int i = 0; i < toPred.numInstances(); i++) {
+                        toPred.instance(i).setClassMissing();
+                    }
+                    double[][] predictions = ((BatchPredictor) classifierToUse).distributionsForInstances(toPred);
+                    plotInstances.process(batchInst, predictions, eval);
+                    if (outputPredictionsText) {
+                        for (int kk = 0; kk < batchInst.numInstances(); kk++) {
+                            classificationOutput.printClassification(predictions[kk], batchInst.instance(kk), kk);
+                        }
+                    }
+                    jj += batchInst.numInstances();
+                    m_Log.statusMessage("Evaluating on test data. Processed " + jj + " instances...");
+                    batchInst.delete();
+                }
+            } else {
+                plotInstances.process(instance, classifierToUse, eval);
+                if (outputPredictionsText) {
+                    classificationOutput.printClassification(classifierToUse, instance, jj);
+                }
+            }
+            if ((++jj % 100) == 0) {
+                m_Log.statusMessage("Evaluating on test data. Processed " + jj + " instances...");
+            }
+        }
+        if (classifierToUse instanceof BatchPredictor && ((BatchPredictor) classifierToUse).implementsMoreEfficientBatchPrediction() && batchInst.numInstances() > 0) {
+            // finish the last batch
+            Instances toPred = new Instances(batchInst);
+            for (int i = 0; i < toPred.numInstances(); i++) {
+                toPred.instance(i).setClassMissing();
+            }
+            double[][] predictions = ((BatchPredictor) classifierToUse).distributionsForInstances(toPred);
+            plotInstances.process(batchInst, predictions, eval);
+            if (outputPredictionsText) {
+                for (int kk = 0; kk < batchInst.numInstances(); kk++) {
+                    classificationOutput.printClassification(predictions[kk], batchInst.instance(kk), kk);
+                }
+            }
+        }
+        if (outputPredictionsText) {
+            classificationOutput.printFooter();
+        }
+        if (outputPredictionsText && classificationOutput.generatesOutput()) {
+            outBuff.append("\n");
+        }
+        if (outputSummary) {
+            outBuff.append(eval.toSummaryString(outputEntropy) + "\n");
+        }
+        if (userTestStructure.classAttribute().isNominal()) {
+            if (outputPerClass) {
+                outBuff.append(eval.toClassDetailsString() + "\n");
+            }
+            if (outputConfusion) {
+                outBuff.append(eval.toMatrixString() + "\n");
+            }
+        }
+        m_History.updateResult(name);
+        m_Log.logMessage("Finished re-evaluation");
+        m_Log.statusMessage("OK");
+    } catch (Exception ex) {
+        ex.printStackTrace();
+        m_Log.logMessage(ex.getMessage());
+        m_Log.statusMessage("See error log");
+        ex.printStackTrace();
+        m_Log.logMessage(ex.getMessage());
+        JOptionPane.showMessageDialog(ClassifierPanel.this, "Problem evaluating classifier:\n" + ex.getMessage(), "Evaluate classifier", JOptionPane.ERROR_MESSAGE);
+        m_Log.statusMessage("Problem evaluating classifier");
+    } finally {
+        try {
+            if (classifierToUse instanceof PMMLClassifier) {
+                // signal the end of the scoring run so
+                // that the initialized state can be reset
+                // (forces the field mapping to be recomputed
+                // for the next scoring run).
+                ((PMMLClassifier) classifierToUse).done();
+            }
+            if (plotInstances != null && plotInstances.getPlotInstances() != null && plotInstances.getPlotInstances().numInstances() > 0) {
+                m_CurrentVis = new VisualizePanel();
+                if (getMainApplication() != null) {
+                    Settings settings = getMainApplication().getApplicationSettings();
+                    m_CurrentVis.applySettings(settings, weka.gui.explorer.VisualizePanel.ScatterDefaults.ID);
+                }
+                m_CurrentVis.setName(name + " (" + userTestStructure.relationName() + ")");
+                m_CurrentVis.setLog(m_Log);
+                m_CurrentVis.addPlot(plotInstances.getPlotData(name));
+                // m_CurrentVis.setColourIndex(plotInstances.getPlotInstances().classIndex()+1);
+                m_CurrentVis.setColourIndex(plotInstances.getPlotInstances().classIndex());
+                plotInstances.cleanUp();
+                if (classifierToUse instanceof Drawable) {
+                    try {
+                        grph = ((Drawable) classifierToUse).graph();
+                    } catch (Exception ex) {
+                    }
+                }
+                if (saveVis) {
+                    ArrayList<Object> vv = new ArrayList<Object>();
+                    vv.add(classifier);
+                    if (trainHeader != null) {
+                        vv.add(trainHeader);
+                    }
+                    vv.add(m_CurrentVis);
+                    if (grph != null) {
+                        vv.add(grph);
+                    }
+                    if ((eval != null) && (eval.predictions() != null)) {
+                        vv.add(eval.predictions());
+                        vv.add(userTestStructure.classAttribute());
+                    }
+                    m_History.addOrOverwriteObject(name, vv);
+                } else {
+                    ArrayList<Object> vv = new ArrayList<Object>();
+                    vv.add(classifierToUse);
+                    if (trainHeader != null) {
+                        vv.add(trainHeader);
+                    }
+                    m_History.addOrOverwriteObject(name, vv);
+                }
+            }
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+        if (isInterrupted()) {
+            m_Log.logMessage("Interrupted reevaluate model");
+            m_Log.statusMessage("Interrupted");
+        }
+        synchronized (this) {
+            m_StartBut.setEnabled(true);
+            m_StopBut.setEnabled(false);
+            m_RunThread = null;
+        }
+        if (m_Log instanceof TaskLogger) {
+            ((TaskLogger) m_Log).taskFinished();
+        }
+    }
+}

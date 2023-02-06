@@ -1,0 +1,82 @@
+protected void invokeRpcCall(AeInvokeContext aContext) throws AeException, RemoteException {
+    Use use = getUse(aContext);
+    addOperationToCall(aContext, use);
+    setupOperationQName(aContext);
+    // Highly unlikely this will ever be null, only situation would be if process got deleted in time it took to perform invoke
+    IAeContextWSDLProvider wsdlProvider = AeEngineFactory.getDeploymentProvider().findDeploymentPlan(aContext.getInvoke().getProcessId(), aContext.getInvoke().getProcessName());
+    if (wsdlProvider == null)
+        return;
+    // register type mappings
+    AeBPELExtendedWSDLDef inputMessageDef = AeWSDLDefHelper.getWSDLDefinitionForMsg(wsdlProvider, aContext.getOperation().getInput().getMessage().getQName());
+    AeBPELExtendedWSDLDef outputMessageDef = null;
+    if (aContext.getOperation().getOutput() != null) {
+        outputMessageDef = AeWSDLDefHelper.getWSDLDefinitionForMsg(wsdlProvider, aContext.getOperation().getOutput().getMessage().getQName());
+    }
+    AeCallTypeMapper typeMapper = new AeCallTypeMapper(aContext.getCall());
+    AeTypeMappingHelper typeMappingHelper = new AeTypeMappingHelper(inputMessageDef, outputMessageDef, aContext.getOperation());
+    typeMappingHelper.setEncoded(aContext.getCall().getOperation().getUse() == Use.ENCODED);
+    typeMappingHelper.registerTypes(typeMapper);
+    // Format the message into the call parameters
+    ArrayList list = new ArrayList();
+    Map messageData = getMessageData(aContext);
+    List outboundAttachments = addAttachments(aContext);
+    AeWebServiceMessageData outputMsg = null;
+    Object obj;
+    try {
+        Message input = aContext.getOperation().getInput().getMessage();
+        for (Iterator iter = aContext.getCall().getOperation().getAllInParams().iterator(); iter.hasNext(); ) {
+            String partName = ((ParameterDesc) iter.next()).getName();
+            Part part = input.getPart(partName);
+            Object data = messageData.get(partName);
+            if (data instanceof Document && AeBPELExtendedWSDLDef.isXsiTypeRequired(part, (Document) data)) {
+                AeXmlUtil.declarePartType((Document) data, part.getTypeName());
+            }
+            if (inputMessageDef.isDerivedSimpleType(part)) {
+                AeSimpleValueWrapper wrapper = new AeSimpleValueWrapper(data);
+                RPCParam param = new RPCParam(part.getName(), wrapper);
+                list.add(param);
+            } else if (part.getElementName() != null) {
+                Document doc = (Document) data;
+                QName elementName = AeXmlUtil.getElementType(doc.getDocumentElement());
+                RPCParam param = new RPCParam(elementName, data);
+                list.add(param);
+            } else {
+                list.add(data);
+            }
+        }
+        if (aContext.getInvoke().isOneWay())
+            aContext.getCall().getOperation().setMep(OperationType.ONE_WAY);
+        // execute the endpoint
+        obj = aContext.getCall().invoke(list.toArray());
+        // outputMsg will be created for request/response only
+        outputMsg = createOutputMessageData(aContext);
+    } finally {
+        closeAttachmentStreams(outboundAttachments);
+    }
+    receiveAttachments(aContext, outputMsg);
+    if (!aContext.getInvoke().isOneWay()) {
+        if (obj != null) {
+            // 
+            // obj is equal to the value of the first part of the message. If there
+            // are other parts to the message then we need to walk all of the output
+            // params in order to read them
+            // 
+            List output = aContext.getCall().getOperation().getAllOutParams();
+            if (output.size() > 0) {
+                // set the first part
+                ParameterDesc desc = (ParameterDesc) output.get(0);
+                outputMsg.setData(desc.getName(), AeTypeMappingHelper.fixPart(aContext.getOperation().getOutput().getMessage().getPart(desc.getName()), obj));
+                // output message.
+                for (int i = 1; i < output.size(); i++) {
+                    desc = (ParameterDesc) output.get(i);
+                    obj = aContext.getCall().getOutputParams().get(desc.getQName());
+                    outputMsg.setData(desc.getName(), AeTypeMappingHelper.fixPart(aContext.getOperation().getOutput().getMessage().getPart(desc.getName()), obj));
+                }
+            }
+        }
+        // read any parts from the header
+        extractPartsFromHeader(aContext, outputMsg);
+    }
+    // Return the message to the awaiting callback
+    aContext.getResponse().setMessageData(outputMsg);
+}

@@ -1,0 +1,36 @@
+private int populateLevel(byte dataId, TrainingDataNodeReader reader, TrainingDataNodeWriter writer) throws IOException {
+    int nextLevelNodeCount = 0;
+    int nrPopulated = 0;
+    long totalCount = 0;
+    // reader.reset();
+    for (ReadableTrainingDataNode nodeData = reader.getNext(); nodeData != null; nodeData = reader.getNext()) {
+        BinaryTree<HistoryTreePayload> oldLeaf = nodes[nodeData.getNodeId()];
+        Long2IntMap counts = new Long2IntMap();
+        if (oldLeaf.isLeaf()) {
+            // compute counts
+            while (nodeData.getData(0).hasNext()) {
+                nodeData.getData(0).next().addCounts(counts);
+            }
+            if (oldLeaf.getPayload().isBackoff)
+                continue;
+        } else {
+            nextLevelNodeCount += 2;
+            BinaryTree<HistoryTreePayload> left = oldLeaf.getLeft();
+            BinaryTree<HistoryTreePayload> right = oldLeaf.getRight();
+            int leftNodeId = left.getPayload().clusterid;
+            int rightNodeId = right.getPayload().clusterid;
+            WritableTrainingDataNode leftDataNode = writer.createNode(leftNodeId, 1);
+            WritableTrainingDataNode rightDataNode = writer.createNode(rightNodeId, 1);
+            writer.add(leftDataNode);
+            writer.add(rightDataNode);
+            TrainingDataUtil.splitData(nodeData.getData(0), oldLeaf.getPayload().question, rightDataNode.getData(0), leftDataNode.getData(0), counts);
+        }
+        ++nrPopulated;
+        ConstCountDistribution dist = new ConstCountDistribution(counts);
+        distStorage.putDistribution(oldLeaf.getPayload().clusterid, dataId, dist);
+        totalCount += dist.getTotalCount();
+    }
+    nrClustersPopulated += nrPopulated;
+    System.out.printf("dataid %d, level count: %d, clusters: %d/%d\n", dataId, totalCount, nrPopulated, nrClustersPopulated);
+    return nextLevelNodeCount;
+}

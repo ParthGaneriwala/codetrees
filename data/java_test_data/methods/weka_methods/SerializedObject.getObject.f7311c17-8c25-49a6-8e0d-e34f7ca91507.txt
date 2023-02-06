@@ -1,0 +1,93 @@
+public Object getObject() {
+    try {
+        ByteArrayInputStream istream = new ByteArrayInputStream(m_storedObjectArray);
+        ObjectInputStream p;
+        Object toReturn = null;
+        if (m_isJython) {
+            if (!m_isCompressed)
+                toReturn = Jython.deserialize(new BufferedInputStream(istream));
+            else
+                toReturn = Jython.deserialize(new BufferedInputStream(new GZIPInputStream(istream)));
+        } else {
+            if (!m_isCompressed)
+                p = new ObjectInputStream(new BufferedInputStream(istream)) {
+
+                    protected Set<WekaPackageLibIsolatingClassLoader> m_thirdPartyLoaders = new LinkedHashSet<>();
+
+                    @Override
+                    protected Class<?> resolveClass(ObjectStreamClass desc) throws IOException, ClassNotFoundException {
+                        // make sure that the type descriptor for arrays gets removed from
+                        // what we're going to look up!
+                        String arrayStripped = desc.getName().replace("[L", "").replace("[", "").replace(";", "");
+                        ClassLoader cl = WekaPackageClassLoaderManager.getWekaPackageClassLoaderManager().getLoaderForClass(arrayStripped);
+                        if (cl instanceof WekaPackageLibIsolatingClassLoader) {
+                            // might be third-party classes involved, store the classloader
+                            m_thirdPartyLoaders.add((WekaPackageLibIsolatingClassLoader) cl);
+                        }
+                        Class<?> result = null;
+                        try {
+                            result = Class.forName(desc.getName(), true, cl);
+                        } catch (ClassNotFoundException ex) {
+                            for (WekaPackageLibIsolatingClassLoader l : m_thirdPartyLoaders) {
+                                ClassLoader checked = SerializationHelper.checkForThirdPartyClass(arrayStripped, l);
+                                if (checked != null) {
+                                    result = Class.forName(desc.getName(), true, checked);
+                                }
+                            }
+                        }
+                        if (result == null) {
+                            result = super.resolveClass(desc);
+                            if (result == null) {
+                                throw new ClassNotFoundException("Unable to find class " + arrayStripped);
+                            }
+                        }
+                        return result;
+                    }
+                };
+            else
+                p = new ObjectInputStream(new BufferedInputStream(new GZIPInputStream(istream))) {
+
+                    protected Set<WekaPackageLibIsolatingClassLoader> m_thirdPartyLoaders = new LinkedHashSet<>();
+
+                    protected WekaPackageLibIsolatingClassLoader m_firstLoader = null;
+
+                    @Override
+                    protected Class<?> resolveClass(ObjectStreamClass desc) throws IOException, ClassNotFoundException {
+                        // make sure that the type descriptor for arrays gets removed
+                        // from what we're going to look up!
+                        String arrayStripped = desc.getName().replace("[L", "").replace("[", "").replace(";", "");
+                        ClassLoader cl = WekaPackageClassLoaderManager.getWekaPackageClassLoaderManager().getLoaderForClass(arrayStripped);
+                        if (cl instanceof WekaPackageLibIsolatingClassLoader) {
+                            // might be third-party classes involved, store the
+                            // classloader
+                            m_thirdPartyLoaders.add((WekaPackageLibIsolatingClassLoader) cl);
+                        }
+                        Class<?> result = null;
+                        try {
+                            result = Class.forName(desc.getName(), true, cl);
+                        } catch (ClassNotFoundException ex) {
+                            for (WekaPackageLibIsolatingClassLoader l : m_thirdPartyLoaders) {
+                                ClassLoader checked = SerializationHelper.checkForThirdPartyClass(arrayStripped, l);
+                                if (checked != null) {
+                                    result = Class.forName(desc.getName(), true, checked);
+                                }
+                            }
+                        }
+                        if (result == null) {
+                            result = super.resolveClass(desc);
+                            if (result == null) {
+                                throw new ClassNotFoundException("Unable to find class " + arrayStripped);
+                            }
+                        }
+                        return result;
+                    }
+                };
+            toReturn = p.readObject();
+        }
+        istream.close();
+        return toReturn;
+    } catch (Exception e) {
+        e.printStackTrace();
+        return null;
+    }
+}

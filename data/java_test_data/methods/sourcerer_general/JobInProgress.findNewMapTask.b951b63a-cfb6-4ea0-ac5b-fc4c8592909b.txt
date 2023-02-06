@@ -1,0 +1,121 @@
+private synchronized int findNewMapTask(TaskTrackerStatus tts, int clusterSize, int numUniqueHosts, double avgProgress) {
+    String taskTracker = tts.getTrackerName();
+    TaskInProgress tip = null;
+    // 
+    // Update the last-known clusterSize
+    // 
+    this.clusterSize = clusterSize;
+    if (!shouldRunOnTaskTracker(taskTracker)) {
+        return -1;
+    }
+    Node node = jobtracker.getNode(tts.getHost());
+    Node nodeParentAtMaxLevel = null;
+    long outSize = resourceEstimator.getEstimatedMapOutputSize();
+    long availSpace = tts.getResourceStatus().getAvailableSpace();
+    if (availSpace < outSize) {
+        LOG.warn("No room for map task. Node " + node + " has " + availSpace + " bytes free; but we expect map to take " + outSize);
+        // see if a different TIP might work better.
+        return -1;
+    }
+    if (node != null) {
+        Node key = node;
+        for (int level = 0; level < maxLevel; ++level) {
+            List<TaskInProgress> cacheForLevel = nonRunningMapCache.get(key);
+            if (cacheForLevel != null) {
+                tip = findTaskFromList(cacheForLevel, tts, numUniqueHosts, level == 0);
+                if (tip != null) {
+                    // Add to running cache
+                    scheduleMap(tip);
+                    // remove the cache if its empty
+                    if (cacheForLevel.size() == 0) {
+                        nonRunningMapCache.remove(key);
+                    }
+                    return tip.getIdWithinJob();
+                }
+            }
+            key = key.getParent();
+        }
+        // get the node parent at max level
+        nodeParentAtMaxLevel = JobTracker.getParentNode(node, maxLevel - 1);
+    }
+    // 2. Search breadth-wise across parents at max level for non-running
+    // TIP if
+    // - cache exists and there is a cache miss
+    // - node information for the tracker is missing (tracker's topology
+    // info not obtained yet)
+    // collection of node at max level in the cache structure
+    Collection<Node> nodesAtMaxLevel = jobtracker.getNodesAtMaxLevel();
+    for (Node parent : nodesAtMaxLevel) {
+        // skip the parent that has already been scanned
+        if (parent == nodeParentAtMaxLevel) {
+            continue;
+        }
+        List<TaskInProgress> cache = nonRunningMapCache.get(parent);
+        if (cache != null) {
+            tip = findTaskFromList(cache, tts, numUniqueHosts, false);
+            if (tip != null) {
+                // Add to the running cache
+                scheduleMap(tip);
+                // remove the cache if empty
+                if (cache.size() == 0) {
+                    nonRunningMapCache.remove(parent);
+                }
+                LOG.info("Choosing a non-local task " + tip.getTIPId());
+                return tip.getIdWithinJob();
+            }
+        }
+    }
+    // 3. Search non-local tips for a new task
+    tip = findTaskFromList(nonLocalMaps, tts, numUniqueHosts, false);
+    if (tip != null) {
+        // Add to the running list
+        scheduleMap(tip);
+        LOG.info("Choosing a non-local task " + tip.getTIPId());
+        return tip.getIdWithinJob();
+    }
+    if (hasSpeculativeMaps) {
+        long currentTime = System.currentTimeMillis();
+        // 1. Check bottom up for speculative tasks from the running cache
+        if (node != null) {
+            Node key = node;
+            for (int level = 0; level < maxLevel; ++level) {
+                Set<TaskInProgress> cacheForLevel = runningMapCache.get(key);
+                if (cacheForLevel != null) {
+                    tip = findSpeculativeTask(cacheForLevel, tts, avgProgress, currentTime, level == 0);
+                    if (tip != null) {
+                        if (cacheForLevel.size() == 0) {
+                            runningMapCache.remove(key);
+                        }
+                        return tip.getIdWithinJob();
+                    }
+                }
+                key = key.getParent();
+            }
+        }
+        for (Node parent : nodesAtMaxLevel) {
+            // ignore the parent which is already scanned
+            if (parent == nodeParentAtMaxLevel) {
+                continue;
+            }
+            Set<TaskInProgress> cache = runningMapCache.get(parent);
+            if (cache != null) {
+                tip = findSpeculativeTask(cache, tts, avgProgress, currentTime, false);
+                if (tip != null) {
+                    // remove empty cache entries
+                    if (cache.size() == 0) {
+                        runningMapCache.remove(parent);
+                    }
+                    LOG.info("Choosing a non-local task " + tip.getTIPId() + " for speculation");
+                    return tip.getIdWithinJob();
+                }
+            }
+        }
+        // 3. Check non-local tips for speculation
+        tip = findSpeculativeTask(nonLocalRunningMaps, tts, avgProgress, currentTime, false);
+        if (tip != null) {
+            LOG.info("Choosing a non-local task " + tip.getTIPId() + " for speculation");
+            return tip.getIdWithinJob();
+        }
+    }
+    return -1;
+}

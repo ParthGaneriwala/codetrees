@@ -1,0 +1,53 @@
+private void parseFunctionParams(FunctionNode fnNode) throws IOException {
+    if (matchToken(Token.RP)) {
+        fnNode.setRp(ts.tokenBeg - fnNode.getPosition());
+        return;
+    }
+    // Would prefer not to call createDestructuringAssignment until codegen,
+    // but the symbol definitions have to happen now, before body is parsed.
+    Map<String, Node> destructuring = null;
+    Set<String> paramNames = new HashSet<String>();
+    do {
+        int tt = peekToken();
+        if (tt == Token.LB || tt == Token.LC) {
+            AstNode expr = destructuringPrimaryExpr();
+            markDestructuring(expr);
+            fnNode.addParam(expr);
+            // variables from the destructuring assignment
+            if (destructuring == null) {
+                destructuring = new HashMap<String, Node>();
+            }
+            String pname = currentScriptOrFn.getNextTempName();
+            defineSymbol(Token.LP, pname, false);
+            destructuring.put(pname, expr);
+        } else {
+            if (mustMatchToken(Token.NAME, "msg.no.parm")) {
+                fnNode.addParam(createNameNode());
+                String paramName = ts.getString();
+                defineSymbol(Token.LP, paramName);
+                if (this.inUseStrictDirective) {
+                    if ("eval".equals(paramName) || "arguments".equals(paramName)) {
+                        reportError("msg.bad.id.strict", paramName);
+                    }
+                    if (paramNames.contains(paramName))
+                        addError("msg.dup.param.strict", paramName);
+                    paramNames.add(paramName);
+                }
+            } else {
+                fnNode.addParam(makeErrorNode());
+            }
+        }
+    } while (matchToken(Token.COMMA));
+    if (destructuring != null) {
+        Node destructuringNode = new Node(Token.COMMA);
+        // Add assignment helper for each destructuring parameter
+        for (Map.Entry<String, Node> param : destructuring.entrySet()) {
+            Node assign = createDestructuringAssignment(Token.VAR, param.getValue(), createName(param.getKey()));
+            destructuringNode.addChildToBack(assign);
+        }
+        fnNode.putProp(Node.DESTRUCTURING_PARAMS, destructuringNode);
+    }
+    if (mustMatchToken(Token.RP, "msg.no.paren.after.parms")) {
+        fnNode.setRp(ts.tokenBeg - fnNode.getPosition());
+    }
+}

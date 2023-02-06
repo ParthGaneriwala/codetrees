@@ -1,0 +1,75 @@
+// ------------------------------------------------------------------------
+public void ReceiveNewMachineJoin(String MachineName) {
+    // for training machines
+    if (LocalMachineEntry.getMachineState() == MachineState.ACTIVE) {
+        SA.AddLogEntry("CMM", "Info - Received a \"Membership Join\" message from the cluster. Machine " + MachineName + " has joined the cluster.");
+        // If not going to be the Mentor - nothing left to do.
+        if (!MachineDBLocalID.equals(FindLeastBusyServer()))
+            return;
+        // Create a snapshot Machine database
+        TreeMap<Integer, MachineEntry> SnapMachineDB = new TreeMap<Integer, MachineEntry>();
+        TreeMap<Integer, TaskEntry> SnapTaskDB = null;
+        synchronized (this) {
+            // Convert MachineDB from TreeMap into a Set
+            Set<Map.Entry<Integer, MachineEntry>> MachineSet = MachineDB.entrySet();
+            Iterator<Map.Entry<Integer, MachineEntry>> it = MachineSet.iterator();
+            // for each element in the set
+            while (it.hasNext()) {
+                // retrieve the set element
+                Map.Entry<Integer, MachineEntry> MapEntry = it.next();
+                // Create a copy of the Machine ID
+                Integer SnapKey = new Integer(MapEntry.getKey());
+                // Create a copy of the MachineEntry
+                MachineEntry SnapEntry = null;
+                try {
+                    SnapEntry = MapEntry.getValue().clone();
+                } catch (CloneNotSupportedException e) {
+                    // TODO remove stack print
+                    e.printStackTrace();
+                    SA.AddLogEntry("CMM", "Error - Failed to create a Snapshot Machine database.");
+                    SA.UnrecoverableClusterError();
+                    return;
+                }
+                // Reset the Task Count of the Machine.
+                // The Trainee will learn the correct Task Count via "Training Update" messages.
+                // note: this is a bug fix. Otherwise, Trainee gets TaskCount mixed up after
+                // Training Migration.
+                SnapEntry.putTaskCount(0);
+                // put the new copy into the snapshot machine database
+                SnapMachineDB.put(SnapKey, SnapEntry);
+            }
+            try {
+                // Create a snapshot Task database
+                SnapTaskDB = CreateSnapshotTaskDB(null);
+            } catch (CloneNotSupportedException e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+                SA.AddLogEntry("CMM", "Error - Failed to create a Snapshot Task database.");
+                SA.UnrecoverableClusterError();
+                return;
+            }
+        }
+        if (InteractiveTrainingMode)
+            WaitForEnter("Press Enter to send \"Training New Task\" message to " + MachineName);
+        // Start mentoring the new machine
+        SA.AddLogEntry("CMM", "Info - Started mentoring new machine " + MachineName);
+        // Create a "Training New Task" message
+        MachineTrainingData data = new MachineTrainingData();
+        data.setMachineName(MachineName);
+        data.setMachineDB(SnapMachineDB);
+        ClusterMessage_TrainingNewTask msg = new ClusterMessage_TrainingNewTask();
+        msg.setContext(data);
+        try {
+            // Send the message to the Cluster
+            SendClusterMessage(msg);
+        } catch (CMMExn_ClusterErr e) {
+            // TODO remove stack trace
+            e.printStackTrace();
+            SA.AddLogEntry("CMM", "Error - Failed to send a \"Training New Task\" message.");
+            SA.UnrecoverableClusterError();
+            return;
+        }
+        // Put Snapshot TaskDatabase into the Snapshot TaskDB List
+        ToBeMentoredList.addLast(new ToBeMentoredEntry(MachineName, SnapTaskDB));
+    }
+}

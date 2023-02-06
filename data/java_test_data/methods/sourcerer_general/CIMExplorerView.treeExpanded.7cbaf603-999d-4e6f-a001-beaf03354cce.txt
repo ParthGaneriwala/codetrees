@@ -1,0 +1,135 @@
+@Override
+public void treeExpanded(TreeEvent event) {
+    final TreeParent tp = (TreeParent) event.item.getData();
+    if (tp.getChildren() != null && tp.getChildren().length > 0 && tp.getChildren()[0].getName().startsWith("Loading")) {
+        Preferences pref = CIMPlugin.getDefault().getPluginPreferences();
+        CIMClient client = CIMConnect.connect(pref.getString(CIMPreferencePage.PreferenceNames.IS_SECURE), pref.getString(CIMPreferencePage.PreferenceNames.CIM_HOST), pref.getString(CIMPreferencePage.PreferenceNames.CIM_PORT), pref.getString(CIMPreferencePage.PreferenceNames.CIM_NAMESPACE));
+        viewer.expandToLevel(tp, 1);
+        viewer.refresh(tp);
+        TreeObject loading = tp.getChildren()[0];
+        /*
+				 * class
+				 *   |_Walk assoc
+				 *         |_RefClass1
+				 *              |_Loading associations...
+				 *              |_class
+				 */
+        try {
+            if (tp.getChildren()[0].getName().startsWith("Loading associations")) {
+                CIMObjectPath x = ((TreeObject) tp.getParent().getParent()).getCop();
+                String className = tp.getName();
+                Enumeration<?> en = client.associators(x, className, // result class
+                null, // role
+                null, // result role
+                null, // include qualifiers
+                false, // include class origin
+                false, // which properties to include in the response - all
+                null);
+                int num = 0;
+                while (en.hasMoreElements()) {
+                    num++;
+                    Object o = en.nextElement();
+                    if (o instanceof CIMInstance) {
+                        addInstanceToTree(tp, (CIMInstance) o);
+                    } else {
+                        CIMClass cc = (CIMClass) o;
+                        CIMObjectPath cassoc = cc.getObjectPath();
+                        // TODO: this might be an istance
+                        TreeClass tni = new TreeClass(cassoc.getObjectName());
+                        tni.setCop(cassoc);
+                        tp.addChild(tni);
+                        // add instances node
+                        TreeParent p1 = new TreeParent("Instances");
+                        p1.setCop(cassoc);
+                        TreeObject p2 = new TreeObject("Loading instance names...");
+                        p1.addChild(p2);
+                        tni.addChild(p1);
+                        // add walk assoc node
+                        TreeParent to = new TreeParent("Walk associations (using class)");
+                        tni.addChild(to);
+                        TreeObject rtn = new TreeObject("Loading references...");
+                        to.addChild(rtn);
+                    }
+                // viewer.refresh(tp, true);
+                // viewer.refresh(tni, true);
+                }
+                if (num == 0) {
+                    TreeObject to = new TreeObject("No instances returned");
+                    tp.addChild(to);
+                }
+            } else if (tp.getName().equals("Methods")) {
+                Vector<?> v = client.getClass(tp.getCop()).getAllMethods();
+                int sz = v == null ? 0 : v.size();
+                if (sz == 0) {
+                    TreeObject to = new TreeObject("No methods detected");
+                    tp.addChild(to);
+                }
+                for (int i = 0; i < v.size(); i++) {
+                    CIMMethod cm = (CIMMethod) v.get(i);
+                    TreeNodeMethod tnm = new TreeNodeMethod(cm);
+                    tp.addChild(tnm);
+                    viewer.refresh(tp, true);
+                    viewer.refresh(tnm, true);
+                }
+                tp.removeChild(loading);
+            } else if (tp.getName().equals("Instances")) {
+                Enumeration<?> en = client.enumerateInstances(tp.getCop());
+                int num = 0;
+                while (en.hasMoreElements()) {
+                    num++;
+                    CIMInstance ci = (CIMInstance) en.nextElement();
+                    addInstanceToTree(tp, ci);
+                }
+                if (num == 0) {
+                    TreeObject to = new TreeObject("No instances returned");
+                    tp.addChild(to);
+                }
+            } else if (tp.getName().startsWith("Walk associations")) {
+                /*
+                					 * class
+                					 *   |_Walk associations
+                					 *   	   |_RefClass1
+                					 *   			|_Loading associations...
+                					 *   			|_class
+                					 */
+                viewer.expandToLevel(tp, 1);
+                Enumeration<?> en = client.referenceNames(tp.getParent().getCop());
+                List<CIMObjectPath> sortedRefs = new ArrayList<CIMObjectPath>();
+                int num = 0;
+                while (en.hasMoreElements()) {
+                    sortedRefs.add((CIMObjectPath) en.nextElement());
+                }
+                Collections.sort(sortedRefs, new COPComparator());
+                int sz = sortedRefs.size();
+                String lastClassName = "";
+                for (int i = 0; i < sz; i++) {
+                    num++;
+                    CIMObjectPath ci = (CIMObjectPath) sortedRefs.get(i);
+                    if (lastClassName.equals(ci.getObjectName())) {
+                        continue;
+                    }
+                    lastClassName = ci.getObjectName();
+                    TreeClassRef tni = new TreeClassRef(ci);
+                    tp.addChild(tni);
+                    String nodeName = "Loading associations (starting from class)... ";
+                    if (tp.getName().indexOf("instance") >= 0) {
+                        nodeName = "Loading associations (starting from instance)... ";
+                    }
+                    TreeObject to = new TreeObject(nodeName);
+                    tni.addChild(to);
+                }
+                if (num == 0) {
+                    TreeObject to = new TreeObject("No references returned");
+                    tp.addChild(to);
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        tp.removeChild(loading);
+        // viewer.getTree().update();
+        viewer.expandToLevel(tp, 1);
+        viewer.refresh(tp, true);
+    // viewer.getTree().update();
+    }
+}

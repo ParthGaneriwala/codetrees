@@ -1,0 +1,153 @@
+public NodeList checkInQ(long rid) throws IOException {
+    NodeList nl = null;
+    inQueue += this.readFromSocket(rid);
+    JHBServlet.dbg("inQueue: " + inQueue, 2);
+    if (init_retry < 1000 && (this.authid == null || this.isReinit()) && inQueue.length() > 0) {
+        init_retry++;
+        if (stream10Test.matcher(inQueue).matches()) {
+            Matcher m = stream10Pattern.matcher(inQueue);
+            if (m.matches()) {
+                this.authid = m.group(1);
+                inQueue = m.group(2);
+                JHBServlet.dbg("inQueue: " + inQueue, 2);
+                /*
+					 * whether there are stream features present we need to
+					 * filter them and strip (start)tls information
+					 */
+                streamFeatures = inQueue.length() > 0;
+            } else {
+                JHBServlet.dbg("failed to get stream features", 2);
+                try {
+                    Thread.sleep(5);
+                } catch (InterruptedException ie) {
+                }
+                // retry
+                return this.checkInQ(rid);
+            }
+        } else {
+            // legacy jabber stream
+            Matcher m = streamPattern.matcher(inQueue);
+            if (m.matches()) {
+                this.authid = m.group(1);
+            } else {
+                JHBServlet.dbg("failed to get authid", 2);
+                try {
+                    Thread.sleep(5);
+                } catch (InterruptedException ie) {
+                }
+                // retry
+                return this.checkInQ(rid);
+            }
+        }
+        // reset
+        init_retry = 0;
+    }
+    // try to parse it
+    if (!inQueue.equals("")) {
+        try {
+            /*
+				 * wrap inQueue with element so that multiple nodes can be
+				 * parsed
+				 */
+            Document doc = null;
+            if (streamFeatures)
+                doc = db.parse(new InputSource(new StringReader("<doc>" + inQueue + "</doc>")));
+            else
+                try {
+                    doc = db.parse(new InputSource(new StringReader("<doc xmlns='jabber:client'>" + inQueue + "</doc>")));
+                } catch (SAXException sex) {
+                    try {
+                        // stream closed?
+                        doc = db.parse(new InputSource(new StringReader("<stream:stream>" + inQueue)));
+                        this.terminate();
+                    } catch (SAXException sex2) {
+                    }
+                }
+            if (doc != null)
+                nl = doc.getFirstChild().getChildNodes();
+            if (streamFeatures) {
+                // check for starttls
+                for (int i = 0; i < nl.item(0).getChildNodes().getLength(); i++) {
+                    if (nl.item(0).getChildNodes().item(i).getNodeName().equals("starttls")) {
+                        if (!this.isReinit()) {
+                            JHBServlet.dbg("starttls present, trying to use it", 2);
+                            this.osw.write("<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>");
+                            this.osw.flush();
+                            String response = this.readFromSocket(rid);
+                            JHBServlet.dbg(response, 2);
+                            try {
+                                SSLSocketFactory sslFact = (SSLSocketFactory) SSLSocketFactory.getDefault();
+                                SSLSocket tls;
+                                tls = (SSLSocket) sslFact.createSocket(this.sock, this.sock.getInetAddress().getHostName(), this.sock.getPort(), false);
+                                tls.addHandshakeCompletedListener(new HandShakeFinished(this));
+                                this.pauseForHandshake = true;
+                                JHBServlet.dbg("initiating handshake");
+                                tls.startHandshake();
+                                try {
+                                    while (this.pauseForHandshake) {
+                                        JHBServlet.dbg(".");
+                                        Thread.sleep(5);
+                                    }
+                                } catch (InterruptedException ire) {
+                                }
+                                JHBServlet.dbg("TLS Handshake complete", 2);
+                                this.sock = tls;
+                                this.sock.setSoTimeout(SOCKET_TIMEOUT);
+                                this.br = new SSLSocketReader((SSLSocket) tls);
+                                this.osw = new OutputStreamWriter(tls.getOutputStream(), "UTF-8");
+                                // reset
+                                this.inQueue = "";
+                                this.setReinit(true);
+                                this.osw.write("<stream:stream to='" + this.to + "'" + " xmlns='jabber:client' " + " xmlns:stream='http://etherx.jabber.org/streams'" + " version='1.0'" + ">");
+                                this.osw.flush();
+                                return this.checkInQ(rid);
+                            } catch (Exception ssle) {
+                                JHBServlet.dbg("STARTTLS failed: " + ssle.toString(), 1);
+                                this.setReinit(false);
+                                if (this.isSecure()) {
+                                    if (!this.sock.getInetAddress().getHostName().equals("localhost") && !this.getResponse(rid).getReq().getServerName().equals(this.sock.getInetAddress().getHostName())) {
+                                        JHBServlet.dbg("secure connection requested but failed", 2);
+                                        throw new IOException();
+                                    } else {
+                                        // we trust localhost and hostnames
+                                        // that are the same as ours
+                                        JHBServlet.dbg("secure requested and we're local", 1);
+                                    }
+                                } else {
+                                    JHBServlet.dbg("tls failed but we don't need to be secure", 2);
+                                }
+                                if (this.sock.isClosed()) {
+                                    JHBServlet.dbg("socket closed", 1);
+                                    // reconnect
+                                    Socket s = new Socket();
+                                    s.connect(this.sock.getRemoteSocketAddress(), SOCKET_TIMEOUT);
+                                    this.sock = s;
+                                    this.sock.setSoTimeout(SOCKET_TIMEOUT);
+                                    this.br = new BufferedReader(new InputStreamReader(this.sock.getInputStream(), "UTF-8"));
+                                    this.osw = new OutputStreamWriter(this.sock.getOutputStream(), "UTF-8");
+                                    // reset
+                                    this.inQueue = "";
+                                    this.setReinit(true);
+                                    this.osw.write("<stream:stream to='" + this.to + "'" + " xmlns='jabber:client' " + " xmlns:stream='http://etherx.jabber.org/streams'" + " version='1.0'" + ">");
+                                    this.osw.flush();
+                                    return this.checkInQ(rid);
+                                }
+                            }
+                        } else
+                            nl.item(0).removeChild(nl.item(0).getChildNodes().item(i));
+                    }
+                }
+            }
+            // reset!
+            inQueue = "";
+        } catch (SAXException sex3) {
+            /* skip this */
+            this.setReinit(false);
+            JHBServlet.dbg("failed to parse inQueue: " + inQueue + "\n" + sex3.toString(), 1);
+            return null;
+        }
+    }
+    this.setReinit(false);
+    this.setLastActive();
+    return nl;
+}

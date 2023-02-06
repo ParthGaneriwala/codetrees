@@ -1,0 +1,66 @@
+// GenericPortlet Impl -----------------------------------------------------
+public void doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    if (System.getProperty("DEBUG") != null) {
+        System.out.println("ScrumReleaseProgressPortlet-> doView");
+    }
+    try {
+        PortletContext context = getPortletContext();
+        // Preferences
+        PortletPreferences prefs = request.getPreferences();
+        String categoryId = prefs.getValue("categoryId", "-1");
+        request.setAttribute("categoryId", categoryId);
+        if ("-1".equals(categoryId)) {
+            // Portlet is not configured
+            PortletRequestDispatcher requestDispatcher = context.getRequestDispatcher(NOT_CONFIGURED_PAGE);
+            requestDispatcher.include(request, response);
+        } else {
+            // Portlet is configured
+            Connection db = PortalUtils.useConnection(request);
+            Project thisProject = PortalUtils.getProject(request);
+            TaskCategory category = new TaskCategory(db, Integer.parseInt(categoryId));
+            request.setAttribute("category", category);
+            // Create an unset column
+            ProjectItem unsetItem = new ProjectItem();
+            unsetItem.setName("(unset)");
+            unsetItem.setId(0);
+            unsetItem.setProjectId(thisProject.getId());
+            unsetItem.setLevel(0);
+            // For each release, file the number of items in each status
+            ProjectItemList statusList = new ProjectItemList();
+            statusList.setProjectId(thisProject.getId());
+            statusList.setEnabled(Constants.TRUE);
+            statusList.buildList(db, ProjectItemList.LIST_STATUS);
+            statusList.add(0, unsetItem);
+            request.setAttribute("statusList", statusList);
+            // Cross reference the open target releases with the story counts
+            ProjectItemList targetReleaseList = new ProjectItemList();
+            targetReleaseList.setProjectId(thisProject.getId());
+            targetReleaseList.setEnabled(Constants.TRUE);
+            targetReleaseList.buildList(db, ProjectItemList.LIST_TARGET_RELEASE);
+            LinkedHashMap<ProjectItem, HashMap> releaseStatusMap = new LinkedHashMap<ProjectItem, HashMap>();
+            for (Object thisReleaseItem : targetReleaseList) {
+                ProjectItem thisRelease = (ProjectItem) thisReleaseItem;
+                LinkedHashMap<Integer, Integer> statusMap = new LinkedHashMap<Integer, Integer>();
+                Iterator i = statusList.iterator();
+                while (i.hasNext()) {
+                    ProjectItem thisStatus = (ProjectItem) i.next();
+                    TaskList storiesList = new TaskList();
+                    storiesList.setProjectId(thisProject.getId());
+                    storiesList.setCategoryId(Integer.parseInt(categoryId));
+                    storiesList.setTargetRelease(thisRelease.getId());
+                    storiesList.setStatus(thisStatus.getId());
+                    storiesList.setComplete(Constants.FALSE);
+                    int count = storiesList.queryCount(db);
+                    statusMap.put(thisStatus.getId(), count);
+                }
+                releaseStatusMap.put(thisRelease, statusMap);
+            }
+            request.setAttribute("releaseStatusMap", releaseStatusMap);
+            PortletRequestDispatcher requestDispatcher = context.getRequestDispatcher(VIEW_PAGE);
+            requestDispatcher.include(request, response);
+        }
+    } catch (Exception e) {
+        e.printStackTrace(System.out);
+        throw new PortletException(e.getMessage());
+    }
+}

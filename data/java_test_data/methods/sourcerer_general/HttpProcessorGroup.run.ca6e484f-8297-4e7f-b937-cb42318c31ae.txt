@@ -1,0 +1,158 @@
+@SuppressWarnings("unchecked")
+public void run() {
+    String tstr = "j56uytjghjfgj";
+    peer.ThreadCounter tc;
+    if (!peer.Config.ThreadStrTable.containsKey(tstr)) {
+        tc = new peer.ThreadCounter();
+        peer.Config.ThreadStrTable.put(tstr, tc);
+    }
+    tc = (ThreadCounter) peer.Config.ThreadStrTable.get(tstr);
+    tc.conut++;
+    System.out.println("����HttpProcessorGroup���߳�");
+    while (run) {
+        loaddingieceSum = 0;
+        availNewLoadPieceSum = 0;
+        synchronized (hpg) {
+            // Http���Notify
+            Iterator<Integer> it0 = httpProcessorTable.keySet().iterator();
+            while (it0.hasNext()) {
+                int processorId = it0.next();
+                HttpProcessor hp = httpProcessorTable.get(processorId);
+                if (hp.waitPiece) {
+                    int pieceOffset = hp.pieceOffset;
+                    // System.out.println("xxxxxxxxxxxx "+processorId+" "+pieceOffset);
+                    if (peer.Config.cacheFileMange.containsPiece(mdb, pieceOffset) | peer.Config.pieceTempGroupMange.containsPiece(mdb, pieceOffset)) {
+                        // System.out.println("WWWWWWWW  "+peer.Config.cacheFileMange.containsPiece(mdb,pieceOffset)+"  "+peer.Config.pieceTempGroupMange.containsPiece(mdb, pieceOffset));
+                        hp.writeNotify();
+                    // System.out.println("writeNotify()writeNotify()writeNotify() "+processorId+"  "+pieceOffset);
+                    }
+                }
+            }
+            ArrayList startOffsetList = new ArrayList();
+            Iterator<Integer> it2 = httpProcessorTable.keySet().iterator();
+            while (it2.hasNext()) {
+                int processorId = it2.next();
+                HttpProcessor hp = httpProcessorTable.get(processorId);
+                // PieceTable2����Ӧ��Ԥ�ط�Ƭ
+                int pieceOffset2 = hp.pieceOffset;
+                // System.out.print("���ȱ�ٵ÷�Ƭ  ");
+                // pieceOffset2=hp.blockOffset*64;
+                startOffsetList.add(hp.pieceOffset);
+                int blockOffset2 = hp.blockOffset;
+                int poffset1 = blockOffset2 * 64;
+                int poffset2 = poffset1 + 63;
+                while (poffset1 <= poffset2) {
+                    if (!peer.Config.cacheFileMange.containsPiece(mdb, poffset1) & !peer.Config.pieceTempGroupMange.containsPiece(mdb, poffset1)) {
+                        if (poffset1 < pieceSum) {
+                            if (!pieceRequestTable.containsKey(poffset1)) {
+                                PieceRequest p = new PieceRequest(this, mdb, blockOffset2, poffset1, getPieceLength(poffset1));
+                                pieceRequestTable.put(poffset1, p);
+                            // System.out.println("���ȱ�ٵ÷�Ƭ111  "+poffset1);
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    poffset1++;
+                }
+                for (int i = 0; i < peer.Config.maxPreLoadPiece & run; i++) {
+                    if (pieceOffset2 < pieceSum) {
+                        if (!peer.Config.cacheFileMange.containsPiece(mdb, pieceOffset2) & !peer.Config.pieceTempGroupMange.containsPiece(mdb, pieceOffset2)) {
+                            if (!pieceRequestTable.containsKey(pieceOffset2)) {
+                                PieceRequest p = new PieceRequest(this, mdb, pieceOffset2 / 64, pieceOffset2, getPieceLength(pieceOffset2));
+                                // PieceTable���ȱ�ٵ÷�Ƭ
+                                pieceRequestTable.put(pieceOffset2, p);
+                            }
+                        }
+                    } else {
+                        break;
+                    }
+                    pieceOffset2++;
+                }
+            }
+            pieceTableT = (HashMap<Integer, PieceRequest>) pieceRequestTable.clone();
+            Iterator<Integer> it = pieceTableT.keySet().iterator();
+            while (it.hasNext() & run) {
+                int pieceNum = it.next();
+                PieceRequest p = pieceRequestTable.get(pieceNum);
+                if (p != null) {
+                    int state = p.getFixState();
+                    if (state == PieceRequest.FixState_FixComplete) {
+                        pieceRequestTable.remove(pieceNum);
+                    }
+                }
+            }
+            ArrayList<Integer> pieceList = new ArrayList<Integer>();
+            ArrayList<Integer> pieceList1 = new ArrayList<Integer>();
+            Iterator<Integer> it8 = pieceRequestTable.keySet().iterator();
+            while (it8.hasNext() & run) {
+                int pieceNum = it8.next();
+                PieceRequest p = pieceRequestTable.get(pieceNum);
+                int state = p.getFixState();
+                boolean b = false;
+                for (int i = 0; i < startOffsetList.size(); i++) {
+                    int startOffset = (Integer) startOffsetList.get(i);
+                    if (pieceNum - startOffset >= 0 & pieceNum - startOffset < peer.Config.maxPreLoadPiece) {
+                        b = true;
+                    }
+                }
+                if (p.getFixState() == PieceRequest.FixState_FixIng) {
+                    if (p.getFixTime() > peer.Config.loadPieceTimeOut) {
+                        System.out.println("��Ƭ��ʱ  " + pieceNum);
+                        // ֹͣ��ʱ����
+                        p.stopFix(true);
+                        System.out.println("ֹͣ��ʱ��Ƭ " + pieceNum + " " + p.sn.conn.dstIp + ":" + p.sn.conn.dstPort);
+                        fixTimeoutSum++;
+                        if (b) {
+                            pieceList1.add(pieceNum);
+                        } else {
+                            // ��ӵ��������
+                            pieceList.add(pieceNum);
+                        }
+                    }
+                }
+                if (state == PieceRequest.FixState_FixStop) {
+                    if (b) {
+                        pieceList1.add(pieceNum);
+                    } else {
+                        // ��ӵ��������
+                        pieceList.add(pieceNum);
+                    }
+                }
+                if (state == PieceRequest.FixState_FixIng) {
+                    loaddingieceSum++;
+                }
+            }
+            availNewLoadPieceSum = peer.Config.maxLoadingPiece - loaddingieceSum;
+            Comparator<Object> comp = new Comparator() {
+
+                public int compare(Object o1, Object o2) {
+                    int n1 = (Integer) o1;
+                    int n2 = (Integer) o2;
+                    if (n1 > n2) {
+                        return 1;
+                    } else if (n1 < n2) {
+                        return -1;
+                    } else {
+                        return 0;
+                    }
+                }
+            };
+            // �Կ��ܽ�ִ�еķ�Ƭ����
+            Collections.sort(pieceList, comp);
+            Collections.sort(pieceList1, comp);
+            // ����ִ��list�еķ�Ƭ
+            m = 0;
+            loadList(pieceList1, true);
+            loadList(pieceList, false);
+        }
+        try {
+            Thread.sleep(10);
+        } catch (InterruptedException e) {
+            break;
+        }
+    }
+    ranList = null;
+    System.out.println("��ֹHttpProcessorGroup���߳�");
+    tc.conut--;
+}

@@ -1,0 +1,83 @@
+// **************************
+// Processing methods
+// **************************
+/**
+ * Creates or updates a subscription. New subscriptions with expires=0 are
+ * called fetchers, they only require one notification
+ *
+ * @returns responseCode
+ */
+public synchronized int processSubscribe(Request request, Dialog dialog, int expires) {
+    logger.info("PresenceServer, processSubscribeRequest: \n" + request);
+    if (isResourceListSubscriber(request)) {
+        // ResourceLists demand a little special handling
+        return processResourceListSubscribe(request, dialog, expires);
+    }
+    int responseCode;
+    String notifierKey = getKey((Message) request, "To");
+    String subscriberKey = getKey((Message) request, "From");
+    String subscriberId = dialog.getDialogId();
+    Notifier notifier = (Notifier) notifiers.get(notifierKey);
+    Subscriber subscriber = (Subscriber) subscribers.get(subscriberId);
+    if (subscriber != null) {
+        logger.info("   PM.processSubscribe - updating old subscription");
+        logger.info("subscriberId:" + subscriberId + "\n" + "notifier:" + notifier);
+        if (expires == 0) {
+            // remove old subscription, send notify
+            responseCode = notifier.removeSubscriber(subscriberKey);
+            subscriber.setSubscriptionState("terminated");
+        } else if (notifier.hasSubscriber(subscriberId)) {
+            // Update subscription, don't send Notify
+            // Authorize subscriber
+            logger.info("�Ự���ڣ���");
+            responseCode = notifier.authorize(subscriberKey, Request.SUBSCRIBE);
+            if (responseCode == Response.OK) {
+                logger.info("��Ӧok");
+                subscriber.setExpires(expires);
+                subscriber.setSubscriptionState("active");
+            } else if (responseCode == Response.ACCEPTED) {
+                subscriber.setExpires(expires);
+                subscriber.setSubscriptionState("pending");
+            } else {
+                subscriber.setSubscriptionState("terminated");
+            }
+            return responseCode;
+        } else {
+            // don't send notify
+            return Response.SERVER_INTERNAL_ERROR;
+        }
+    } else {
+        // subscriber object does not exist (The dialogId was unmatched)
+        // Authorize subscriber and create object
+        responseCode = notifier.authorize(subscriberKey, Request.SUBSCRIBE);
+        if (responseCode == Response.OK) {
+            subscriber = createSubscriber(request, subscriberKey, dialog, expires);
+            subscriber.setExpires(expires);
+            subscriber.setSubscriptionState("active");
+            subscriber.updateNotifyBody(notifier.getFullState());
+            initialNotifyQueue.add((Object) subscriber);
+            if (expires > 0) {
+                subscribers.put((Object) subscriberId, (Object) subscriber);
+                notifier.addSubscriber(subscriberKey, subscriberId, "active");
+            }
+        } else if (responseCode == Response.ACCEPTED) {
+            logger.info("   PM.processSubscribe - new subscription, Accepted");
+            subscriber = (Subscriber) createSubscriber(request, subscriberKey, dialog, expires);
+            subscriber.setExpires(expires);
+            subscriber.setSubscriptionState("pending");
+            subscriber.updateNotifyBody(notifier.getOfflineState());
+            if (expires > 0) {
+                subscribers.put((Object) subscriberId, (Object) subscriber);
+                notifier.addSubscriber(subscriberKey, subscriberId, "pending");
+            }
+        } else {
+            logger.info("   PM.processSubscribe - new subscription, Not accepted");
+            // this new subscription was declined.
+            return responseCode;
+        }
+    }
+    // New subscriptions should be notified immediately
+    initialNotifyQueue.add((Object) subscriber);
+    logger.info(" PM.processSubscribe finished, added subscriber to NotifyQueue: " + initialNotifyQueue.toString());
+    return responseCode;
+}

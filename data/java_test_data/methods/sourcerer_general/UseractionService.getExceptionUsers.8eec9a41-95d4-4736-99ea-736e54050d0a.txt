@@ -1,0 +1,47 @@
+public PaginationSupport getExceptionUsers(String apnni, Date date, String orderby, int pageNo, int pageSize) {
+    final long start = com.sxit.stat.util.StatUtil.getDateTime(date);
+    final long end = com.sxit.stat.util.StatUtil.getOneDayAfter(start);
+    final String _date = dfyyyyMMdd.format(date);
+    final String today = dfyyyyMMdd.format(new Date());
+    String where = "";
+    if (apnni != null && !apnni.equals(""))
+        where = "  reqapnni='" + apnni + "'";
+    else
+        where = "  reqapnni like '%.cq'";
+    String cntsql = "";
+    String sql = "";
+    int startIndex = (pageNo - 1) * pageSize;
+    if (today.equals(_date)) {
+        cntsql = "select count(*) as cnt from (select count(reqapnni) from cdr_mistake where reqapnni like '%.cq' and errcode=33 and opentime between " + start / 1000 + " and " + end / 1000 + " ${where} group by reqapnni )";
+        sql = "select * from(select a.*,rownum rn from(select reqapnni ,count(distinct(imsi)) as usercount from cdr_mistake where reqapnni like '%.cq' and errcode=33 and opentime between " + start / 1000 + " and " + end / 1000 + " ${where} group by reqapnni " + orderby + ") a where rownum<=" + (startIndex + pageSize) + ") where rn>" + startIndex;
+    } else {
+        cntsql = "select count(*) from stat_apn_error where " + where + " and errcode=33 and stattime=" + _date;
+        sql = "select * from(select a.*,rownum rn from(select reqapnni ,usercount from stat_apn_error where " + where + " and errcode=33 and stattime= " + _date + orderby + ") a where rownum<=" + (startIndex + pageSize) + ") where rn>" + startIndex;
+    }
+    long now = System.currentTimeMillis();
+    int totalCount = jdbcTemplate.queryForInt(cntsql);
+    System.out.println((System.currentTimeMillis() - now) + "::" + cntsql);
+    now = System.currentTimeMillis();
+    Object object = jdbcTemplate.query(sql, new ResultSetExtractor() {
+
+        public Object extractData(ResultSet rs) throws SQLException, DataAccessException {
+            List list = new ArrayList();
+            while (rs.next()) {
+                ExceptionUsers eusers = new ExceptionUsers();
+                eusers.setApnni(rs.getString("reqapnni"));
+                eusers.setUsercount(rs.getInt("usercount"));
+                if (today.equals(_date)) {
+                    eusers.setImsilist(getExcepionUserDetailByApn(eusers, eusers.getApnni(), start, end));
+                } else {
+                    eusers.setImsilist(getExcepionUserDetailByApn(eusers, eusers.getApnni(), _date));
+                }
+                list.add(eusers);
+            }
+            return list;
+        }
+    });
+    System.out.println((System.currentTimeMillis() - now) + "::" + sql);
+    List list = (List) object;
+    PaginationSupport ps = new PaginationSupport(list, totalCount, pageSize, startIndex);
+    return ps;
+}

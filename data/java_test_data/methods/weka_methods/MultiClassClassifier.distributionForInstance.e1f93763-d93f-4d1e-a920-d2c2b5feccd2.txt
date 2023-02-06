@@ -1,0 +1,76 @@
+public double[] distributionForInstance(Instance inst) throws Exception {
+    if (m_Classifiers.length == 1) {
+        return m_Classifiers[0].distributionForInstance(inst);
+    }
+    double[] probs = new double[inst.numClasses()];
+    if (m_Method == METHOD_1_AGAINST_1) {
+        double[][] r = new double[inst.numClasses()][inst.numClasses()];
+        double[][] n = new double[inst.numClasses()][inst.numClasses()];
+        for (int i = 0; i < m_ClassFilters.length; i++) {
+            if (m_Classifiers[i] != null) {
+                Instance tempInst = (Instance) inst.copy();
+                tempInst.setDataset(m_TwoClassDataset);
+                double[] current = m_Classifiers[i].distributionForInstance(tempInst);
+                Range range = new Range(((RemoveWithValues) m_ClassFilters[i]).getNominalIndices());
+                range.setUpper(m_ClassAttribute.numValues());
+                int[] pair = range.getSelection();
+                if (m_pairwiseCoupling && inst.numClasses() > 2) {
+                    r[pair[0]][pair[1]] = current[0];
+                    n[pair[0]][pair[1]] = m_SumOfWeights[i];
+                } else {
+                    if (current[0] > current[1]) {
+                        probs[pair[0]] += 1.0;
+                    } else {
+                        probs[pair[1]] += 1.0;
+                    }
+                }
+            }
+        }
+        if (m_pairwiseCoupling && inst.numClasses() > 2) {
+            return pairwiseCoupling(n, r);
+        }
+    } else if (m_Method == METHOD_1_AGAINST_ALL) {
+        for (int i = 0; i < m_ClassFilters.length; i++) {
+            m_ClassFilters[i].input(inst);
+            m_ClassFilters[i].batchFinished();
+            probs[i] = m_Classifiers[i].distributionForInstance(m_ClassFilters[i].output())[1];
+        }
+    } else {
+        if (getLogLossDecoding()) {
+            Arrays.fill(probs, 1.0);
+            for (int i = 0; i < m_ClassFilters.length; i++) {
+                m_ClassFilters[i].input(inst);
+                m_ClassFilters[i].batchFinished();
+                double[] current = m_Classifiers[i].distributionForInstance(m_ClassFilters[i].output());
+                for (int j = 0; j < m_ClassAttribute.numValues(); j++) {
+                    if (((MakeIndicator) m_ClassFilters[i]).getValueRange().isInRange(j)) {
+                        probs[j] += Math.log(Utils.SMALL + (1.0 - 2 * Utils.SMALL) * current[1]);
+                    } else {
+                        probs[j] += Math.log(Utils.SMALL + (1.0 - 2 * Utils.SMALL) * current[0]);
+                    }
+                }
+            }
+            probs = Utils.logs2probs(probs);
+        } else {
+            // Use old-style decoding
+            for (int i = 0; i < m_ClassFilters.length; i++) {
+                m_ClassFilters[i].input(inst);
+                m_ClassFilters[i].batchFinished();
+                double[] current = m_Classifiers[i].distributionForInstance(m_ClassFilters[i].output());
+                for (int j = 0; j < m_ClassAttribute.numValues(); j++) {
+                    if (((MakeIndicator) m_ClassFilters[i]).getValueRange().isInRange(j)) {
+                        probs[j] += current[1];
+                    } else {
+                        probs[j] += current[0];
+                    }
+                }
+            }
+        }
+    }
+    if (Utils.gr(Utils.sum(probs), 0)) {
+        Utils.normalize(probs);
+        return probs;
+    } else {
+        return m_ZeroR.distributionForInstance(inst);
+    }
+}

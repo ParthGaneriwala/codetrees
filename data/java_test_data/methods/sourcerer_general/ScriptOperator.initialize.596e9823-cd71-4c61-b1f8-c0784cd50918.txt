@@ -1,0 +1,34 @@
+public void initialize(Configuration hconf) throws HiveException {
+    super.initialize(hconf);
+    statsMap.put(Counter.DESERIALIZE_ERRORS, deserialize_error_count);
+    statsMap.put(Counter.SERIALIZE_ERRORS, serialize_error_count);
+    try {
+        this.hconf = hconf;
+        scriptOutputDeserializer = conf.getScriptOutputInfo().getDeserializerClass().newInstance();
+        scriptOutputDeserializer.initialize(hconf, conf.getScriptOutputInfo().getProperties());
+        scriptInputSerializer = (Serializer) conf.getScriptInputInfo().getDeserializerClass().newInstance();
+        scriptInputSerializer.initialize(hconf, conf.getScriptInputInfo().getProperties());
+        String[] cmdArgs = splitArgs(conf.getScriptCmd());
+        String[] wrappedCmdArgs = addWrapper(cmdArgs);
+        LOG.info("Executing " + Arrays.asList(wrappedCmdArgs));
+        LOG.info("tablename=" + hconf.get(HiveConf.ConfVars.HIVETABLENAME.varname));
+        LOG.info("partname=" + hconf.get(HiveConf.ConfVars.HIVEPARTITIONNAME.varname));
+        LOG.info("alias=" + alias);
+        ProcessBuilder pb = new ProcessBuilder(wrappedCmdArgs);
+        Map<String, String> env = pb.environment();
+        addJobConfToEnvironment(hconf, env);
+        env.put(safeEnvVarName(HiveConf.ConfVars.HIVEALIAS.varname), String.valueOf(alias));
+        // Runtime.getRuntime().exec(wrappedCmdArgs);
+        scriptPid = pb.start();
+        scriptOut = new DataOutputStream(new BufferedOutputStream(scriptPid.getOutputStream()));
+        scriptIn = new DataInputStream(new BufferedInputStream(scriptPid.getInputStream()));
+        scriptErr = new DataInputStream(new BufferedInputStream(scriptPid.getErrorStream()));
+        outThread = new StreamThread(scriptIn, new OutputStreamProcessor(scriptOutputDeserializer.getObjectInspector()), "OutputProcessor");
+        outThread.start();
+        errThread = new StreamThread(scriptErr, new ErrorStreamProcessor(), "ErrorProcessor");
+        errThread.start();
+    } catch (Exception e) {
+        e.printStackTrace();
+        throw new HiveException("Cannot initialize ScriptOperator", e);
+    }
+}

@@ -1,0 +1,125 @@
+public boolean assingPayments(String enterpriseId) throws RemoteException, UnexpectedErrorFault, InvalidIdFault, LoginFault, Exception {
+    boolean allRight = false;
+    CP_Enterprise_Account__c enterprise = null;
+    // Query List
+    List<SObject> queryList = null;
+    // Account_Info Keys for the sql query
+    Set<String> account_InfoSet = new HashSet<String>();
+    // Past_Dues Keys for the sql query
+    List<String> past_DuesIdsArray = new ArrayList<String>();
+    // Past Dues
+    Map<String, Past_Due__c> past_DueMap = new HashMap<String, Past_Due__c>();
+    // Past Dues
+    Map<String, List<CP_Payment__c>> paymentsMap = new HashMap<String, List<CP_Payment__c>>();
+    // Payment List
+    List<CP_Payment__c> paymentList = null;
+    // Past Due
+    Past_Due__c past_due = null;
+    PaymentMethodProcess paymentProcess = null;
+    String query = "";
+    // 0. GETS ENTERPRISE
+    try {
+        enterprise = (CP_Enterprise_Account__c) ClientSalesforce.queryLimitOne("Select Id, Name, Company__c from CP_Enterprise_Account__c " + "where Enterprise_Account_Code__c = '" + enterpriseId + "' LIMIT 1");
+    } catch (Exception e) {
+        logger.log(Level.INFO, "COLLECT/PAYMENTS Enterprise Account can not be found - End of process");
+        throw new Exception("0. Enterprise Account " + enterpriseId + " can not be found - End of process");
+    }
+    // CP_Payment__c - All the payments must have an Enterprise Account
+    try {
+        query = "Select c.Past_Due__r.Past_Due_Amount_USD__c, c.Past_Due__r.Past_Due_Amount_Local__c, c.Past_Due__r.Enterprise_Account__c, ";
+        query += " c.Past_Due__r.Minimum_Payment_USD__c, c.Past_Due__r.Minimum_Payment_Local__c, ";
+        query += " c.Past_Due__r.Status__c, c.Past_Due__r.Name, c.Past_Due__r.Id, c.Past_Due__r.Account_Info__c, c.Past_Due__c, ";
+        query += " c.Name, c.Id, c.CPEE_Enterprise_Account__c, c.Applied__c From CP_Payment__c c";
+        query += " where c.Applied__c =  false and c.CPEE_Enterprise_Account__c = '" + enterprise.getId() + "' order by c.Past_Due__r.Id";
+        queryList = ClientSalesforce.query(query);
+    } catch (Exception e) {
+        logger.log(Level.INFO, "COLLECT/PAYMENTS Get Payment not applied - End of process");
+        throw new Exception("1. Get Payment not applied - End of process");
+    }
+    if (null == queryList || queryList.size() == 0) {
+        logger.log(Level.INFO, "COLLECT/PAYMENTS The Enterprise Acc doesn't have Payments to process - End of process");
+        return allRight;
+    }
+    // 2.Organize Past Due and their Accounts
+    for (SObject payObject : queryList) {
+        CP_Payment__c payment = (CP_Payment__c) payObject;
+        if (null != payment.getPast_Due__r()) {
+            if (!past_DueMap.containsKey(payment.getPast_Due__r().getId().getID())) {
+                // Load the Past Dues Map
+                past_DueMap.put(payment.getPast_Due__r().getId().getID(), payment.getPast_Due__r());
+                // List of Past Dues
+                past_DuesIdsArray.add(payment.getPast_Due__r().getId().getID());
+                // ** The Past Due must have an Account_info.
+                if (null == payment.getPast_Due__r().getAccount_Info__c()) {
+                    logger.log(Level.INFO, "COLLECT/PAYMENTS Past Due " + payment.getPast_Due__r().getId().getID() + " " + payment.getPast_Due__r().getName() + " without Account_Info");
+                } else {
+                    // Set of Accounts
+                    account_InfoSet.add(payment.getPast_Due__r().getAccount_Info__c().getID());
+                }
+            }
+        }
+    }
+    if (account_InfoSet.size() == 0) {
+        logger.log(Level.INFO, "COLLECT/PAYMENTS The Payments pending to process don't have Accounts - End of process");
+        return allRight;
+    }
+    // CP_Payment__c
+    try {
+        query = "Select c.Past_Due__r.Id, c.Past_Due__c, c.Name, c.Id, c.CurrencyIsoCode, c.CreatedDate, c.CPEE_Enterprise_Account__c, ";
+        query += " c.Applied__c, c.Amount__c From CP_Payment__c c";
+        query += " where c.CPEE_Enterprise_Account__c = '" + enterprise.getId() + "' and c.Past_Due__r.Id in ";
+        queryList = ClientSalesforce.query(query, past_DuesIdsArray, " order by  c.Past_Due__r.Id");
+    } catch (Exception e) {
+        logger.log(Level.INFO, "COLLECT/PAYMENTS Get all the Past Dues's Payments - End of process");
+        throw new Exception("3. Get all the Past Dues's Payments - End of process");
+    }
+    // 4 Assign the Payments to the Past Dues
+    for (SObject payObject : queryList) {
+        CP_Payment__c payment = (CP_Payment__c) payObject;
+        if (paymentsMap.containsKey(payment.getPast_Due__r().getId().getID())) {
+            paymentList = paymentsMap.get(payment.getPast_Due__r().getId().getID());
+            paymentList.add(payment);
+        } else {
+            paymentList = new ArrayList<CP_Payment__c>();
+            paymentList.add(payment);
+            paymentsMap.put(payment.getPast_Due__r().getId().getID(), paymentList);
+        }
+    }
+    // 5 Search the Payment Method
+    List<String> account_InfoIdsArray = new ArrayList<String>(account_InfoSet);
+    try {
+        query = "Select a.Product__r.Pay_Method__c, a.Product__c, a.Name, a.Id, a.CPEE_Enterprise_Account__c, a.Account_Number__c, ";
+        query += "  (Select Id From Past_Dues1__r) From Account_Info__c a";
+        query += " where a.CPEE_Enterprise_Account__c = '" + enterprise.getId() + "' and a.Id in ";
+        queryList = ClientSalesforce.query(query, account_InfoIdsArray, "");
+    } catch (Exception e) {
+        logger.log(Level.INFO, "COLLECT/PAYMENTS Payment Method not be found - End of process");
+        throw new Exception("5. Payment Method can not be found - End of process");
+    }
+    // 6 Iterate by Account and verify the Payment Method
+    for (SObject account_InfoObject : queryList) {
+        Account_Info__c account_Info = (Account_Info__c) account_InfoObject;
+        if (null != account_Info.getProduct__r() && null != account_Info.getProduct__r().getPay_Method__c()) {
+            // Only the Past Dues with Payments
+            SObject[] past_duesArray = account_Info.getPast_Dues1__r().getRecords();
+            if (null != past_duesArray) {
+                for (SObject past_dueObj : past_duesArray) {
+                    past_due = (Past_Due__c) past_dueObj;
+                    paymentList = paymentsMap.get(past_due.getId().getID());
+                    past_due = past_DueMap.get(past_due.getId().getID());
+                    logger.log(Level.INFO, "Processing Past Due id: " + ((Past_Due__c) past_dueObj).getId().getID());
+                    if (null != past_due) {
+                        if (INTEREST_FREE.equals(account_Info.getProduct__r().getPay_Method__c())) {
+                            paymentProcess = new InterestFreePaymentMethod();
+                            paymentProcess.apply(past_due, paymentList);
+                        } else if (INTEREST.equals(account_Info.getProduct__r().getPay_Method__c())) {
+                            paymentProcess = new InterestPaymentMethod();
+                            paymentProcess.apply(past_due, paymentList);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return allRight;
+}

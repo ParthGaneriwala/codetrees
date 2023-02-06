@@ -1,0 +1,97 @@
+// documentation inherited
+@Override
+public Geometry createGeometry(GlContext ctx, Scope scope, GeometryConfig.Stored config, PassDescriptor[] passes) {
+    // get the array of bone matrices
+    final Matrix4f[] boneMatrices = config.getBoneMatrices(scope);
+    // get the index and weight arrays; if we're missing anything, fall back to static
+    ClientArrayConfig boneIndexArray = config.getVertexAttribArray("boneIndices");
+    ClientArrayConfig boneWeightArray = config.getVertexAttribArray("boneWeights");
+    if (boneMatrices == null || boneIndexArray == null || boneWeightArray == null) {
+        return config.createStaticGeometry(ctx, scope, passes);
+    }
+    final int[] boneIndices = config.getIntArray(false, boneIndexArray);
+    final float[] boneWeights = config.getFloatArray(false, boneWeightArray);
+    // get the source data (tangents, normals, and vertices)
+    PassSummary summary = new PassSummary(passes);
+    ArrayList<ClientArrayConfig> sourceArrays = new ArrayList<ClientArrayConfig>();
+    ClientArrayConfig tangentArray = summary.vertexAttribs.contains("tangents") ? config.getVertexAttribArray("tangents") : null;
+    final boolean tangents = (tangentArray != null);
+    if (tangents) {
+        sourceArrays.add(tangentArray);
+    }
+    final boolean normals = (summary.normals && config.normalArray != null);
+    if (normals) {
+        sourceArrays.add(config.normalArray);
+    }
+    sourceArrays.add(config.vertexArray);
+    final float[] source = config.getFloatArray(false, sourceArrays.toArray(new ClientArrayConfig[sourceArrays.size()]));
+    // get the dest data (shared between instances)
+    ArrayList<ClientArrayConfig> destArrays = new ArrayList<ClientArrayConfig>();
+    for (String attrib : summary.vertexAttribs) {
+        ClientArrayConfig vertexAttribArray = config.getVertexAttribArray(attrib);
+        if (vertexAttribArray != null) {
+            destArrays.add(vertexAttribArray);
+        }
+    }
+    for (int set : summary.texCoordSets) {
+        ClientArrayConfig texCoordArray = config.getTexCoordArray(set);
+        if (texCoordArray != null) {
+            destArrays.add(texCoordArray);
+        }
+    }
+    if (summary.colors && config.colorArray != null) {
+        destArrays.add(config.colorArray);
+    }
+    if (summary.normals && config.normalArray != null) {
+        destArrays.add(config.normalArray);
+    }
+    destArrays.add(config.vertexArray);
+    float[] dest = config.getFloatArray(true, destArrays.toArray(new ClientArrayConfig[destArrays.size()]));
+    // create the array states and, if possible, a VBO to hold the skinned data
+    BufferObject arrayBuffer = null;
+    FloatBuffer floatArray = null;
+    boolean vbos = GLContext.getCapabilities().GL_ARB_vertex_buffer_object;
+    if (vbos) {
+        arrayBuffer = new BufferObject(ctx.getRenderer());
+    } else {
+        floatArray = BufferUtils.createFloatBuffer(dest.length);
+    }
+    final ArrayState[] arrayStates = config.createArrayStates(ctx, passes, summary, false, vbos, arrayBuffer, floatArray);
+    final int tangentOffset = tangents ? getTangentOffset(passes, arrayStates) : 0;
+    final int normalOffset = normals ? getNormalOffset(arrayStates) : 0;
+    ClientArray vertexArray = arrayStates[0].getVertexArray();
+    final int vertexOffset = (int) (vertexArray.offset / 4);
+    final int vertexStride = vertexArray.stride / 4;
+    // finally, create the draw command and the geometry itself
+    final Vector3f center = config.bounds.getCenter();
+    final DrawCommand drawCommand = config.createDrawCommand(vbos);
+    return new DynamicGeometry(dest, arrayBuffer, floatArray) {
+
+        public CoordSpace getCoordSpace(int pass) {
+            return CoordSpace.EYE;
+        }
+
+        public Vector3f getCenter() {
+            return center;
+        }
+
+        public ArrayState getArrayState(int pass) {
+            return arrayStates[pass];
+        }
+
+        public DrawCommand getDrawCommand(int pass) {
+            return drawCommand;
+        }
+
+        protected void updateData() {
+            // skin based on attributes
+            if (tangents && normals) {
+                skinVertices(source, _data, boneMatrices, boneIndices, boneWeights, tangentOffset, normalOffset, vertexOffset, vertexStride);
+            } else if (normals) {
+                skinVertices(source, _data, boneMatrices, boneIndices, boneWeights, normalOffset, vertexOffset, vertexStride);
+            } else {
+                skinVertices(source, _data, boneMatrices, boneIndices, boneWeights, vertexOffset, vertexStride);
+            }
+        }
+    };
+}

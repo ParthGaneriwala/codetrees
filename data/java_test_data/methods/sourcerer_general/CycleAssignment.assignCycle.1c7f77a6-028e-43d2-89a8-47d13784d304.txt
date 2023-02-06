@@ -1,0 +1,213 @@
+public boolean assignCycle(String enterpriseId, String cycleId) throws RemoteException, UnexpectedErrorFault, InvalidIdFault, LoginFault, Exception {
+    boolean allRight = false;
+    if (null != cycleId) {
+        Cycle__c currentCycle = null;
+        CP_Enterprise_Account__c enterprise = null;
+        // Map<ProductId,Map<categoryId,int>>
+        HashMap<String, HashMap<String, Integer>> productCategoriesIndexMap = new HashMap<String, HashMap<String, Integer>>();
+        // Holiday map
+        Map<String, HashMap<Integer, Holiday__c>> holidayMap = null;
+        // 0. GETS ENTERPRISE
+        try {
+            enterprise = (CP_Enterprise_Account__c) ClientSalesforce.queryLimitOne("Select Id, Name, Company__r.Result_Code_for_Closing_an_Activity__c, " + "Company__r.Code_for_Closing_an_Activity__c, Company__c from CP_Enterprise_Account__c " + "where Enterprise_Account_Code__c = '" + enterpriseId + "' LIMIT 1");
+        } catch (Exception e) {
+            logger.log(Level.INFO, "COLLECT - Enterprise Account can not be found - End of process");
+            throw new Exception("Enterprise Account can not be found - End of process");
+        }
+        if (null != enterprise) {
+            // 1. GETS CURRENT CYCLE
+            try {
+                currentCycle = (Cycle__c) ClientSalesforce.queryLimitOne("Select Id, CPEE_Closed_Cycle__c, Period__c, Enterprise_Account__c, Company__c, " + "CPEE_Cycle_Start_Date__c, CPEE_Cycle_End_Date__c from Cycle__c " + "where External_Identifier__c = '" + cycleId + "' " + "and Enterprise_Account__c = '" + enterprise.getId().getID() + "' LIMIT 1");
+            } catch (Exception e) {
+                logger.log(Level.INFO, "COLLECT - Current Cycle not found - End of process");
+                throw new Exception("Current Cycle not found - End of process");
+            }
+            // 2. CLOSES LAST PERIOD
+            closeLastPeriod(currentCycle);
+            // 3. LOOKS FOR AGENTS AND CATEGORY-PRODUCT CONFIGURATION
+            constructAgentsMaps(currentCycle);
+            if (agentCatProdMap.size() > 0) {
+                int lastIndex = 0;
+                boolean returning = false;
+                // 4. LOOKS FOR AGENTS LOAD
+                calculateAgentCurrentLoad(currentCycle, enterprise);
+                // 5. LOOKS FOR CLIENT'S PAST DUES
+                createPastDueSortedStructures(enterprise, currentCycle);
+                // GETS HOLIDAYS MAP
+                holidayMap = Utilities.getHolidayMap(enterprise.getId().getID());
+                getCategoryProductConfiguration(enterprise.getId().getID());
+                getAgentShifts(agentIdsArray, enterprise.getCompany__c().getID());
+                // ****************************************************** SECOND PART ********************************************************
+                // ************************************************** ASIGNACION - RANKS *****************************************************
+                logger.log(Level.INFO, "COLLECT - ASSIGNMENT BY RANKS");
+                for (int i = 0; null != pastDueSortedList && i < pastDueSortedList.size(); i++) {
+                    try {
+                        Past_Due__c pastDue = pastDueSortedList.get(i);
+                        logger.log(Level.INFO, "COLLECT - Trying to assing past due: " + pastDue.getName() + " / total consolidated: " + pastDue.getTotal_Balance_Consolidate__c());
+                        String productId = pastDue.getCP_Product__c().toString();
+                        String categoryId = pastDue.getCategory__c().toString();
+                        List<Agent__c> agentList = new ArrayList<Agent__c>();
+                        // finds agents which match product and category
+                        if (null != agentCatProdMap)
+                            if (agentCatProdMap.containsKey(productId))
+                                if (agentCatProdMap.get(productId).containsKey(categoryId))
+                                    agentList = agentCatProdMap.get(productId).get(categoryId);
+                        if (agentList.size() > 0) {
+                            // Saves last used index from agent list - in order to use the very next index for the following past due
+                            if (!productCategoriesIndexMap.containsKey(productId))
+                                productCategoriesIndexMap.put(productId, new HashMap<String, Integer>());
+                            if (!productCategoriesIndexMap.get(productId).containsKey(categoryId))
+                                productCategoriesIndexMap.get(productId).put(categoryId, new Integer(0));
+                            // Gets the last index used for this category/product
+                            lastIndex = productCategoriesIndexMap.get(productId).get(categoryId);
+                            // If last index was reached last time, set program to use the index from end to start (...3, 2, 1)
+                            if (lastIndex == agentList.size() && agentList.size() > 0) {
+                                returning = true;
+                                lastIndex = lastIndex - 1;
+                            } else // If first index where reached last time, set program to use the index form start to end (0, 1, 2...)
+                            if (lastIndex - 1 < 0) {
+                                returning = false;
+                                lastIndex = 0;
+                            }
+                            int currentIndex = lastIndex;
+                            // iterates over agent list for the product and the category of the past due
+                            while (currentIndex < agentList.size() && currentIndex >= 0) {
+                                Agent__c agent = agentList.get(currentIndex);
+                                logger.log(Level.INFO, "COLLECT - Trying to assign to agent: " + agent.getName());
+                                int load = (agentLoadMap.containsKey(agent.getId().getID())) ? (agentLoadMap.get(agent.getId().getID()).size()) : 0;
+                                Agent_category_product__c agentCategoryProduct = categoryProductsMap.get(agent.getId().getID()).get(productId).get(categoryId);
+                                // verifies load
+                                if (load < agent.getCPEE_Maximum_Cycle__c()) {
+                                    // verifies ranks
+                                    if (pastDue.getTotal_Balance_Consolidate__c() >= agentCategoryProduct.getMinimum_Amount_to_Allocate__c() && pastDue.getTotal_Balance_Consolidate__c() <= agentCategoryProduct.getMaximum_Amount_to_Allocate__c()) {
+                                        // Calculate activity scheduling date
+                                        Date availableDate = getAvailableDate(agent, pastDue, currentCycle, holidayMap);
+                                        if (null != availableDate) {
+                                            // 1. ASSIGN NEW ACTIVITY
+                                            CP_Activity__c activity = getNewActivity(pastDue, agent, availableDate);
+                                            newActivities.add(activity);
+                                            // 2. ASSIGN PAST DUE - UPDATES AGENT
+                                            assignPastDue(pastDue, activity, agent.getId(), productId, categoryId);
+                                            // registers last used agent index
+                                            productCategoriesIndexMap.get(productId).put(categoryId, new Integer(returning ? currentIndex - 1 : currentIndex + 1));
+                                            logger.log(Level.INFO, "COLLECT - ASSIGNED PAST DUE " + pastDue.getName() + " / to agent '" + agent.getName() + "' " + pastDue.getCP_Product__r().getName() + " / " + pastDue.getCategory__r().getName());
+                                        } else
+                                            logger.log(Level.INFO, "COLLECT - No date available to assign this past due to agent " + agent.getName());
+                                        break;
+                                    } else
+                                        logger.log(Level.INFO, "COLLECT - ranks not reached: " + agentCategoryProduct.getMinimum_Amount_to_Allocate__c() + " / " + agentCategoryProduct.getMaximum_Amount_to_Allocate__c() + " for agent " + agent.getName());
+                                } else
+                                    logger.log(Level.INFO, "COLLECT - Agent cycle load reached " + agent.getCPEE_Maximum_Cycle__c());
+                                // increases or decreases the index, depending on the direction going forward or going backward
+                                currentIndex = returning ? currentIndex - 1 : currentIndex + 1;
+                            }
+                        // END WHILE
+                        } else
+                            logger.log(Level.INFO, "COLLECT - No agent found for " + pastDue.getName() + " / " + pastDue.getCP_Product__r().getName() + "/ " + pastDue.getCategory__r().getName());
+                    } catch (Exception e) {
+                        logger.log(Level.SEVERE, "COLLECT - ERROR WHILE PROCESING PAST DUE INDEX: " + i + " / " + e);
+                    }
+                }
+                // END ASSIGNATION BY RANKS
+                // ****************************************************** SECOND PART ********************************************************
+                // ********************************************** ASSIGNMENT BY AVAILABILITY *************************************************
+                logger.log(Level.INFO, "COLLECT - ASSIGNMENT BY AVAILABILITY - ASSIGNES ALL THE PAST DUE FROM A SINGLE CLIENT TO A SINGLE AGENT");
+                Map<String, Past_Due__c> pastDuesForSupervisors = new HashMap<String, Past_Due__c>();
+                // Iterates over past dues list
+                for (int i = 0; i < pastDueSortedList.size(); i++) {
+                    Past_Due__c pastDue = pastDueSortedList.get(i);
+                    String productId = pastDue.getCP_Product__c().toString();
+                    String categoryId = pastDue.getCategory__c().toString();
+                    List<Agent__c> agentList = new ArrayList<Agent__c>();
+                    boolean agentFound = false;
+                    List<Past_Due__c> pastDuesToAssign = new ArrayList<Past_Due__c>();
+                    try {
+                        // Verifies this past due was not assigned on ranks assignment
+                        if (!pastDuesAssignedMap.containsKey(pastDue.getId().getID()) && !pastDuesForSupervisors.containsKey(pastDue.getId().getID())) {
+                            logger.log(Level.INFO, "Trying to assing past dues from client: " + pastDue.getCustomer__r().getName() + "from mayor PastDue: " + pastDue.getName() + " / Total consolidated: " + pastDue.getTotal_Balance_Consolidate__c());
+                            // finds client past dues
+                            if (null != clientPastDuesMap.get(pastDue.getCustomer__c().getID())) {
+                                List<Past_Due__c> clientPastDues = clientPastDuesMap.get(pastDue.getCustomer__c().getID());
+                                // group client past dues that must be assigned - not previously assigned
+                                for (int j = 0; j < clientPastDues.size(); j++) {
+                                    if (!pastDuesAssignedMap.containsKey(clientPastDues.get(j).getId().getID()))
+                                        pastDuesToAssign.add(clientPastDues.get(j));
+                                }
+                                // finds agents list which can attend the current past due (mayor amount and mayor category)
+                                if (null != agentCatProdMap)
+                                    if (agentCatProdMap.containsKey(productId))
+                                        if (agentCatProdMap.get(productId).containsKey(categoryId))
+                                            agentList = agentCatProdMap.get(productId).get(categoryId);
+                                // This avoids the code from assigning client's past dues to diff agents.
+                                for (int j = 0; !agentFound && null != agentList && j < agentList.size(); j++) {
+                                    Agent__c agent = agentList.get(j);
+                                    logger.log(Level.INFO, "Trying to assign to agent: " + agent.getName());
+                                    // Verifies cycle load was not reached by this agent
+                                    int load = (agentLoadMap.containsKey(agent.getId().getID())) ? (agentLoadMap.get(agent.getId().getID()).size()) : 0;
+                                    if (load < agent.getCPEE_Maximum_Cycle__c()) {
+                                        // iterates over client past due list - the ones must be assigned
+                                        for (int x = 0; x < pastDuesToAssign.size(); x++) {
+                                            Past_Due__c pastDueToAssign = pastDuesToAssign.get(x);
+                                            logger.log(Level.INFO, "Testing agent: " + pastDueToAssign.getName());
+                                            // find available date for this past due on agents days
+                                            Date availableDate = getAvailableDate(agent, pastDueToAssign, currentCycle, holidayMap);
+                                            if (null != availableDate) {
+                                                agentFound = true;
+                                                // 1. ASSIGN activity and past due
+                                                CP_Activity__c activity = getNewActivity(pastDueToAssign, agent, availableDate);
+                                                newActivities.add(activity);
+                                                assignPastDue(pastDueToAssign, activity, agent.getId(), productId, categoryId);
+                                                logger.log(Level.INFO, "COLLECT - Assigned past due " + pastDueToAssign.getName() + " / to agent '" + agent.getName() + "' " + pastDue.getCP_Product__r().getName() + " / " + pastDue.getCategory__r().getName());
+                                            } else {
+                                                // one more past due.
+                                                if (agentFound) {
+                                                    pastDuesForSupervisors.put(pastDueToAssign.getId().getID(), pastDueToAssign);
+                                                    logger.log(Level.INFO, "Past due listed to be assigned to a supervisor: " + pastDueToAssign.getName());
+                                                }
+                                            }
+                                        }
+                                    // end past dues to assign for
+                                    } else
+                                        logger.log(Level.INFO, "COLLECT - Cycle load reached by agent: " + agent.getName());
+                                }
+                                // if any past due could be assigned
+                                if (!agentFound) {
+                                    for (int x = 0; x < pastDuesToAssign.size(); x++) {
+                                        Past_Due__c pastDueToAssign = pastDuesToAssign.get(x);
+                                        pastDuesForSupervisors.put(pastDueToAssign.getId().getID(), pastDueToAssign);
+                                        logger.log(Level.INFO, "Past due listed to be assigned to a supervisor: " + pastDueToAssign.getName());
+                                    }
+                                }
+                            } else
+                                logger.log(Level.INFO, "COLLECT - Clients has no past dues");
+                        } else
+                            logger.log(Level.INFO, "COLLECT - Past Due was already assigned or defined to be assigned to supervisor" + pastDue.getName() + " / " + pastDue.getTotal_Balance_Consolidate__c());
+                    } catch (Exception e) {
+                        logger.log(Level.SEVERE, "COLLECT - Error " + pastDue.getName());
+                    }
+                }
+                // end for of past dues
+                // assigns past dues to supervisors
+                logger.log(Level.INFO, "COLLECT - Assign to supervisor: " + pastDuesForSupervisors.size());
+                Iterator<Past_Due__c> ite = pastDuesForSupervisors.values().iterator();
+                while (ite.hasNext()) {
+                    Past_Due__c pastDue = ite.next();
+                    if (null != categoryProductMap.get(pastDue.getCP_Product__c().getID()) && null != categoryProductMap.get(pastDue.getCP_Product__c().getID()).get(pastDue.getCategory__c().getID())) {
+                        Category_Product__c categoryProduct = (Category_Product__c) categoryProductMap.get(pastDue.getCP_Product__c().getID()).get(pastDue.getCategory__c().getID());
+                        // 1. ASSIGN new activity and past due
+                        CP_Activity__c activity = getNewActivityForSupervisor(pastDue, categoryProduct.getSupervisor__r().getCPEE_Agent__c(), categoryProduct.getSupervisor__r().getName());
+                        newActivities.add(activity);
+                        assignPastDue(pastDue, activity, categoryProduct.getSupervisor__r().getCPEE_Agent__c(), pastDue.getCP_Product__c().getID(), pastDue.getCategory__c().getID());
+                        logger.log(Level.INFO, "COLLECT - Assigned Past due " + pastDue.getName() + " / " + pastDue.getTotal_Balance_Consolidate__c() + " to a supervisor " + categoryProduct.getSupervisor__r().getName());
+                    } else
+                        logger.log(Level.INFO, "COLLECT - No Supervisor found for pastDue " + pastDue.getName());
+                }
+            } else
+                logger.log(Level.SEVERE, "No Agent-category-product configuration found for this enterprise");
+        } else
+            logger.log(Level.SEVERE, this.getClass().getPackage() + this.getClass().getName() + "/ " + "Required information was not received ");
+        ClientSalesforce.update(pastDuesAssignedList);
+        ClientSalesforce.create(newActivities);
+    }
+    return allRight;
+}

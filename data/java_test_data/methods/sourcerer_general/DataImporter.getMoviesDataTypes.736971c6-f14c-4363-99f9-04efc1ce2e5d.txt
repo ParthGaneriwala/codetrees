@@ -1,0 +1,70 @@
+public boolean getMoviesDataTypes(ListFilesEnum dataType, String patternRegExp, DBTablesEnum tablesEnum, DBFieldsEnum movieFieldsEnum, DBFieldsEnum datatypeFieldsEnum, NamedEntitiesEnum namedEntitiesEnum) {
+    Parser parser = new Parser();
+    Map<String, Integer> moviesMap = new WeakHashMap<String, Integer>();
+    Map<String, Integer> datatypesMap = new HashMap<String, Integer>();
+    Set<NamedRelation> movieDatatypeSet = new LinkedHashSet<NamedRelation>();
+    Pattern pattern;
+    Matcher matcher;
+    int totalElementsNum = 0;
+    List<NamedEntity> datatypesList;
+    int moviesStartRow;
+    int moviesEndRow;
+    String tempMovieName = null;
+    parser.loadFile(listfilesMap.get(dataType), dataType);
+    moviesStartRow = 1;
+    moviesEndRow = moviesStartRow + SELECT_BUCKET_SIZE;
+    // compiling the pattern to look for in the list file
+    pattern = Pattern.compile(patternRegExp);
+    // retrieving the list to put inside a map
+    // the data types map would be small enough to stay resident in memory during the whole method
+    datatypesList = DBManager.getAllNamedEntities(namedEntitiesEnum);
+    for (NamedEntity entity : datatypesList) {
+        datatypesMap.put(entity.getName(), entity.getId());
+    }
+    boolean isEmpty = false;
+    do {
+        // retrieving part of the movies list to put inside a map
+        // since the movie list is huge, we select buckets and iterate over all of them
+        moviesMap = DBManager.getInstance().getAllMovies(moviesStartRow, moviesEndRow);
+        if (moviesMap.size() == 0)
+            isEmpty = true;
+        if (!isEmpty) {
+            // run over the Result Set, and enter all the movies there to the moviesMap
+            movieDatatypeSet = new LinkedHashSet<NamedRelation>();
+            // Making sure we find the start of the list
+            if (parser.findStartOfList()) {
+                System.out.println("Found the start of the list!");
+                while (!parser.isEOF()) {
+                    matcher = pattern.matcher(parser.readLine());
+                    if (matcher.matches()) {
+                        tempMovieName = matcher.group(1).trim();
+                        if (moviesMap.containsKey(tempMovieName) && datatypesMap.containsKey(matcher.group(2)))
+                            movieDatatypeSet.add(new NamedRelation(moviesMap.get(tempMovieName), datatypesMap.get(matcher.group(2)), null));
+                    }
+                    // flush results every BATCH_SIZE
+                    if ((movieDatatypeSet.size() > 0) && (movieDatatypeSet.size() % PSTMT_BATCH_SIZE == 0)) {
+                        System.out.println("Inserting " + movieDatatypeSet.size() + " elements to the DB");
+                        DBManager.getInstance().insertMovieSingleDataTypeSetToDB(connection, movieDatatypeSet, tablesEnum, movieFieldsEnum, datatypeFieldsEnum);
+                        totalElementsNum += movieDatatypeSet.size();
+                        movieDatatypeSet.clear();
+                    }
+                }
+                // flush the results that were left
+                System.out.println("Inserting " + movieDatatypeSet.size() + " elements to the DB");
+                DBManager.getInstance().insertMovieSingleDataTypeSetToDB(connection, movieDatatypeSet, tablesEnum, movieFieldsEnum, datatypeFieldsEnum);
+                totalElementsNum += movieDatatypeSet.size();
+                System.out.println("Total number of elements entered into DB: " + totalElementsNum);
+                movieDatatypeSet.clear();
+                moviesMap.clear();
+                moviesMap = null;
+                System.gc();
+            } else
+                return false;
+        }
+        moviesStartRow += SELECT_BUCKET_SIZE;
+        moviesEndRow += SELECT_BUCKET_SIZE;
+        parser.closeFile();
+        System.gc();
+    } while (!isEmpty);
+    return true;
+}

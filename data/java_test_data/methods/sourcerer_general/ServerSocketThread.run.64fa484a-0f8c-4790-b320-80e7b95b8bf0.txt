@@ -1,0 +1,155 @@
+public void run() {
+    /* loop forever */
+    for (; ; ) {
+        /* wait for client (if necessary) */
+        synchronized (this.runLock) {
+            while (this.client == null) {
+                try {
+                    this.runLock.wait();
+                } catch (InterruptedException ignored) {
+                    ignored.printStackTrace();
+                }
+            }
+        }
+        /* reset byte counts */
+        this.readByteCount = 0L;
+        this.writeByteCount = 0L;
+        /* remote client IP address */
+        InetAddress inetAddr = this.client.getInetAddress();
+        Print.logInfo("Remote client port: " + inetAddr + ":" + this.client.getPort() + "[" + this.client.getLocalPort() + "]");
+        /* session timeout */
+        long sessionStartTime = DateTime.getCurrentTimeMillis();
+        long sessionTimeoutMS = ServerSocketThread.this.getSessionTimeout();
+        long sessionTimeoutAt = (sessionTimeoutMS > 0L) ? (sessionStartTime + sessionTimeoutMS) : -1L;
+        /* client session handler */
+        ClientPacketHandler clientHandler = ServerSocketThread.this.getClientPacketHandler();
+        if (clientHandler != null) {
+            if (clientHandler instanceof AbstractClientPacketHandler) {
+                // set a handle to this session thread
+                ((AbstractClientPacketHandler) clientHandler).setSessionInfo(this);
+            }
+            clientHandler.sessionStarted(inetAddr);
+        }
+        /* process client requests */
+        OutputStream output = null;
+        OutputStream serverOutput = null;
+        Throwable termError = null;
+        try {
+            /* get output stream */
+            output = this.client.getOutputStream();
+            serverOutput = this.dmtpServer.getOutputStream();
+            /* write initial packet from server */
+            if (clientHandler != null) {
+                // may be null
+                byte[] initialPacket = clientHandler.getInitialPacket();
+                this.writeBytes(output, initialPacket);
+            }
+            /* loop until timeout, error, client terminate */
+            for (; ; ) {
+                /* session timeout? */
+                if (sessionTimeoutAt > 0L) {
+                    long currentTimeMS = DateTime.getCurrentTimeMillis();
+                    if (currentTimeMS >= sessionTimeoutAt) {
+                        throw new SSSessionTimeoutException("Session timeout");
+                    }
+                }
+                /* read packet */
+                byte[] packet = this.readPacket(this.client, clientHandler);
+                Print.logDebug("<== " + StringTools.toHexString(packet));
+                /* send packet to listeners */
+                if ((packet != null) && ServerSocketThread.this.hasListeners()) {
+                    try {
+                        ServerSocketThread.this.invokeListeners(packet);
+                    } catch (Throwable t) {
+                        // a listener can terminate this session
+                        break;
+                    }
+                }
+                /* get response */
+                if ((packet != null) && (clientHandler != null)) {
+                    try {
+                        byte[] response = clientHandler.getHandlePacket(packet);
+                        if ((response != null) && (response.length > 0)) {
+                            // forward packet to DMTP server
+                            this.writeBytes(serverOutput, response);
+                            // Send response to client
+                            this.writeBytes(output, clientHandler.getRespPacket());
+                            clientHandler.clearRespQueue();
+                        }
+                        if (clientHandler.terminateSession()) {
+                            break;
+                        }
+                    } catch (Throwable t) {
+                        // the ClientPacketHandler can terminate this session
+                        Print.logException("Unexpected exception: ", t);
+                        break;
+                    }
+                }
+            }
+        // socket read loop
+        } catch (SSSessionTimeoutException ste) {
+            Print.logError(ste.getMessage());
+            termError = ste;
+        } catch (SSReadTimeoutException rte) {
+            Print.logError(rte.getMessage());
+            termError = rte;
+        } catch (SSEndOfStreamException eos) {
+            Print.logError(eos.getMessage());
+            termError = eos;
+        } catch (SocketException se) {
+            Print.logError("Connection closed");
+            termError = se;
+        } catch (Throwable t) {
+            Print.logException("?", t);
+            termError = t;
+        }
+        /* client session terminated */
+        if (clientHandler != null) {
+            try {
+                byte[] finalPacket = clientHandler.getFinalPacket(termError != null);
+                this.writeBytes(output, finalPacket);
+            } catch (Throwable t) {
+                Print.logException("Final packet transmission", t);
+            }
+            clientHandler.sessionTerminated(termError, this.readByteCount, this.writeByteCount);
+            if (clientHandler instanceof AbstractClientPacketHandler) {
+                // clear the session so that it doesn't hold on to an instance of this class
+                ((AbstractClientPacketHandler) clientHandler).setSessionInfo(null);
+            }
+        }
+        /* flush output before closing */
+        if (output != null) {
+            try {
+                output.flush();
+            } catch (IOException ioe) {
+                Print.logException("Flush", ioe);
+            } catch (Throwable t) {
+                Print.logException("?", t);
+            }
+        }
+        /* linger on close */
+        try {
+            // (seconds)
+            this.client.setSoLinger(ServerSocketThread.this.getLingerTimeoutSec());
+            // (seconds)
+            this.dmtpServer.setSoLinger(ServerSocketThread.this.getLingerTimeoutSec());
+        } catch (SocketException se) {
+            Print.logException("setSoLinger", se);
+        } catch (Throwable t) {
+            Print.logException("?", t);
+        }
+        /* close socket */
+        try {
+            this.client.close();
+            this.dmtpServer.close();
+        } catch (IOException ioe) {
+        /* unable to close? */
+        }
+        /* clear for next requestor */
+        synchronized (this.runLock) {
+            this.client = null;
+            this.dmtpServer = null;
+        }
+    }
+// while (true)
+}

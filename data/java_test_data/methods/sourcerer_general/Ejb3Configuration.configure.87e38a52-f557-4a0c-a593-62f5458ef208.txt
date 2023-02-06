@@ -1,0 +1,108 @@
+public Ejb3Configuration configure(PersistenceUnitInfo info, Map integration) {
+    if (log.isDebugEnabled()) {
+        log.debug("Processing {}", LogHelper.logPersistenceUnitInfo(info));
+    } else {
+        log.info("Processing PersistenceUnitInfo [\n\tname: {}\n\t...]", info.getPersistenceUnitName());
+    }
+    integration = integration != null ? Collections.unmodifiableMap(integration) : CollectionHelper.EMPTY_MAP;
+    String provider = (String) integration.get(HibernatePersistence.PROVIDER);
+    if (provider == null)
+        provider = info.getPersistenceProviderClassName();
+    if (provider != null && !provider.trim().startsWith(IMPLEMENTATION_NAME)) {
+        log.info("Required a different provider: {}", provider);
+        return null;
+    }
+    if (info.getClassLoader() == null) {
+        throw new IllegalStateException("[PersistenceUnit: " + info.getPersistenceUnitName() == null ? "" : info.getPersistenceUnitName() + "] " + "PersistenceUnitInfo.getClassLoader() id null");
+    }
+    // set the classloader
+    Thread thread = Thread.currentThread();
+    ClassLoader contextClassLoader = thread.getContextClassLoader();
+    boolean sameClassLoader = info.getClassLoader().equals(contextClassLoader);
+    if (!sameClassLoader) {
+        overridenClassLoader = info.getClassLoader();
+        thread.setContextClassLoader(overridenClassLoader);
+    } else {
+        overridenClassLoader = null;
+    }
+    try {
+        Map workingVars = new HashMap();
+        workingVars.put(HibernatePersistence.PERSISTENCE_UNIT_NAME, info.getPersistenceUnitName());
+        this.persistenceUnitName = info.getPersistenceUnitName();
+        List<String> entities = new ArrayList<String>(50);
+        if (info.getManagedClassNames() != null)
+            entities.addAll(info.getManagedClassNames());
+        List<NamedInputStream> hbmFiles = new ArrayList<NamedInputStream>();
+        List<String> packages = new ArrayList<String>();
+        List<String> xmlFiles = new ArrayList<String>(50);
+        if (info.getMappingFileNames() != null)
+            xmlFiles.addAll(info.getMappingFileNames());
+        // Should always be true if the container is not dump
+        boolean searchForORMFiles = !xmlFiles.contains(META_INF_ORM_XML);
+        boolean[] detectArtifactForOtherJars = getDetectedArtifacts(info.getProperties(), null, false);
+        boolean[] detectArtifactForMainJar = getDetectedArtifacts(info.getProperties(), null, info.excludeUnlistedClasses());
+        for (URL jar : info.getJarFileUrls()) {
+            scanForClasses(jar, packages, entities, hbmFiles, detectArtifactForOtherJars, searchForORMFiles);
+        }
+        scanForClasses(info.getPersistenceUnitRootUrl(), packages, entities, hbmFiles, detectArtifactForMainJar, searchForORMFiles);
+        Properties properties = info.getProperties() != null ? info.getProperties() : new Properties();
+        ConfigurationHelper.overrideProperties(properties, integration);
+        // FIXME entities is used to enhance classes and to collect annotated entities this should not be mixed
+        // fill up entities with the on found in xml files
+        addXMLEntities(xmlFiles, info, entities);
+        // FIXME send the appropriate entites.
+        if ("true".equalsIgnoreCase(properties.getProperty(HibernatePersistence.USE_CLASS_ENHANCER))) {
+            info.addTransformer(new InterceptFieldClassFileTransformer(entities));
+        }
+        workingVars.put(HibernatePersistence.CLASS_NAMES, entities);
+        workingVars.put(HibernatePersistence.PACKAGE_NAMES, packages);
+        workingVars.put(HibernatePersistence.XML_FILE_NAMES, xmlFiles);
+        if (hbmFiles.size() > 0)
+            workingVars.put(HibernatePersistence.HBXML_FILES, hbmFiles);
+        // datasources
+        Boolean isJTA = null;
+        boolean overridenDatasource = false;
+        if (integration.containsKey(HibernatePersistence.JTA_DATASOURCE)) {
+            String dataSource = (String) integration.get(HibernatePersistence.JTA_DATASOURCE);
+            overridenDatasource = true;
+            properties.setProperty(Environment.DATASOURCE, dataSource);
+            isJTA = Boolean.TRUE;
+        }
+        if (integration.containsKey(HibernatePersistence.NON_JTA_DATASOURCE)) {
+            String dataSource = (String) integration.get(HibernatePersistence.NON_JTA_DATASOURCE);
+            overridenDatasource = true;
+            properties.setProperty(Environment.DATASOURCE, dataSource);
+            if (isJTA == null)
+                isJTA = Boolean.FALSE;
+        }
+        if (!overridenDatasource && (info.getJtaDataSource() != null || info.getNonJtaDataSource() != null)) {
+            isJTA = info.getJtaDataSource() != null ? Boolean.TRUE : Boolean.FALSE;
+            this.setDataSource(isJTA ? info.getJtaDataSource() : info.getNonJtaDataSource());
+            this.setProperty(Environment.CONNECTION_PROVIDER, InjectedDataSourceConnectionProvider.class.getName());
+        }
+        /*
+			 * If explicit type => use it
+			 * If a JTA DS is used => JTA transaction,
+			 * if a non JTA DS is used => RESOURCe_LOCAL
+			 * if none, set to JavaEE default => JTA transaction
+			 */
+        PersistenceUnitTransactionType transactionType = info.getTransactionType();
+        if (transactionType == null) {
+            if (isJTA == Boolean.TRUE) {
+                transactionType = PersistenceUnitTransactionType.JTA;
+            } else if (isJTA == Boolean.FALSE) {
+                transactionType = PersistenceUnitTransactionType.RESOURCE_LOCAL;
+            } else {
+                transactionType = PersistenceUnitTransactionType.JTA;
+            }
+        }
+        defineTransactionType(transactionType, workingVars);
+        configure(properties, workingVars);
+    } finally {
+        // After EMF, set the CCL back
+        if (!sameClassLoader) {
+            thread.setContextClassLoader(contextClassLoader);
+        }
+    }
+    return this;
+}

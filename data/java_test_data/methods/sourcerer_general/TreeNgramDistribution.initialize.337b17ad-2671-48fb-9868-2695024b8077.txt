@@ -1,0 +1,84 @@
+@SuppressWarnings({ "unchecked", "null" })
+public void initialize(File dataFile, boolean dummySmoother, double discountScale) throws IOException {
+    BinaryTree<HistoryTreePayload> theTree = lm.getHistoryTree();
+    int maxClusterId = 0;
+    for (BinaryTreeIterator<HistoryTreePayload> it = theTree.getPostOrderIterator(); it.hasNext(); ) {
+        int clusterId = it.next().clusterid;
+        if (clusterId > maxClusterId)
+            maxClusterId = clusterId;
+    }
+    int nrClusters = maxClusterId + 1;
+    GenerationData genData = new GenerationData();
+    genData.file = dataFile;
+    genData.nodes = new BinaryTree[nrClusters];
+    genData.clusterLists = new ClusterLists[nrClusters];
+    genData.discountScale = discountScale;
+    /*
+		int nrBackoffClusters[] = new int[forest.getOrder()-2];
+		Arrays.fill(nrBackoffClusters, 1);
+		nrBackoffClusters[nrBackoffClusters.length-1] = nrClusters;
+		*/
+    node2ClusterLists = new IdentityHashMap<BinaryTree<HistoryTreePayload>, ClusterLists>(nrClusters);
+    for (BinaryTreeIterator<HistoryTreePayload> it = theTree.getPostOrderIterator(); it.hasNext(); ) {
+        BinaryTree<HistoryTreePayload> node = it.nextNode();
+        int clusterid = node.getPayload().clusterid;
+        genData.nodes[clusterid] = node;
+        if (lm.getOrder() > 1) {
+            int[] cl = new int[lm.getOrder() - 1];
+            Arrays.fill(cl, 0, cl.length - 1, 1);
+            cl[cl.length - 1] = clusterid;
+            ClusterLists clusterLists = new ClusterLists(cl);
+            genData.clusterLists[clusterid] = clusterLists;
+            node2ClusterLists.put(node, clusterLists);
+        }
+    }
+    // generate NgramCounts
+    {
+        FileInputStream input = new FileInputStream(dataFile);
+        TrainingDataNodeReader reader = new OnDiskTrainingDataNodeReader(input.getChannel());
+        NgramCounts ngramCounts = new NgramCounts(lm.getOrder());
+        while (true) {
+            ReadableTrainingDataNode dataNode = reader.getNext();
+            if (dataNode == null)
+                break;
+            ProxyTrainingDataReader proxyReader = new ProxyTrainingDataReader(dataNode.getData(0));
+            ContextReducingReadableTrainingData ngramData = new ContextReducingReadableTrainingData(proxyReader, lm.getOrder(), 0, 1000000);
+            ngramCounts.populateCounts(ngramData);
+            break;
+        }
+        input.close();
+        genData.ngramCounts = ngramCounts;
+        // estimate the ngram smoothers
+        smoothers = new Smoother[lm.getOrder() - 1];
+        Smoother unigramSmoother = null;
+        for (byte order = 1; order <= lm.getOrder(); ++order) {
+            SmootherProducer producer = new SmootherProducer();
+            Iterator<Trie> iterator = ngramCounts.iterateLevel(order);
+            while (iterator.hasNext()) {
+                producer.addCount(iterator.next().count);
+            }
+            System.err.printf("order %d smoother: ", order);
+            Smoother smoother = dummySmoother ? new DummySmoother(producer) : new KNModSmoother(producer, System.err);
+            if (order == 1) {
+                unigramSmoother = smoother;
+            } else {
+                smoothers[order - 2] = smoother;
+            }
+        }
+        // compute the unigram distribution interpolated with the uniform distribution
+        Set<FactorTuple> allOvertFactors = Experiment.getInstance().getTupleDescription().getAllOvertFactors().keySet();
+        double uniformProb = unigramSmoother.getBackoffProb() / allOvertFactors.size();
+        Long2DoubleMap unigramDist = new Long2DoubleMap(allOvertFactors.size());
+        for (Iterator<Trie> it = ngramCounts.iterateLevel(1); it.hasNext(); ) {
+            Trie trie = it.next();
+            unigramDist.addAndGet(trie.word, unigramSmoother.getProb(trie.count));
+        }
+        double totalProb = 0;
+        for (FactorTuple tuple : allOvertFactors) {
+            totalProb += unigramDist.addAndGet(tuple.getBits(), uniformProb);
+        }
+        assert (ProbMath.approxEqual(totalProb, 1.0));
+        unigramDistribution = new Distribution(unigramDist, unigramSmoother.getTotalCount(), 0);
+    }
+    initialize(genData);
+}

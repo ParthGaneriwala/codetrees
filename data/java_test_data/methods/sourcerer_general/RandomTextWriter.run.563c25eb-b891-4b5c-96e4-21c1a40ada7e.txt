@@ -1,0 +1,54 @@
+public int run(String[] args) throws Exception {
+    if (args.length == 0) {
+        return printUsage();
+    }
+    JobConf job = new JobConf(getConf());
+    job.setJarByClass(RandomTextWriter.class);
+    job.setJobName("random-text-writer");
+    job.setOutputKeyClass(Text.class);
+    job.setOutputValueClass(Text.class);
+    job.setInputFormat(RandomWriter.RandomInputFormat.class);
+    job.setMapperClass(Map.class);
+    JobClient client = new JobClient(job);
+    ClusterStatus cluster = client.getClusterStatus();
+    int numMapsPerHost = job.getInt("test.randomtextwrite.maps_per_host", 10);
+    long numBytesToWritePerMap = job.getLong("test.randomtextwrite.bytes_per_map", 1 * 1024 * 1024 * 1024);
+    if (numBytesToWritePerMap == 0) {
+        System.err.println("Cannot have test.randomtextwrite.bytes_per_map set to 0");
+        return -2;
+    }
+    long totalBytesToWrite = job.getLong("test.randomtextwrite.total_bytes", numMapsPerHost * numBytesToWritePerMap * cluster.getTaskTrackers());
+    int numMaps = (int) (totalBytesToWrite / numBytesToWritePerMap);
+    if (numMaps == 0 && totalBytesToWrite > 0) {
+        numMaps = 1;
+        job.setLong("test.randomtextwrite.bytes_per_map", totalBytesToWrite);
+    }
+    Class<? extends OutputFormat> outputFormatClass = SequenceFileOutputFormat.class;
+    List<String> otherArgs = new ArrayList<String>();
+    for (int i = 0; i < args.length; ++i) {
+        try {
+            if ("-outFormat".equals(args[i])) {
+                outputFormatClass = Class.forName(args[++i]).asSubclass(OutputFormat.class);
+            } else {
+                otherArgs.add(args[i]);
+            }
+        } catch (ArrayIndexOutOfBoundsException except) {
+            System.out.println("ERROR: Required parameter missing from " + args[i - 1]);
+            // exits
+            return printUsage();
+        }
+    }
+    job.setOutputFormat(outputFormatClass);
+    FileOutputFormat.setOutputPath(job, new Path(otherArgs.get(0)));
+    job.setNumMapTasks(numMaps);
+    System.out.println("Running " + numMaps + " maps.");
+    // reducer NONE
+    job.setNumReduceTasks(0);
+    Date startTime = new Date();
+    System.out.println("Job started: " + startTime);
+    JobClient.runJob(job);
+    Date endTime = new Date();
+    System.out.println("Job ended: " + endTime);
+    System.out.println("The job took " + (endTime.getTime() - startTime.getTime()) / 1000 + " seconds.");
+    return 0;
+}

@@ -1,0 +1,68 @@
+public static IThreadPolicy getThreadPolicyFromXML(String XXXclassName, AccessibleObject obj) {
+    lazyLoad();
+    IThreadPolicy policy = null;
+    // fast return if already searched
+    policy = threadPolicySearchMapCache.get(obj);
+    if (policy != null) {
+        return policy;
+    }
+    // fast return if already searched and returned null
+    if (threadNullPolicySearchMapCache.get(obj) instanceof Boolean) {
+        return null;
+    }
+    // Perform search
+    String methodToAnalyze = ReflectUtil.getName(obj);
+    Class declaringClass = ReflectUtil.getDeclaringClass(obj);
+    String className = declaringClass.getName();
+    ClassEntryDO classInfo = null;
+    try {
+        Class classToAnalyze = ClassLoaderBridge.loadClass(className);
+        Class clazz = classToAnalyze;
+        while (clazz != null) {
+            // check class
+            classInfo = classMap.get(clazz.getName());
+            if (classInfo != null) {
+                policy = getThreadPolicyFromEntry(methodToAnalyze, declaringClass, classInfo);
+                if (policy != null) {
+                    break;
+                }
+            // check interfaces
+            } else {
+                Class[] interfaceList = clazz.getInterfaces();
+                for (Class cls : interfaceList) {
+                    classInfo = classMap.get(cls.getName());
+                    if (classInfo != null) {
+                        policy = getThreadPolicyFromEntry(methodToAnalyze, declaringClass, classInfo);
+                        if (policy != null) {
+                            break;
+                        }
+                    }
+                }
+            }
+            // go up the hierarchy
+            clazz = clazz.getSuperclass();
+        }
+        // descriptors specify a policy
+        if (policy == null) {
+            for (ClassPatternEntryDO entry : classPatternList) {
+                String classNamePattern = entry.getClassNamePattern();
+                String candidateClassName = declaringClass.getName();
+                if (isRegExMatch(candidateClassName, classNamePattern)) {
+                    policy = getThreadPolicyFromEntry(methodToAnalyze, declaringClass, entry);
+                    if (policy != null) {
+                        break;
+                    }
+                }
+            }
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+    // cache for performance
+    if (policy != null) {
+        threadPolicySearchMapCache.put(obj, policy);
+    } else {
+        threadNullPolicySearchMapCache.put(obj, Boolean.TRUE);
+    }
+    return policy;
+}

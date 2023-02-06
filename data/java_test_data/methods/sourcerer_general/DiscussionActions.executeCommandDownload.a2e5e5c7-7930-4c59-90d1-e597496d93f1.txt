@@ -1,0 +1,69 @@
+public String executeCommandDownload(ActionContext context) {
+    String projectId = context.getRequest().getParameter("pid");
+    String issueId = context.getRequest().getParameter("iid");
+    String replyId = context.getRequest().getParameter("rid");
+    String itemId = context.getRequest().getParameter("fid");
+    String view = context.getRequest().getParameter("view");
+    FileItem thisItem = null;
+    Connection db = null;
+    try {
+        db = getConnection(context);
+        Project thisProject = retrieveAuthorizedProject(Integer.parseInt(projectId), context);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-discussion-messages-reply")) {
+            return "PermissionError";
+        }
+        if (issueId != null) {
+            Topic thisTopic = new Topic(db, Integer.parseInt(issueId), thisProject.getId());
+            thisItem = new FileItem(db, Integer.parseInt(itemId), thisTopic.getId(), Constants.DISCUSSION_FILES_TOPIC);
+        }
+        if (replyId != null) {
+            Reply reply = new Reply(db, Integer.parseInt(replyId));
+            Topic thisTopic = new Topic(db, reply.getIssueId(), thisProject.getId());
+            thisItem = new FileItem(db, Integer.parseInt(itemId), reply.getId(), Constants.DISCUSSION_FILES_REPLY);
+        }
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return ("SystemError");
+    } finally {
+        this.freeConnection(context, db);
+    }
+    // Start the download
+    try {
+        FileItem itemToDownload = thisItem;
+        itemToDownload.setEnteredBy(getUserId(context));
+        String filePath = this.getPath(context, "projects") + getDatePath(itemToDownload.getModified()) + itemToDownload.getFilename();
+        FileDownload fileDownload = new FileDownload();
+        fileDownload.setFullPath(filePath);
+        fileDownload.setDisplayName(itemToDownload.getClientFilename());
+        if (fileDownload.fileExists()) {
+            if (view != null && "true".equals(view)) {
+                if (thisItem.isImageFormat() && thisItem.hasValidImageSize()) {
+                    // Use the panel preview
+                    Thumbnail thumbnail = ThumbnailUtils.retrieveThumbnail(db, itemToDownload, 640, 480, this.getPath(context, "projects"));
+                    filePath = this.getPath(context, "projects") + getDatePath(itemToDownload.getModified()) + thumbnail.getFilename();
+                    fileDownload.setFullPath(filePath);
+                    fileDownload.setFileTimestamp(itemToDownload.getModificationDate().getTime());
+                    fileDownload.streamThumbnail(context, thumbnail);
+                } else {
+                    // Use the browser's capability
+                    fileDownload.streamContent(context);
+                }
+            } else {
+                fileDownload.sendFile(context);
+            }
+            // Get a db connection now that the download is complete
+            db = getConnection(context);
+            itemToDownload.updateCounter(db);
+        } else {
+            System.err.println("Discussion-> Trying to send a file that does not exist");
+        }
+    } catch (java.net.SocketException se) {
+    // User either canceled the download or lost connection
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return ("SystemError");
+    } finally {
+        this.freeConnection(context, db);
+    }
+    return ("-none-");
+}

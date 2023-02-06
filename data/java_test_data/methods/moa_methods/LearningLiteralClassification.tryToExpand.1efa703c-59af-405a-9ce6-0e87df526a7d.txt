@@ -1,0 +1,116 @@
+@Override
+public boolean tryToExpand(double splitConfidence, double tieThreshold) {
+    boolean shouldSplit = false;
+    // find the best split per attribute and rank the results
+    AttributeExpansionSuggestion[] bestSplitSuggestions = this.getBestSplitSuggestions(splitCriterion);
+    double sumMerit = 0;
+    meritPerInput = new double[attributesMask.length];
+    for (int i = 0; i < bestSplitSuggestions.length; i++) {
+        double merit = bestSplitSuggestions[i].getMerit();
+        if (merit > 0) {
+            meritPerInput[bestSplitSuggestions[i].predicate.getAttributeIndex()] = merit;
+            sumMerit += merit;
+        }
+    }
+    // if merit==0 it means the split have not enough examples in the smallest branch
+    if (sumMerit == 0)
+        // this indicates that no merit should be considered (e.g. for feature ranking)
+        meritPerInput = null;
+    Arrays.sort(bestSplitSuggestions);
+    // disable attributes that are not relevant
+    int[] oldInputs = inputsToLearn.clone();
+    // 
+    inputsToLearn = inputSelector.getNextInputIndices(bestSplitSuggestions);
+    Arrays.sort(this.inputsToLearn);
+    for (int i = 0; i < oldInputs.length; i++) {
+        if (attributesMask[oldInputs[i]]) {
+            if (Arrays.binarySearch(inputsToLearn, oldInputs[i]) < 0) {
+                this.attributeObservers.set(oldInputs[i], null);
+            }
+        }
+    }
+    // If only one split was returned, use it
+    if (bestSplitSuggestions.length < 2) {
+        // shouldSplit = ((bestSplitSuggestions.length > 0) && (bestSplitSuggestions[0].merit > 0));
+        bestSuggestion = bestSplitSuggestions[bestSplitSuggestions.length - 1];
+        shouldSplit = true;
+    } else // Otherwise, consider which of the splits proposed may be worth trying
+    {
+        double hoeffdingBound = computeHoeffdingBound(splitCriterion.getRangeOfMerit(this.literalStatistics), splitConfidence, weightSeen);
+        // debug("Hoeffding bound " + hoeffdingBound, 4);
+        // Determine the top two ranked splitting suggestions
+        bestSuggestion = bestSplitSuggestions[bestSplitSuggestions.length - 1];
+        AttributeExpansionSuggestion secondBestSuggestion = bestSplitSuggestions[bestSplitSuggestions.length - 2];
+        if ((((bestSuggestion.merit - secondBestSuggestion.merit)) > hoeffdingBound) || (hoeffdingBound < tieThreshold)) {
+            // if ((((secondBestSuggestion.merit/bestSuggestion.merit) + hoeffdingBound) < 1) || (hoeffdingBound < tieThreshold)) {
+            // debug("Expanded ", 5);
+            shouldSplit = true;
+        // System.out.println(bestSuggestion.merit);
+        }
+    }
+    if (shouldSplit) {
+        // check which branch is better and update bestSuggestion (in amrules the splits are binary )
+        DoubleVector[][] resultingStatistics = bestSuggestion.getResultingNodeStatistics();
+        // if not or higher is better, change predicate (negate condition)
+        double[] branchMerits = splitCriterion.getBranchesSplitMerits(resultingStatistics);
+        DoubleVector[] newLiteralStatistics;
+        if (branchMerits[1] > branchMerits[0]) {
+            bestSuggestion.getPredicate().negateCondition();
+            newLiteralStatistics = getBranchStatistics(resultingStatistics, 1);
+        } else {
+            newLiteralStatistics = getBranchStatistics(resultingStatistics, 0);
+        }
+        int[] newOutputs = outputSelector.getNextOutputIndices(newLiteralStatistics, literalStatistics, outputsToLearn);
+        // Must be ordered for latter correspondence algorithm to work
+        Arrays.sort(newOutputs);
+        // set other branch (only used if default rule expands)
+        otherBranchLearningLiteral = new LearningLiteralClassification();
+        otherBranchLearningLiteral.instanceHeader = instanceHeader;
+        otherBranchLearningLiteral.learner = (MultiLabelLearner) learner.copy();
+        otherBranchLearningLiteral.instanceTransformer = (InstanceTransformer) this.instanceTransformer;
+        // should we do the same for input attributes (attributesMask)?. It would have impact in RandomAMRules
+        if (learner instanceof AMRulesFunction) {
+            // Reset learning
+            if (newOutputs.length != outputsToLearn.length) {
+                // other outputs
+                int[] otherOutputs = Utils.complementSet(outputsToLearn, newOutputs);
+                int[] indices;
+                if (otherOutputs.length > 0) {
+                    otherOutputsLearningLiteral = new LearningLiteralClassification(otherOutputs);
+                    MultiLabelLearner otherOutputsLearner = (MultiLabelLearner) learner.copy();
+                    indices = Utils.getIndexCorrespondence(outputsToLearn, otherOutputs);
+                    ((AMRulesFunction) otherOutputsLearner).selectOutputsToLearn(indices);
+                    ((AMRulesFunction) otherOutputsLearner).resetWithMemory();
+                    otherOutputsLearningLiteral.learner = otherOutputsLearner;
+                    otherOutputsLearningLiteral.instanceHeader = instanceHeader;
+                    otherOutputsLearningLiteral.instanceTransformer = new InstanceOutputAttributesSelector(instanceHeader, otherOutputs);
+                }
+                // expanded
+                indices = Utils.getIndexCorrespondence(outputsToLearn, newOutputs);
+                ((AMRulesFunction) learner).selectOutputsToLearn(indices);
+            }
+            ((AMRulesFunction) learner).resetWithMemory();
+        } else // just reset learning
+        {
+            // other outputs //TODO JD: Test for general learner (other than AMRules functions
+            if (newOutputs.length != outputsToLearn.length) {
+                int[] otherOutputs = Utils.complementSet(outputsToLearn, newOutputs);
+                if (otherOutputs.length > 0) {
+                    otherOutputsLearningLiteral = new LearningLiteralClassification();
+                    MultiLabelLearner otherOutputsLearner = (MultiLabelLearner) learner.copy();
+                    otherOutputsLearner.resetLearning();
+                    otherOutputsLearningLiteral.learner = otherOutputsLearner;
+                    otherOutputsLearningLiteral.instanceHeader = instanceHeader;
+                    otherOutputsLearningLiteral.instanceTransformer = new InstanceOutputAttributesSelector(instanceHeader, otherOutputs);
+                }
+            }
+            // expanded
+            learner.resetLearning();
+        }
+        expandedLearningLiteral = new LearningLiteralClassification(newOutputs);
+        expandedLearningLiteral.learner = (MultiLabelLearner) this.learner.copy();
+        expandedLearningLiteral.instanceHeader = instanceHeader;
+        expandedLearningLiteral.instanceTransformer = new InstanceOutputAttributesSelector(instanceHeader, newOutputs);
+    }
+    return shouldSplit;
+}

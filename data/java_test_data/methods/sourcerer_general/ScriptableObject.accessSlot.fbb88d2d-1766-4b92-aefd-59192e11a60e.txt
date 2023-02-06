@@ -1,0 +1,173 @@
+private Slot accessSlot(String name, int index, int accessType) {
+    int indexOrHash = (name != null ? name.hashCode() : index);
+    if (accessType == SLOT_QUERY || accessType == SLOT_MODIFY || accessType == SLOT_MODIFY_CONST || accessType == SLOT_MODIFY_GETTER_SETTER || accessType == SLOT_CONVERT_ACCESSOR_TO_DATA) {
+        // Check the hashtable without using synchronization
+        // Get stable local reference
+        Slot[] slotsLocalRef = slots;
+        if (slotsLocalRef == null) {
+            if (accessType == SLOT_QUERY)
+                return null;
+        } else {
+            int tableSize = slotsLocalRef.length;
+            int slotIndex = getSlotIndex(tableSize, indexOrHash);
+            Slot slot = slotsLocalRef[slotIndex];
+            while (slot != null) {
+                String sname = slot.name;
+                if (sname != null) {
+                    if (sname == name)
+                        break;
+                    if (name != null && indexOrHash == slot.indexOrHash) {
+                        if (name.equals(sname)) {
+                            // This will avoid calling String.equals when
+                            // slot is accessed with same string object
+                            // next time.
+                            slot.name = name;
+                            break;
+                        }
+                    }
+                } else if (name == null && indexOrHash == slot.indexOrHash) {
+                    break;
+                }
+                slot = slot.next;
+            }
+            if (accessType == SLOT_QUERY) {
+                return slot;
+            } else if (accessType == SLOT_MODIFY) {
+                if (slot != null)
+                    return slot;
+            } else if (accessType == SLOT_MODIFY_GETTER_SETTER) {
+                if (slot instanceof GetterSlot)
+                    return slot;
+            } else if (accessType == SLOT_MODIFY_CONST) {
+                if (slot != null)
+                    return slot;
+            } else if (accessType == SLOT_CONVERT_ACCESSOR_TO_DATA) {
+                if (!(slot instanceof GetterSlot))
+                    return slot;
+            }
+        }
+        synchronized (this) {
+            // Refresh local ref if another thread triggered grow
+            slotsLocalRef = slots;
+            int insertPos;
+            if (count == 0) {
+                // Always throw away old slots if any on empty insert
+                slotsLocalRef = new Slot[5];
+                slots = slotsLocalRef;
+                insertPos = getSlotIndex(slotsLocalRef.length, indexOrHash);
+            } else {
+                int tableSize = slotsLocalRef.length;
+                insertPos = getSlotIndex(tableSize, indexOrHash);
+                Slot prev = slotsLocalRef[insertPos];
+                Slot slot = prev;
+                while (slot != null) {
+                    if (slot.indexOrHash == indexOrHash && (slot.name == name || (name != null && name.equals(slot.name)))) {
+                        break;
+                    }
+                    prev = slot;
+                    slot = slot.next;
+                }
+                if (slot != null) {
+                    // Another thread just added a slot with same
+                    // name/index before this one entered synchronized
+                    // block. This is a race in application code and
+                    // probably indicates bug there. But for the hashtable
+                    // implementation it is harmless with the only
+                    // complication is the need to replace the added slot
+                    // if we need GetterSlot and the old one is not.
+                    Slot newSlot;
+                    if (accessType == SLOT_MODIFY_GETTER_SETTER && !(slot instanceof GetterSlot)) {
+                        newSlot = new GetterSlot(name, indexOrHash, slot.getAttributes());
+                    } else if (accessType == SLOT_CONVERT_ACCESSOR_TO_DATA && (slot instanceof GetterSlot)) {
+                        newSlot = new Slot(name, indexOrHash, slot.getAttributes());
+                    } else if (accessType == SLOT_MODIFY_CONST) {
+                        return null;
+                    } else {
+                        return slot;
+                    }
+                    newSlot.value = slot.value;
+                    newSlot.next = slot.next;
+                    // add new slot to linked list
+                    if (lastAdded != null)
+                        lastAdded.orderedNext = newSlot;
+                    if (firstAdded == null)
+                        firstAdded = newSlot;
+                    lastAdded = newSlot;
+                    // add new slot to hash table
+                    if (prev == slot) {
+                        slotsLocalRef[insertPos] = newSlot;
+                    } else {
+                        prev.next = newSlot;
+                    }
+                    // other housekeeping
+                    slot.wasDeleted = true;
+                    slot.value = null;
+                    slot.name = null;
+                    if (slot == lastAccess) {
+                        lastAccess = REMOVED;
+                    }
+                    return newSlot;
+                } else {
+                    // Check if the table is not too full before inserting.
+                    if (4 * (count + 1) > 3 * slotsLocalRef.length) {
+                        slotsLocalRef = new Slot[slotsLocalRef.length * 2 + 1];
+                        copyTable(slots, slotsLocalRef, count);
+                        slots = slotsLocalRef;
+                        insertPos = getSlotIndex(slotsLocalRef.length, indexOrHash);
+                    }
+                }
+            }
+            Slot newSlot = (accessType == SLOT_MODIFY_GETTER_SETTER ? new GetterSlot(name, indexOrHash, 0) : new Slot(name, indexOrHash, 0));
+            if (accessType == SLOT_MODIFY_CONST)
+                newSlot.setAttributes(CONST);
+            ++count;
+            // add new slot to linked list
+            if (lastAdded != null)
+                lastAdded.orderedNext = newSlot;
+            if (firstAdded == null)
+                firstAdded = newSlot;
+            lastAdded = newSlot;
+            // add new slot to hash table, return it
+            addKnownAbsentSlot(slotsLocalRef, newSlot, insertPos);
+            return newSlot;
+        }
+    } else if (accessType == SLOT_REMOVE) {
+        synchronized (this) {
+            Slot[] slotsLocalRef = slots;
+            if (count != 0) {
+                int tableSize = slots.length;
+                int slotIndex = getSlotIndex(tableSize, indexOrHash);
+                Slot prev = slotsLocalRef[slotIndex];
+                Slot slot = prev;
+                while (slot != null) {
+                    if (slot.indexOrHash == indexOrHash && (slot.name == name || (name != null && name.equals(slot.name)))) {
+                        break;
+                    }
+                    prev = slot;
+                    slot = slot.next;
+                }
+                if (slot != null && (slot.getAttributes() & PERMANENT) == 0) {
+                    count--;
+                    // remove slot from hash table
+                    if (prev == slot) {
+                        slotsLocalRef[slotIndex] = slot.next;
+                    } else {
+                        prev.next = slot.next;
+                    }
+                    // Mark the slot as removed. It is still referenced
+                    // from the order-added linked list, but will be
+                    // cleaned up later
+                    slot.wasDeleted = true;
+                    slot.value = null;
+                    slot.name = null;
+                    if (slot == lastAccess) {
+                        lastAccess = REMOVED;
+                    }
+                }
+            }
+        }
+        return null;
+    } else {
+        throw Kit.codeBug();
+    }
+}

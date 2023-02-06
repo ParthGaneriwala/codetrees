@@ -1,0 +1,70 @@
+public synchronized void collect(K key, V value) throws IOException {
+    reporter.progress();
+    if (key.getClass() != keyClass) {
+        throw new IOException("Type mismatch in key from map: expected " + keyClass.getName() + ", recieved " + key.getClass().getName());
+    }
+    if (value.getClass() != valClass) {
+        throw new IOException("Type mismatch in value from map: expected " + valClass.getName() + ", recieved " + value.getClass().getName());
+    }
+    final int kvnext = (kvindex + 1) % kvoffsets.length;
+    spillLock.lock();
+    try {
+        boolean kvfull;
+        do {
+            if (sortSpillException != null) {
+                throw (IOException) new IOException("Spill failed").initCause(sortSpillException);
+            }
+            // sufficient acct space
+            kvfull = kvnext == kvstart;
+            final boolean kvsoftlimit = ((kvnext > kvend) ? kvnext - kvend > softRecordLimit : kvend - kvnext <= kvoffsets.length - softRecordLimit);
+            if (kvstart == kvend && kvsoftlimit) {
+                LOG.info("Spilling map output: record full = " + kvsoftlimit);
+                startSpill();
+            }
+            if (kvfull) {
+                try {
+                    while (kvstart != kvend) {
+                        reporter.progress();
+                        spillDone.await();
+                    }
+                } catch (InterruptedException e) {
+                    throw (IOException) new IOException("Collector interrupted while waiting for the writer").initCause(e);
+                }
+            }
+        } while (kvfull);
+    } finally {
+        spillLock.unlock();
+    }
+    try {
+        // serialize key bytes into buffer
+        int keystart = bufindex;
+        keySerializer.serialize(key);
+        if (bufindex < keystart) {
+            // wrapped the key; reset required
+            bb.reset();
+            keystart = 0;
+        }
+        // serialize value bytes into buffer
+        final int valstart = bufindex;
+        valSerializer.serialize(value);
+        int valend = bb.markRecord();
+        final int partition = partitioner.getPartition(key, value, partitions);
+        if (partition < 0 || partition >= partitions) {
+            throw new IOException("Illegal partition for " + key + " (" + partition + ")");
+        }
+        mapOutputRecordCounter.increment(1);
+        mapOutputByteCounter.increment(valend >= keystart ? valend - keystart : (bufvoid - keystart) + valend);
+        // update accounting info
+        int ind = kvindex * ACCTSIZE;
+        kvoffsets[kvindex] = ind;
+        kvindices[ind + PARTITION] = partition;
+        kvindices[ind + KEYSTART] = keystart;
+        kvindices[ind + VALSTART] = valstart;
+        kvindex = kvnext;
+    } catch (MapBufferTooSmallException e) {
+        LOG.info("Record too large for in-memory buffer: " + e.getMessage());
+        spillSingleRecord(key, value);
+        mapOutputRecordCounter.increment(1);
+        return;
+    }
+}

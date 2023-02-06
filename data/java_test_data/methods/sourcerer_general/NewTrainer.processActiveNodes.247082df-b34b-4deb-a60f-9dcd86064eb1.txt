@@ -1,0 +1,58 @@
+private void processActiveNodes(final TrainingContext ctx, final TrainingContext newCtx) throws IOException {
+    TrainingDataNodeReader reader = ctx.getDataReader();
+    JobManager manager = JobManager.getInstance();
+    MemoryUsage memuse;
+    int maxTasks = 1;
+    int level = ctx.getIteration();
+    if (level >= lm.getForceHiddenQuestions() || level > 8) {
+        maxTasks = level / 2 + 1;
+    }
+    if (maxTasks > manager.getNumWorkers() / 2 + 1) {
+        maxTasks = manager.getNumWorkers() / 2 + 1;
+    }
+    final TaskSequencer sequencer = new TaskSequencer(maxTasks);
+    while (true) {
+        sequencer.grabInput();
+        // note: sequencer.runningTasks cannot increase while we are holding the input
+        while (sequencer.getRunningTasks() > 1) {
+            memuse = memoryBean.getHeapMemoryUsage();
+            if (memuse.getUsed() > memuse.getMax() * MAX_MEMORY_USE_FRACTION) {
+                System.err.printf("Too little memory to start the next node: runningTasks=%d, mem used: %dM/%dM, running GC\n", sequencer.getRunningTasks(), memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+                System.gc();
+                memuse = memoryBean.getHeapMemoryUsage();
+                if (memuse.getUsed() > memuse.getMax() * MAX_MEMORY_USE_FRACTION) {
+                    System.err.printf("Delaying starting the next node: runningTasks=%d, mem used: %dM/%dM\n", sequencer.getRunningTasks(), memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+                    if (!sequencer.waitForSomething(1)) {
+                        // no nodes left to wait for
+                        break;
+                    }
+                } else {
+                    System.err.printf("GC helped! : runningTasks=%d, mem used: %dM/%dM\n", sequencer.getRunningTasks(), memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+                }
+            } else {
+                break;
+            }
+        }
+        final ReadableTrainingDataNode data = reader.getNext();
+        if (data == null) {
+            sequencer.releaseInput();
+            sequencer.finish();
+            break;
+        }
+        Runnable run = new Runnable() {
+
+            @Override
+            public void run() {
+                try {
+                    processActiveNode(ctx, newCtx, data, sequencer);
+                } finally {
+                    sequencer.finish();
+                }
+            }
+        };
+        Job job = new Job(run, "a job");
+        manager.addJob(job);
+    }
+    sequencer.join();
+    reader.close();
+}

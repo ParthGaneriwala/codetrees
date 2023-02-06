@@ -1,0 +1,81 @@
+private void addRecords(XMLStreamWriter writer, Object object, TransactionItem transactionItem, PacketContext packetContext, Connection db, ArrayList<String> addedRecords) throws Exception {
+    // Contains backup instructions
+    TransactionMeta meta = transactionItem.getMeta();
+    ArrayList<String> propertyStopList = new ArrayList<String>();
+    for (String field : meta.getFields()) {
+        if (field.startsWith("stop=")) {
+            propertyStopList.add(field.substring(5));
+        }
+    }
+    // Handles converting an object to a datarecord
+    DataRecordFactory factory = DataRecordFactory.INSTANCE;
+    // Process the array depending on the underlying Class
+    Collection objectList = null;
+    if (object instanceof java.util.AbstractList) {
+        if (object.getClass().getName().equals("CustomLookupList")) {
+            objectList = ((CustomLookupList) object);
+        } else {
+            objectList = (AbstractList) object;
+        }
+    } else if (object instanceof java.util.AbstractMap) {
+        objectList = ((AbstractMap) object).values();
+    } else {
+        objectList = new ArrayList<Object>();
+        objectList.add(object);
+    /*
+      Record thisRecord = new Record(recordAction);
+      this.addFields(thisRecord, meta, object);
+      recordList.add(thisRecord);
+      return thisRecord;
+       */
+    // throw new Exception("BackupService-> Needs to be implemented for: " + object.getClass().getName());
+    }
+    // Save each object as a data record using the streaming writer
+    for (Object thisObject : objectList) {
+        // Convert the object into a datarecord
+        DataRecord thisRecord = factory.parse(thisObject);
+        String uniqueField = factory.retrieveUniqueField(thisRecord.getName());
+        String currentId = ObjectUtils.getParam(thisObject, uniqueField);
+        String key = thisRecord.getName() + "-" + currentId;
+        // Only add the record to the backup set once
+        if (!addedRecords.contains(key)) {
+            // Add the record
+            save(writer, thisRecord, currentId, thisObject, packetContext);
+            addedRecords.add(key);
+        }
+        // Determine if children should be retrieved
+        if (meta.hasField("descend=false")) {
+            LOG.debug("Do not descend directive found.");
+            continue;
+        }
+        // For each referenced object add them to the backup
+        ArrayList<PropertyList> names = factory.retrieveDependentNames(thisRecord.getName());
+        for (PropertyList thisProperty : names) {
+            String dependentListClass = factory.retrieveClassName(thisProperty.getId() + "List");
+            if (dependentListClass == null) {
+                LOG.error("Dependent class not found for name = " + thisProperty.getId() + "List");
+            } else if (propertyStopList.contains(thisProperty.getId())) {
+                LOG.debug("Found a property to stop at... " + thisProperty.getId());
+            } else {
+                Object dependentList = Class.forName(dependentListClass).newInstance();
+                // set the properties in which there is a dependency
+                // @todo will need to set all referencing properties on a multi-level backup
+                // for now performing a Project backup works because only 1 value is being used, the project Id
+                String referencingProperty = thisProperty.retrieveReferencingProperty(thisRecord.getName());
+                ObjectUtils.setParam(dependentList, referencingProperty, ObjectUtils.getParam(thisObject, uniqueField));
+                // Apply any object values that are defined
+                Map<String, String> parameters = factory.retrieveParameterMap(thisProperty.getId() + "List");
+                if (parameters.size() > 0) {
+                    for (String parameter : parameters.keySet()) {
+                        ObjectUtils.setParam(dependentList, parameter, parameters.get(parameter));
+                    }
+                }
+                // @todo implement paging
+                // Build the list of records
+                TransactionItem.doExecute(dependentList, db, TransactionItem.SELECT, packetContext, "buildList");
+                // Recurse through the dependent records
+                addRecords(writer, dependentList, transactionItem, packetContext, db, addedRecords);
+            }
+        }
+    }
+}

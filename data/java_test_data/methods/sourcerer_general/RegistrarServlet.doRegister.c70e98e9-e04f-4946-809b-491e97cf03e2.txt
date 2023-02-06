@@ -1,0 +1,116 @@
+protected void doRegister(SipServletRequest register) throws IOException, ServletException {
+    String aor = URIUtil.toCanonical(register.getTo().getURI());
+    ListIterator<String> it2 = register.getHeaders(Constants.REQUIRE);
+    if (it2.hasNext()) {
+        SipServletResponse response = register.createResponse(SipServletResponse.SC_BAD_EXTENSION);
+        while (it2.hasNext()) response.addHeader(Constants.UNSUPPORTED, it2.next());
+        response.send();
+        return;
+    }
+    long now = System.currentTimeMillis();
+    List<Binding> bindings;
+    Registration record = _locationService.get(aor);
+    record.addListener(_regEventPackage.getRegistrationListener());
+    try {
+        bindings = record.getBindings();
+        if (bindings == null)
+            bindings = Collections.emptyList();
+        Iterator<Address> it = register.getAddressHeaders(Constants.CONTACT);
+        if (it.hasNext()) {
+            List<Address> contacts = new ArrayList<Address>();
+            boolean wildcard = false;
+            while (it.hasNext()) {
+                Address contact = it.next();
+                if (contact.isWildcard()) {
+                    wildcard = true;
+                    if (it.hasNext() || contacts.size() > 0 || register.getExpires() > 0) {
+                        register.createResponse(SipServletResponse.SC_BAD_REQUEST, "Invalid wildcard").send();
+                        return;
+                    }
+                }
+                contacts.add(contact);
+            }
+            String callId = register.getCallId();
+            int cseq;
+            try {
+                String s = register.getHeader(Constants.CSEQ);
+                cseq = Integer.parseInt(s.substring(0, s.indexOf(' ')));
+            } catch (Exception e) {
+                register.createResponse(SipServletResponse.SC_BAD_REQUEST).send();
+                return;
+            }
+            if (wildcard) {
+                for (Binding binding : bindings) {
+                    if (callId.equals(binding.getCallId()) && cseq < binding.getCSeq()) {
+                        _log.debug("Got lower CSeq for aor {} and call-ID {}", aor, binding.getCallId());
+                        register.createResponse(SipServletResponse.SC_SERVER_INTERNAL_ERROR, "Lower CSeq").send();
+                        return;
+                    }
+                }
+                if (_log.isDebugEnabled())
+                    _log.debug("removing all bindings for aor " + aor);
+                record.removeAllBindings();
+            } else {
+                for (Address contact : contacts) {
+                    int expires = -1;
+                    expires = contact.getExpires();
+                    if (expires < 0)
+                        expires = register.getExpires();
+                    if (expires != 0) {
+                        if (expires < 0)
+                            expires = _defaultExpires;
+                        if (expires > _maxExpires)
+                            expires = _maxExpires;
+                        if (expires < _minExpires) {
+                            SipServletResponse response = register.createResponse(SipServletResponse.SC_INTERVAL_TOO_BRIEF);
+                            response.addHeader(Constants.MIN_EXPIRES, Integer.toString(_minExpires));
+                            response.send();
+                            return;
+                        }
+                    }
+                    Binding binding = null;
+                    for (int i = 0; i < bindings.size() && binding == null; i++) {
+                        binding = bindings.get(i);
+                        if (!contact.getURI().equals(binding.getContact()))
+                            binding = null;
+                    }
+                    if (binding != null) {
+                        if (callId.equals(binding.getCallId()) && cseq < binding.getCSeq()) {
+                            _log.debug("Got lower CSeq for aor {} and call-ID {}", aor, binding.getCallId());
+                            register.createResponse(SipServletResponse.SC_SERVER_INTERNAL_ERROR, "Lower CSeq").send();
+                            return;
+                        }
+                        if (expires == 0) {
+                            if (_log.isDebugEnabled())
+                                _log.debug("removing binding {} for aor {}", binding, aor);
+                            record.removeBinding(binding);
+                        } else {
+                            if (_log.isDebugEnabled())
+                                _log.debug("updating binding {} for aor {}", binding, aor);
+                            record.updateBinding(binding, contact.getURI(), callId, cseq, now + expires * 1000);
+                        }
+                    }
+                    if (binding == null && expires != 0) {
+                        binding = new Binding(contact.getURI(), callId, cseq, now + expires * 1000);
+                        if (_log.isDebugEnabled())
+                            _log.debug("adding binding {} to aor {}", binding, aor);
+                        record.addBinding(binding);
+                    }
+                }
+            }
+            bindings = record.getBindings();
+        }
+    } finally {
+        _locationService.put(record);
+    }
+    SipServletResponse ok = register.createResponse(SipServletResponse.SC_OK);
+    ok.addHeader(Constants.DATE, _dateFormat.format(new Date(now)));
+    if (bindings != null) {
+        for (Binding binding : bindings) {
+            Address address = _sipFactory.createAddress(binding.getContact());
+            address.setExpires((int) ((binding.getExpirationTime() - now) / 1000));
+            ok.addAddressHeader(Constants.CONTACT, address, false);
+        }
+    }
+    ok.send();
+}

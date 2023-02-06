@@ -1,0 +1,44 @@
+private void connect(Session session, boolean withReadOnlyData) {
+    // Open new cache:
+    if ((dataSource.length() == 0) || isConnected) {
+        // nothing to do
+        return;
+    }
+    PersistentStore store = database.persistentStoreCollection.getStore(this);
+    this.store = store;
+    DataFileCache cache = null;
+    try {
+        cache = (TextCache) database.logger.openTextFilePersistence(this, dataSource, withReadOnlyData, isReversed);
+        store.setCache(cache);
+        // read and insert all the rows from the source file
+        Row row = null;
+        int nextpos = 0;
+        if (((TextCache) cache).ignoreFirst) {
+            nextpos += ((TextCache) cache).readHeaderLine();
+        }
+        while (true) {
+            row = (Row) store.get(nextpos, false);
+            if (row == null) {
+                break;
+            }
+            Object[] data = row.getData();
+            nextpos = row.getPos() + row.getStorageSize();
+            systemUpdateIdentityValue(data);
+            enforceRowConstraints(session, data);
+            for (int i = 0; i < indexList.length; i++) {
+                indexList[i].insert(null, store, row);
+            }
+        }
+    } catch (Throwable t) {
+        int linenumber = cache == null ? 0 : ((TextCache) cache).getLineNumber();
+        clearAllData(session);
+        if (cache != null) {
+            database.logger.closeTextCache(this);
+            store.release();
+        }
+        // source and cache or have an empty source and null cache.
+        throw Error.error(t, ErrorCode.TEXT_FILE, 0, new Object[] { t.getMessage(), new Integer(linenumber) });
+    }
+    isConnected = true;
+    isReadOnly = withReadOnlyData;
+}

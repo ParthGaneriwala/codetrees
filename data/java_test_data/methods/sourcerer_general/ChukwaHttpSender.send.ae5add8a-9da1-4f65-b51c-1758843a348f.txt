@@ -1,0 +1,54 @@
+public List<CommitListEntry> send(List<Chunk> toSend) throws InterruptedException, IOException {
+    List<DataOutputBuffer> serializedEvents = new ArrayList<DataOutputBuffer>();
+    List<CommitListEntry> commitResults = new ArrayList<CommitListEntry>();
+    log.info("collected " + toSend.size() + " chunks");
+    // Serialize each chunk in turn into it's own DataOutputBuffer and add that buffer to serializedEvents
+    for (Chunk c : toSend) {
+        DataOutputBuffer b = new DataOutputBuffer(c.getSerializedSizeEstimate());
+        try {
+            c.write(b);
+        } catch (IOException err) {
+            log.error("serialization threw IOException", err);
+        }
+        serializedEvents.add(b);
+        // store a CLE for this chunk which we will use to ack this chunk to the caller of send()
+        // (e.g. the agent will use the list of CLE's for checkpointing)
+        commitResults.add(new CommitListEntry(c.getInitiator(), c.getSeqID()));
+    }
+    toSend.clear();
+    // collect all serialized chunks into a single buffer to send
+    RequestEntity postData = new BuffersRequestEntity(serializedEvents);
+    int retries = SENDER_RETRIES;
+    while (currCollector != null) {
+        // need to pick a destination here
+        PostMethod method = new PostMethod();
+        try {
+            doPost(method, postData, currCollector);
+            // reset count on success
+            retries = SENDER_RETRIES;
+            // if no exception was thrown from doPost, ACK that these chunks were sent
+            return commitResults;
+        } catch (Throwable e) {
+            log.error("Http post exception", e);
+            log.info("Checking list of collectors to see if another collector has been specified for rollover");
+            if (collectors.hasNext()) {
+                currCollector = collectors.next();
+                log.info("Found a new collector to roll over to, retrying HTTP Post to collector " + currCollector);
+            } else {
+                if (retries > 0) {
+                    log.warn("No more collectors to try rolling over to; waiting " + WAIT_FOR_COLLECTOR_REBOOT + " ms (" + retries + "retries left)");
+                    Thread.sleep(WAIT_FOR_COLLECTOR_REBOOT);
+                    retries--;
+                } else {
+                    log.error("No more collectors to try rolling over to; aborting");
+                    throw new IOException("no collectors");
+                }
+            }
+        } finally {
+            // be sure the connection is released back to the connection manager
+            method.releaseConnection();
+        }
+    }
+    // end retry loop
+    return new ArrayList<CommitListEntry>();
+}

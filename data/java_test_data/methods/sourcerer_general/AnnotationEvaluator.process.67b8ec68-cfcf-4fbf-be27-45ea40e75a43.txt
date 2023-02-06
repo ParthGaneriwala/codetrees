@@ -1,0 +1,76 @@
+@Override
+public void process(JCas jCas) throws AnalysisEngineProcessException {
+    JCas goldView, systemView;
+    try {
+        goldView = jCas.getView(this.goldViewName);
+        systemView = jCas.getView(this.systemViewName);
+    } catch (CASException e) {
+        throw new AnalysisEngineProcessException(e);
+    }
+    // convert the annotations in the CAS views to span->tag maps
+    Map<T, String> goldSpanTags = this.getSpanTags(goldView);
+    Map<T, String> systemSpanTags = this.getSpanTags(systemView);
+    if (this.ignoreSystemSpansNotInGold) {
+        for (T span : new HashSet<T>(systemSpanTags.keySet())) {
+            if (!goldSpanTags.containsKey(span)) {
+                systemSpanTags.remove(span);
+            }
+        }
+    }
+    // find the span+tags that were labeled correctly
+    Set<T> matchingSpans = new HashSet<T>();
+    matchingSpans.addAll(goldSpanTags.keySet());
+    matchingSpans.retainAll(systemSpanTags.keySet());
+    Map<T, String> matchingSpanTags = new HashMap<T, String>();
+    for (T span : matchingSpans) {
+        if (this.annotationAttributeName == null) {
+            matchingSpanTags.put(span, null);
+        } else {
+            String goldTag = goldSpanTags.get(span);
+            String systemTag = systemSpanTags.get(span);
+            if (goldTag.equals(systemTag)) {
+                matchingSpanTags.put(span, goldTag);
+            }
+        }
+    }
+    // update counts
+    int gold = goldSpanTags.size();
+    int system = systemSpanTags.size();
+    int matching = matchingSpanTags.size();
+    this.collectionStats.gold += gold;
+    this.collectionStats.system += system;
+    this.collectionStats.matching += matching;
+    this.batchStats.gold += gold;
+    this.batchStats.system += system;
+    this.batchStats.matching += matching;
+    // print out the errors
+    Set<T> spans = new HashSet<T>();
+    spans.addAll(goldSpanTags.keySet());
+    spans.addAll(systemSpanTags.keySet());
+    if (!spans.equals(matchingSpanTags.keySet())) {
+        StringBuilder message = new StringBuilder();
+        message.append(ViewURIUtil.getURI(jCas)).append('\n');
+        List<T> spansList = new ArrayList<T>(spans);
+        Collections.sort(spansList);
+        for (T span : spansList) {
+            String goldTag = goldSpanTags.get(span);
+            String systemTag = systemSpanTags.get(span);
+            if (!matchingSpanTags.containsKey(span)) {
+                boolean isGold = goldSpanTags.containsKey(span);
+                boolean isSystem = systemSpanTags.containsKey(span);
+                if (isGold && isSystem) {
+                    message.append(String.format("WRONG: system=%s gold=%s %s\n", systemTag, goldTag, span));
+                } else if (isGold) {
+                    String attr = goldTag == null ? "" : String.format("gold=%s ", goldTag);
+                    message.append(String.format("DROPPED: %s%s\n", attr, span));
+                } else if (isSystem) {
+                    if (!this.ignoreSystemSpansNotInGold) {
+                        String attr = systemTag == null ? "" : String.format("system=%s ", systemTag);
+                        message.append(String.format("ADDED: %s%s\n", attr, span));
+                    }
+                }
+            }
+        }
+        this.logger.log(Level.INFO, message.toString().trim());
+    }
+}

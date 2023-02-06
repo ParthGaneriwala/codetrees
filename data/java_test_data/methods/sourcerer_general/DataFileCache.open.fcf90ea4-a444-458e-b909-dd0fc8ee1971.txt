@@ -1,0 +1,69 @@
+public void open(boolean readonly) {
+    fileFreePosition = 0;
+    database.logger.logInfoEvent("open start");
+    try {
+        boolean isNio = database.logger.propNioDataFile;
+        int fileType;
+        if (database.logger.isStoredFileAccess()) {
+            fileType = ScaledRAFile.DATA_FILE_STORED;
+        } else if (database.isFilesInJar()) {
+            fileType = ScaledRAFile.DATA_FILE_JAR;
+        } else if (isNio) {
+            fileType = ScaledRAFile.DATA_FILE_NIO;
+        } else {
+            fileType = ScaledRAFile.DATA_FILE_RAF;
+        }
+        if (readonly || database.isFilesInJar()) {
+            dataFile = ScaledRAFile.newScaledRAFile(database, dataFileName, readonly, fileType);
+            initBuffers();
+            return;
+        }
+        boolean preexists = false;
+        long freesize = 0;
+        if (fa.isStreamElement(dataFileName)) {
+            preexists = true;
+        }
+        dataFile = ScaledRAFile.newScaledRAFile(database, dataFileName, readonly, fileType);
+        if (preexists) {
+            dataFile.seek(FLAGS_POS);
+            int flags = dataFile.readInt();
+            boolean isSaved = BitMap.isSet(flags, FLAG_ISSAVED);
+            database.logger.propIncrementBackup = BitMap.isSet(flags, FLAG_ISSHADOWED);
+            is180 = !BitMap.isSet(flags, FLAG_190);
+            if (!isSaved) {
+                boolean restored = true;
+                dataFile.close();
+                if (database.logger.propIncrementBackup) {
+                    restored = restoreBackupIncremental();
+                } else {
+                    restoreBackup();
+                }
+                dataFile = ScaledRAFile.newScaledRAFile(database, dataFileName, readonly, fileType);
+                if (!restored) {
+                    initNewFile();
+                    is180 = false;
+                }
+            }
+            dataFile.seek(LONG_EMPTY_SIZE);
+            freesize = dataFile.readLong();
+            dataFile.seek(LONG_FREE_POS_POS);
+            fileFreePosition = dataFile.readLong();
+            if (fileFreePosition < initialFreePos) {
+                fileFreePosition = initialFreePos;
+            }
+            if (database.logger.propIncrementBackup && fileFreePosition != initialFreePos) {
+                shadowFile = new RAShadowFile(database, dataFile, backupFileName, fileFreePosition, 1 << 14);
+            }
+        } else {
+            initNewFile();
+        }
+        initBuffers();
+        fileModified = false;
+        freeBlocks = new DataFileBlockManager(maxFreeBlocks, cacheFileScale, freesize);
+        database.logger.logInfoEvent("open end");
+    } catch (Throwable t) {
+        database.logger.logSevereEvent("open failed", t);
+        close(false);
+        throw Error.error(t, ErrorCode.FILE_IO_ERROR, ErrorCode.M_DataFileCache_open, new Object[] { t.getMessage(), dataFileName });
+    }
+}

@@ -1,0 +1,90 @@
+public void execute(JobExecutionContext context) throws JobExecutionException {
+    long startTime = System.currentTimeMillis();
+    LOG.debug("Starting job...");
+    SchedulerContext schedulerContext = null;
+    Connection db = null;
+    try {
+        schedulerContext = context.getScheduler().getContext();
+        // Determine if the twitter hash is enabled
+        ApplicationPrefs prefs = (ApplicationPrefs) schedulerContext.get("ApplicationPrefs");
+        String twitterHash = prefs.get(ApplicationPrefs.TWITTER_HASH);
+        if (!StringUtils.hasText(twitterHash)) {
+            LOG.debug("Hash is not defined exiting from Twitter query job...");
+            return;
+        }
+        db = SchedulerUtils.getConnection(schedulerContext);
+        // Determine the previous retrieved twitter id to use for query
+        Process process = new Process(db, "TwitterQueryJob");
+        long sinceId = process.getLongValue();
+        LOG.debug("Last saved twitter id is : " + sinceId);
+        // Create Query Object for searching twitter
+        Query query = new Query("#" + twitterHash);
+        query.setRpp(99);
+        if (sinceId > 0) {
+            // Set since_id in the query
+            query.setSinceId(sinceId);
+        }
+        // Get the Twitter search results
+        Twitter twitter = new Twitter(TWITTER_BASE_URL);
+        QueryResult result = twitter.search(query);
+        LOG.debug("Found and retrieved " + result.getTweets().size() + " tweet(s).");
+        // Iterate through the tweets and store in project history
+        int count = 0;
+        for (Tweet tweet : result.getTweets()) {
+            count++;
+            LOG.debug("Got tweet from " + tweet.getFromUser() + " as " + tweet.getText());
+            // See if this matches any profiles in the system
+            // @note it's possible that more than one project can have the same twitter id
+            ProjectList projectList = new ProjectList();
+            projectList.setTwitterId(tweet.getFromUser());
+            projectList.setApprovedOnly(true);
+            projectList.buildList(db);
+            // Clean up the tweet output
+            String message = tweet.getText();
+            // Turn links into wiki links
+            message = WikiUtils.addWikiLinks(message);
+            // Remove the hash tag - beginning or middle
+            message = StringUtils.replace(message, "#" + twitterHash + " ", "");
+            // Remove the hash tag - middle or end
+            message = StringUtils.replace(message, " #" + twitterHash, "");
+            // Remove the hash tag - untokenized
+            message = StringUtils.replace(message, "#" + twitterHash, "");
+            // Update the activity stream for the matching profiles
+            for (Project project : projectList) {
+                ProjectHistory projectHistory = new ProjectHistory();
+                projectHistory.setProjectId(project.getId());
+                projectHistory.setEnabled(true);
+                // If there is a user profile, use the user's id, else use the businesses id? or use a different event
+                if (project.getProfile()) {
+                    projectHistory.setEnteredBy(project.getOwner());
+                } else {
+                    projectHistory.setEnteredBy(project.getOwner());
+                }
+                projectHistory.setLinkStartDate(new Timestamp(System.currentTimeMillis()));
+                String desc = WikiLink.generateLink(project) + " [[http://twitter.com/" + tweet.getFromUser() + "/statuses/" + tweet.getId() + " tweeted]] " + message;
+                projectHistory.setDescription(desc);
+                projectHistory.setLinkItemId(project.getId());
+                projectHistory.setLinkObject(ProjectHistoryList.TWITTER_OBJECT);
+                projectHistory.setEventType(ProjectHistoryList.TWITTER_EVENT);
+                // Store the tweets in project history
+                projectHistory.insert(db);
+            }
+            // Set the tweet id as since_Id
+            if (sinceId < tweet.getId()) {
+                sinceId = tweet.getId();
+            }
+        }
+        // update the recent sinceId and process timestamp
+        process.setLongValue(sinceId);
+        process.setProcessed(new Timestamp(new java.util.Date().getTime()));
+        process.update(db);
+        long endTime = System.currentTimeMillis();
+        long totalTime = endTime - startTime;
+        LOG.debug("Finished: " + count + " took " + totalTime + " ms");
+    } catch (Exception e) {
+        LOG.error("TwitterQueryJob Exception", e);
+        throw new JobExecutionException(e.getMessage());
+    } finally {
+        SchedulerUtils.freeConnection(schedulerContext, db);
+    }
+}

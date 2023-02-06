@@ -1,0 +1,82 @@
+public int run(String[] args) throws Exception {
+    long startTime = Util.now();
+    OutputStream out = null;
+    try {
+        // initialize a balancer
+        init(parseArgs(args));
+        /* Check if there is another balancer running.
+       * Exit if there is another one running.
+       */
+        out = checkAndMarkRunningBalancer();
+        if (out == null) {
+            System.out.println("Another balancer is running. Exiting...");
+            return ALREADY_RUNNING;
+        }
+        Formatter formatter = new Formatter(System.out);
+        System.out.println("Time Stamp               Iteration#  Bytes Already Moved  Bytes Left To Move  Bytes Being Moved");
+        int iterations = 0;
+        while (true) {
+            /* get all live datanodes of a cluster and their disk usage
+         * decide the number of bytes need to be moved
+         */
+            long bytesLeftToMove = initNodes();
+            if (bytesLeftToMove == 0) {
+                System.out.println("The cluster is balanced. Exiting...");
+                return SUCCESS;
+            } else {
+                LOG.info("Need to move " + FsShell.byteDesc(bytesLeftToMove) + " bytes to make the cluster balanced.");
+            }
+            /* Decide all the nodes that will participate in the block move and
+         * the number of bytes that need to be moved from one node to another
+         * in this iteration. Maximum bytes to be moved per node is
+         * Min(1 Band worth of bytes,  MAX_SIZE_TO_MOVE).
+         */
+            long bytesToMove = chooseNodes();
+            if (bytesToMove == 0) {
+                System.out.println("No block can be moved. Exiting...");
+                return NO_MOVE_BLOCK;
+            } else {
+                LOG.info("Will move " + FsShell.byteDesc(bytesToMove) + "bytes in this iteration");
+            }
+            formatter.format("%-24s %10d  %19s  %18s  %17s\n", DateFormat.getDateTimeInstance().format(new Date()), iterations, FsShell.byteDesc(bytesMoved.get()), FsShell.byteDesc(bytesLeftToMove), FsShell.byteDesc(bytesToMove));
+            /* For each pair of <source, target>, start a thread that repeatedly 
+         * decide a block to be moved and its proxy source, 
+         * then initiates the move until all bytes are moved or no more block
+         * available to move.
+         * Exit no byte has been moved for 5 consecutive iterations.
+         */
+            if (dispatchBlockMoves() > 0) {
+                notChangedIterations = 0;
+            } else {
+                notChangedIterations++;
+                if (notChangedIterations >= 5) {
+                    System.out.println("No block has been moved for 5 iterations. Exiting...");
+                    return NO_MOVE_PROGRESS;
+                }
+            }
+            // clean all lists
+            resetData();
+            try {
+                Thread.sleep(2 * conf.getLong("dfs.heartbeat.interval", 3));
+            } catch (InterruptedException ignored) {
+            }
+            iterations++;
+        }
+    } catch (IllegalArgumentException ae) {
+        return ILLEGAL_ARGS;
+    } catch (IOException e) {
+        System.out.println("Received an IO exception: " + e.getMessage() + " . Exiting...");
+        return IO_EXCEPTION;
+    } finally {
+        // shutdown thread pools
+        dispatcherExecutor.shutdownNow();
+        moverExecutor.shutdownNow();
+        // close the output file
+        IOUtils.closeStream(out);
+        try {
+            fs.delete(BALANCER_ID_PATH, true);
+        } catch (IOException ignored) {
+        }
+        System.out.println("Balancing took " + time2Str(Util.now() - startTime));
+    }
+}

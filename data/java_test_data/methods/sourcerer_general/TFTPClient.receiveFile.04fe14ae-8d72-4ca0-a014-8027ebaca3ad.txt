@@ -1,0 +1,102 @@
+public int receiveFile(String filename, int mode, OutputStream output, InetAddress host, int port) throws IOException {
+    int bytesRead, timeouts, lastBlock, block, hostPort, dataLength;
+    TFTPPacket sent, received = null;
+    TFTPErrorPacket error;
+    TFTPDataPacket data;
+    TFTPAckPacket ack = new TFTPAckPacket(host, port, 0);
+    beginBufferedOps();
+    dataLength = lastBlock = hostPort = bytesRead = 0;
+    block = 1;
+    if (mode == TFTP.ASCII_MODE)
+        output = new FromNetASCIIOutputStream(output);
+    sent = new TFTPReadRequestPacket(host, port, filename, mode);
+    _sendPacket: do {
+        bufferedSend(sent);
+        _receivePacket: while (true) {
+            timeouts = 0;
+            while (timeouts < __maxTimeouts) {
+                try {
+                    received = bufferedReceive();
+                    break;
+                } catch (SocketException e) {
+                    if (++timeouts >= __maxTimeouts) {
+                        endBufferedOps();
+                        throw new IOException("Connection timed out.");
+                    }
+                    continue;
+                } catch (InterruptedIOException e) {
+                    if (++timeouts >= __maxTimeouts) {
+                        endBufferedOps();
+                        throw new IOException("Connection timed out.");
+                    }
+                    continue;
+                } catch (TFTPPacketException e) {
+                    endBufferedOps();
+                    throw new IOException("Bad packet: " + e.getMessage());
+                }
+            }
+            // answering host address (for hosts with multiple IPs)
+            if (lastBlock == 0) {
+                hostPort = received.getPort();
+                ack.setPort(hostPort);
+                if (!host.equals(received.getAddress())) {
+                    host = received.getAddress();
+                    ack.setAddress(host);
+                    sent.setAddress(host);
+                }
+            }
+            // should be sent to originator if unexpected TID or host.
+            if (host.equals(received.getAddress()) && received.getPort() == hostPort) {
+                switch(received.getType()) {
+                    case TFTPPacket.ERROR:
+                        error = (TFTPErrorPacket) received;
+                        endBufferedOps();
+                        throw new IOException("Error code " + error.getError() + " received: " + error.getMessage());
+                    case TFTPPacket.DATA:
+                        data = (TFTPDataPacket) received;
+                        dataLength = data.getDataLength();
+                        lastBlock = data.getBlockNumber();
+                        if (lastBlock == block) {
+                            try {
+                                output.write(data.getData(), data.getDataOffset(), dataLength);
+                            } catch (IOException e) {
+                                error = new TFTPErrorPacket(host, hostPort, TFTPErrorPacket.OUT_OF_SPACE, "File write failed.");
+                                bufferedSend(error);
+                                endBufferedOps();
+                                throw e;
+                            }
+                            ++block;
+                            if (block > 65535) {
+                                // wrap the block number
+                                block = 0;
+                            }
+                            break _receivePacket;
+                        } else {
+                            discardPackets();
+                            if (lastBlock == (block == 0 ? 65535 : (block - 1)))
+                                // Resend last acknowledgement.
+                                continue _sendPacket;
+                            // Start fetching packets again.
+                            continue _receivePacket;
+                        }
+                    default:
+                        endBufferedOps();
+                        throw new IOException("Received unexpected packet type.");
+                }
+            } else {
+                error = new TFTPErrorPacket(received.getAddress(), received.getPort(), TFTPErrorPacket.UNKNOWN_TID, "Unexpected host or port.");
+                bufferedSend(error);
+                continue _sendPacket;
+            }
+        // We should never get here, but this is a safety to avoid
+        // infinite loop.  If only Java had the goto statement.
+        // break;
+        }
+        ack.setBlockNumber(lastBlock);
+        sent = ack;
+        bytesRead += dataLength;
+    } while (dataLength == TFTPPacket.SEGMENT_SIZE);
+    bufferedSend(sent);
+    endBufferedOps();
+    return bytesRead;
+}

@@ -1,0 +1,59 @@
+@Override
+public Instance getNextInstance(Instances structure) throws IOException {
+    m_structure = structure;
+    if (m_DataBaseConnection == null) {
+        throw new IOException("No source database has been specified");
+    }
+    if (getRetrieval() == BATCH) {
+        throw new IOException("Cannot mix getting Instances in both incremental and batch modes");
+    }
+    // give them incrementally to user
+    if (m_pseudoIncremental) {
+        setRetrieval(INCREMENTAL);
+        if (m_datasetPseudoInc.numInstances() > 0) {
+            Instance current = m_datasetPseudoInc.instance(0);
+            m_datasetPseudoInc.delete(0);
+            return current;
+        } else {
+            resetStructure();
+            return null;
+        }
+    }
+    // real incremental mode. At the moment(version 1.0) only for MySQL and
+    // HSQLDB (Postgres not tested, should work)
+    setRetrieval(INCREMENTAL);
+    try {
+        if (!m_DataBaseConnection.isConnected()) {
+            connectToDatabase();
+        }
+        // if no key columns specified by user, try to detect automatically
+        if (m_firstTime && m_orderBy.size() == 0) {
+            if (!checkForKey()) {
+                throw new Exception("A unique order cannot be detected automatically.\nYou have to use SELECT * in your query to enable this feature.\nMaybe JDBC driver is not able to detect key.\nDefine primary key in your database or use -P option (command line) or enter key columns in the GUI.");
+            }
+        }
+        if (m_firstTime) {
+            m_firstTime = false;
+            m_rowCount = getRowCount();
+        }
+        // as long as not all rows has been loaded
+        if (m_counter < m_rowCount) {
+            if (m_DataBaseConnection.execute(limitQuery(m_query, m_counter, m_choice)) == false) {
+                throw new Exception("Tuple could not be retrieved.");
+            }
+            m_counter++;
+            ResultSet rs = m_DataBaseConnection.getResultSet();
+            rs.next();
+            Instance current = readInstance(rs);
+            rs.close();
+            return current;
+        } else {
+            m_DataBaseConnection.disconnectFromDatabase();
+            resetStructure();
+            return null;
+        }
+    } catch (Exception ex) {
+        printException(ex);
+    }
+    return null;
+}

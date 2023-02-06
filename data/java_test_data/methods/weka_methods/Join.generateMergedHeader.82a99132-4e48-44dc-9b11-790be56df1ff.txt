@@ -1,0 +1,133 @@
+protected void generateMergedHeader() {
+    if (m_keySpec == null || m_keySpec.length() == 0) {
+        if (m_log != null) {
+            String msg = statusMessagePrefix() + "ERROR: Key fields are null!";
+            m_log.statusMessage(msg);
+            m_log.logMessage(msg);
+            stop();
+            m_busy = false;
+            return;
+        }
+    }
+    String resolvedKeySpec = m_keySpec;
+    try {
+        resolvedKeySpec = m_env.substitute(m_keySpec);
+    } catch (Exception ex) {
+    }
+    String[] parts = resolvedKeySpec.split(KEY_SPEC_SEPARATOR);
+    if (parts.length != 2) {
+        if (m_log != null) {
+            String msg = statusMessagePrefix() + "ERROR: Invalid key specification: " + m_keySpec;
+            m_log.statusMessage(msg);
+            m_log.logMessage(msg);
+            stop();
+            m_busy = false;
+            return;
+        }
+    }
+    // try to parse as a Range first
+    for (int i = 0; i < 2; i++) {
+        String rangeS = parts[i].trim();
+        Range r = new Range();
+        r.setUpper(i == 0 ? m_headerOne.numAttributes() : m_headerTwo.numAttributes());
+        try {
+            r.setRanges(rangeS);
+            if (i == 0) {
+                m_keyIndexesOne = r.getSelection();
+            } else {
+                m_keyIndexesTwo = r.getSelection();
+            }
+        } catch (IllegalArgumentException e) {
+            // assume a list of attribute names
+            String[] names = rangeS.split(",");
+            if (i == 0) {
+                m_keyIndexesOne = new int[names.length];
+            } else {
+                m_keyIndexesTwo = new int[names.length];
+            }
+            for (int j = 0; j < names.length; j++) {
+                String aName = names[j].trim();
+                Attribute anAtt = (i == 0) ? m_headerOne.attribute(aName) : m_headerTwo.attribute(aName);
+                if (anAtt == null) {
+                    String msg = statusMessagePrefix() + "ERROR: Invalid key attribute name: " + aName;
+                    if (m_log != null) {
+                        m_log.statusMessage(msg);
+                        m_log.logMessage(msg);
+                    } else {
+                        System.err.println(msg);
+                    }
+                    stop();
+                    m_busy = false;
+                    return;
+                }
+                if (i == 0) {
+                    m_keyIndexesOne[j] = anAtt.index();
+                } else {
+                    m_keyIndexesTwo[j] = anAtt.index();
+                }
+            }
+        }
+    }
+    if (m_keyIndexesOne == null || m_keyIndexesTwo == null) {
+        if (m_log != null) {
+            String msg = statusMessagePrefix() + "ERROR: Key fields are null!";
+            m_log.statusMessage(msg);
+            m_log.logMessage(msg);
+            stop();
+            m_busy = false;
+            return;
+        }
+    }
+    if (m_keyIndexesOne.length != m_keyIndexesTwo.length) {
+        if (m_log != null) {
+            String msg = statusMessagePrefix() + "ERROR: number of key fields are different for each input!";
+            m_log.statusMessage(msg);
+            m_log.logMessage(msg);
+            stop();
+            m_busy = false;
+            return;
+        }
+    }
+    // check types
+    for (int i = 0; i < m_keyIndexesOne.length; i++) {
+        if (m_headerOne.attribute(m_keyIndexesOne[i]).type() != m_headerTwo.attribute(m_keyIndexesTwo[i]).type()) {
+            if (m_log != null) {
+                String msg = statusMessagePrefix() + "ERROR: type of key corresponding key fields differ: " + "input 1 - " + Attribute.typeToStringShort(m_headerOne.attribute(m_keyIndexesOne[i])) + " input 2 - " + Attribute.typeToStringShort(m_headerTwo.attribute(m_keyIndexesTwo[i]));
+                m_log.statusMessage(msg);
+                m_log.logMessage(msg);
+                stop();
+                m_busy = false;
+                return;
+            }
+        }
+    }
+    ArrayList<Attribute> newAtts = new ArrayList<Attribute>();
+    Set<String> nameLookup = new HashSet<String>();
+    for (int i = 0; i < m_headerOne.numAttributes(); i++) {
+        newAtts.add((Attribute) m_headerOne.attribute(i).copy());
+        nameLookup.add(m_headerOne.attribute(i).name());
+    }
+    for (int i = 0; i < m_headerTwo.numAttributes(); i++) {
+        String name = m_headerTwo.attribute(i).name();
+        if (nameLookup.contains(name)) {
+            name = name + "_2";
+        }
+        newAtts.add(m_headerTwo.attribute(i).copy(name));
+    }
+    m_mergedHeader = new Instances(m_headerOne.relationName() + "+" + m_headerTwo.relationName(), newAtts, 0);
+    m_ie.setStructure(m_mergedHeader);
+    notifyInstanceListeners(m_ie);
+    m_stringAttsPresent = false;
+    if (m_mergedHeader.checkForStringAttributes()) {
+        m_stringAttsPresent = true;
+        m_headerPool = new ArrayList<Instances>();
+        m_count = new AtomicInteger();
+        for (int i = 0; i < 10; i++) {
+            try {
+                m_headerPool.add((Instances) (new SerializedObject(m_mergedHeader)).getObject());
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    }
+}

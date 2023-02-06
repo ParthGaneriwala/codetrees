@@ -1,0 +1,84 @@
+@Override
+public void run() {
+    LOG.info("Starting thread: " + this.getClass());
+    while (true) {
+        // Print the processTrees for debugging.
+        if (LOG.isDebugEnabled()) {
+            StringBuffer tmp = new StringBuffer("[ ");
+            for (ProcessTreeInfo p : processTreeInfoMap.values()) {
+                tmp.append(p.getPID());
+                tmp.append(" ");
+            }
+            LOG.debug("Current ProcessTree list : " + tmp.substring(0, tmp.length()) + "]");
+        }
+        // Add new Tasks
+        synchronized (tasksToBeAdded) {
+            processTreeInfoMap.putAll(tasksToBeAdded);
+            tasksToBeAdded.clear();
+        }
+        // Remove finished Tasks
+        synchronized (tasksToBeRemoved) {
+            for (TaskAttemptID tid : tasksToBeRemoved) {
+                processTreeInfoMap.remove(tid);
+            }
+            tasksToBeRemoved.clear();
+        }
+        // Now, check memory usage and kill any overflowing tasks
+        for (Iterator<Map.Entry<TaskAttemptID, ProcessTreeInfo>> it = processTreeInfoMap.entrySet().iterator(); it.hasNext(); ) {
+            Map.Entry<TaskAttemptID, ProcessTreeInfo> entry = it.next();
+            TaskAttemptID tid = entry.getKey();
+            ProcessTreeInfo ptInfo = entry.getValue();
+            String pId = ptInfo.getPID();
+            // Initialize any uninitialized processTrees
+            if (pId == null) {
+                // get pid from pid-file
+                pId = getPid(tid);
+                if (pId != null) {
+                    // PID will be null, either if the pid file is yet to be created
+                    // or if the tip is finished and we removed pidFile, but the TIP
+                    // itself is still retained in runningTasks till successful
+                    // transmission to JT
+                    // create process tree object
+                    ProcfsBasedProcessTree pt = new ProcfsBasedProcessTree(pId);
+                    LOG.debug("Tracking ProcessTree " + pId + " for the first time");
+                    ptInfo.setPid(pId);
+                    ptInfo.setProcessTree(pt);
+                    processTreeInfoMap.put(tid, ptInfo);
+                }
+            }
+            if (pId == null) {
+                // processTree cannot be tracked
+                continue;
+            }
+            LOG.debug("Constructing ProcessTree for : PID = " + pId + " TID = " + tid);
+            ProcfsBasedProcessTree pTree = ptInfo.getProcessTree();
+            // get the updated process-tree
+            pTree = pTree.getProcessTree();
+            // update ptInfo with proces-tree of
+            ptInfo.setProcessTree(pTree);
+            // updated state
+            long currentMemUsage = pTree.getCumulativeVmem();
+            long limit = ptInfo.getMemLimit();
+            LOG.info("Memory usage of ProcessTree " + pId + " :" + currentMemUsage + "kB. Limit : " + limit + "kB");
+            if (limit != JobConf.DISABLED_VIRTUAL_MEMORY_LIMIT && currentMemUsage > limit) {
+                // Task (the root process) is still alive and overflowing memory.
+                // Clean up.
+                String msg = "TaskTree [pid=" + pId + ",tipID=" + tid + "] is running beyond memory-limits. Current usage : " + currentMemUsage + "kB. Limit : " + limit + "kB. Killing task.";
+                LOG.warn(msg);
+                taskTracker.cleanUpOverMemoryTask(tid, msg);
+                // Now destroy the ProcessTree, remove it from monitoring map.
+                pTree.destroy();
+                it.remove();
+                LOG.info("Removed ProcessTree with root " + pId);
+            }
+        }
+        // Sleep for some time before beginning next cycle
+        try {
+            LOG.debug(this.getClass() + " : Sleeping for " + monitoringInterval + " ms");
+            Thread.sleep(monitoringInterval);
+        } catch (InterruptedException ie) {
+            LOG.warn(this.getClass() + " interrupted. Finishing the thread and returning.");
+            return;
+        }
+    }
+}

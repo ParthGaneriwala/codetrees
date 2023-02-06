@@ -1,0 +1,73 @@
+synchronized void addRunningTaskToTIP(TaskInProgress tip, TaskAttemptID id, TaskTrackerStatus tts, boolean isScheduled) {
+    // keeping the earlier ordering intact
+    String name;
+    Enum counter = null;
+    if (tip.isSetupTask()) {
+        launchedSetup = true;
+        name = Values.SETUP.name();
+    } else if (tip.isCleanupTask()) {
+        launchedCleanup = true;
+        name = Values.CLEANUP.name();
+    } else if (tip.isMapTask()) {
+        ++runningMapTasks;
+        name = Values.MAP.name();
+        counter = Counter.TOTAL_LAUNCHED_MAPS;
+        if (tip.getActiveTasks().size() > 1)
+            speculativeMapTasks++;
+    } else {
+        ++runningReduceTasks;
+        name = Values.REDUCE.name();
+        counter = Counter.TOTAL_LAUNCHED_REDUCES;
+        if (tip.getActiveTasks().size() > 1)
+            speculativeReduceTasks++;
+    }
+    // restart has already their logs in place.
+    if (tip.isFirstAttempt(id)) {
+        JobHistory.Task.logStarted(tip.getTIPId(), name, tip.getExecStartTime(), "");
+    }
+    if (!tip.isSetupTask() && !tip.isCleanupTask()) {
+        jobCounters.incrCounter(counter, 1);
+    }
+    // added
+    if (!isScheduled) {
+        tip.addRunningTask(id, tts.getTrackerName());
+    }
+    // data locality.
+    if (tip.isMapTask() && !tip.isSetupTask() && !tip.isCleanupTask()) {
+        // increment the data locality counter for maps
+        Node tracker = jobtracker.getNode(tts.getHost());
+        int level = this.maxLevel;
+        // find the right level across split locations
+        for (String local : maps[tip.getIdWithinJob()].getSplitLocations()) {
+            Node datanode = jobtracker.getNode(local);
+            int newLevel = this.maxLevel;
+            if (tracker != null && datanode != null) {
+                newLevel = getMatchingLevelForNodes(tracker, datanode);
+            }
+            if (newLevel < level) {
+                level = newLevel;
+                // an optimization
+                if (level == 0) {
+                    break;
+                }
+            }
+        }
+        switch(level) {
+            case 0:
+                LOG.info("Choosing data-local task " + tip.getTIPId());
+                jobCounters.incrCounter(Counter.DATA_LOCAL_MAPS, 1);
+                break;
+            case 1:
+                LOG.info("Choosing rack-local task " + tip.getTIPId());
+                jobCounters.incrCounter(Counter.RACK_LOCAL_MAPS, 1);
+                break;
+            default:
+                // check if there is any locality
+                if (level != this.maxLevel) {
+                    LOG.info("Choosing cached task at level " + level + tip.getTIPId());
+                    jobCounters.incrCounter(Counter.OTHER_LOCAL_MAPS, 1);
+                }
+                break;
+        }
+    }
+}

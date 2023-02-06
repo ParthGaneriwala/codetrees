@@ -1,0 +1,42 @@
+private void createTaskAttempt(JobInProgress job, TaskAttemptID attemptId, JobHistory.TaskAttempt attempt) {
+    TaskID id = attemptId.getTaskID();
+    String type = attempt.get(Keys.TASK_TYPE);
+    TaskInProgress tip = job.getTaskInProgress(id);
+    // I. Get the required info
+    TaskStatus taskStatus = null;
+    String trackerName = attempt.get(Keys.TRACKER_NAME);
+    String trackerHostName = JobInProgress.convertTrackerNameToHostName(trackerName);
+    int index = trackerHostName.indexOf("_");
+    trackerHostName = trackerHostName.substring(index + 1, trackerHostName.length());
+    int port = attempt.getInt(Keys.HTTP_PORT);
+    long attemptStartTime = attempt.getLong(Keys.START_TIME);
+    // II. Create the (appropriate) task status
+    if (type.equals(Values.MAP.name())) {
+        taskStatus = new MapTaskStatus(attemptId, 0.0f, TaskStatus.State.RUNNING, "", "", trackerName, TaskStatus.Phase.MAP, new Counters());
+    } else {
+        taskStatus = new ReduceTaskStatus(attemptId, 0.0f, TaskStatus.State.RUNNING, "", "", trackerName, TaskStatus.Phase.REDUCE, new Counters());
+    }
+    // Set the start time
+    taskStatus.setStartTime(attemptStartTime);
+    List<TaskStatus> ttStatusList = new ArrayList<TaskStatus>();
+    ttStatusList.add(taskStatus);
+    // III. Create the dummy tasktracker status
+    TaskTrackerStatus ttStatus = new TaskTrackerStatus(trackerName, trackerHostName, port, ttStatusList, 0, 0, 0);
+    ttStatus.setLastSeen(System.currentTimeMillis());
+    // IV. Register a new tracker
+    boolean isTrackerRegistered = getTaskTracker(trackerName) != null;
+    if (!isTrackerRegistered) {
+        addNewTracker(ttStatus);
+    }
+    // V. Update the tracker status
+    // This will update the meta info of the jobtracker and also add the
+    // tracker status if missing i.e register it
+    updateTaskTrackerStatus(trackerName, ttStatus);
+    // VI. Register the attempt
+    // a) In the job
+    job.addRunningTaskToTIP(tip, attemptId, ttStatus, false);
+    // b) In the tip
+    tip.updateStatus(taskStatus);
+    // VII. Make an entry in the launched tasks
+    expireLaunchingTasks.addNewTask(attemptId);
+}

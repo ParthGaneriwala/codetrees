@@ -1,0 +1,223 @@
+@SuppressWarnings("fallthrough")
+private Node primaryExpr() throws IOException, ParserException {
+    Node pn;
+    int ttFlagged = nextFlaggedToken();
+    int tt = ttFlagged & CLEAR_TI_MASK;
+    switch(tt) {
+        case Token.FUNCTION:
+            return function(FunctionNode.FUNCTION_EXPRESSION);
+        case Token.LB:
+            {
+                ObjArray elems = new ObjArray();
+                int skipCount = 0;
+                int lineno = ts.getLineno();
+                int charno = ts.getCharno();
+                decompiler.addToken(Token.LB);
+                boolean after_lb_or_comma = true;
+                for (; ; ) {
+                    tt = peekToken();
+                    if (tt == Token.COMMA) {
+                        consumeToken();
+                        decompiler.addToken(Token.COMMA);
+                        if (!after_lb_or_comma) {
+                            after_lb_or_comma = true;
+                        } else {
+                            elems.add(null);
+                            ++skipCount;
+                        }
+                    } else if (tt == Token.RB) {
+                        if (after_lb_or_comma && elems.size() > 0) {
+                            addWarning("msg.trailing.comma");
+                        }
+                        consumeToken();
+                        decompiler.addToken(Token.RB);
+                        break;
+                    } else {
+                        if (!after_lb_or_comma) {
+                            reportError("msg.no.bracket.arg");
+                        }
+                        elems.add(assignExpr(false));
+                        after_lb_or_comma = false;
+                    }
+                }
+                return nf.createArrayLiteral(elems, skipCount, lineno, charno);
+            }
+        case Token.LC:
+            {
+                ObjArray elems = new ObjArray();
+                decompiler.addToken(Token.LC);
+                int lineno = ts.getLineno();
+                int charno = ts.getCharno();
+                if (!matchToken(Token.RC)) {
+                    boolean first = true;
+                    commaloop: do {
+                        Node property;
+                        if (!first)
+                            decompiler.addToken(Token.COMMA);
+                        else
+                            first = false;
+                        tt = peekToken();
+                        switch(tt) {
+                            case Token.NAME:
+                            case Token.STRING:
+                                {
+                                    consumeToken();
+                                    // map NAMEs to STRINGs in object literal context
+                                    // but tell the decompiler the proper type
+                                    String s = ts.getString();
+                                    int linenoName = ts.getLineno();
+                                    int charnoName = ts.getCharno();
+                                    if (tt == Token.NAME) {
+                                        if (s.equals("get") && peekToken() == Token.NAME) {
+                                            decompiler.addToken(Token.GET);
+                                            consumeToken();
+                                            s = ts.getString();
+                                            decompiler.addName(s);
+                                            if (!getterSetterProperty(elems, s, true, linenoName, charnoName)) {
+                                                break commaloop;
+                                            }
+                                            break;
+                                        } else if (s.equals("set") && peekToken() == Token.NAME) {
+                                            decompiler.addToken(Token.SET);
+                                            consumeToken();
+                                            s = ts.getString();
+                                            decompiler.addName(s);
+                                            if (!getterSetterProperty(elems, s, false, linenoName, charnoName)) {
+                                                break commaloop;
+                                            }
+                                            break;
+                                        }
+                                        decompiler.addName(s);
+                                        property = nf.createString(s, linenoName, charnoName);
+                                    } else {
+                                        decompiler.addString(s);
+                                        property = nf.createString(s, linenoName, charnoName);
+                                        property.setQuotedString();
+                                    }
+                                    plainProperty(elems, property);
+                                    break;
+                                }
+                            case Token.NUMBER:
+                                {
+                                    consumeToken();
+                                    double n = ts.getNumber();
+                                    int linenoNumber = ts.getLineno();
+                                    int charnoNumber = ts.getCharno();
+                                    decompiler.addNumber(n);
+                                    property = nf.createNumber(n, linenoNumber, charnoNumber);
+                                    plainProperty(elems, property);
+                                    break;
+                                }
+                            case Token.COMMA:
+                                consumeToken();
+                            case Token.RC:
+                                addWarning("msg.trailing.comma");
+                                break commaloop;
+                            default:
+                                reportError("msg.bad.prop");
+                                break commaloop;
+                        }
+                    } while (matchToken(Token.COMMA));
+                    mustMatchToken(Token.RC, "msg.no.brace.prop");
+                }
+                decompiler.addToken(Token.RC);
+                return nf.createObjectLiteral(elems, lineno, charno);
+            }
+        case Token.LP:
+            JSDocInfo info = ts.getAndResetJSDocInfo();
+            /* Brendan's IR-jsparse.c makes a new node tagged with
+             * TOK_LP here... I'm not sure I understand why.  Isn't
+             * the grouping already implicit in the structure of the
+             * parse tree?  also TOK_LP is already overloaded (I
+             * think) in the C IR as 'function call.'  */
+            decompiler.addToken(Token.LP);
+            pn = expr(false);
+            pn.putProp(Node.PARENTHESIZED_PROP, Boolean.TRUE);
+            decompiler.addToken(Token.RP);
+            if (info == null) {
+                info = ts.getAndResetJSDocInfo();
+            }
+            if (info != null && info.hasType()) {
+                pn.setJSDocInfo(info);
+            }
+            mustMatchToken(Token.RP, "msg.no.paren");
+            return pn;
+        case Token.XMLATTR:
+            mustHaveXML();
+            decompiler.addToken(Token.XMLATTR);
+            pn = attributeAccess(null, 0);
+            return pn;
+        case Token.NAME:
+            {
+                String name = ts.getString();
+                int lineno = ts.getLineno();
+                int charno = ts.getCharno();
+                if ((ttFlagged & TI_CHECK_LABEL) != 0) {
+                    if (peekToken() == Token.COLON) {
+                        // XXX Better way?
+                        return nf.createLabel(name, lineno, charno);
+                    }
+                }
+                decompiler.addName(name);
+                if (compilerEnv.isXmlAvailable()) {
+                    pn = propertyName(null, name, 0, lineno, charno);
+                } else {
+                    pn = nf.createName(name, lineno, charno);
+                }
+                return pn;
+            }
+        case Token.NUMBER:
+            {
+                double n = ts.getNumber();
+                int lineno = ts.getLineno();
+                int charno = ts.getCharno();
+                decompiler.addNumber(n);
+                return nf.createNumber(n, lineno, charno);
+            }
+        case Token.STRING:
+            {
+                String s = ts.getString();
+                int lineno = ts.getLineno();
+                int charno = ts.getCharno();
+                decompiler.addString(s);
+                return nf.createString(s, lineno, charno);
+            }
+        case Token.DIV:
+        case Token.ASSIGN_DIV:
+            {
+                // Got / or /= which should be treated as regexp in fact
+                ts.readRegExp(tt);
+                String flags = ts.regExpFlags;
+                ts.regExpFlags = null;
+                String re = ts.getString();
+                int lineno = ts.getLineno();
+                int charno = ts.getCharno();
+                decompiler.addRegexp(re, flags);
+                return nf.createRegExp(re, flags, lineno, charno);
+            }
+        case Token.NULL:
+        case Token.THIS:
+        case Token.FALSE:
+        case Token.TRUE:
+            {
+                int lineno = ts.getLineno();
+                int charno = ts.getCharno();
+                decompiler.addToken(tt);
+                return nf.createLeaf(tt, lineno, charno);
+            }
+        case Token.RESERVED:
+            reportError("msg.reserved.id");
+            break;
+        case Token.ERROR:
+            /* the scanner or one of its subroutines reported the error. */
+            break;
+        case Token.EOF:
+            reportError("msg.unexpected.eof");
+            break;
+        default:
+            reportError("msg.syntax");
+            break;
+    }
+    // should never reach here
+    return null;
+}

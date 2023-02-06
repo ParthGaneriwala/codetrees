@@ -1,0 +1,62 @@
+protected Workspace loadWorkspace(WorkspaceDTO dto) {
+    Workspace workspace = new Workspace();
+    workspace.setName(dto.getName());
+    workspace.setId(dto.getId());
+    // use saved
+    workspace.setSavingState(WorkspaceSavingState.NOT_SAVED);
+    // once we have everything in commands
+    workspaceManager.setWorkspace(workspace);
+    restoreResources(dto);
+    ResourceSetDTO[] resourceSetDTOs = dto.getResourceSets();
+    final ResourceSet[] resourceSets = new ResourceSet[resourceSetDTOs.length];
+    // 1. restore primary resource sets
+    for (ResourceSetDTO resourceSetDTO : resourceSetDTOs) {
+        if (!resourceSetDTO.isUnmodifiable()) {
+            ResourceSet resourceSet = resourceSetFactory.createResourceSet();
+            resourceSet.setLabel(resourceSetDTO.getLabel());
+            for (String uri : resourceSetDTO.getResourceIds()) {
+                resourceSet.add(resourceManager.getByUri(uri));
+            }
+            resourceSets[resourceSetDTO.getId()] = resourceSet;
+        }
+    }
+    // 2. restore unmodifiable resource sets
+    for (ResourceSetDTO resourceSetDTO : resourceSetDTOs) {
+        if (resourceSetDTO.isUnmodifiable()) {
+            int delegateId = resourceSetDTO.getDelegateSetId();
+            ResourceSet resourceSet = new UnmodifiableResourceSet(resourceSets[delegateId]);
+            resourceSets[resourceSetDTO.getId()] = resourceSet;
+        }
+    }
+    ResourceSetAccessor accessor = new ResourceSetAccessor() {
+
+        @Override
+        public ResourceSet getResourceSet(int id) {
+            assert id >= 0;
+            return resourceSets[id];
+        }
+    };
+    // add new windows
+    desktop.clearWindows();
+    WindowDTO[] windows = dto.getWindows();
+    for (WindowDTO wDTO : windows) {
+        String contentType = wDTO.getContentType();
+        int width = wDTO.getWidth();
+        int height = wDTO.getHeight();
+        String title = wDTO.getTitle();
+        int x = wDTO.getX();
+        int y = wDTO.getY();
+        WindowContent content = viewFactory.createWindowContent(contentType);
+        content.setLabel(title);
+        desktop.createWindow(content, x, y, width, height);
+        /*
+             * important: we restore the content after the window was created,
+             * because different view content objects such as the timeline
+             * require the view to be attached to the DOM.
+             */
+        if (content instanceof Persistable) {
+            ((Persistable) content).restore(wDTO.getViewState(), restorationService, accessor);
+        }
+    }
+    return workspace;
+}

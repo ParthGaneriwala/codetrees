@@ -1,0 +1,64 @@
+public void prepare() {
+    this.subClassCache = ((TransitiveReasoner) reasoner).getSubClassCache();
+    this.subPropertyCache = ((TransitiveReasoner) reasoner).getSubPropertyCache().deepCopy();
+    this.tbox = ((TransitiveReasoner) reasoner).getTbox();
+    haveSplitSubClassCache = false;
+    // Combine a place to hold axioms and local deductions and the tbox into single cache
+    if (tbox == null) {
+        tripleCache = axioms;
+    } else {
+        tripleCache = FinderUtil.cascade(axioms, tbox);
+    }
+    // Check for vocabulary definitions in the data graph
+    Graph data = fdata.getGraph();
+    if ((TransitiveEngine.checkOccuranceUtility(RDFSReasoner.subPropertyOf, data, subPropertyCache) || TransitiveEngine.checkOccuranceUtility(RDFSReasoner.subClassOf, data, subPropertyCache) || TransitiveEngine.checkOccuranceUtility(RDFSReasoner.domainP, data, subPropertyCache) || TransitiveEngine.checkOccuranceUtility(RDFSReasoner.rangeP, data, subPropertyCache))) {
+        // The data graph contains some ontology knowledge so split the caches
+        // now and rebuild them using merged data
+        Finder tempTbox = tbox == null ? fdata : FinderUtil.cascade(tbox, fdata);
+        splitSubClassCache();
+        TransitiveEngine.cacheSubPropUtility(tempTbox, subPropertyCache);
+        TransitiveEngine.cacheSubClassUtility(tempTbox, subPropertyCache, subClassCache);
+        // Cache the closures of subPropertyOf because these are likely to be
+        // small and accessed a lot
+        subPropertyCache.setCaching(true);
+    }
+    // add axioms
+    for (int i = 0; i < baseAxioms.length; i++) {
+        axioms.getGraph().add(baseAxioms[i]);
+    }
+    TransitiveEngine.cacheSubPropUtility(axioms, subPropertyCache);
+    // slower and no ContainerMembershipProperty assertions will be detected
+    if (scanProperties) {
+        ExtendedIterator it = tripleCache.findWithContinuation(new TriplePattern(null, null, null), fdata);
+        HashSet properties = new HashSet();
+        String memberPrefix = RDF.getURI() + "_";
+        Node sP = RDF.Property.asNode();
+        while (it.hasNext()) {
+            Triple triple = (Triple) it.next();
+            Node prop = triple.getPredicate();
+            if (prop.equals(RDF.type.asNode()) && prop.equals(RDF.Property.asNode())) {
+                prop = triple.getSubject();
+            }
+            if (properties.add(prop)) {
+                // Unseen property - add the subPropertyOf statement
+                subPropertyCache.addRelation(new Triple(prop, sP, prop));
+                if (prop.getURI().startsWith(memberPrefix)) {
+                    // A container property
+                    axioms.getGraph().add(new Triple(prop, RDF.type.asNode(), RDFS.ContainerMembershipProperty.asNode()));
+                    subPropertyCache.addRelation(new Triple(prop, sP, RDFS.member.asNode()));
+                }
+            }
+        }
+    }
+    // set up the router which connect queries to the appropriate processing element
+    router = new PatternRouter();
+    router.register(subPropertyCache);
+    router.register(subClassCache);
+    // Run the forward rules to preload the tripleCache and build the backward rules
+    checkAllForwardRules();
+    // Add fixed backward rules
+    for (int i = 0; i < brules.length; i++) {
+        addBRule(brules[i]);
+    }
+    isPrepared = true;
+}

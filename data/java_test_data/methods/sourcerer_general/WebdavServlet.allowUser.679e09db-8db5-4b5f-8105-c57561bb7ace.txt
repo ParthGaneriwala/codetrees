@@ -1,0 +1,78 @@
+protected boolean allowUser(ActionContext context, String argHeader) throws IOException {
+    if (argHeader == null) {
+        return false;
+    }
+    boolean status = false;
+    // System.out.println("WebdavServlet-> USERAGENT: " + context.getRequest().getHeader("user-agent"));
+    if (context.getRequest().getHeader("user-agent").toLowerCase().startsWith("microsoft") || context.getRequest().getHeader("user-agent").toLowerCase().indexOf("windows") > -1) {
+        // BASIC AUTHENTICATION
+        if (!argHeader.toUpperCase().startsWith("BASIC")) {
+            // we only do BASIC
+            return false;
+        }
+        // Get encoded user and password, comes after "BASIC "
+        String userpassEncoded = argHeader.substring(6);
+        // Decode it, using any base 64 decoder
+        String userpassDecoded = new String(Base64.decodeBase64(userpassEncoded.getBytes("UTF8")));
+        // Check our user list to see if that user and password are "allowed"
+        String username = userpassDecoded.substring(0, userpassDecoded.indexOf(":"));
+        String password = userpassDecoded.substring(username.length() + 1);
+        Connection db = null;
+        try {
+            db = this.getConnection(context);
+            WebdavManager manager = this.getWebdavManager(context);
+            // System.out.println("username: " + username);
+            if (manager.hasUser(username)) {
+                status = true;
+            } else if (manager.allowUser(db, username, password)) {
+                String nonce = "";
+                status = manager.addUser(db, username, nonce);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace(System.out);
+        // TODO: set error message in the response
+        } finally {
+            this.freeConnection(db, context);
+        }
+    } else {
+        // DIGEST AUTHENTICATION
+        if (!argHeader.startsWith("Digest")) {
+            return false;
+        }
+        HashMap params = getAuthenticationParams(context, argHeader);
+        // System.out.println("client digest : " + (String) params.get("response"));
+        Connection db = null;
+        String username = (String) params.get("username");
+        try {
+            WebdavManager manager = this.getWebdavManager(context);
+            if (manager.hasUser(username)) {
+                // user already logged in. calculate the digest value and validate the user
+                String digest = MD5Encoder.encode(md5Helper.digest((manager.getUser(username).getDigest() + ":" + (String) params.get("nonce") + ":" + getA2(context, params)).getBytes()));
+                if (digest.equals((String) params.get("response"))) {
+                    // user has been authenticated earlier and is still valid
+                    status = true;
+                } else {
+                    // user is no longer valid.
+                    manager.removeUser(username);
+                    status = false;
+                }
+            // System.out.println("server digest : " + digest);
+            } else {
+                // Try to authenticate the user
+                db = this.getConnection(context);
+                String digest = MD5Encoder.encode(md5Helper.digest((manager.getWebdavPassword(db, username) + ":" + (String) params.get("nonce") + ":" + getA2(context, params)).getBytes()));
+                // System.out.println("server digest : " + digest);
+                String nonce = (String) params.get("nonce");
+                if (digest.equals((String) params.get("response"))) {
+                    status = manager.addUser(db, username, nonce);
+                }
+            }
+        } catch (SQLException e) {
+            e.printStackTrace(System.out);
+        // TODO: set error message in the response
+        } finally {
+            this.freeConnection(db, context);
+        }
+    }
+    return status;
+}

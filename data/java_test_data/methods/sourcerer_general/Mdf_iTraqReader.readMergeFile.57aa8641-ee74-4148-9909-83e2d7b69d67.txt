@@ -1,0 +1,134 @@
+public void readMergeFile() {
+    try {
+        String iCurrentSpectrumTitle = null;
+        String iCurrentSpectrumScans = null;
+        String iCurrentCharge = null;
+        Vector<Peak> lPeaks = new Vector<Peak>();
+        if (!iMgf.exists()) {
+            throw new IOException("Mergefile '" + iMgf.getCanonicalPath() + "' could not be found!");
+        } else {
+            BufferedReader br = new BufferedReader(new FileReader(iMgf));
+            // First parse the header.
+            // First (non-empty?) line can be CHARGE= --> omit it if present.
+            // Next up are comment blocks.
+            // First non-empty comment line is raw filename (fully qualified).
+            // Second non-empty comment line holds the run title.
+            // Rest holds additional info which will be stored in the 'iComments' variable.
+            // First comment line without spaces after the '###' is part of the first spectrum.
+            String line = null;
+            int commentLineCounter = 0;
+            int lineCounter = 0;
+            boolean inSpectrum = false;
+            boolean lMultiFile = false;
+            Vector<String> lMultiRawFileNames = new Vector<String>();
+            StringBuffer tempComments = new StringBuffer();
+            // Cycle the file.
+            boolean runnameNotYetFound = true;
+            while ((line = br.readLine()) != null) {
+                lineCounter++;
+                line = line.trim();
+                // Skip empty lines and file-level charge statement.
+                if (line.equals("") || (lineCounter == 1 && line.startsWith("CHARGE"))) {
+                    continue;
+                } else // Comment lines.
+                if (line.startsWith("#") && !inSpectrum) {
+                    // First strip off the comment markings in a new String ('cleanLine').
+                    String cleanLine = cleanCommentMarks(line);
+                    // If cleanLine trimmed is empty String, it's an empty comment line
+                    // and therefore skipped without counting.
+                    String cleanLineTrimmed = cleanLine.trim();
+                    if (cleanLineTrimmed.equals("")) {
+                        continue;
+                    } else // comment, so we start by counting it!
+                    if (cleanLine.startsWith(" ") || cleanLine.startsWith("\t")) {
+                        commentLineCounter++;
+                        // Every non-empty comment line is added to the tempComments
+                        // StringBuffer, the contents of which are afterwards copied into
+                        // the 'iComments' variable.
+                        tempComments.append(line + "\n");
+                    } else // Spectrum comment. Start a new Spectrum!
+                    {
+                        inSpectrum = true;
+                    }
+                } else // '_DISTILLER_RAWFILE[0]={1}C:\Users\mascot\...\QstarE04494.wiff' this is the case
+                if (line.startsWith("_DISTILLER_RAWFILE")) {
+                    lMultiRawFileNames.add(line.substring(line.lastIndexOf("}")));
+                } else // Not an empty line, not an initial charge line, not a comment line and inside a spectrum.
+                if (inSpectrum) {
+                    // Note that this is the only difference with the parent.
+                    if (line.indexOf("TITLE") >= 0) {
+                        iCurrentSpectrumTitle = line;
+                        if (lMultiFile) {
+                            // check if this is linked to two files
+                            String lTemp = iCurrentSpectrumTitle.substring(iCurrentSpectrumTitle.lastIndexOf("[") + 1, iCurrentSpectrumTitle.lastIndexOf("]"));
+                            if (lTemp.indexOf(",") > 0) {
+                                // linked to multiple files
+                                iCurrentSpectrumTitle = iCurrentSpectrumTitle.substring(0, iCurrentSpectrumTitle.lastIndexOf(lTemp) + (lTemp.substring(0, lTemp.indexOf(","))).length()) + "]";
+                            }
+                        }
+                    }
+                    // Keep track of the 'SCANS' value for further usage in the filename creation.
+                    if (line.indexOf("SCANS") >= 0) {
+                        iCurrentSpectrumScans = line;
+                    }
+                    // Keep track of the 'CHARGE' value for further usage in the filename creation.
+                    if (line.indexOf("CHARGE") >= 0) {
+                        iCurrentCharge = line.substring(line.indexOf("=") + 1);
+                    }
+                    // Try to find the peaks
+                    if (line.indexOf("\t") > 0) {
+                        // we found a tab, we are in the peaklist
+                        // get the mass
+                        double lMass = Double.valueOf(line.substring(0, line.indexOf("\t")));
+                        // get the intensity
+                        double lIntensity = Double.valueOf(line.substring(line.indexOf("\t") + 1));
+                        // add a new peak to the peak list
+                        lPeaks.add(new Peak(lMass, lIntensity));
+                    }
+                    // See if it was an 'END IONS', in which case we stop being in a spectrum.
+                    if (line.indexOf("END IONS") >= 0) {
+                        // End detected. Much to do!
+                        // Reset boolean.
+                        inSpectrum = false;
+                        String[] lMultiFileNameArray = new String[lMultiRawFileNames.size()];
+                        lMultiRawFileNames.toArray(lMultiFileNameArray);
+                        if (lMultiFileNameArray.length > 1) {
+                            lMultiFile = true;
+                        }
+                        // Create a filename for the spectrum, based on the filename of the mergefile, with
+                        // an '_[spectrumCounter]' before the extension (eg., myParent.mgf --> myParent_1.mgf).
+                        String spectrumFilename;
+                        // the spectrum is fully parsed
+                        // create a peak array
+                        Peak[] lPeakArray = new Peak[lPeaks.size()];
+                        lPeaks.toArray(lPeakArray);
+                        try {
+                            spectrumFilename = Query.processMGFTitleToFilename(iCurrentSpectrumTitle, lMultiFile, lMultiFileNameArray, iCurrentSpectrumScans, iCurrentCharge);
+                            iSpectra.put(this.getComponentNumberFromTitle(spectrumFilename), lPeakArray);
+                        } catch (Exception e) {
+                            spectrumFilename = iCurrentSpectrumTitle;
+                            iSpectra.put(spectrumFilename.substring(spectrumFilename.indexOf("=") + 1, spectrumFilename.indexOf(":")), lPeakArray);
+                        }
+                        // add a new spectrum to the hashmap
+                        // remove everything from the vector and delete the title
+                        iCurrentCharge = null;
+                        iCurrentSpectrumScans = null;
+                        iCurrentSpectrumTitle = null;
+                        lPeaks.removeAllElements();
+                        inSpectrum = false;
+                    }
+                } else // If we're not in a spectrum, see if the line is 'BEGIN IONS', which marks the begin of a spectrum!
+                if (line.indexOf("BEGIN IONS") >= 0) {
+                    inSpectrum = true;
+                }
+            }
+            br.close();
+        }
+    } catch (FileNotFoundException e) {
+        iFlamable.passHotPotato(new Throwable("Problem reading '" + iMgf.getAbsolutePath() + "' !"));
+        logger.error(e.getMessage(), e);
+    } catch (IOException e) {
+        iFlamable.passHotPotato(new Throwable("Problem reading '" + iMgf.getAbsolutePath() + "' !"));
+        logger.error(e.getMessage(), e);
+    }
+}

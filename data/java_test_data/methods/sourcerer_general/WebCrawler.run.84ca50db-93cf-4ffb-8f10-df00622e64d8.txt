@@ -1,0 +1,136 @@
+public void run() {
+    String strURL = textURL.getText();
+    String strTargetType = choiceType.getSelectedItem();
+    int numberSearched = 0;
+    int numberFound = 0;
+    if (strURL.length() == 0) {
+        setStatus("ERROR: must enter a starting URL");
+        return;
+    }
+    // initialize search data structures
+    vectorToSearch.removeAllElements();
+    vectorSearched.removeAllElements();
+    vectorMatches.removeAllElements();
+    listMatches.removeAll();
+    vectorToSearch.addElement(strURL);
+    while ((vectorToSearch.size() > 0) && (Thread.currentThread() == searchThread)) {
+        // get the first element from the to be searched list
+        strURL = (String) vectorToSearch.elementAt(0);
+        setStatus("searching " + strURL);
+        URL url;
+        try {
+            url = new URL(strURL);
+        } catch (MalformedURLException e) {
+            setStatus("ERROR: invalid URL " + strURL);
+            break;
+        }
+        // mark the URL as searched (we want this one way or the other)
+        vectorToSearch.removeElementAt(0);
+        vectorSearched.addElement(strURL);
+        // can only search http: protocol URLs
+        if (url.getProtocol().compareTo("http") != 0)
+            break;
+        // test to make sure it is before searching
+        if (!robotSafe(url))
+            break;
+        try {
+            // try opening the URL
+            URLConnection urlConnection = url.openConnection();
+            urlConnection.setAllowUserInteraction(false);
+            InputStream urlStream = url.openStream();
+            String type = urlConnection.guessContentTypeFromStream(urlStream);
+            if (type == null)
+                break;
+            if (type.compareTo("text/html") != 0)
+                break;
+            // search the input stream for links
+            // first, read in the entire URL
+            byte[] b = new byte[1000];
+            int numRead = urlStream.read(b);
+            String content = new String(b, 0, numRead);
+            while (numRead != -1) {
+                if (Thread.currentThread() != searchThread)
+                    break;
+                numRead = urlStream.read(b);
+                if (numRead != -1) {
+                    String newContent = new String(b, 0, numRead);
+                    content += newContent;
+                }
+            }
+            urlStream.close();
+            if (Thread.currentThread() != searchThread)
+                break;
+            String lowerCaseContent = content.toLowerCase();
+            int index = 0;
+            while ((index = lowerCaseContent.indexOf("<a", index)) != -1) {
+                if ((index = lowerCaseContent.indexOf("href", index)) == -1)
+                    break;
+                if ((index = lowerCaseContent.indexOf("=", index)) == -1)
+                    break;
+                if (Thread.currentThread() != searchThread)
+                    break;
+                index++;
+                String remaining = content.substring(index);
+                StringTokenizer st = new StringTokenizer(remaining, "\t\n\r\">#");
+                String strLink = st.nextToken();
+                URL urlLink;
+                try {
+                    urlLink = new URL(url, strLink);
+                    strLink = urlLink.toString();
+                } catch (MalformedURLException e) {
+                    setStatus("ERROR: bad URL " + strLink);
+                    continue;
+                }
+                // only look at http links
+                if (urlLink.getProtocol().compareTo("http") != 0)
+                    break;
+                if (Thread.currentThread() != searchThread)
+                    break;
+                try {
+                    // try opening the URL
+                    URLConnection urlLinkConnection = urlLink.openConnection();
+                    urlLinkConnection.setAllowUserInteraction(false);
+                    InputStream linkStream = urlLink.openStream();
+                    String strType = urlLinkConnection.guessContentTypeFromStream(linkStream);
+                    linkStream.close();
+                    // if another page, add to the end of search list
+                    if (strType == null)
+                        break;
+                    if (strType.compareTo("text/html") == 0) {
+                        // searched or is going to be searched
+                        if ((!vectorSearched.contains(strLink)) && (!vectorToSearch.contains(strLink))) {
+                            // test to make sure it is robot-safe!
+                            if (robotSafe(urlLink))
+                                vectorToSearch.addElement(strLink);
+                        }
+                    }
+                    // unless we have already seen it
+                    if (strType.compareTo(strTargetType) == 0) {
+                        if (vectorMatches.contains(strLink) == false) {
+                            listMatches.add(strLink);
+                            vectorMatches.addElement(strLink);
+                            numberFound++;
+                            if (numberFound >= SEARCH_LIMIT)
+                                break;
+                        }
+                    }
+                } catch (IOException e) {
+                    setStatus("ERROR: couldn't open URL " + strLink);
+                    continue;
+                }
+            }
+        } catch (IOException e) {
+            setStatus("ERROR: couldn't open URL " + strURL);
+            break;
+        }
+        numberSearched++;
+        if (numberSearched >= SEARCH_LIMIT)
+            break;
+    }
+    if (numberSearched >= SEARCH_LIMIT || numberFound >= SEARCH_LIMIT)
+        setStatus("reached search limit of " + SEARCH_LIMIT);
+    else
+        setStatus("done");
+    searchThread = null;
+// searchThread.stop();
+}

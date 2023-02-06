@@ -1,0 +1,67 @@
+public static void main(String[] args) {
+    OptionParser optParser = new OptionParser(Options.class);
+    final Options opts = (Options) optParser.parse(args, true);
+    Experiment.initialize(opts.config);
+    Experiment experiment = Experiment.getInstance();
+    experiment.buildPrefixes();
+    JobManager.initialize(opts.jobs);
+    Thread thread = new Thread(JobManager.getInstance(), "Job Manager");
+    thread.setDaemon(true);
+    thread.start();
+    final LanguageModel lm = experiment.getLM(opts.lm);
+    final Map<Integer, Long2IntMap> countsMap1 = new HashMap<Integer, Long2IntMap>(lm.getMaxClusters());
+    final Map<Integer, Long2IntMap> countsMap2 = new HashMap<Integer, Long2IntMap>(lm.getMaxClusters());
+    JobGroup group = JobManager.getInstance().createJobGroup("balh");
+    Runnable run1 = new Runnable() {
+
+        @Override
+        public void run() {
+            try {
+                computeCounts(lm, opts.file1, countsMap1);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    };
+    JobManager.getInstance().addJob(group, new Job(run1, "1"));
+    Runnable run2 = new Runnable() {
+
+        @Override
+        public void run() {
+            try {
+                computeCounts(lm, opts.file2, countsMap2);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    };
+    JobManager.getInstance().addJob(group, new Job(run2, "2"));
+    group.join();
+    int nrBuckets = 20;
+    int[] wordOverLap = new int[nrBuckets];
+    int[] eventOverLap = new int[nrBuckets];
+    for (Map.Entry<Integer, Long2IntMap> entry : countsMap1.entrySet()) {
+        int wordsMatched = 0;
+        int eventsMatched = 0;
+        Long2IntMap map1 = entry.getValue();
+        Long2IntMap map2 = countsMap2.get(entry.getKey());
+        if (map2 != null) {
+            for (Long2IntMap.Iterator it = map1.iterator(); it.hasNext(); ) {
+                Long2IntMap.Entry e = it.next();
+                if (map2.get(e.getKey()) > 0) {
+                    wordsMatched += 1;
+                    eventsMatched += e.getValue();
+                }
+            }
+        }
+        if (wordsMatched == 0)
+            wordsMatched = 1;
+        wordOverLap[(wordsMatched * nrBuckets - 1) / map1.size()] += 1;
+        if (eventsMatched == 0)
+            eventsMatched = 1;
+        eventOverLap[(int) ((eventsMatched * nrBuckets - 1) / map1.sumValues())] += 1;
+    }
+    for (int i = 0; i < nrBuckets; ++i) {
+        System.out.printf("%3d -%3d%%:\t%g%%\t%g%%\n", i * 100 / nrBuckets, (i + 1) * 100 / nrBuckets, 100.0 * wordOverLap[i] / countsMap1.size(), 100.0 * eventOverLap[i] / countsMap1.size());
+    }
+}

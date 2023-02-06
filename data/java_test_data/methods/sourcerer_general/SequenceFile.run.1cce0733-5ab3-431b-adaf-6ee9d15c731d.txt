@@ -1,0 +1,67 @@
+public int run(boolean deleteInput) throws IOException {
+    int segments = 0;
+    int currentFile = 0;
+    boolean atEof = (currentFile >= inFiles.length);
+    boolean isCompressed = false;
+    boolean isBlockCompressed = false;
+    CompressionCodec codec = null;
+    segmentLengths.clear();
+    if (atEof) {
+        return 0;
+    }
+    // Initialize
+    in = new Reader(fs, inFiles[currentFile], conf);
+    isCompressed = in.isCompressed();
+    isBlockCompressed = in.isBlockCompressed();
+    codec = in.getCompressionCodec();
+    for (int i = 0; i < rawValues.length; ++i) {
+        rawValues[i] = null;
+    }
+    while (!atEof) {
+        int count = 0;
+        int bytesProcessed = 0;
+        rawKeys.reset();
+        while (!atEof && bytesProcessed < memoryLimit && count < recordLimit) {
+            // Read a record into buffer
+            // Note: Attempt to re-use 'rawValue' as far as possible
+            int keyOffset = rawKeys.getLength();
+            ValueBytes rawValue = (count == keyOffsets.length || rawValues[count] == null) ? in.createValueBytes() : rawValues[count];
+            int recordLength = in.nextRaw(rawKeys, rawValue);
+            if (recordLength == -1) {
+                in.close();
+                if (deleteInput) {
+                    fs.delete(inFiles[currentFile], true);
+                }
+                currentFile += 1;
+                atEof = currentFile >= inFiles.length;
+                if (!atEof) {
+                    in = new Reader(fs, inFiles[currentFile], conf);
+                } else {
+                    in = null;
+                }
+                continue;
+            }
+            int keyLength = rawKeys.getLength() - keyOffset;
+            if (count == keyOffsets.length)
+                grow();
+            // update pointers
+            keyOffsets[count] = keyOffset;
+            pointers[count] = count;
+            keyLengths[count] = keyLength;
+            rawValues[count] = rawValue;
+            bytesProcessed += recordLength;
+            count++;
+        }
+        // buffer is full -- sort & flush it
+        LOG.debug("flushing segment " + segments);
+        rawBuffer = rawKeys.getData();
+        sort(count);
+        // indicate we're making progress
+        if (progressable != null) {
+            progressable.progress();
+        }
+        flush(count, bytesProcessed, isCompressed, isBlockCompressed, codec, segments == 0 && atEof);
+        segments++;
+    }
+    return segments;
+}

@@ -1,0 +1,81 @@
+public void initVelocityConstraints(final BBTimeStep step) {
+    BBBody b1 = m_bodyA;
+    BBBody b2 = m_bodyB;
+    m_localCenter1 = b1.getLocalCenter();
+    m_localCenter2 = b2.getLocalCenter();
+    BBTransform xf1 = b1.getTransform();
+    BBTransform xf2 = b2.getTransform();
+    // Compute the effective masses.
+    BBVec2 r1 = mul(xf1.R, sub(m_localAnchor1, m_localCenter1));
+    BBVec2 r2 = mul(xf2.R, sub(m_localAnchor2, m_localCenter2));
+    BBVec2 d = sub(sub(add(b2.m_sweep.c, r2), b1.m_sweep.c), r1);
+    m_invMass1 = b1.m_invMass;
+    m_invI1 = b1.m_invI;
+    m_invMass2 = b2.m_invMass;
+    m_invI2 = b2.m_invI;
+    // Compute motor Jacobian and effective mass.
+    {
+        m_axis = mul(xf1.R, m_localXAxis1);
+        m_a1 = BBMath.cross(add(d, r1), m_axis);
+        m_a2 = BBMath.cross(r2, m_axis);
+        m_motorMass = m_invMass1 + m_invMass2 + m_invI1 * m_a1 * m_a1 + m_invI2 * m_a2 * m_a2;
+        if (m_motorMass > FLT_EPSILON) {
+            m_motorMass = 1.0f / m_motorMass;
+        } else {
+            m_motorMass = 0.0f;
+        }
+    }
+    // Prismatic constraint.
+    {
+        m_perp = mul(xf1.R, m_localYAxis1);
+        m_s1 = BBMath.cross(add(d, r1), m_perp);
+        m_s2 = BBMath.cross(r2, m_perp);
+        float m1 = m_invMass1, m2 = m_invMass2;
+        float i1 = m_invI1, i2 = m_invI2;
+        float k11 = m1 + m2 + i1 * m_s1 * m_s1 + i2 * m_s2 * m_s2;
+        float k12 = i1 * m_s1 * m_a1 + i2 * m_s2 * m_a2;
+        float k22 = m1 + m2 + i1 * m_a1 * m_a1 + i2 * m_a2 * m_a2;
+        m_K.col1.set(k11, k12);
+        m_K.col2.set(k12, k22);
+    }
+    // Compute motor and limit terms.
+    if (m_enableLimit) {
+        float jointTranslation = BBMath.dot(m_axis, d);
+        if (abs(m_upperTranslation - m_lowerTranslation) < 2.0f * linearSlop) {
+            m_limitState = e_equalLimits;
+        } else if (jointTranslation <= m_lowerTranslation) {
+            if (m_limitState != e_atLowerLimit) {
+                m_limitState = e_atLowerLimit;
+                m_impulse.y = 0.0f;
+            }
+        } else if (jointTranslation >= m_upperTranslation) {
+            if (m_limitState != e_atUpperLimit) {
+                m_limitState = e_atUpperLimit;
+                m_impulse.y = 0.0f;
+            }
+        } else {
+            m_limitState = e_inactiveLimit;
+            m_impulse.y = 0.0f;
+        }
+    } else {
+        m_limitState = e_inactiveLimit;
+    }
+    if (!m_enableMotor) {
+        m_motorImpulse = 0.0f;
+    }
+    if (step.warmStarting) {
+        // Account for variable time step.
+        m_impulse.mul(step.dtRatio);
+        m_motorImpulse *= step.dtRatio;
+        BBVec2 P = add(mul(m_impulse.x, m_perp), mul((m_motorImpulse + m_impulse.y), m_axis));
+        float L1 = m_impulse.x * m_s1 + (m_motorImpulse + m_impulse.y) * m_a1;
+        float L2 = m_impulse.x * m_s2 + (m_motorImpulse + m_impulse.y) * m_a2;
+        b1.m_linearVelocity.sub(mul(m_invMass1, P));
+        b1.m_angularVelocity -= m_invI1 * L1;
+        b2.m_linearVelocity.add(mul(m_invMass2, P));
+        b2.m_angularVelocity += m_invI2 * L2;
+    } else {
+        m_impulse.setZero();
+        m_motorImpulse = 0.0f;
+    }
+}

@@ -1,0 +1,105 @@
+public Conteudo retirarConteudo(PaginaPro paginaPro, PadraoApresentacao padrao) {
+    /**
+     * Quantidade de tags da fronteira
+     */
+    int qntTagFronteira = 3;
+    logger.debug("Iniciou a extracao de conteudo");
+    if (padrao == null) {
+        logger.error("Nao existe padrao(template) para paginaPro " + paginaPro.getIdPagina());
+        return null;
+    }
+    Retificador retificador = new Retificador();
+    retificador.setColocarDocType(false);
+    List<Fronteira> fronteirasList = new ArrayList<Fronteira>();
+    ArrayList<Tag> tagsPaginaPro = new ArrayList<Tag>();
+    Matcher mat = patTagCapada.matcher(paginaPro.getCodTrabalho());
+    while (mat.find()) {
+        Tag tag = new Tag();
+        tag.setTag(mat.group(1));
+        tag.setIniPontChar(mat.start());
+        tag.setFimPontChar(mat.end());
+        tagsPaginaPro.add(tag);
+    }
+    logger.debug("Retirando o conteudo da pagina " + paginaPro.getIdPagina());
+    String padraoTemp = padrao.getDePadraoTemp();
+    Fronteira fronteira = acharFronteira("<!-- ini titulo pagina -->", "<!-- fim titulo pagina -->", padraoTemp, qntTagFronteira);
+    fronteirasList.add(fronteira);
+    String retorno = "Sem titulo";
+    if (fronteira != null) {
+        // ver se a fronteira presta
+        retorno = extrairConteudoMarcado(paginaPro.getCodTrabalho(), fronteira, tagsPaginaPro);
+        logger.debug("titulo pagina = " + retorno);
+    }
+    fronteira = acharFronteira("<!-- ini item(titulo) -->", "<!-- fim item(titulo) -->", padraoTemp, qntTagFronteira);
+    fronteirasList.add(fronteira);
+    logger.debug("fronteira = " + fronteira);
+    String paginaTitulo = null;
+    if (fronteira != null) {
+        paginaTitulo = extrairConteudoMarcado(paginaPro.getCodTrabalho(), fronteira, tagsPaginaPro);
+        logger.debug("titulo do item = " + paginaTitulo);
+    }
+    fronteira = acharFronteira("<!-- ini item(conteudo) -->", "<!-- fim item(conteudo) -->", padraoTemp, qntTagFronteira);
+    fronteirasList.add(fronteira);
+    logger.debug("fronteira = " + fronteira);
+    String conteudoPost = "";
+    if (fronteira != null) {
+        conteudoPost = extrairConteudoMarcado(paginaPro.getCodTrabalho(), fronteira, tagsPaginaPro);
+        logger.debug("Conteudo = " + conteudoPost);
+        String topoHtmlPadrao = "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">" + "<html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"pt\" lang=\"pt-br\"><head><title>Standard</title></head><body>";
+        String fimHtmlPadrao = "</body></html>";
+        conteudoPost = topoHtmlPadrao + conteudoPost + fimHtmlPadrao;
+        conteudoPost = retificador.consertarErroAcessibilidade(conteudoPost);
+        conteudoPost = retificador.consertarErroHtml(conteudoPost);
+        conteudoPost = conteudoPost.substring(topoHtmlPadrao.length(), (conteudoPost.length() - fimHtmlPadrao.length()));
+        conteudoPost = conteudoPost.replaceAll("  *", " ");
+    }
+    /**
+     * Inser��o no CMS
+     */
+    // Criar a pagina
+    Pagina paginaCms = null;
+    try {
+        paginaCms = Coordenador.getPaginaDaoCMS().select(paginaPro.getIdPaginaCMS());
+        paginaCms.setTemVinculoPro(Boolean.TRUE);
+        paginaCms.setUrlPro(paginaPro.getUrl());
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+    paginaCms.setDePagina("Pagina criada automaticamente da paginaPro " + paginaPro.getIdPagina());
+    paginaCms.setNoTitulo((paginaTitulo != null ? paginaTitulo : "") + paginaPro.getIdPagina());
+    paginaCms.setNuSitio(padrao.getSitio().getNuSitio());
+    paginaCms.setSitio(padrao.getSitio());
+    paginaCms.setNuPadraoApresentacao(Coordenador.getPadraoApresentacao().getNuPadraoApresentacao());
+    // *
+    if (conteudoPost == null || conteudoPost.isEmpty()) {
+        logger.error("Nao foi possivel retirar o conteudo da paginaPro " + paginaPro.getIdPagina() + "\n\t" + paginaPro.getUrl() + " padrao (template) " + padrao.getNuPadraoApresentacao());
+        return null;
+    }
+    // Salva esta pagina
+    Coordenador.getPaginaDaoCMS().create(paginaCms);
+    // Criar o conteudo
+    Conteudo conteudo = new Conteudo();
+    conteudo.setCoOrdemDecrescente(false);
+    conteudo.setDeCabecalho("Conteudo criado automaticamente da pagina do cms cod " + paginaCms.getNuPagina());
+    conteudo.setNoConteudo("Post");
+    conteudo.setPagina(paginaCms);
+    // POST
+    conteudo.setNuTipoConteudo(1L);
+    // ConteudistaPro
+    conteudo.setNuUsuario(2L);
+    conteudo.setSitio(padrao.getSitio());
+    // paginaPro.setIdPaginaCMS(paginaCms.getNuPagina());//rela��o PAGINA CMS x PAGINA PRO
+    // pagProDao.update(paginaPro);
+    Coordenador.getConteudoDaoCMS().create(conteudo);
+    if (paginaCms.getListConteudo() == null) {
+        paginaCms.setListConteudo(new ArrayList<Conteudo>());
+    }
+    paginaCms.getListConteudo().add(conteudo);
+    Coordenador.getPaginaDaoCMS().update(paginaCms);
+    cadastrarItem(paginaTitulo, conteudoPost, conteudo);
+    List<ItemConteudo> listItemConteudo = Coordenador.getConteudoDaoCMS().listarItemConteudo(conteudo, 0, Integer.MAX_VALUE, true);
+    if (listItemConteudo.size() == 0) {
+        logger.error("Sem itens no conteudo");
+    }
+    return conteudo;
+}

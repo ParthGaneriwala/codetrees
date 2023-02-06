@@ -1,0 +1,106 @@
+private RefactoringStatus insertNewEnumType(IProgressMonitor monitor) throws CoreException {
+    final RefactoringStatus status = new RefactoringStatus();
+    final AST ast = AST.newAST(AST.JLS3);
+    for (final Iterator it = this.computer.getEnumerizationForest().iterator(); it.hasNext(); ) {
+        final Collection col = (Collection) it.next();
+        if (col.isEmpty())
+            continue;
+        final Collection constants = this.extractConstants(col);
+        final Map newEnumConstantToOldConstantFieldMap = new HashMap();
+        final EnumConstantComparator comparator = new EnumConstantComparator(newEnumConstantToOldConstantFieldMap);
+        final SortedSet enumConstantDeclarationCollection = new TreeSet(comparator);
+        final Map annotationToQualifiedNameMap = new HashMap();
+        for (final Iterator cit = constants.iterator(); cit.hasNext(); ) {
+            final IField constantField = (IField) cit.next();
+            final FieldDeclaration originalFieldDeclaration = (FieldDeclaration) this.removedFieldNodes.get(constantField);
+            // Get annotations.
+            final Collection annotationCollection = new LinkedHashSet();
+            for (final Iterator mit = originalFieldDeclaration.modifiers().iterator(); mit.hasNext(); ) {
+                final Object o = mit.next();
+                if (o instanceof Annotation) {
+                    final Annotation oldAnnotation = (Annotation) o;
+                    final Annotation newAnnotation = (Annotation) ASTNode.copySubtree(ast, oldAnnotation);
+                    annotationToQualifiedNameMap.put(newAnnotation, oldAnnotation.resolveTypeBinding().getQualifiedName());
+                    annotationCollection.add(newAnnotation);
+                }
+            }
+            // Get the javadoc.
+            final Javadoc originalJavadoc = originalFieldDeclaration.getJavadoc();
+            final Javadoc newJavadoc = (Javadoc) ASTNode.copySubtree(ast, originalJavadoc);
+            final EnumConstantDeclaration constDecl = createNewEnumConstantDeclarataion(ast, ast.newSimpleName(constantField.getElementName()), newJavadoc, annotationCollection);
+            newEnumConstantToOldConstantFieldMap.put(constDecl, constantField);
+            enumConstantDeclarationCollection.add(constDecl);
+        }
+        // Get the consistent access modifier of the enum constants.
+        final int flag = Util.getConsistentVisibility(constants);
+        /**
+         * ****************************************************************
+         * * TODO: Need condition check here: 1. If enum is in its own file
+         * then only public and package default are allowed. 2. Else, if
+         * enum is embedded in another type, then all visibilities are
+         * allowed, but may need more checking here for private!.
+         * ****************************************************************
+         */
+        if (!(Flags.isPublic(flag) || Flags.isPackageDefault(flag)))
+            status.addFatalError(Messages.ConvertConstantsToEnumRefactoring_EnumTypeMustHaveCorrectVisibility);
+        EnumDeclaration newEnumDeclaration = null;
+        // only add modifier if it is not package default.
+        if (!Flags.isPackageDefault(flag)) {
+            final Modifier newModifier = ast.newModifier(Modifier.ModifierKeyword.fromFlagValue(flag));
+            newEnumDeclaration = createNewEnumDeclaration(ast, ast.newSimpleName((String) this.simpleTypeNames.get(col)), enumConstantDeclarationCollection, new Object[] { newModifier });
+        } else
+            newEnumDeclaration = createNewEnumDeclaration(ast, ast.newSimpleName((String) this.simpleTypeNames.get(col)), enumConstantDeclarationCollection, new Object[] {});
+        // TODO [bm] pretty dirty hack to workaround 16: Refactoring should not use UI components for code changes
+        // http://code.google.com/p/constants-to-enum-eclipse-plugin/issues/detail?id=16
+        final NewEnumWizardPage[] result = new NewEnumWizardPage[1];
+        Display.getDefault().syncExec(new Runnable() {
+
+            public void run() {
+                result[0] = new NewEnumWizardPage();
+            }
+        });
+        NewEnumWizardPage page = result[0];
+        page.setTypeName((String) this.simpleTypeNames.get(col), false);
+        final IPackageFragmentRoot root = this.getPackageFragmentRoot();
+        page.setPackageFragmentRoot(root, false);
+        final IPackageFragment pack = this.getPackageFragment((String) this.packageNames.get(col), monitor);
+        page.setPackageFragment(pack, false);
+        /**
+         * ****************************************************************
+         * TODO: Need a way of inserting this new type such that it appears
+         * in the text changes for rollback purposes, etc.
+         * ****************************************************************
+         */
+        try {
+            page.createType(monitor);
+        } catch (final InterruptedException E) {
+            status.addFatalError(E.getMessage());
+        }
+        // Modify the newly created enum type.
+        final IType newEnumType = page.getCreatedType();
+        final CompilationUnit node = (CompilationUnit) Util.getASTNode(newEnumType, monitor);
+        final ASTRewrite astRewrite = ASTRewrite.create(node.getAST());
+        final ImportRewrite importRewrite = ImportRewrite.create(node, true);
+        final EnumDeclaration oldEnumDeclaration = (EnumDeclaration) node.types().get(0);
+        // Add imports for annotations to the enum constants.
+        for (final Iterator eit = newEnumDeclaration.enumConstants().iterator(); eit.hasNext(); ) {
+            final Object obj = eit.next();
+            final EnumConstantDeclaration ecd = (EnumConstantDeclaration) obj;
+            for (final Iterator emit = ecd.modifiers().iterator(); emit.hasNext(); ) {
+                final Object o = emit.next();
+                if (o instanceof Annotation) {
+                    final Annotation anno = (Annotation) o;
+                    final String newName = importRewrite.addImport((String) annotationToQualifiedNameMap.get(anno));
+                    anno.setTypeName(ast.newName(newName));
+                }
+            }
+        }
+        /*
+			 * TODO: Need to remove resulting unused imports, but I am unsure of
+			 * how to do that.
+			 */
+        astRewrite.replace(oldEnumDeclaration, newEnumDeclaration, null);
+        this.rewriteAST(newEnumType.getCompilationUnit(), astRewrite, importRewrite);
+    }
+    return status;
+}

@@ -1,0 +1,42 @@
+public User authenticate(LoginMessage message, ClientCommunicator communicator) {
+    User user = null;
+    try {
+        synchronized (this.userManager) {
+            System.err.println("Controller::authenticate - " + message);
+            boolean wasLoggedIn = this.userManager.isLoggedIn(message.getLogin());
+            // then let's log him out first.
+            if (wasLoggedIn && !message.isRetry()) {
+                Command command = new QuitCommand(new QuitMessage(), this.userManager.getUser(message.getLogin()));
+                command.execute();
+            }
+            user = this.userManager.authenticate(message.getLogin(), message.getPassword(), communicator);
+            user.getPlayer().setUserAgent(message.getUserAgent());
+            if (message.isRetry() && wasLoggedIn) {
+                try {
+                    UserLoggedInMessage loggedInMessage = new UserLoggedInMessage(user.getPlayer());
+                    loggedInMessage.setId(-1);
+                    loggedInMessage.setLastReceivedId(user.getLastMessageReceivedId());
+                    communicator.send(loggedInMessage);
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+                // The user is reconecting... We must send him the messages he didn't receive.
+                messageManager.reSendAllAfter(user, message.getLastReceivedId());
+            }
+            if (!wasLoggedIn || !message.isRetry())
+                this.fireUserLoggedInEvent(new UserLoggedInEventArgs(new UserLoggedInMessage(user.getPlayer())));
+        }
+    } catch (InvalidLoginParametersException e) {
+        LoginFailedMessage replyMessage = new LoginFailedMessage(message);
+        try {
+            communicator.send(replyMessage);
+        } catch (IOException e1) {
+            System.out.println("Problem sending LoginFailed message to client!");
+            this.forward(replyMessage, user);
+            e1.printStackTrace();
+        }
+        this.fireLoginFailedEvent(new LoginFailedEventArgs(replyMessage));
+    }
+    saveStateToDisk();
+    return user;
+}

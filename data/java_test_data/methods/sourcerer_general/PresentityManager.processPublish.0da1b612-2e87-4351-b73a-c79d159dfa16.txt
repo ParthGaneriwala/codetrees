@@ -1,0 +1,85 @@
+public synchronized int processPublish(Request request) {
+    logger.debug("PresenceServer, processPublish");
+    String notifierKey = getKey((Message) request, "To");
+    String publisherKey = getKey((Message) request, "From");
+    Notifier notifier = (Notifier) notifiers.get(notifierKey);
+    int responseCode;
+    // Step 1 is performed by Proxy
+    // Steps 2-3 are performed by PresentityManager
+    // 4. Authorize, return 403 if Forbidden
+    responseCode = notifier.authorize(publisherKey, "PUBLISH");
+    if (responseCode == Response.FORBIDDEN)
+        return responseCode;
+    // 5. Examine event header
+    EventHeader eventHeader = (EventHeader) request.getHeader(EventHeader.NAME);
+    if ((eventHeader == null) || !(notifier.hasEvent(eventHeader.getEventType()))) {
+        return Response.BAD_EVENT;
+    }
+    // 6. Examine If-Match header
+    Header ifMatchHeader = (Header) request.getHeader("SIP-If-Match");
+    String entityTag = new String();
+    if (ifMatchHeader != null) {
+        String ifMatchString = ifMatchHeader.toString();
+        int colon = ifMatchString.indexOf(":");
+        entityTag = ifMatchString.substring(colon + 1).trim();
+    }
+    // 8. Process body
+    if (responseCode == Response.OK) {
+        Object content = request.getContent();
+        String newBody = null;
+        if (content instanceof String) {
+            newBody = (String) content;
+        } else if (content instanceof byte[]) {
+            newBody = new String((byte[]) content);
+        }
+        // get oldBody from notifier
+        String oldBody = notifier.getFullState();
+        if (oldBody.length() > 0) {
+            // Merge the old and new body.
+            // parse old body
+            xmlCpimParser.parseCPIMString(oldBody.trim());
+            PresenceTag oldPresenceTag = xmlCpimParser.getPresenceTag();
+            Vector oldTupleTagList = oldPresenceTag.getTupleTagList();
+            // parse new body, generate a list of all id's
+            xmlCpimParser.parseCPIMString(newBody.trim());
+            PresenceTag newPresenceTag = xmlCpimParser.getPresenceTag();
+            if (newPresenceTag == null) {
+                logger.error("ERROR: The incoming presence Tag is null!!!");
+                return Response.BAD_REQUEST;
+            }
+            Vector newTupleTagList = newPresenceTag.getTupleTagList();
+            // Iterate through the old list and update old Tuples
+            for (int i = 0; i < oldTupleTagList.size(); i++) {
+                TupleTag oldTupleTag = (TupleTag) oldTupleTagList.get(i);
+                String tupleId = oldTupleTag.getId();
+                for (int j = 0; j < newTupleTagList.size(); j++) {
+                    TupleTag newTag = (TupleTag) newTupleTagList.get(j);
+                    if (newTag.getId().equals(tupleId)) {
+                        // replace the old tuple with the new
+                        oldTupleTagList.setElementAt((Object) newTupleTagList.remove(j), i);
+                        break;
+                    }
+                }
+            }
+            // add new tuples
+            while (!newTupleTagList.isEmpty()) {
+                TupleTag newTT = (TupleTag) newTupleTagList.remove(0);
+                oldPresenceTag.addTupleTag(newTT);
+            }
+            newBody = oldPresenceTag.toString();
+        }
+        // Update the notifier
+        notifier.setFullState(newBody);
+        // Update subscribers. Should be partial update someday
+        Collection notifiersSubscriberKeys = notifier.getSubscribers();
+        Iterator it = notifiersSubscriberKeys.iterator();
+        while (it.hasNext()) {
+            String dialogId = (String) it.next();
+            if (logger.isDebugEnabled())
+                logger.debug("getting subscriber for " + dialogId);
+            Subscriber subscriber = (Subscriber) subscribers.get(dialogId);
+            subscriber.updateNotifyBody(newBody);
+        }
+    }
+    return responseCode;
+}

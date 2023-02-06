@@ -1,0 +1,106 @@
+public void setObject(Object object) {
+    // make sure it's not the same object
+    if (object == _object) {
+        return;
+    }
+    // if the object is the same class as the current object, we can reuse the existing editors
+    Class<?> oclazz = (_object == null) ? null : _object.getClass();
+    Class<?> nclazz = (object == null) ? null : object.getClass();
+    _object = object;
+    if (oclazz == nclazz) {
+        for (PropertyEditor editor : _editors) {
+            editor.setObject(_object);
+        }
+        updateDynamicProperties();
+        return;
+    }
+    // remove any existing editors
+    removeAll();
+    _editors.clear();
+    // find the object's editable categories/properties
+    if (_object == null) {
+        revalidate();
+        repaint();
+        return;
+    }
+    Class<?> clazz = _object.getClass();
+    Property[] props = Introspector.getProperties(clazz);
+    final String[] cats = getFilteredCategories(clazz, props);
+    MessageBundle cmsgs = _msgmgr.getBundle(Introspector.getMessageBundle(clazz));
+    if (cats.length <= 1) {
+        // if there's only one category, add them in a single scroll panel
+        JPanel inner = addScrollPanel();
+        addEditors(props, null, inner);
+    } else if (_catmode == CategoryMode.PANELS) {
+        JPanel inner = addScrollPanel();
+        for (String cat : cats) {
+            JPanel content = new JPanel();
+            inner.add(content = new JPanel());
+            if (cat.length() > 0) {
+                content.setBorder(BorderFactory.createTitledBorder(getLabel(cat, cmsgs)));
+                content.setBackground(getDarkerBackground((_ancestors == null ? 0 : _ancestors.length) + 0.5f));
+            } else {
+                content.setBackground(null);
+            }
+            content.setLayout(new VGroupLayout(GroupLayout.NONE, GroupLayout.STRETCH, 5, GroupLayout.TOP));
+            addEditors(props, cat, content);
+        }
+    } else if (_catmode == CategoryMode.TABS) {
+        JTabbedPane tabs = new JTabbedPane();
+        add(tabs);
+        for (String cat : cats) {
+            JPanel inner = GroupLayout.makeVBox(GroupLayout.NONE, GroupLayout.TOP, GroupLayout.STRETCH);
+            inner.setBackground(null);
+            tabs.addTab(getLabel(cat, cmsgs), isEmbedded() ? inner : createScrollPane(inner));
+            addEditors(props, cat, inner);
+        }
+    } else {
+        // _catmode == CategoryMode.CHOOSER
+        JPanel cpanel = new JPanel();
+        add(cpanel, GroupLayout.FIXED);
+        cpanel.add(new JLabel(_msgs.get("m.category")));
+        final JComboBox cbox = new JComboBox(getLabels(cats, cmsgs));
+        cpanel.add(cbox);
+        final CardLayout cards = new CardLayout();
+        final JPanel inner = new JPanel(cards);
+        add(inner);
+        for (String cat : cats) {
+            JPanel panel = GroupLayout.makeVBox(GroupLayout.NONE, GroupLayout.TOP, GroupLayout.STRETCH);
+            panel.setBackground(null);
+            inner.add(isEmbedded() ? panel : createScrollPane(panel), cat);
+            addEditors(props, cat, panel);
+        }
+        cbox.addItemListener(new ItemListener() {
+
+            public void itemStateChanged(ItemEvent event) {
+                cards.show(inner, cats[cbox.getSelectedIndex()]);
+            }
+        });
+    }
+    // add listeners for dependencies
+    for (final PropertyEditor editor : _editors) {
+        String[] depends = editor.getProperty().getAnnotation().depends();
+        if (depends.length > 0) {
+            ChangeListener cl = new ChangeListener() {
+
+                public void stateChanged(ChangeEvent event) {
+                    editor.update();
+                }
+            };
+            for (String depend : depends) {
+                PropertyEditor deditor = getEditor(depend);
+                if (deditor != null) {
+                    deditor.addChangeListener(cl);
+                }
+            }
+        }
+    }
+    // we iterate backwards through the listener list when notifying, we add them afterwards)
+    for (PropertyEditor editor : _editors) {
+        editor.addChangeListener(this);
+    }
+    // update the dynamic properties
+    updateDynamicProperties();
+    // update the layout
+    revalidate();
+}

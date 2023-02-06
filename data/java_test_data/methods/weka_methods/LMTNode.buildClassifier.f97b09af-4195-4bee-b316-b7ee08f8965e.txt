@@ -1,0 +1,60 @@
+@Override
+public void buildClassifier(Instances data) throws Exception {
+    // of iteration everywhere in the tree.
+    if (m_fastRegression && (m_fixedNumIterations < 0)) {
+        m_fixedNumIterations = tryLogistic(data);
+    }
+    // Need to cross-validate alpha-parameter for CART-pruning
+    Instances cvData = new Instances(data);
+    cvData.stratify(m_numFoldsPruning);
+    double[][] alphas = new double[m_numFoldsPruning][];
+    double[][] errors = new double[m_numFoldsPruning][];
+    for (int i = 0; i < m_numFoldsPruning; i++) {
+        // for every fold, grow tree on training set...
+        Instances train = cvData.trainCV(m_numFoldsPruning, i);
+        Instances test = cvData.testCV(m_numFoldsPruning, i);
+        buildTree(train, null, train.numInstances(), 0, null);
+        int numNodes = getNumInnerNodes();
+        alphas[i] = new double[numNodes + 2];
+        errors[i] = new double[numNodes + 2];
+        // ... then prune back and log alpha-values and errors on test set
+        prune(alphas[i], errors[i], test);
+    }
+    // don't need CV data anymore
+    cvData = null;
+    // build tree using all the data
+    buildTree(data, null, data.numInstances(), 0, null);
+    int numNodes = getNumInnerNodes();
+    double[] treeAlphas = new double[numNodes + 2];
+    // prune back and log alpha-values
+    int iterations = prune(treeAlphas, null, null);
+    double[] treeErrors = new double[numNodes + 2];
+    for (int i = 0; i <= iterations; i++) {
+        // compute midpoint alphas
+        double alpha = Math.sqrt(treeAlphas[i] * treeAlphas[i + 1]);
+        double error = 0;
+        // the cross-validation
+        for (int k = 0; k < m_numFoldsPruning; k++) {
+            int l = 0;
+            while (alphas[k][l] <= alpha) {
+                l++;
+            }
+            error += errors[k][l - 1];
+        }
+        treeErrors[i] = error;
+    }
+    // find best alpha
+    int best = -1;
+    double bestError = Double.MAX_VALUE;
+    for (int i = iterations; i >= 0; i--) {
+        if (treeErrors[i] < bestError) {
+            bestError = treeErrors[i];
+            best = i;
+        }
+    }
+    double bestAlpha = Math.sqrt(treeAlphas[best] * treeAlphas[best + 1]);
+    // "unprune" final tree (faster than regrowing it)
+    unprune();
+    // CART-prune it with best alpha
+    prune(bestAlpha);
+}

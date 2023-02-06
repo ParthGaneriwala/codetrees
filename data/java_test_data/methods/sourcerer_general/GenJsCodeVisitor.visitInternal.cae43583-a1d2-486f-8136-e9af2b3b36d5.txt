@@ -1,0 +1,65 @@
+@Override
+protected void visitInternal(GoogMsgNode node) {
+    // Build the code for the message text and the individual code bits for each placeholder (i.e.
+    // "<placeholderName>: <exprCode>").
+    StringBuilder msgTextCodeSb = new StringBuilder();
+    List<String> placeholderCodeBits = new ArrayList<String>();
+    Set<String> seenPlaceholderNames = new HashSet<String>();
+    for (SoyNode child : node.getChildren()) {
+        if (child instanceof RawTextNode) {
+            // Only need to add to message text.
+            msgTextCodeSb.append(((RawTextNode) child).getRawText());
+        } else if (child instanceof MsgPlaceholderNode) {
+            String placeholderName = node.getPlaceholderName((MsgPlaceholderNode) child);
+            String googMsgPlaceholderName = genGoogMsgPlaceholderName(placeholderName);
+            // Add placeholder to message text.
+            msgTextCodeSb.append("{$").append(googMsgPlaceholderName).append("}");
+            // representative node. Add the code bit for the placeholder now.
+            if (!seenPlaceholderNames.contains(placeholderName)) {
+                seenPlaceholderNames.add(placeholderName);
+                String placeholderCodeBit = "'" + googMsgPlaceholderName + "': " + genGoogMsgPlaceholderExpr((MsgPlaceholderNode) child).getText();
+                placeholderCodeBits.add(placeholderCodeBit);
+            }
+        } else {
+            String nodeStringForErrorMsg = (node instanceof SoyCommandNode) ? "Tag " + ((SoyCommandNode) node).getTagString() : "Node " + node.toString();
+            throw new SoySyntaxException(nodeStringForErrorMsg + " is not allowed to be a direct child of a 'msg' tag.");
+        }
+    }
+    String msgTextCode = BaseUtils.escapeToSoyString(msgTextCodeSb.toString(), false);
+    // Note: BaseUtils.escapeToSoyString() builds a Soy string, which is usually a valid JS string.
+    // The rare exception is a string containing a Unicode Format character (Unicode category "Cf")
+    // because of the JavaScript language quirk that requires all category "Cf" characters to be
+    // escaped in JS strings. Therefore, we must call JsSrcUtils.escapeUnicodeFormatChars() on the
+    // result.
+    msgTextCode = JsSrcUtils.escapeUnicodeFormatChars(msgTextCode);
+    // Finally, generate the code for the whole message definition.
+    jsCodeBuilder.indent().append("/** @desc ", node.getDesc());
+    if (node.isHidden()) {
+        jsCodeBuilder.append("\n");
+        jsCodeBuilder.indent().append(" *  @hidden");
+    }
+    jsCodeBuilder.append(" */\n");
+    jsCodeBuilder.indent().append("var ", node.getGoogMsgName(), " = goog.getMsg(");
+    if (placeholderCodeBits.size() == 0) {
+        // If no placeholders, we put the message text on the same line.
+        jsCodeBuilder.append(msgTextCode);
+    } else {
+        // If there are placeholders, we put the message text on a new line, indented 4 extra spaces.
+        // And we line up the placeholders too.
+        jsCodeBuilder.append("\n");
+        jsCodeBuilder.indent().append("    ", msgTextCode);
+        boolean isFirst = true;
+        for (String placeholderCodeBit : placeholderCodeBits) {
+            jsCodeBuilder.append(",\n");
+            if (isFirst) {
+                isFirst = false;
+                jsCodeBuilder.indent().append("    {");
+            } else {
+                jsCodeBuilder.indent().append("     ");
+            }
+            jsCodeBuilder.append(placeholderCodeBit);
+        }
+        jsCodeBuilder.append("}");
+    }
+    jsCodeBuilder.append(");\n");
+}

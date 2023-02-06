@@ -1,0 +1,105 @@
+public String executeCommandJoin(ActionContext context) {
+    Connection db = null;
+    String errorMessage = null;
+    // Parameters
+    String projectIdStr = context.getRequest().getParameter("pid");
+    boolean isNotify = DatabaseUtils.parseBoolean(context.getRequest().getParameter("notification"));
+    int emailUpdateSchedule = Integer.parseInt(context.getRequest().getParameter("emailNotification"));
+    User user = getUser(context);
+    Project project = null;
+    int projectId = -1;
+    try {
+        db = getConnection(context);
+        if (projectIdStr == null) {
+            errorMessage = "Project id (pid) must be specified.";
+        } else if (user == null || user.getId() == -1) {
+            errorMessage = "User must be logged in to join.";
+        } else {
+            projectId = Integer.parseInt(context.getRequest().getParameter("pid"));
+            // Project permissions
+            project = retrieveAuthorizedProject(projectId, context);
+            // userCanJoin rule
+            boolean canJoin = TeamMemberUtils.userCanJoin(user, project);
+            if (!canJoin) {
+                return "PermissionError";
+            }
+            context.getRequest().setAttribute("project", project);
+        }
+        if (errorMessage != null) {
+            context.getRequest().setAttribute("actionError", errorMessage);
+        } else {
+            // Check for an existing team member record if the status is less then joined update to joined and save
+            TeamMemberList members = new TeamMemberList();
+            members.setProjectId(projectId);
+            members.setUserId(user.getId());
+            members.buildList(db);
+            if (members.size() == 1 && members.get(0).getStatus() != TeamMember.STATUS_ADDED) {
+                TeamMember member = members.get(0);
+                if (member.getRoleId() > TeamMember.MEMBER) {
+                    // If membership is not required
+                    member.setUserLevel(getUserLevel(TeamMember.MEMBER));
+                    member.setModifiedBy(user.getId());
+                    member.setStatus(TeamMember.STATUS_ADDED);
+                    member.setNotification(isNotify);
+                    member.setEmailUpdatesSchedule(emailUpdateSchedule);
+                    member.update(db);
+                // TODO If membership is required
+                // TeamMember.PARTICIPANT
+                // TeamMember.STATUS_JOINED_NEEDS_APPROVAL
+                }
+            } else if (members.isEmpty()) {
+                // Otherwise insert new team member with status set to joined
+                TeamMember thisMember = new TeamMember();
+                thisMember.setProjectId(projectId);
+                thisMember.setUserId(user.getId());
+                thisMember.setUserLevel(getUserLevel(TeamMember.MEMBER));
+                thisMember.setStatus(TeamMember.STATUS_ADDED);
+                thisMember.setEnteredBy(user.getId());
+                thisMember.setModifiedBy(user.getId());
+                thisMember.setNotification(isNotify);
+                thisMember.setEmailUpdatesSchedule(emailUpdateSchedule);
+                if (thisMember.insert(db)) {
+                    processInsertHook(context, thisMember);
+                }
+            }
+            // Handle reciprocate membership if the user has accepted to be member of a user profile
+            Project targetProject = ProjectUtils.loadProject((projectId));
+            if (targetProject.getOwner() != -1) {
+                User ownerOfTargetProject = UserUtils.loadUser(targetProject.getOwner());
+                if (ownerOfTargetProject.getProfileProjectId() == targetProject.getId()) {
+                    Project thisUserProfileProject = user.getProfileProject();
+                    TeamMemberList teamMemberList = thisUserProfileProject.getTeam();
+                    TeamMember reciprocatingTeamMember = null;
+                    // Determine if the reciprocal already exists, then update if necessary
+                    if (teamMemberList.hasUserId(targetProject.getOwner())) {
+                        reciprocatingTeamMember = thisUserProfileProject.getTeam().getTeamMember(user.getId());
+                        if (reciprocatingTeamMember.getStatus() == TeamMember.STATUS_ADDED) {
+                        // DO Nothing
+                        } else {
+                            reciprocatingTeamMember.setStatus(TeamMember.STATUS_ADDED);
+                            if (reciprocatingTeamMember.getUserLevel() > TeamMember.MEMBER) {
+                                reciprocatingTeamMember.setUserLevel(UserUtils.getUserLevel(TeamMember.MEMBER));
+                            }
+                            reciprocatingTeamMember.update(db);
+                        }
+                    } else {
+                        // Reciprocal does not exist, therefore create one
+                        reciprocatingTeamMember = new TeamMember();
+                        reciprocatingTeamMember.setProjectId(thisUserProfileProject.getId());
+                        reciprocatingTeamMember.setUserId(targetProject.getOwner());
+                        reciprocatingTeamMember.setUserLevel(UserUtils.getUserLevel(TeamMember.MEMBER));
+                        reciprocatingTeamMember.setEnteredBy(user.getId());
+                        reciprocatingTeamMember.setModifiedBy(user.getId());
+                        reciprocatingTeamMember.insert(db);
+                    }
+                }
+            }
+        }
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return "SystemError";
+    } finally {
+        freeConnection(context, db);
+    }
+    return "JoinOK";
+}

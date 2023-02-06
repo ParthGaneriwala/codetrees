@@ -1,0 +1,84 @@
+protected void addChildrenToElement(DeserializationContext aContext, MessageElement aMessageElement, QName aParentTypeName, ComplexType aParentType, Element aElement) throws AeException {
+    addAttributes(aMessageElement, aElement);
+    // we might no know the type of parent we're deserializing, depends on whether the inbound soap message had an xsi:type attribute
+    QName parentType = aParentTypeName == null ? aMessageElement.getType() : aParentTypeName;
+    // flag used to avoid multiple attempts at discovering the parent's XMLType
+    boolean attemptedToResolveParent = false;
+    ComplexType parentComplexType = aParentType;
+    // flag used to determine if local elements should be deserialized into the parent type's namespace
+    boolean isSchemaQualified = aParentType != null ? isSchemaQualified(aParentType.getSchema()) : false;
+    // if the parent type is a soap array, then there is special handling for the child element names based on engine config
+    boolean parentIsArray = AeSchemaUtil.isArray(parentType);
+    for (Iterator it = aMessageElement.getChildElements(); it.hasNext(); ) {
+        Object obj = it.next();
+        if (!(obj instanceof Text) && obj instanceof MessageElement) {
+            // child elements need to be namespace qualified or not.
+            if (parentComplexType == null && !attemptedToResolveParent && parentType != null) {
+                attemptedToResolveParent = true;
+                XMLType parentXmlType = getXMLType(parentType);
+                parentComplexType = (ComplexType) parentXmlType;
+                if (parentComplexType != null) {
+                    Schema schema = parentComplexType.getSchema();
+                    isSchemaQualified = isSchemaQualified(schema);
+                }
+            }
+            MessageElement child = (MessageElement) obj;
+            MessageElement dereferencedChildElement = null;
+            if (child.getHref() == null)
+                dereferencedChildElement = child;
+            else
+                dereferencedChildElement = (MessageElement) aContext.getObjectByRef(child.getHref());
+            QName type = dereferencedChildElement.getType();
+            String text = dereferencedChildElement.getValue();
+            /**
+             * There used to be a check here to see if we were deserializing
+             * array elements. In that case the element name would be changed to
+             * match the type of the element.
+             * Section 5.4.2 of the SOAP 1.1 spec:
+             *
+             * "Within an array value, element names are not significant for
+             * distinguishing accessors. Elements may have any name. In practice,
+             * elements will frequently be named so that their declaration in a
+             * schema suggests or determines their type."
+             */
+            String elementName = child.getLocalName();
+            if (parentIsArray && type != null) {
+                // the name of the deserialized array item is configurable unless
+                // the item is a schema element, in which case we must use the
+                // local name of the type.
+                elementName = type.getLocalPart();
+            }
+            ComplexType typeOfChild = null;
+            String childNS = dereferencedChildElement.getNamespaceURI();
+            if (AeUtil.isNullOrEmpty(childNS) && parentComplexType != null) {
+                // In the case of Axis (and prob all other RPC-encoders), the childNS
+                // will always be "". In order to know for sure whether it should
+                // be ns qualified or not, we need to examine the ComplexType or
+                // its schema to see if either are defined as being ns qualified.
+                ElementDecl elementDecl = AeBPELExtendedWSDLDef.findElement(parentComplexType, AeXmlUtil.getLocalName(child));
+                if (elementDecl != null) {
+                    if (elementDecl.getForm() == Form.Qualified || elementDecl.getForm() == null && isSchemaQualified) {
+                        childNS = elementDecl.getSchema().getTargetNamespace();
+                    }
+                    if (elementDecl.getType() instanceof ComplexType) {
+                        typeOfChild = (ComplexType) elementDecl.getType();
+                    }
+                }
+            }
+            // $NON-NLS-1$
+            String prefixWithColon = "";
+            if (AeUtil.notNullOrEmpty(childNS)) {
+                String prefix = getOrDeclarePrefix(aElement, childNS);
+                if (AeUtil.notNullOrEmpty(prefix)) {
+                    // if the prefix comes back empty, it means we don't need it for
+                    // the child element. This is probably because the parent has
+                    // an xmlns declaration on it.
+                    // $NON-NLS-1$
+                    prefixWithColon = prefix + ":";
+                }
+            }
+            Element multiRefElement = AeXmlUtil.addElementNS(aElement, childNS, prefixWithColon + elementName, text);
+            addChildrenToElement(aContext, dereferencedChildElement, type, typeOfChild, multiRefElement);
+        }
+    }
+}

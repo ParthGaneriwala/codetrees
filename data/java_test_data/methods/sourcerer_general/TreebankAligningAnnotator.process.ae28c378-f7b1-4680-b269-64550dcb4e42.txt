@@ -1,0 +1,48 @@
+@Override
+public void process(JCas jCas) throws AnalysisEngineProcessException {
+    // determine the appropriate .mrg file name
+    String wsjPath = ViewURIUtil.getURI(jCas).getPath();
+    String wsjName = new File(wsjPath).getName();
+    String subdir = wsjName.substring(4, 6);
+    String mrgName = wsjName.replaceAll("\\.tml", ".mrg");
+    File mrgFile = new File(new File(this.treebankDirectory, subdir), mrgName);
+    // read the parse text
+    String mrgText;
+    try {
+        mrgText = FileUtils.file2String(mrgFile);
+    } catch (IOException e) {
+        throw new AnalysisEngineProcessException(e);
+    }
+    // we need a TEXT element to know where to start
+    Collection<Text> texts = JCasUtil.select(jCas, Text.class);
+    if (texts.size() != 1) {
+        throw CleartkExtractorException.wrongNumberOfAnnotations(Text.class, 1, texts.size());
+    }
+    // parse the trees, skipping the document if there are alignment
+    // problems
+    int offset = texts.iterator().next().getBegin();
+    String text = jCas.getDocumentText();
+    List<org.cleartk.syntax.constituent.util.TopTreebankNode> utilTrees;
+    try {
+        utilTrees = TreebankFormatParser.parseDocument(mrgText, offset, text);
+    } catch (Exception e) {
+        this.getContext().getLogger().log(Level.WARNING, String.format("Skipping %s due to alignment problems", wsjPath), e);
+        return;
+    }
+    // add Token, Sentence and TreebankNode annotations for the text
+    for (org.cleartk.syntax.constituent.util.TopTreebankNode utilTree : utilTrees) {
+        // create a Sentence and set its parse
+        TopTreebankNode tree = TreebankNodeUtility.convert(utilTree, jCas, true);
+        Sentence sentence = new Sentence(jCas, tree.getBegin(), tree.getEnd());
+        sentence.addToIndexes();
+        // create the Tokens and add them to the Sentence
+        for (int i = 0; i < tree.getTerminals().size(); i++) {
+            TreebankNode leaf = tree.getTerminals(i);
+            if (leaf.getBegin() != leaf.getEnd()) {
+                Token token = new Token(jCas, leaf.getBegin(), leaf.getEnd());
+                token.setPos(leaf.getNodeType());
+                token.addToIndexes();
+            }
+        }
+    }
+}

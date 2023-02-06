@@ -1,0 +1,57 @@
+protected Object readValue(ClassWrapper clazz, int objectId) throws IOException {
+    // read in the class unless we can determine it implicitly
+    ClassWrapper cclazz = clazz;
+    if (!clazz.isFinal()) {
+        cclazz = readClass();
+    }
+    // see if we can stream the value directly
+    Class<?> wclazz = cclazz.getWrappedClass();
+    Streamer streamer = (wclazz == null) ? null : Streamer.getStreamer(wclazz);
+    if (streamer != null) {
+        Object value = null;
+        try {
+            value = streamer.read(_in);
+        } catch (ClassNotFoundException e) {
+            log.warning("Class not found.", e);
+        }
+        if (value != null && objectId != -1) {
+            _objects.put(objectId, value);
+        }
+        return value;
+    }
+    // otherwise, create and populate the object
+    Object value = null;
+    int length = 0;
+    if (cclazz.isArray()) {
+        length = _in.readInt();
+        if (wclazz != null) {
+            value = Array.newInstance(wclazz.getComponentType(), length);
+        }
+    } else {
+        Object outer = cclazz.isInner() ? read(_objectClass) : null;
+        if (wclazz != null) {
+            value = ReflectionUtil.newInstance(wclazz, outer);
+        }
+    }
+    _objects.put(objectId, (value == null) ? NULL : value);
+    if (cclazz.isArray()) {
+        readEntries(value == null ? new Object[length] : (Object[]) value, cclazz.getComponentType());
+    } else if (cclazz.isCollection()) {
+        @SuppressWarnings("unchecked") Collection<Object> collection = (value == null) ? new ArrayList<Object>() : (Collection<Object>) value;
+        readEntries(collection);
+    } else if (cclazz.isMap()) {
+        @SuppressWarnings("unchecked") Map<Object, Object> map = (value == null) ? new HashMap<Object, Object>() : (Map<Object, Object>) value;
+        readEntries(map);
+    } else {
+        ClassData cdata = _classData.get(cclazz);
+        if (cdata == null) {
+            _classData.put(cclazz, cdata = new ClassData());
+        }
+        _fields = cdata.readFields();
+        if (value instanceof Exportable) {
+            readFields((Exportable) value);
+        }
+        _fields = null;
+    }
+    return value;
+}

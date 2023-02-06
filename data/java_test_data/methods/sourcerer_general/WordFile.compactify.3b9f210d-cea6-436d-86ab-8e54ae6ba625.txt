@@ -1,0 +1,114 @@
+public void compactify(FileOutputStream dest, boolean compress) throws IOException {
+    File indexFile = writingData.indexOutput.getBackendFile();
+    File dataFile = writingData.dataOutput.getBackendFile();
+    RandomAccessFile index = new RandomAccessFile(indexFile, "r");
+    int indexLen = (int) index.length();
+    byte[] indexReadBuf = new byte[indexLen];
+    index.readFully(indexReadBuf);
+    index.close();
+    RandomAccessFile data = new RandomAccessFile(dataFile, "r");
+    int dataLen = (int) data.length();
+    byte[] dataReadBuf = new byte[dataLen];
+    data.readFully(dataReadBuf);
+    data.close();
+    byte[] indexWriteBuf = new byte[indexLen];
+    byte[] dataWriteBuf = new byte[dataLen];
+    int indexReadPos = 0;
+    int dataReadPos = 0;
+    int indexWritePos = 0;
+    int dataWritePos = 0;
+    HashMap<ProbTreeCompactionKey, GrowingIntArray> probTreeRefs = new HashMap<ProbTreeCompactionKey, GrowingIntArray>(indexLen / 5 + 1);
+    while (indexReadPos < indexLen) {
+        int intLen = PackedInteger.getReadIntLength(indexReadBuf, indexReadPos);
+        int clusterid = PackedInteger.readInt(indexReadBuf, indexReadPos);
+        indexReadPos += intLen;
+        intLen = PackedInteger.getReadIntLength(indexReadBuf, indexReadPos);
+        int clusterDataLen = PackedInteger.readInt(indexReadBuf, indexReadPos);
+        indexReadPos += intLen;
+        ProbTreeCompactionKey theKey = new ProbTreeCompactionKey(dataReadBuf, clusterDataLen, dataReadPos);
+        GrowingIntArray clusterList = probTreeRefs.get(theKey);
+        if (clusterList == null) {
+            clusterList = new GrowingIntArray(4);
+            probTreeRefs.put(theKey, clusterList);
+        }
+        clusterList.add(clusterid);
+        dataReadPos += clusterDataLen;
+    }
+    int duplicateProbTrees = 0;
+    int totalProbTrees = 0;
+    int spaceSaved = 0;
+    for (Map.Entry<ProbTreeCompactionKey, GrowingIntArray> e : probTreeRefs.entrySet()) {
+        ProbTreeCompactionKey theKey = e.getKey();
+        GrowingIntArray clusterList = e.getValue();
+        clusterList.trim();
+        int[] clusters = clusterList.array();
+        for (int i = 0; i < clusters.length - 1; ++i) {
+            int clusterid = clusters[i];
+            int intLen = PackedInteger.getWriteIntLength(clusterid);
+            PackedInteger.writeInt(indexWriteBuf, indexWritePos, clusterid);
+            indexWritePos += intLen;
+        }
+        int clusterid = -clusters[clusters.length - 1];
+        int intLen = PackedInteger.getWriteIntLength(clusterid);
+        PackedInteger.writeInt(indexWriteBuf, indexWritePos, clusterid);
+        indexWritePos += intLen;
+        intLen = PackedInteger.getWriteIntLength(theKey.size);
+        PackedInteger.writeInt(indexWriteBuf, indexWritePos, theKey.size);
+        indexWritePos += intLen;
+        // copy data
+        System.arraycopy(dataReadBuf, theKey.offset, dataWriteBuf, dataWritePos, theKey.size);
+        dataWritePos += theKey.size;
+        totalProbTrees += clusters.length;
+        if (clusters.length > 1) {
+            duplicateProbTrees += clusters.length - 1;
+            spaceSaved += (clusters.length - 1) * (theKey.size + PackedInteger.getWriteIntLength(theKey.size));
+        }
+    }
+    WordFile.totalProbTrees.addAndGet(totalProbTrees);
+    WordFile.duplicateProbTrees.addAndGet(duplicateProbTrees);
+    WordFile.totalSpaceSaved.addAndGet(spaceSaved);
+    /*
+		while(indexReadPos < indexLen) {
+			int intLen = PackedInteger.getReadIntLength(indexReadBuf, indexReadPos);
+			int clusterid = PackedInteger.readInt(indexReadBuf, indexReadPos);
+			indexReadPos += intLen;
+			
+			intLen = PackedInteger.getReadIntLength(indexReadBuf, indexReadPos);
+			int clusterDataLen = PackedInteger.readInt(indexReadBuf, indexReadPos);
+			indexReadPos += intLen;
+			
+			// read and write data
+			System.arraycopy(dataReadBuf, dataReadPos, dataWriteBuf, dataWritePos, clusterDataLen);
+			dataReadPos += clusterDataLen;
+			dataWritePos += clusterDataLen;
+			
+			// write index entry
+			clusterid = -clusterid; 
+			
+			intLen = PackedInteger.getWriteIntLength(clusterid);
+			PackedInteger.writeInt(indexWriteBuf, indexWritePos, clusterid);
+			indexWritePos += intLen;
+			
+			intLen = PackedInteger.getWriteIntLength(clusterDataLen);
+			PackedInteger.writeInt(indexWriteBuf, indexWritePos, clusterDataLen);
+			indexWritePos += intLen;
+		}
+		*/
+    // buffers plus two ints (sizes)
+    int maxLength = 8 + indexWritePos + dataWritePos;
+    ByteArrayOutputStream bufOutput = new ByteArrayOutputStream(maxLength);
+    DataOutputStream output;
+    if (compress) {
+        output = new DataOutputStream(new GZIPOutputStream(bufOutput, 4096));
+    } else {
+        output = new DataOutputStream(bufOutput);
+    }
+    output.writeInt(indexWritePos);
+    output.write(indexWriteBuf, 0, indexWritePos);
+    output.writeInt(dataWritePos);
+    output.write(dataWriteBuf, 0, dataWritePos);
+    output.close();
+    bufOutput.writeTo(dest);
+    indexFile.delete();
+    dataFile.delete();
+}

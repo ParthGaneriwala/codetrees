@@ -1,0 +1,76 @@
+public int run(String[] args) throws Exception {
+    LOG.info("Starting the benchmark for threaded spills");
+    String version = "ThreadedMapBenchmark.0.0.1";
+    System.out.println(version);
+    String usage = "Usage: threadedmapbenchmark " + "[-dataSizePerMap <data size (in mb) per map, default is 128 mb>] " + "[-numSpillsPerMap <number of spills per map, default is 2>] " + "[-numMapsPerHost <number of maps per host, default is 1>]";
+    // in mb
+    int dataSizePerMap = 128;
+    int numSpillsPerMap = 2;
+    int numMapsPerHost = 1;
+    JobConf masterConf = new JobConf(getConf());
+    for (int i = 0; i < args.length; i++) {
+        // parse command line
+        if (args[i].equals("-dataSizePerMap")) {
+            dataSizePerMap = Integer.parseInt(args[++i]);
+        } else if (args[i].equals("-numSpillsPerMap")) {
+            numSpillsPerMap = Integer.parseInt(args[++i]);
+        } else if (args[i].equals("-numMapsPerHost")) {
+            numMapsPerHost = Integer.parseInt(args[++i]);
+        } else {
+            System.err.println(usage);
+            System.exit(-1);
+        }
+    }
+    if (// verify arguments
+    dataSizePerMap < 1 || numSpillsPerMap < 1 || numMapsPerHost < 1) {
+        System.err.println(usage);
+        System.exit(-1);
+    }
+    FileSystem fs = null;
+    try {
+        // using random-writer to generate the input data
+        generateInputData(dataSizePerMap, numSpillsPerMap, numMapsPerHost, masterConf);
+        // configure job for sorting
+        JobConf job = new JobConf(masterConf, ThreadedMapBenchmark.class);
+        job.setJobName("threaded-map-benchmark-unspilled");
+        job.setJarByClass(ThreadedMapBenchmark.class);
+        job.setInputFormat(NonSplitableSequenceFileInputFormat.class);
+        job.setOutputFormat(SequenceFileOutputFormat.class);
+        job.setOutputKeyClass(BytesWritable.class);
+        job.setOutputValueClass(BytesWritable.class);
+        job.setMapperClass(IdentityMapper.class);
+        job.setReducerClass(IdentityReducer.class);
+        FileInputFormat.addInputPath(job, INPUT_DIR);
+        FileOutputFormat.setOutputPath(job, OUTPUT_DIR);
+        JobClient client = new JobClient(job);
+        ClusterStatus cluster = client.getClusterStatus();
+        job.setNumMapTasks(numMapsPerHost * cluster.getTaskTrackers());
+        job.setNumReduceTasks(1);
+        // set io.sort.mb to avoid spill
+        int ioSortMb = (int) Math.ceil(FACTOR * dataSizePerMap);
+        job.set("io.sort.mb", String.valueOf(ioSortMb));
+        fs = FileSystem.get(job);
+        LOG.info("Running sort with 1 spill per map");
+        long startTime = System.currentTimeMillis();
+        JobClient.runJob(job);
+        long endTime = System.currentTimeMillis();
+        LOG.info("Total time taken : " + String.valueOf(endTime - startTime) + " millisec");
+        fs.delete(OUTPUT_DIR, true);
+        // set io.sort.mb to have multiple spills
+        JobConf spilledJob = new JobConf(job, ThreadedMapBenchmark.class);
+        ioSortMb = (int) Math.ceil(FACTOR * Math.ceil((double) dataSizePerMap / numSpillsPerMap));
+        spilledJob.set("io.sort.mb", String.valueOf(ioSortMb));
+        spilledJob.setJobName("threaded-map-benchmark-spilled");
+        spilledJob.setJarByClass(ThreadedMapBenchmark.class);
+        LOG.info("Running sort with " + numSpillsPerMap + " spills per map");
+        startTime = System.currentTimeMillis();
+        JobClient.runJob(spilledJob);
+        endTime = System.currentTimeMillis();
+        LOG.info("Total time taken : " + String.valueOf(endTime - startTime) + " millisec");
+    } finally {
+        if (fs != null) {
+            fs.delete(BASE_DIR, true);
+        }
+    }
+    return 0;
+}

@@ -1,0 +1,71 @@
+public void testTaskEventsAndReportsWithRecovery(MiniDFSCluster dfs, MiniMRCluster mr) throws IOException {
+    // II. Test a tasktracker with waiting mapper and recovery turned on.
+    // Ideally the tracker should SYNC with the new/restarted jobtracker
+    FileSystem fileSys = dfs.getFileSystem();
+    final int numMaps = 50;
+    final int numReducers = 1;
+    cleanUp(fileSys, shareDir);
+    JobConf newConf = getJobs(mr.createJobConf(), new JobPriority[] { JobPriority.NORMAL }, new int[] { numMaps }, new int[] { numReducers }, outputDir, inDir, getMapSignalFile(shareDir), getReduceSignalFile(shareDir))[0];
+    JobClient jobClient = new JobClient(newConf);
+    RunningJob job = jobClient.submitJob(newConf);
+    JobID id = job.getID();
+    mr.initializeJob(id);
+    // make sure that atleast on reducer is spawned
+    while (jobClient.getClusterStatus().getReduceTasks() == 0) {
+        waitFor(100);
+    }
+    while (true) {
+        // Since we are using a half waiting mapper, maps should be stuck at 50%
+        TaskCompletionEvent[] trackerEvents = mr.getMapTaskCompletionEventsUpdates(0, id, numMaps).getMapTaskCompletionEvents();
+        if (trackerEvents.length < numMaps / 2) {
+            waitFor(1000);
+        } else {
+            break;
+        }
+    }
+    TaskCompletionEvent[] prevEvents = mr.getTaskCompletionEvents(id, 0, numMaps);
+    TaskReport[] prevSetupReports = jobClient.getSetupTaskReports(id);
+    TaskReport[] prevMapReports = jobClient.getMapTaskReports(id);
+    ClusterStatus prevStatus = jobClient.getClusterStatus();
+    mr.stopJobTracker();
+    // Turn off the recovery
+    mr.getJobTrackerConf().setBoolean("mapred.jobtracker.restart.recover", true);
+    // Wait for a minute before submitting a job
+    waitFor(60 * 1000);
+    mr.startJobTracker();
+    // Signal the map tasks
+    signalTasks(dfs, fileSys, true, getMapSignalFile(shareDir), getReduceSignalFile(shareDir));
+    // Wait for the JT to be ready
+    waitForJobTracker(jobClient);
+    int numToMatch = mr.getNumEventsRecovered() / 2;
+    // make sure that the maps are completed
+    while (getJobStatus(jobClient, id).mapProgress() < 1.0f) {
+        waitFor(100);
+    }
+    // Get the new jobtrackers events
+    TaskCompletionEvent[] jtEvents = mr.getTaskCompletionEvents(id, 0, 2 * numMaps);
+    // Test if all the events that were recovered match exactly
+    testTaskCompletionEvents(prevEvents, jtEvents, false, numToMatch);
+    TaskCompletionEvent[] trackerEvents;
+    while (true) {
+        trackerEvents = mr.getMapTaskCompletionEventsUpdates(0, id, 2 * numMaps).getMapTaskCompletionEvents();
+        if (trackerEvents.length < jtEvents.length) {
+            waitFor(1000);
+        } else {
+            break;
+        }
+    }
+    // Check the task reports
+    // The reports should match exactly if the attempts are same
+    TaskReport[] afterMapReports = jobClient.getMapTaskReports(id);
+    TaskReport[] afterSetupReports = jobClient.getSetupTaskReports(id);
+    testTaskReports(prevMapReports, afterMapReports, numToMatch - 1);
+    testTaskReports(prevSetupReports, afterSetupReports, 1);
+    // Signal the reduce tasks
+    signalTasks(dfs, fileSys, false, getMapSignalFile(shareDir), getReduceSignalFile(shareDir));
+    waitTillDone(jobClient);
+    testTaskCompletionEvents(jtEvents, trackerEvents, true, 2 * numMaps);
+    // check if the cluster status is insane
+    ClusterStatus status = jobClient.getClusterStatus();
+    assertTrue("Cluster status is insane", checkClusterStatusOnCompletion(status, prevStatus));
+}

@@ -1,0 +1,56 @@
+public String save() throws Exception {
+    Integer originalVersion = user.getVersion();
+    boolean isNew = ("".equals(getRequest().getParameter("user.version")));
+    // for other users, prepare() method will handle populating
+    if (getRequest().isUserInRole(Constants.ADMIN_ROLE)) {
+        // APF-788: Removing roles from user doesn't work
+        user.getRoles().clear();
+        String[] userRoles = getRequest().getParameterValues("userRoles");
+        for (int i = 0; userRoles != null && i < userRoles.length; i++) {
+            String roleName = userRoles[i];
+            user.addRole(roleManager.getRole(roleName));
+        }
+    }
+    try {
+        userManager.saveUser(user);
+        System.out.println("user: " + user.getFullName() + " - " + user.getPassword() + " - " + user.getConfirmPassword());
+    } catch (AccessDeniedException ade) {
+        // thrown by UserSecurityAdvice configured in aop:advisor userManagerSecurity
+        log.warn(ade.getMessage());
+        getResponse().sendError(HttpServletResponse.SC_FORBIDDEN);
+        return null;
+    } catch (UserExistsException e) {
+        List<String> args = new ArrayList<String>();
+        args.add(user.getUsername());
+        args.add(user.getEmail());
+        addActionError(getText("errors.existing.user", args));
+        // reset the version # to what was passed in
+        user.setVersion(originalVersion);
+        // redisplay the unencrypted passwords
+        user.setPassword(user.getConfirmPassword());
+        return INPUT;
+    }
+    if (!"list".equals(from)) {
+        // add success messages
+        saveMessage(getText("user.saved"));
+        return "mainMenu";
+    } else {
+        // add success messages
+        List<String> args = new ArrayList<String>();
+        args.add(user.getFullName());
+        if (isNew) {
+            saveMessage(getText("user.added", args));
+            // Send an account information e-mail
+            mailMessage.setSubject(getText("signup.email.subject"));
+            try {
+                sendUserMessage(user, getText("newuser.email.message", args), RequestUtil.getAppURL(getRequest()));
+            } catch (MailException me) {
+                addActionError(me.getCause().getLocalizedMessage());
+            }
+            return SUCCESS;
+        } else {
+            saveMessage(getText("user.updated.byAdmin", args));
+            return SUCCESS;
+        }
+    }
+}

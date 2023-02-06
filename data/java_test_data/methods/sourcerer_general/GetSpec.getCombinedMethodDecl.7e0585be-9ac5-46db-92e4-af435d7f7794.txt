@@ -1,0 +1,59 @@
+/**
+ * * Implement GetCombinedMethodDecl from ESCJ 16c section 7:
+ * <p>* * Precondition: the type declaring rd has been typechecked.
+ * <p>* * Note: this routine may typecheck the supertypes of the type that *
+ * declares rd.
+ */
+public static DerivedMethodDecl getCombinedMethodDecl(/* @ non_null */
+RoutineDecl rd) {
+    DerivedMethodDecl dmd = (DerivedMethodDecl) dmdDecoration.get(rd);
+    if (dmd != null)
+        return dmd;
+    dmd = new DerivedMethodDecl(rd);
+    dmdDecoration.set(rd, dmd);
+    dmd.throwsSet = rd.raises;
+    dmd.requires = ExprModifierPragmaVec.make();
+    dmd.modifies = ModifiesGroupPragmaVec.make();
+    dmd.ensures = ExprModifierPragmaVec.make();
+    dmd.exsures = VarExprModifierPragmaVec.make();
+    if (rd instanceof ConstructorDecl) {
+        // Handle constructor case:
+        dmd.args = rd.args;
+        TypeSig thisType = TypeSig.getSig(rd.parent);
+        if (!thisType.isTopLevelType()) {
+            // An Inner class; add this$0 argument:
+            dmd.args = rd.args.copy();
+            FormalParaDecl this0arg = Inner.getEnclosingInstanceArg((ConstructorDecl) rd);
+            dmd.args.insertElementAt(this0arg, 0);
+        }
+        dmd.returnType = thisType;
+        addModifiersToDMD(dmd, rd);
+    } else {
+        // Handle method case:
+        // @ assume rd instanceof MethodDecl;
+        MethodDecl md = (MethodDecl) rd;
+        dmd.returnType = md.returnType;
+        if (Modifiers.isStatic(rd.modifiers)) {
+            // static method
+            dmd.args = rd.args;
+        } else {
+            // instance method
+            dmd.args = md.args.copy();
+            dmd.args.insertElementAt((FormalParaDecl) GC.thisvar.decl, 0);
+        }
+        /*
+       * Add modifiers from this method as well as all methods it overrides;
+       * also handle non_null:
+       */
+        addModifiersToDMD(dmd, md);
+        Set overrides = escjava.tc.FlowInsensitiveChecks.getAllOverrides(md);
+        Enumeration en = overrides.elements();
+        while (en.hasMoreElements()) {
+            MethodDecl smd = (MethodDecl) en.nextElement();
+            TypeSig.getSig(smd.parent).typecheck();
+            addModifiersToDMD(dmd, smd);
+        }
+    }
+    dmd.computeFreshUsage();
+    return dmd;
+}

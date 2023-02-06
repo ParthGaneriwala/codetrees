@@ -1,0 +1,86 @@
+private void visitTryCatchFinally(Jump node, Node child) {
+    /* Save the variable object, in case there are with statements
+         * enclosed by the try block and we catch some exception.
+         * We'll restore it for the catch block so that catch block
+         * statements get the right scope.
+         */
+    // OPT we only need to do this if there are enclosed WITH
+    // statements; could statically check and omit this if there aren't any.
+    // XXX OPT Maybe instead do syntactic transforms to associate
+    // each 'with' with a try/finally block that does the exitwith.
+    short savedVariableObject = getNewWordLocal();
+    cfw.addALoad(variableObjectLocal);
+    cfw.addAStore(savedVariableObject);
+    /*
+         * Generate the code for the tree; most of the work is done in IRFactory
+         * and NodeTransformer;  Codegen just adds the java handlers for the
+         * javascript catch and finally clauses.  */
+    int startLabel = cfw.acquireLabel();
+    cfw.markLabel(startLabel, (short) 0);
+    Node catchTarget = node.target;
+    Node finallyTarget = node.getFinally();
+    // create a table for the equivalent of JSR returns
+    if (isGenerator && finallyTarget != null) {
+        FinallyReturnPoint ret = new FinallyReturnPoint();
+        if (finallys == null) {
+            finallys = new HashMap<Node, FinallyReturnPoint>();
+        }
+        // add the finally target to hashtable
+        finallys.put(finallyTarget, ret);
+        // add the finally node as well to the hash table
+        finallys.put(finallyTarget.getNext(), ret);
+    }
+    while (child != null) {
+        generateStatement(child);
+        child = child.getNext();
+    }
+    // control flow skips the handlers
+    int realEnd = cfw.acquireLabel();
+    cfw.add(ByteCode.GOTO, realEnd);
+    int exceptionLocal = getLocalBlockRegister(node);
+    // catch area.
+    if (catchTarget != null) {
+        // get the label to goto
+        int catchLabel = catchTarget.labelId();
+        generateCatchBlock(JAVASCRIPT_EXCEPTION, savedVariableObject, catchLabel, startLabel, exceptionLocal);
+        /*
+             * catch WrappedExceptions, see if they are wrapped
+             * JavaScriptExceptions. Otherwise, rethrow.
+             */
+        generateCatchBlock(EVALUATOR_EXCEPTION, savedVariableObject, catchLabel, startLabel, exceptionLocal);
+        /*
+                we also need to catch EcmaErrors and feed the
+                associated error object to the handler
+            */
+        generateCatchBlock(ECMAERROR_EXCEPTION, savedVariableObject, catchLabel, startLabel, exceptionLocal);
+        Context cx = Context.getCurrentContext();
+        if (cx != null && cx.hasFeature(Context.FEATURE_ENHANCED_JAVA_ACCESS)) {
+            generateCatchBlock(THROWABLE_EXCEPTION, savedVariableObject, catchLabel, startLabel, exceptionLocal);
+        }
+    }
+    // the finally, then re-throw.
+    if (finallyTarget != null) {
+        int finallyHandler = cfw.acquireLabel();
+        cfw.markHandler(finallyHandler);
+        cfw.addAStore(exceptionLocal);
+        // reset the variable object local
+        cfw.addALoad(savedVariableObject);
+        cfw.addAStore(variableObjectLocal);
+        // get the label to JSR to
+        int finallyLabel = finallyTarget.labelId();
+        if (isGenerator)
+            addGotoWithReturn(finallyTarget);
+        else
+            cfw.add(ByteCode.JSR, finallyLabel);
+        // rethrow
+        cfw.addALoad(exceptionLocal);
+        if (isGenerator)
+            cfw.add(ByteCode.CHECKCAST, "java/lang/Throwable");
+        cfw.add(ByteCode.ATHROW);
+        // mark the handler
+        cfw.addExceptionHandler(startLabel, finallyLabel, finallyHandler, // catch any
+        null);
+    }
+    releaseWordLocal(savedVariableObject);
+    cfw.markLabel(realEnd);
+}

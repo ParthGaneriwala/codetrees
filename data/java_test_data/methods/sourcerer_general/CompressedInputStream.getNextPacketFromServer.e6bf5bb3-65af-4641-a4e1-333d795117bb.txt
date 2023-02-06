@@ -1,0 +1,80 @@
+private void getNextPacketFromServer() throws IOException {
+    byte[] uncompressedData = null;
+    int lengthRead = readFully(this.packetHeaderBuffer, 0, 7);
+    if (lengthRead < 7) {
+        throw new IOException("Unexpected end of input stream");
+    }
+    int compressedPacketLength = ((this.packetHeaderBuffer[0] & 0xff)) + (((this.packetHeaderBuffer[1] & 0xff)) << 8) + (((this.packetHeaderBuffer[2] & 0xff)) << 16);
+    int uncompressedLength = ((this.packetHeaderBuffer[4] & 0xff)) + (((this.packetHeaderBuffer[5] & 0xff)) << 8) + (((this.packetHeaderBuffer[6] & 0xff)) << 16);
+    if (this.connection.getTraceProtocol()) {
+        try {
+            this.connection.getLog().logTrace("Reading compressed packet of length " + compressedPacketLength + " uncompressed to " + uncompressedLength);
+        } catch (SQLException sqlEx) {
+            // should never
+            throw new IOException(sqlEx.toString());
+        // happen
+        }
+    }
+    if (uncompressedLength > 0) {
+        uncompressedData = new byte[uncompressedLength];
+        byte[] compressedBuffer = new byte[compressedPacketLength];
+        readFully(compressedBuffer, 0, compressedPacketLength);
+        try {
+            this.inflater.reset();
+        } catch (NullPointerException npe) {
+            this.inflater = new Inflater();
+        }
+        this.inflater.setInput(compressedBuffer);
+        try {
+            this.inflater.inflate(uncompressedData);
+        } catch (DataFormatException dfe) {
+            throw new IOException("Error while uncompressing packet from server.");
+        }
+        this.inflater.end();
+    } else {
+        if (this.connection.getTraceProtocol()) {
+            try {
+                this.connection.getLog().logTrace("Packet didn't meet compression threshold, not uncompressing...");
+            } catch (SQLException sqlEx) {
+                // should never
+                throw new IOException(sqlEx.toString());
+            // happen
+            }
+        }
+        // 
+        // Read data, note this this code is reached when using
+        // compressed packets that have not been compressed, as well
+        // 
+        uncompressedData = new byte[compressedPacketLength];
+        readFully(uncompressedData, 0, compressedPacketLength);
+    }
+    if (this.connection.getTraceProtocol()) {
+        try {
+            this.connection.getLog().logTrace("Uncompressed packet: \n" + StringUtils.dumpAsHex(uncompressedData, compressedPacketLength));
+        } catch (SQLException sqlEx) {
+            // should never
+            throw new IOException(sqlEx.toString());
+        // happen
+        }
+    }
+    if ((this.buffer != null) && (this.pos < this.buffer.length)) {
+        if (this.connection.getTraceProtocol()) {
+            try {
+                this.connection.getLog().logTrace("Combining remaining packet with new: ");
+            } catch (SQLException sqlEx) {
+                // should never
+                throw new IOException(sqlEx.toString());
+            // happen
+            }
+        }
+        int remaining = this.buffer.length - this.pos;
+        byte[] newBuffer = new byte[remaining + uncompressedData.length];
+        int newIndex = 0;
+        for (int i = this.pos; i < this.buffer.length; i++) newBuffer[newIndex++] = this.buffer[i];
+        System.arraycopy(uncompressedData, 0, newBuffer, newIndex, uncompressedData.length);
+        uncompressedData = newBuffer;
+    }
+    this.pos = 0;
+    this.buffer = uncompressedData;
+    return;
+}

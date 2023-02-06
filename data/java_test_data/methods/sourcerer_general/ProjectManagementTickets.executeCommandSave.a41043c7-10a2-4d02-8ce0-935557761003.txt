@@ -1,0 +1,106 @@
+public String executeCommandSave(ActionContext context) {
+    Connection db = null;
+    int resultCount = 0;
+    boolean recordInserted = false;
+    String returnTo = context.getRequest().getParameter("return");
+    try {
+        // Process the ticket
+        int projectId = Integer.parseInt(context.getRequest().getParameter("pid"));
+        Ticket thisTicket = (Ticket) context.getFormBean();
+        thisTicket.setProjectId(projectId);
+        boolean newTicket = (thisTicket.getId() == -1);
+        if (newTicket) {
+            thisTicket.setEnteredBy(getUserId(context));
+        }
+        thisTicket.setModifiedBy(getUserId(context));
+        if ("ON".equals(context.getParameter("emailUpdates"))) {
+            thisTicket.addToInsertMembers(getUserId(context));
+        }
+        if ("ON".equals(context.getParameter("doNotEmailUpdates"))) {
+            thisTicket.addToDeleteMembers(getUserId(context));
+        }
+        db = this.getConnection(context);
+        // Load the project
+        Project thisProject = retrieveAuthorizedProject(thisTicket.getProjectId(), context);
+        // Only assign to users of the project
+        if (thisTicket.getAssignedTo() > -1 && !TeamMemberList.isOnTeam(db, thisProject.getId(), thisTicket.getAssignedTo())) {
+            return "PermissionError";
+        }
+        if (newTicket) {
+            if (!hasProjectAccess(context, thisProject.getId(), "project-tickets-add")) {
+                return "PermissionError";
+            }
+            recordInserted = thisTicket.insert(db);
+            if (recordInserted) {
+                indexAddItem(context, thisTicket);
+                processInsertHook(context, thisTicket);
+            }
+        } else {
+            // allow access to edit if assigned to this user and ticket is not closed
+            if (!hasProjectAccess(context, thisProject.getId(), "project-tickets-edit") && !(hasProjectAccess(context, thisProject.getId(), "project-tickets-view") && thisTicket.getClosed() == null && thisTicket.getAssignedTo() == getUserId(context))) {
+                return "PermissionError";
+            }
+            if (thisProject.getId() != thisTicket.getProjectId()) {
+                return "PermissionError";
+            }
+            Ticket previousTicket = new Ticket(db, thisTicket.getId());
+            // Deny if this user is not allowed to view other's tickets
+            if (!hasProjectAccess(context, thisProject.getId(), "project-tickets-other") && previousTicket.getEnteredBy() != getUser(context).getId() && previousTicket.getAssignedTo() != getUser(context).getId()) {
+                return "PermissionError";
+            }
+            // fields must stay intact during the update
+            if (!hasProjectAccess(context, thisProject.getId(), "project-tickets-edit") && !hasProjectAccess(context, thisProject.getId(), "project-tickets-assign")) {
+                thisTicket.setStateId(previousTicket.getStateId());
+                thisTicket.setCause(previousTicket.getCause());
+                thisTicket.setDefectId(previousTicket.getDefectId());
+                thisTicket.setRelatedId(previousTicket.getRelatedId());
+            }
+            if (!hasProjectAccess(context, thisProject.getId(), "project-tickets-assign")) {
+                thisTicket.setEscalationId(previousTicket.getEscalationId());
+                thisTicket.setPriorityCode(previousTicket.getPriorityCode());
+                thisTicket.setAssignedTo(previousTicket.getAssignedTo());
+                thisTicket.setEstimatedResolutionDate(previousTicket.getEstimatedResolutionDate());
+            }
+            if (!hasProjectAccess(context, thisProject.getId(), "project-tickets-edit") && !hasProjectAccess(context, thisProject.getId(), "project-tickets-assign")) {
+                thisTicket.setResolutionId(previousTicket.getResolutionId());
+                thisTicket.setSolution(previousTicket.getSolution());
+                thisTicket.setReadyForClose(previousTicket.getReadyForClose());
+            }
+            if (!hasProjectAccess(context, thisProject.getId(), "project-tickets-close")) {
+                thisTicket.setClosed(previousTicket.getClosed());
+                thisTicket.setCloseIt(previousTicket.getCloseIt());
+            }
+            resultCount = thisTicket.update(db);
+            if (resultCount == 1) {
+                // Since ticket is now closed, return user to the list
+                if (thisTicket.getCloseIt()) {
+                    returnTo = "list";
+                }
+                // Reload, index, and process the hook
+                thisTicket.queryRecord(db, thisTicket.getId());
+                indexAddItem(context, thisTicket);
+                processUpdateHook(context, previousTicket, thisTicket);
+            }
+        }
+        if (!recordInserted && resultCount < 1) {
+            processErrors(context, thisTicket.getErrors());
+        }
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return ("SystemError");
+    } finally {
+        this.freeConnection(context, db);
+    }
+    if (recordInserted) {
+        return ("SaveOK");
+    } else if (resultCount == 1) {
+        if ("list".equals(returnTo)) {
+            return ("SaveOK");
+        } else {
+            return ("SaveDetailsOK");
+        }
+    } else {
+        // the ticket, then the id gets lost
+        return (executeCommandAdd(context));
+    }
+}

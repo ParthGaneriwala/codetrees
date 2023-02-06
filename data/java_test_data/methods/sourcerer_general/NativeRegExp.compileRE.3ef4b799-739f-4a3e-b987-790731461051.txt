@@ -1,0 +1,72 @@
+static Object compileRE(Context cx, String str, String global, boolean flat) {
+    RECompiled regexp = new RECompiled();
+    regexp.source = str.toCharArray();
+    int length = str.length();
+    int flags = 0;
+    if (global != null) {
+        for (int i = 0; i < global.length(); i++) {
+            char c = global.charAt(i);
+            if (c == 'g') {
+                flags |= JSREG_GLOB;
+            } else if (c == 'i') {
+                flags |= JSREG_FOLD;
+            } else if (c == 'm') {
+                flags |= JSREG_MULTILINE;
+            } else {
+                reportError("msg.invalid.re.flag", String.valueOf(c));
+            }
+        }
+    }
+    regexp.flags = flags;
+    CompilerState state = new CompilerState(cx, regexp.source, length, flags);
+    if (flat && length > 0) {
+        if (debug) {
+            System.out.println("flat = \"" + str + "\"");
+        }
+        state.result = new RENode(REOP_FLAT);
+        state.result.chr = state.cpbegin[0];
+        state.result.length = length;
+        state.result.flatIndex = 0;
+        state.progLength += 5;
+    } else if (!parseDisjunction(state))
+        return null;
+    regexp.program = new byte[state.progLength + 1];
+    if (state.classCount != 0) {
+        regexp.classList = new RECharSet[state.classCount];
+        regexp.classCount = state.classCount;
+    }
+    int endPC = emitREBytecode(state, regexp, 0, state.result);
+    regexp.program[endPC++] = REOP_END;
+    if (debug) {
+        System.out.println("Prog. length = " + endPC);
+        for (int i = 0; i < endPC; i++) {
+            System.out.print(regexp.program[i]);
+            if (i < (endPC - 1))
+                System.out.print(", ");
+        }
+        System.out.println();
+    }
+    regexp.parenCount = state.parenCount;
+    // If re starts with literal, init anchorCh accordingly
+    switch(regexp.program[0]) {
+        case REOP_UCFLAT1:
+        case REOP_UCFLAT1i:
+            regexp.anchorCh = (char) getIndex(regexp.program, 1);
+            break;
+        case REOP_FLAT1:
+        case REOP_FLAT1i:
+            regexp.anchorCh = (char) (regexp.program[1] & 0xFF);
+            break;
+        case REOP_FLAT:
+        case REOP_FLATi:
+            int k = getIndex(regexp.program, 1);
+            regexp.anchorCh = regexp.source[k];
+            break;
+    }
+    if (debug) {
+        if (regexp.anchorCh >= 0) {
+            System.out.println("Anchor ch = '" + (char) regexp.anchorCh + "'");
+        }
+    }
+    return regexp;
+}

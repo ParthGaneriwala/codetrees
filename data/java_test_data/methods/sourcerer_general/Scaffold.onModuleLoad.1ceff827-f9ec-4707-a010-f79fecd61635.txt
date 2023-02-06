@@ -1,0 +1,69 @@
+public void onModuleLoad() {
+    ScaffoldFactory factory = GWT.create(ScaffoldFactory.class);
+    /* App controllers and services */
+    final EventBus eventBus = factory.getEventBus();
+    final ApplicationRequestFactory requestFactory = factory.getRequestFactory();
+    final PlaceController placeController = factory.getPlaceController();
+    /* Top level UI */
+    final ScaffoldShell shell = factory.getShell();
+    /* Display loading notifications when we touch the network. */
+    eventBus.addHandler(RequestEvent.TYPE, new RequestEvent.Handler() {
+
+        // Only show loading status if a request isn't serviced in 250ms.
+        private static final int LOADING_TIMEOUT = 250;
+
+        public void onRequestEvent(RequestEvent requestEvent) {
+            if (requestEvent.getState() == State.SENT) {
+                shell.getMole().showDelayed(LOADING_TIMEOUT);
+            } else {
+                shell.getMole().hide();
+            }
+        }
+    });
+    /* Check for Authentication failures or mismatches */
+    eventBus.addHandler(RequestEvent.TYPE, new AuthenticationFailureHandler());
+    /* Add a login widget to the page */
+    final LoginWidget login = shell.getLoginWidget();
+    Receiver<UserInformationRecord> receiver = new Receiver<UserInformationRecord>() {
+
+        public void onSuccess(UserInformationRecord userInformationRecord, Set<SyncResult> syncResults) {
+            login.setUserInformation(userInformationRecord);
+        }
+    };
+    requestFactory.userInformationRequest().getCurrentUserInformation(Location.getHref()).fire(receiver);
+    /* Left side lets us pick from all the types of entities */
+    HasConstrainedValue<ProxyListPlace> listPlacePickerView = shell.getPlacesBox();
+    listPlacePickerView.setAcceptableValues(getTopPlaces());
+    factory.getListPlacePicker().register(eventBus, listPlacePickerView);
+    /*
+		 * Top of the screen is the master list of a master / detail UI. Set it up to filter ProxyPlace instances to an appropriate ProxyListPlace, and put a cache on it to keep the same activity
+		 * instance running rather than building a new one on each detail change.
+		 */
+    CachingActivityMapper cached = new CachingActivityMapper(new ApplicationMasterActivities(requestFactory, placeController));
+    ActivityMapper masterActivityMap = new FilteredActivityMapper(factory.getProxyPlaceToListPlace(), cached);
+    final ActivityManager masterActivityManager = new ActivityManager(masterActivityMap, eventBus);
+    masterActivityManager.setDisplay(new Activity.Display() {
+
+        public void showActivityWidget(IsWidget widget) {
+            shell.getMasterPanel().setWidget(widget == null ? null : widget.asWidget());
+        }
+    });
+    /* Bottom of the screen shows the details of a master / detail UI */
+    final ActivityManager detailsActivityManager = new ActivityManager(new ApplicationDetailsActivities(requestFactory, placeController), eventBus);
+    detailsActivityManager.setDisplay(new Activity.Display() {
+
+        public void showActivityWidget(IsWidget widget) {
+            shell.getDetailsPanel().setWidget(widget == null ? null : widget.asWidget());
+        }
+    });
+    /* Hide the loading message */
+    Element loading = Document.get().getElementById("loading");
+    loading.getParentElement().removeChild(loading);
+    /* Browser history integration */
+    PlaceHistoryHandler placeHistoryHandler = factory.getPlaceHistoryHandler();
+    placeHistoryHandler.register(placeController, eventBus, getTopPlaces().iterator().next());
+    /* defaultPlace */
+    placeHistoryHandler.handleCurrentHistory();
+    /* And show the user the shell */
+    RootLayoutPanel.get().add(shell);
+}

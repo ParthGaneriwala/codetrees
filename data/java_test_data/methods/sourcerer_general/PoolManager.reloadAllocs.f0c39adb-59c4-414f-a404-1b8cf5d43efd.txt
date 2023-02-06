@@ -1,0 +1,83 @@
+public void reloadAllocs() throws IOException, ParserConfigurationException, SAXException, AllocationConfigurationException {
+    if (allocFile == null)
+        return;
+    // Create some temporary hashmaps to hold the new allocs, and we only save
+    // them in our fields if we have parsed the entire allocs file successfully.
+    Map<String, Integer> mapAllocs = new HashMap<String, Integer>();
+    Map<String, Integer> reduceAllocs = new HashMap<String, Integer>();
+    Map<String, Integer> poolMaxJobs = new HashMap<String, Integer>();
+    Map<String, Integer> userMaxJobs = new HashMap<String, Integer>();
+    int userMaxJobsDefault = Integer.MAX_VALUE;
+    // Remember all pool names so we can display them on web UI, etc.
+    List<String> poolNamesInAllocFile = new ArrayList<String>();
+    // Read and parse the allocations file.
+    DocumentBuilderFactory docBuilderFactory = DocumentBuilderFactory.newInstance();
+    docBuilderFactory.setIgnoringComments(true);
+    DocumentBuilder builder = docBuilderFactory.newDocumentBuilder();
+    Document doc = builder.parse(new File(allocFile));
+    Element root = doc.getDocumentElement();
+    if (!"allocations".equals(root.getTagName()))
+        throw new AllocationConfigurationException("Bad allocations file: " + "top-level element not <allocations>");
+    NodeList elements = root.getChildNodes();
+    for (int i = 0; i < elements.getLength(); i++) {
+        Node node = elements.item(i);
+        if (!(node instanceof Element))
+            continue;
+        Element element = (Element) node;
+        if ("pool".equals(element.getTagName())) {
+            String poolName = element.getAttribute("name");
+            poolNamesInAllocFile.add(poolName);
+            NodeList fields = element.getChildNodes();
+            for (int j = 0; j < fields.getLength(); j++) {
+                Node fieldNode = fields.item(j);
+                if (!(fieldNode instanceof Element))
+                    continue;
+                Element field = (Element) fieldNode;
+                if ("minMaps".equals(field.getTagName())) {
+                    String text = ((Text) field.getFirstChild()).getData().trim();
+                    int val = Integer.parseInt(text);
+                    mapAllocs.put(poolName, val);
+                } else if ("minReduces".equals(field.getTagName())) {
+                    String text = ((Text) field.getFirstChild()).getData().trim();
+                    int val = Integer.parseInt(text);
+                    reduceAllocs.put(poolName, val);
+                } else if ("maxRunningJobs".equals(field.getTagName())) {
+                    String text = ((Text) field.getFirstChild()).getData().trim();
+                    int val = Integer.parseInt(text);
+                    poolMaxJobs.put(poolName, val);
+                }
+            }
+        } else if ("user".equals(element.getTagName())) {
+            String userName = element.getAttribute("name");
+            NodeList fields = element.getChildNodes();
+            for (int j = 0; j < fields.getLength(); j++) {
+                Node fieldNode = fields.item(j);
+                if (!(fieldNode instanceof Element))
+                    continue;
+                Element field = (Element) fieldNode;
+                if ("maxRunningJobs".equals(field.getTagName())) {
+                    String text = ((Text) field.getFirstChild()).getData().trim();
+                    int val = Integer.parseInt(text);
+                    userMaxJobs.put(userName, val);
+                }
+            }
+        } else if ("userMaxJobsDefault".equals(element.getTagName())) {
+            String text = ((Text) element.getFirstChild()).getData().trim();
+            int val = Integer.parseInt(text);
+            userMaxJobsDefault = val;
+        } else {
+            LOG.warn("Bad element in allocations file: " + element.getTagName());
+        }
+    }
+    // if it does not already exist, so it can be displayed on the web UI.
+    synchronized (this) {
+        this.mapAllocs = mapAllocs;
+        this.reduceAllocs = reduceAllocs;
+        this.poolMaxJobs = poolMaxJobs;
+        this.userMaxJobs = userMaxJobs;
+        this.userMaxJobsDefault = userMaxJobsDefault;
+        for (String name : poolNamesInAllocFile) {
+            getPool(name);
+        }
+    }
+}

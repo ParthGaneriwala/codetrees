@@ -1,0 +1,82 @@
+public String executeCommandUploadImage(ActionContext context) {
+    Connection db = null;
+    boolean recordInserted = false;
+    String editor = null;
+    try {
+        String filePath = this.getPath(context, "projects-news");
+        // Process the form data
+        HttpMultiPartParser multiPart = new HttpMultiPartParser();
+        multiPart.setUsePathParam(false);
+        multiPart.setUseUniqueName(true);
+        multiPart.setUseDateForFolder(true);
+        multiPart.setExtensionId(getUserId(context));
+        HashMap parts = multiPart.parseData(context.getRequest(), filePath);
+        String newsId = (String) parts.get("nid");
+        String subject = (String) parts.get("subject");
+        editor = (String) parts.get("editor");
+        if (editor == null) {
+            editor = context.getParameter("editor");
+        }
+        db = getConnection(context);
+        // News
+        BlogPost blogPost = new BlogPost(db, Integer.parseInt(newsId));
+        context.getRequest().setAttribute("newsArticle", blogPost);
+        // Project
+        Project thisProject = retrieveAuthorizedProject(blogPost.getProjectId(), context);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-news-add")) {
+            // TODO: Should delete the uploads, then exit
+            return "PermissionError";
+        }
+        context.getRequest().setAttribute("project", thisProject);
+        // Update the database with the resulting file
+        if ((Object) parts.get("id" + newsId) instanceof FileInfo) {
+            FileInfo newFileInfo = (FileInfo) parts.get("id" + newsId);
+            FileItem thisItem = new FileItem();
+            thisItem.setLinkModuleId(Constants.BLOG_POST_FILES);
+            thisItem.setLinkItemId(blogPost.getId());
+            thisItem.setEnteredBy(getUserId(context));
+            thisItem.setModifiedBy(getUserId(context));
+            thisItem.setSubject("News Article Image");
+            thisItem.setClientFilename(newFileInfo.getClientFileName());
+            thisItem.setFilename(newFileInfo.getRealFilename());
+            thisItem.setSize(newFileInfo.getSize());
+            // this is a new document
+            thisItem.setVersion(1.0);
+            recordInserted = thisItem.insert(db);
+            thisItem.setDirectory(filePath);
+            if (!recordInserted) {
+                processErrors(context, thisItem.getErrors());
+            } else {
+                if (thisItem.isImageFormat() && thisItem.hasValidImageSize()) {
+                    // Create a thumbnail if this is an image
+                    File thumbnailFile = new File(newFileInfo.getLocalFile().getPath() + "TH");
+                    Thumbnail thumbnail = new Thumbnail(ImageUtils.saveThumbnail(newFileInfo.getLocalFile(), thumbnailFile, 133d, 133d, "jpg"));
+                    // Store thumbnail in database
+                    thumbnail.setId(thisItem.getId());
+                    thumbnail.setFilename(newFileInfo.getRealFilename() + "TH");
+                    thumbnail.setVersion(thisItem.getVersion());
+                    thumbnail.setSize((int) thumbnailFile.length());
+                    thumbnail.setEnteredBy(thisItem.getEnteredBy());
+                    thumbnail.setModifiedBy(thisItem.getModifiedBy());
+                    recordInserted = thumbnail.insert(db);
+                }
+            }
+            context.getRequest().setAttribute("popup", "true");
+            context.getRequest().setAttribute("PageLayout", "/layout1.jsp");
+            // Image List
+            FileItemList files = new FileItemList();
+            files.setLinkModuleId(Constants.BLOG_POST_FILES);
+            files.setLinkItemId(blogPost.getId());
+            files.setWebImageFormatOnly(true);
+            files.buildList(db);
+            context.getRequest().setAttribute("imageList", files);
+        }
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return ("SystemError");
+    } finally {
+        freeConnection(context, db);
+    }
+    LOG.debug("Editor: " + editor);
+    return "UploadImageTINYMCEOK";
+}

@@ -1,0 +1,94 @@
+void reTypeColumn(Column oldCol, Column newCol) throws HsqlException {
+    boolean notallowed = false;
+    int oldtype = oldCol.getType();
+    int newtype = newCol.getType();
+    switch(newtype) {
+        case Types.BINARY:
+        case Types.VARBINARY:
+        case Types.LONGVARBINARY:
+        case Types.OTHER:
+        case Types.JAVA_OBJECT:
+            notallowed = !(newtype == oldtype || table.isEmpty(session));
+    }
+    switch(oldtype) {
+        case Types.BINARY:
+        case Types.VARBINARY:
+        case Types.LONGVARBINARY:
+        case Types.OTHER:
+        case Types.JAVA_OBJECT:
+            notallowed = !(newtype == oldtype || table.isEmpty(session));
+            break;
+        case Types.TINYINT:
+        case Types.SMALLINT:
+        case Types.INTEGER:
+        case Types.BIGINT:
+        case Types.REAL:
+        case Types.FLOAT:
+        case Types.DOUBLE:
+        case Types.NUMERIC:
+        case Types.DECIMAL:
+            switch(newtype) {
+                case Types.DATE:
+                case Types.TIME:
+                case Types.TIMESTAMP:
+                    notallowed = !table.isEmpty(session);
+                default:
+            }
+            break;
+        case Types.DATE:
+        case Types.TIME:
+        case Types.TIMESTAMP:
+            switch(newtype) {
+                case Types.TINYINT:
+                case Types.SMALLINT:
+                case Types.INTEGER:
+                case Types.BIGINT:
+                case Types.REAL:
+                case Types.FLOAT:
+                case Types.DOUBLE:
+                case Types.NUMERIC:
+                case Types.DECIMAL:
+                    notallowed = !table.isEmpty(session);
+                default:
+            }
+            break;
+    }
+    if (notallowed) {
+        throw Trace.error(Trace.INVALID_CONVERSION);
+    }
+    int colIndex = table.getColumnNr(oldCol.columnName.name);
+    if (table.getPrimaryKey().length > 1) {
+        // if there is a multi-column PK, do not change the PK attributes
+        if (newCol.isIdentity()) {
+            throw Trace.error(Trace.SECOND_PRIMARY_KEY);
+        }
+        newCol.setPrimaryKey(oldCol.isPrimaryKey());
+        if (ArrayUtil.find(table.getPrimaryKey(), colIndex) != -1) {
+            newCol.setNullable(false);
+        }
+    } else if (table.hasPrimaryKey()) {
+        if (oldCol.isPrimaryKey()) {
+            newCol.setPrimaryKey(true);
+            newCol.setNullable(false);
+        } else if (newCol.isPrimaryKey()) {
+            throw Trace.error(Trace.SECOND_PRIMARY_KEY);
+        }
+    } else if (newCol.isPrimaryKey()) {
+        throw Trace.error(Trace.PRIMARY_KEY_NOT_ALLOWED);
+    }
+    // apply and return if only metadata change is required
+    if (newtype == oldtype && oldCol.isNullable() == newCol.isNullable() && oldCol.getScale() == newCol.getScale() && oldCol.isIdentity() == newCol.isIdentity() && oldCol.identityIncrement == newCol.identityIncrement && (oldCol.getSize() == newCol.getSize() || (oldCol.getSize() < newCol.getSize() && (oldtype == Types.VARCHAR || oldtype == Types.DECIMAL || oldtype == Types.NUMERIC)))) {
+        // size of some types may be increased with this command
+        // default expressions can change
+        oldCol.setType(newCol);
+        oldCol.setDefaultExpression(newCol.getDefaultExpression());
+        table.setColumnTypeVars(colIndex);
+        table.resetDefaultsFlag();
+        return;
+    }
+    table.database.schemaManager.checkColumnIsInView(table, table.getColumn(colIndex).columnName.name);
+    table.checkColumnInCheckConstraint(table.getColumn(colIndex).columnName.name);
+    table.checkColumnInFKConstraint(colIndex);
+    checkConvertColDataType(oldCol, newCol);
+    retypeColumn(newCol, colIndex);
+}

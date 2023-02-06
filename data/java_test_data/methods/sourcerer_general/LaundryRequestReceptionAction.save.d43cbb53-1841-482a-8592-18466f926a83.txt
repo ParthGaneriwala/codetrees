@@ -1,0 +1,99 @@
+public String save() throws Exception {
+    System.out.println("LaundryRequestReceptionAction -> save()");
+    if (cancel != null) {
+        return CANCEL;
+    }
+    boolean isNew = false;
+    isNew = (laundryRequestItem.getId() == null);
+    laundryRequest = (LaundryRequest) getSession().getAttribute("laundryRequest");
+    laundryRequest = laundryRequestManager.get(laundryRequest.getId());
+    if (!isNew) {
+        // -------------  update old datas ------------
+        LaundryRequestItem laundryRequestItemOld = laundryRequestItemManager.get(laundryRequestItem.getId());
+        laundryItems = new ArrayList<LaundryItem>();
+        // List<LaundryItem> laundryItemsOld = laundryRequestItemOld.getLaundryItems();
+        for (LaundryItem laundryItem : laundryRequestItemOld.getLaundryItems()) {
+            laundryItems.add(laundryItem);
+        }
+        PantDesign pantDesignOld = laundryRequestItemOld.getLaundryItems().get(0).getPantDesign();
+        modelSizes = ((Set<ModelSize>) getSession().getAttribute("modelSizes"));
+        quantitieIndexs = ((String[]) getSession().getAttribute("quantitieIndexs"));
+        quantitiesCurrent = ((String[]) getSession().getAttribute("quantitiesCurrent"));
+        quantitiesFail = ((String[]) getSession().getAttribute("quantitiesFail"));
+        quantitiesPriceCurrent = ((String[]) getSession().getAttribute("quantitiesPriceCurrent"));
+        quantitiesPriceFail = ((String[]) getSession().getAttribute("quantitiesPriceFail"));
+        indexsUsers = ((List<Integer>) getSession().getAttribute("indexsUsers"));
+        for (int i = 0; i < quantitiesFailUser.length; i++) {
+            Integer index = indexsUsers.get(i);
+            quantitiesFail[index] = quantitiesFailUser[i];
+            quantitiesPriceCurrent[index] = quantitiesPriceCurrentUser[i];
+            quantitiesPriceFail[index] = quantitiesPriceFailUser[i];
+        }
+        laundryItems = laundryItemManager.findByOrderSize(laundryRequestItemOld.getId());
+        Integer failTotalQuantity = 0;
+        Integer clothesTotalQuantity = 0;
+        Double priceXclothesTotal = 0.0D;
+        Double priceFailTotal = 0.0D;
+        for (int i = 0; i < quantitiesCurrent.length; i++) {
+            if (!quantitieIndexs[i].equals("-1")) {
+                Integer failQuantity = Integer.parseInt(quantitiesFail[i]);
+                LaundryItem lItem = laundryItems.get(Integer.parseInt(quantitieIndexs[i]));
+                if (failQuantity <= Integer.parseInt(quantitiesCurrent[i])) {
+                    lItem.setFailQuantity(failQuantity);
+                } else {
+                    errorMessage("Error: Fail quantity exceeded the good quantity");
+                    return "reload";
+                }
+                failTotalQuantity += failQuantity;
+                // ------------------------------------------------------
+                Double priceXclothes = Double.parseDouble(quantitiesPriceCurrent[i]);
+                if (priceXclothes >= 0) {
+                    lItem.setUnitPrice(priceXclothes);
+                } else {
+                    errorMessage("Error: Fail price");
+                    return "reload";
+                }
+                priceXclothesTotal += priceXclothes * Integer.parseInt(quantitiesCurrent[i]);
+                lItem.setUnitTotalPrice(priceXclothes * Integer.parseInt(quantitiesCurrent[i]));
+                // ------------------------------------------------------
+                Double priceXFail = Double.parseDouble(quantitiesPriceFail[i]);
+                if (priceXFail >= 0) {
+                    lItem.setFailUnitPrice(priceXFail);
+                } else {
+                    errorMessage("Error: Fail price fail");
+                    return "reload";
+                }
+                lItem.setTotalPrice((lItem.getQuantity() * lItem.getUnitPrice()) - (lItem.getFailQuantity() * lItem.getFailUnitPrice()));
+                lItem.setFailTotalPrice(lItem.getFailQuantity() * lItem.getFailUnitPrice());
+                priceFailTotal += priceXFail * Integer.parseInt(quantitiesFail[i]);
+            }
+        }
+        laundryRequestItemOld.setLaundryItems(laundryItems);
+        laundryRequestItemOld.setFailUnitPrice(0.0D);
+        laundryRequestItemOld.setFailQuantity(failTotalQuantity);
+        laundryRequestItemOld.setFailTotalPrice(priceFailTotal);
+        laundryRequestItemOld.setUnitTotalPrice(priceXclothesTotal);
+        laundryRequestItemOld.setTotalPrice(priceXclothesTotal - priceFailTotal);
+        laundryRequestItemOld = laundryRequestItemManager.save(laundryRequestItemOld);
+        laundryRequest = laundryRequestItemOld.getLaundryRequest();
+        laundryRequest.setCurrentTotalPrice(laundryRequest.getCurrentTotalPrice() + laundryRequestItemOld.getTotalPrice());
+        laundryRequest.setTotalPrice(laundryRequest.getCurrentTotalPrice() + laundryRequestItemOld.getTotalPrice());
+        laundryRequest.setFailTotalPrice(laundryRequest.getFailTotalPrice() + priceFailTotal);
+        laundryRequest.setClothesTotalPrice(laundryRequest.getClothesTotalPrice() + priceXclothesTotal);
+        PeriodPaymentLaundry periodPaymentLaundry = laundryRequest.getPeriodPaymentLaundry();
+        LaundryRequest laundryRequest = laundryRequestItemOld.getLaundryRequest();
+        BalanceLaundry balanceLaundry = laundryRequest.getBalanceLaundry();
+        balanceLaundry.setAmountWon(balanceLaundry.getAmountPaid() + priceXclothesTotal);
+        balanceLaundry.setAmountPaid(balanceLaundry.getAmountPaid() + failTotalQuantity);
+        balanceLaundry.setBalance(periodPaymentLaundry.getCurrentAmount() + laundryRequestItemOld.getTotalPrice());
+        balanceLaundry = balanceLaundryManager.save(balanceLaundry);
+        periodPaymentLaundry.setAmountWon(periodPaymentLaundry.getAmountWon() + laundryRequestItemOld.getTotalPrice());
+        periodPaymentLaundry.setCurrentAmount(periodPaymentLaundry.getCurrentAmount() + laundryRequestItemOld.getTotalPrice());
+        periodPaymentLaundry.setAmountPayment(periodPaymentLaundry.getAmountPayment() + laundryRequestItemOld.getFailTotalPrice());
+        periodPaymentLaundryManager.save(periodPaymentLaundry);
+    }
+    getSession().setAttribute("laundryRequestItem", null);
+    saveMessage(getText("laundryRequestItem.updated"));
+    System.out.println("LaundryRequestReceptionAction -> end save()");
+    return INPUT;
+}

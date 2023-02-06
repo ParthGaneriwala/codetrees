@@ -1,0 +1,80 @@
+@Override
+public void scan() throws Exception {
+    MultiException mex = new MultiException();
+    if (getContexts() == null)
+        throw new IllegalArgumentException("No HandlerContainer");
+    Resource r = Resource.newResource(getWebAppDir());
+    if (!r.exists())
+        throw new IllegalArgumentException("No such sipapps resource " + r);
+    if (!r.isDirectory())
+        throw new IllegalArgumentException("Not directory sipapps resource " + r);
+    String[] files = r.list();
+    files: for (int f = 0; files != null && f < files.length; f++) {
+        try {
+            String context = files[f];
+            if (context.equalsIgnoreCase("CVS/") || context.equalsIgnoreCase("CVS") || context.startsWith("."))
+                continue;
+            Resource app = r.addPath(r.encode(context));
+            if (context.toLowerCase().endsWith(".war") || context.toLowerCase().endsWith(".jar") || context.toLowerCase().endsWith(".sar")) {
+                context = context.substring(0, context.length() - 4);
+                Resource unpacked = r.addPath(context);
+                if (unpacked != null && unpacked.exists() && unpacked.isDirectory())
+                    continue;
+            } else if (!app.isDirectory()) {
+                continue;
+            }
+            if (context.equalsIgnoreCase("root") || context.equalsIgnoreCase("root/"))
+                context = URIUtil.SLASH;
+            else
+                context = "/" + context;
+            if (context.endsWith("/") && context.length() > 0)
+                context = context.substring(0, context.length() - 1);
+            // Check the context path has not already been added or the webapp itself is not already deployed
+            if (!getAllowDuplicates()) {
+                Handler[] installed = getContexts().getChildHandlersByClass(ContextHandler.class);
+                for (int i = 0; i < installed.length; i++) {
+                    ContextHandler c = (ContextHandler) installed[i];
+                    if (c instanceof SipAppContext) {
+                        SipAppContext sipAppContext = (SipAppContext) c;
+                        if (context.equals(sipAppContext.getContextPath()))
+                            continue files;
+                    }
+                    if (context.equals(c.getContextPath()))
+                        continue files;
+                    if (c.getBaseResource() != null && c.getBaseResource().getFile().getAbsolutePath().equals(app.getFile().getAbsolutePath()))
+                        continue files;
+                }
+            }
+            // create a sipapp
+            SipAppContext sac = null;
+            if (getContexts() instanceof ContextHandlerCollection && SipAppContext.class.isAssignableFrom(((ContextHandlerCollection) getContexts()).getContextClass())) {
+                try {
+                    sac = (SipAppContext) ((ContextHandlerCollection) getContexts()).getContextClass().newInstance();
+                } catch (Exception e) {
+                    throw new Error(e);
+                }
+            } else {
+                sac = new SipAppContext();
+            }
+            // configure it
+            sac.setContextPath(context);
+            if (getConfigurationClasses() != null)
+                sac.setConfigurationClasses(getConfigurationClasses());
+            if (getDefaultsDescriptor() != null)
+                sac.setDefaultsDescriptor(getDefaultsDescriptor());
+            if (getDefaultsSipDescriptor() != null)
+                sac.setDefaultsSipDescriptor(getDefaultsSipDescriptor());
+            sac.setExtractWAR(isExtract());
+            sac.setWar(app.toString());
+            sac.setParentLoaderPriority(isParentLoaderPriority());
+            // add it
+            getContexts().addHandler(sac);
+            _deployed.add(sac);
+            if (getContexts().isStarted())
+                sac.start();
+        } catch (Throwable e) {
+            mex.add(e);
+        }
+    }
+    mex.ifExceptionThrow();
+}

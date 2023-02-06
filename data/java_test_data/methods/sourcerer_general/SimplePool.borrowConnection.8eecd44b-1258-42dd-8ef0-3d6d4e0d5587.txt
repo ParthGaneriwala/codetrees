@@ -1,0 +1,105 @@
+public C borrowConnection() throws FailedToConnectException, WaitingTimeoutException, PoolErrorException {
+    WaitingTicket ticket = null;
+    CreateConnecionToken token = null;
+    C conn = null;
+    try {
+        synchronized (mutex) {
+            if (destroyed) {
+                throw new IllegalStateException("The pool has been destroyed.");
+            }
+            if (borrowedMap.size() + handlingMap.size() >= maxConnection) {
+                // too many connections, get a waiting ticket and wait.
+                ticket = new WaitingTicket();
+                waitingList.add(ticket);
+            } else {
+                // just get from pool or create a new one.
+                if (pool.isEmpty()) {
+                    token = new CreateConnecionToken();
+                    handlingMap.put(token, nothing);
+                } else {
+                    conn = pool.remove(0);
+                    borrowedMap.put(conn, nothing);
+                }
+            }
+        }
+        if (ticket != null) {
+            synchronized (ticket) {
+                if (ticket.conn != null) {
+                    // luckily, no need to wait.
+                    conn = ticket.conn;
+                } else {
+                    try {
+                        ticket.wait(waitingTimeout);
+                        if (ticket.conn != null) {
+                            conn = ticket.conn;
+                        } else {
+                            ticket.gaveUp = true;
+                            throw new WaitingTimeoutException();
+                        }
+                    } catch (InterruptedException e) {
+                        ticket.gaveUp = true;
+                        throw new WaitingTimeoutException("Waiting thread is interrupted.", e);
+                    }
+                }
+            }
+        } else if (token != null) {
+            try {
+                conn = (C) factory.createConnection(connectionTimeout);
+                synchronized (mutex) {
+                    handlingMap.remove(token);
+                    if (conn == null) {
+                        throw new PoolErrorException("ConnectionFactory return null at createConnection() method. Please check the ConnectionFactory implementation.");
+                    } else {
+                        borrowedMap.put(conn, nothing);
+                    }
+                }
+            } catch (FailedToConnectException e) {
+                synchronized (mutex) {
+                    handlingMap.remove(token);
+                }
+                throw e;
+            }
+        }
+        if (conn != null) {
+            try {
+                factory.touchConnection(conn, connectionTimeout);
+            } catch (ConnectionDamagedException e) {
+                e.printStackTrace();
+                // the connection is damaged, get a new one.
+                factory.destroyConnection(conn);
+                C newConn = (C) factory.createConnection(connectionTimeout);
+                synchronized (mutex) {
+                    borrowedMap.remove(conn);
+                    if (newConn == null) {
+                        throw new PoolErrorException("ConnectionFactory return null at createConnection() method. Please check the ConnectionFactory implementation.");
+                    } else {
+                        borrowedMap.put(newConn, nothing);
+                    }
+                    conn = newConn;
+                }
+            } catch (FailedToConnectException e) {
+                synchronized (mutex) {
+                    borrowedMap.remove(conn);
+                }
+                throw e;
+            }
+            return conn;
+        } else {
+            throw new PoolErrorException("Sorry, must be pool's coding bug, any way, not able to get a connection.");
+        }
+    } catch (RuntimeException e) {
+        synchronized (mutex) {
+            if (conn != null) {
+                factory.destroyConnection(conn);
+                borrowedMap.remove(conn);
+            }
+            if (token != null) {
+                handlingMap.remove(token);
+            }
+            if (ticket != null) {
+                ticket.gaveUp = true;
+            }
+        }
+        throw new PoolErrorException("RuntimeException has been caught.", e);
+    }
+}

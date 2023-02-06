@@ -1,0 +1,116 @@
+public static void main(String[] args) throws IOException {
+    OptionParser optParser = new OptionParser(Options.class);
+    final Options opts = (Options) optParser.parse(args, true);
+    Experiment.initialize(opts.config);
+    Experiment experiment = Experiment.getInstance();
+    FactorTupleDescription desc = experiment.getTupleDescription();
+    experiment.buildPrefixes();
+    experiment.buildWordPrefixes();
+    // parse the contexts
+    Pattern ctxRE = Pattern.compile("(W|T)\\@([+-]?[0-9])");
+    CtxVar[] contexts;
+    if (opts.context == null) {
+        // unigram model, no context
+        contexts = new CtxVar[0];
+    } else {
+        String[] contextStr = opts.context.split(",");
+        contexts = new CtxVar[contextStr.length];
+        for (int i = 0; i < contextStr.length; ++i) {
+            Matcher matcher = ctxRE.matcher(contextStr[i]);
+            if (matcher.matches()) {
+                CtxVar var = new CtxVar(Byte.parseByte(matcher.group(2)), matcher.group(1).equals("T"));
+                contexts[i] = var;
+            } else {
+                System.err.printf("Failed to parse context string: %s\n", contextStr[i]);
+                return;
+            }
+        }
+    }
+    CtxVar future;
+    {
+        Matcher matcher = ctxRE.matcher(opts.future);
+        if (matcher.matches()) {
+            future = new CtxVar(Byte.parseByte(matcher.group(2)), matcher.group(1).equals("T"));
+        } else {
+            System.err.printf("Failed to parse future string: %s\n", opts.future);
+            return;
+        }
+    }
+    // make the vocabulary for the future variable
+    int[] futureVocab;
+    if (future.isHidden()) {
+        byte aFactor = 0;
+        for (byte f : desc.getHiddenFactors()) {
+            if (desc.getDescription(f).getParent() == null) {
+                aFactor = f;
+                break;
+            }
+        }
+        ArrayList<Integer> tags = new ArrayList<Integer>(experiment.getHiddenPrefixes().size());
+        factors: for (FactorTuple tuple : experiment.getHiddenPrefixes().keySet()) {
+            int aFactorValue = tuple.getValue(aFactor);
+            for (byte aHiddenFactor : desc.getHiddenFactors()) {
+                if (Dictionary.isNull(tuple.getValue(aHiddenFactor))) {
+                    continue factors;
+                }
+            }
+            if (future.getOffset() == 0 && Dictionary.isStart(aFactorValue)) {
+                // don't predict <s> in the end of the ngram
+                continue;
+            } else if (future.getOffset() < 0 && Dictionary.isEnd(aFactorValue)) {
+                // don't predict </s> before the end of the ngram
+                continue;
+            }
+            tags.add(desc.packHiddenFactorsToInt(tuple.getBits()));
+        }
+        futureVocab = new int[tags.size()];
+        int pos = 0;
+        for (int tag : tags) {
+            futureVocab[pos++] = tag;
+        }
+    } else {
+        // either <s> or </s> is omitted
+        futureVocab = new int[desc.getAllOvertFactors().size() - 1];
+        int pos = 0;
+        byte mainFactor = desc.getMainFactorIndex();
+        factors: for (FactorTuple tuple : desc.getAllOvertFactors().keySet()) {
+            int mainFactorValue = tuple.getValue(mainFactor);
+            for (byte anOvertFactor : desc.getOvertFactors()) {
+                if (Dictionary.isNull(tuple.getValue(anOvertFactor))) {
+                    continue factors;
+                }
+            }
+            if (future.getOffset() == 0 && Dictionary.isStart(mainFactorValue)) {
+                // don't predict <s> in the end of the ngram
+                continue;
+            } else if (future.getOffset() < 0 && Dictionary.isEnd(mainFactorValue)) {
+                // don't predict </s> before the end of the ngram
+                continue;
+            }
+            futureVocab[pos++] = desc.packOvertFactorsToInt(tuple.getBits());
+        }
+        if (pos < futureVocab.length) {
+            futureVocab = Arrays.copyOf(futureVocab, pos);
+        }
+    }
+    NgramModel model = new NgramModel(opts.name, contexts, future, futureVocab);
+    {
+        Counts counts = new Counts();
+        String[] fileNames = opts.dataFiles.split(",");
+        // collect singleton stats
+        for (String fileName : fileNames) {
+            ReadableByteChannel channel = new FileInputStream(fileName).getChannel();
+            TrainingDataReader reader = new OnDiskTrainingDataReader(channel);
+            ReadableTrainingData inputData = new ReadableTrainingData(reader);
+            while (inputData.hasNext()) {
+                TrainingDataBlock block = inputData.next();
+                model.addTrainingData(counts, block);
+            }
+            channel.close();
+        }
+        model.estimateModel(counts);
+    }
+    ObjectOutputStream oos = new ObjectOutputStream(opts.lmFile == null ? System.out : IO.getOutputStream(opts.lmFile));
+    oos.writeObject(model);
+    oos.close();
+}

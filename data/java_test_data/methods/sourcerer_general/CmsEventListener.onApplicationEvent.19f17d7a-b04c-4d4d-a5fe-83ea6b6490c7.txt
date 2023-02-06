@@ -1,0 +1,56 @@
+@SuppressWarnings("deprecation")
+public void onApplicationEvent(ApplicationEvent event) {
+    logUserOptService = (ILogUserOptService) SpringContextUtil.getApplicationContext().getBean("logUserOptService");
+    // 登陆成功;
+    if (event instanceof AuthenticationSuccessEvent) {
+        UsernamePasswordAuthenticationToken token = (UsernamePasswordAuthenticationToken) event.getSource();
+        WebAuthenticationDetails detail = (WebAuthenticationDetails) token.getDetails();
+        String userId = token.getName();
+        Meta meta = logMap.get(userId);
+        // 挤出其它用户;
+        if (!isMetaEmpty(meta)) {
+            logUserOptService.logout(meta.logID, null, "forceOut by:" + detail.getRemoteAddress(), LogUserOpt.LogType.forceOut);
+            SessionRegistry sessionRegistry = (SessionRegistry) SpringContextUtil.getApplicationContext().getBean("sessionRegistry");
+            sessionRegistry.removeSessionInformation(meta.sessionID);
+        }
+        LogUserOpt log = logUserOptService.login(userId, detail.getRemoteAddress(), "");
+        Meta tmp = new Meta();
+        tmp.logID = log.getId();
+        tmp.sessionID = detail.getSessionId();
+        logMap.put(userId, tmp);
+    // ev.getSession().setAttribute("isLogin",true);
+    } else // }
+    if (event instanceof AuthorizationHttpLogoutEvent) {
+        AuthorizationHttpLogoutEvent ev = (AuthorizationHttpLogoutEvent) event;
+        UsernamePasswordAuthenticationToken token = (UsernamePasswordAuthenticationToken) ev.getSource();
+        WebAuthenticationDetails detail = (WebAuthenticationDetails) token.getDetails();
+        String userId = token.getName();
+        Meta meta = logMap.get(userId);
+        /*只记录有效的用户能出;
+			 * 当用户多处登陆时可能出现,用户已给其它用户挤出,然后用户退出的情况;
+			 */
+        if (!isMetaEmpty(meta) && ev.getSession().getId().equals(meta.sessionID)) {
+            logUserOptService.logout(meta.logID, detail.getRemoteAddress(), "", LogUserOpt.LogType.logout);
+            logMap.remove(userId);
+        }
+    } else // 退出系统;
+    if (event instanceof HttpSessionDestroyedEvent) {
+        HttpSessionDestroyedEvent ev = (HttpSessionDestroyedEvent) event;
+        SecurityContext SecurityContext = (SecurityContext) ev.getSession().getAttribute(HttpSessionContextIntegrationFilter.SPRING_SECURITY_CONTEXT_KEY);
+        if (SecurityContext == null)
+            return;
+        Authentication auth = SecurityContext.getAuthentication();
+        if (auth == null)
+            return;
+        String userId = auth.getName();
+        Meta meta = logMap.get(userId);
+        // 检查用户有没进入系统;
+        if (meta == null)
+            return;
+        // 正常退出已由其它拦截器处理;
+        if (!isMetaEmpty(meta) && ev.getSession().getId().equals(meta.sessionID)) {
+            logUserOptService.logout(meta.logID, null, LogUserOpt.LogType.sessionDestory);
+            logMap.remove(userId);
+        }
+    }
+}

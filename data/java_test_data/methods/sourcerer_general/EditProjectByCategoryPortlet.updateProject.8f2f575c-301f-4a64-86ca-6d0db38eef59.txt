@@ -1,0 +1,58 @@
+private Project updateProject(ActionRequest request) throws Exception {
+    int saved = -1;
+    Connection db = null;
+    db = PortalUtils.useConnection(request);
+    // Load the previous state of the project for comparison
+    Project prevProject = new Project(db, PortalUtils.getProject(request).getId());
+    // Load the project to make changes to it
+    Project projectToEdit = new Project(db, PortalUtils.getProject(request).getId());
+    // Populate the updated project
+    ProjectFormBean projectBean = new ProjectFormBean();
+    PortalUtils.populateObject(projectBean, request);
+    // Check required fields enforced by preferences
+    String categoryName = getProjectCategoryName(db, projectToEdit);
+    HashMap<String, String> preferenceMap = getDisplayPreferences(request, categoryName);
+    // Populate project based on portlet preferences
+    projectBean.populateProjectFromBeanBasedOnPreferences(preferenceMap, projectToEdit);
+    // Update who modified the project
+    projectToEdit.setModifiedBy(PortalUtils.getUser(request).getId());
+    if (isValid(request, projectToEdit, preferenceMap)) {
+        saved = projectToEdit.update(db);
+        if (saved != -1) {
+            // Save as meeting based on preferences
+            boolean isSpawnMeeting = (preferenceMap.get(PREF_SPAWN_MEETING) != null && "true".equals(preferenceMap.get(PREF_SPAWN_MEETING))) ? true : false;
+            if (isSpawnMeeting) {
+                // Update an existing meeting corresponding to the event if it exists, else create a new one
+                MeetingList meetingList = new MeetingList();
+                PagedListInfo meetingListInfo = new PagedListInfo();
+                meetingListInfo.setColumnToSortBy("m.modified");
+                meetingList.setPagedListInfo(meetingListInfo);
+                meetingList.setProjectId(projectToEdit.getId());
+                meetingList.buildList(db);
+                Meeting originalMeeting = null;
+                if (meetingList.size() > 0) {
+                    // Get the latest record
+                    originalMeeting = meetingList.get(meetingList.size() - 1);
+                }
+                Meeting meeting = Meeting.createMeetingFromProject(projectToEdit);
+                if (originalMeeting == null) {
+                    meeting.insert(db);
+                } else {
+                    meeting.setId(originalMeeting.getId());
+                    meeting.setModified(originalMeeting.getModified());
+                    meeting.update(db);
+                }
+            }
+        }
+    }
+    request.getPortletSession().setAttribute(PROJECT_BEAN, projectBean);
+    if (saved == -1) {
+        // set project to the session so that errors can be displayed in the form
+        request.getPortletSession().setAttribute(PROJECT, projectToEdit);
+        return null;
+    } else {
+        PortalUtils.indexAddItem(request, projectToEdit);
+        PortalUtils.processUpdateHook(request, prevProject, projectToEdit);
+    }
+    return projectToEdit;
+}

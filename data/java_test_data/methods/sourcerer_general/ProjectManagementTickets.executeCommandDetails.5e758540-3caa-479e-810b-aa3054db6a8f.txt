@@ -1,0 +1,83 @@
+public String executeCommandDetails(ActionContext context) {
+    Connection db = null;
+    String projectId = context.getRequest().getParameter("pid");
+    String ticketId = context.getRequest().getParameter("id");
+    String returnAction = context.getRequest().getParameter("return");
+    try {
+        db = this.getConnection(context);
+        // Load the project
+        Project thisProject = retrieveAuthorizedProject(Integer.parseInt(projectId), context);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-tickets-view")) {
+            return "PermissionError";
+        }
+        context.getRequest().setAttribute("project", thisProject);
+        Ticket thisTicket = null;
+        if (returnAction == null) {
+            // Determine pagedlist
+            PagedListInfo projectTicketsInfo = this.getPagedListInfo(context, "projectTicketsInfo", "t.entered", null);
+            projectTicketsInfo.setLink(context, ctx(context) + "/show/" + thisProject.getUniqueId() + "/issue");
+            projectTicketsInfo.setMode(PagedListInfo.DETAILS_VIEW);
+            // Load the ticket based on the offset
+            TicketList tickets = new TicketList();
+            tickets.setProjectId(thisProject.getId());
+            tickets.setPagedListInfo(projectTicketsInfo);
+            if (ticketId != null) {
+                tickets.setId(Integer.parseInt(ticketId));
+            }
+            if (projectTicketsInfo.getListView() == null) {
+                projectTicketsInfo.setListView("open");
+                // Categories
+                projectTicketsInfo.addFilter(1, "-1");
+            }
+            // Deny if this user is not allowed to view other's tickets
+            if (!hasProjectAccess(context, thisProject.getId(), "project-tickets-other")) {
+                tickets.setOwnTickets(getUser(context).getId());
+            }
+            if ("all".equals(projectTicketsInfo.getListView())) {
+            } else if ("review".equals(projectTicketsInfo.getListView())) {
+                tickets.setOnlyOpen(true);
+                tickets.setForReview(Constants.TRUE);
+            } else if ("closed".equals(projectTicketsInfo.getListView())) {
+                tickets.setOnlyClosed(true);
+            } else {
+                tickets.setOnlyOpen(true);
+            }
+            tickets.setCatCode(projectTicketsInfo.getFilterValueAsInt("listFilter1"));
+            tickets.buildList(db);
+            // Retrieve the ticket
+            if (tickets.size() > 0) {
+                thisTicket = tickets.get(0);
+            }
+            if (thisTicket != null) {
+                context.getRequest().setAttribute(PagedListInfo.REFRESH_PARAMETER, "/" + thisTicket.getProjectTicketCount());
+            }
+        }
+        if (thisTicket == null) {
+            thisTicket = new Ticket(db, Integer.parseInt(ticketId));
+        }
+        if (thisTicket.getAssignedTo() > 0) {
+            thisTicket.checkEnabledOwnerAccount(db);
+        }
+        // Deny if this user is not allowed to view other's tickets
+        if (!hasProjectAccess(context, thisProject.getId(), "project-tickets-other") && thisTicket.getEnteredBy() != getUser(context).getId() && thisTicket.getAssignedTo() != getUser(context).getId()) {
+            return "PermissionError";
+        }
+        // Load the ticket history
+        thisTicket.buildHistory(db);
+        thisTicket.buildLinkItem(db);
+        context.getRequest().setAttribute("ticket", thisTicket);
+        processSelectHook(context, thisTicket);
+        // Load the distribution list
+        TicketContactList distributionList = new TicketContactList();
+        distributionList.setTicketId(thisTicket.getId());
+        distributionList.buildList(db);
+        context.getRequest().setAttribute("distributionList", distributionList);
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return ("SystemError");
+    } finally {
+        this.freeConnection(context, db);
+    }
+    context.getRequest().setAttribute("IncludeSection", "tickets_details");
+    return ("ProjectCenterOK");
+}

@@ -1,0 +1,102 @@
+public static final void load(Map map, InputStream sm, String charset, boolean caseInsensitive) throws IOException {
+    final PushbackInputStream pis = new PushbackInputStream(sm, 3);
+    if (charset == null || charset.startsWith("UTF")) {
+        final byte[] ahead = new byte[3];
+        int n = pis.read(ahead);
+        if (n >= 2 && ((ahead[0] == (byte) 0xfe && ahead[1] == (byte) 0xff) || (ahead[0] == (byte) 0xff && ahead[1] == (byte) 0xfe))) {
+            charset = "UTF-16";
+        // don't eat UTF-16 BOM, since Java use it to know endian
+        } else if (n == 3 && ahead[0] == (byte) 0xef && ahead[1] == (byte) 0xbb && ahead[2] == (byte) 0xbf) {
+            charset = "UTF-8";
+            // eat UTF-8 BOM since Java won't handle it
+            n = 0;
+        } else if (charset == null) {
+            charset = "UTF-8";
+        }
+        if (n > 0)
+            pis.unread(ahead, 0, n);
+    }
+    final BufferedReader in = new BufferedReader(new InputStreamReader(pis, charset));
+    final List prefixes = new LinkedList();
+    String prefix = null;
+    String line;
+    for (int lno = 1; (line = in.readLine()) != null; ++lno) {
+        int len = line.length();
+        if (len == 0)
+            continue;
+        final int from = Strings.skipWhitespaces(line, 0);
+        if (from < len && line.charAt(from) == '#')
+            // comment, ignore rest of line
+            continue;
+        final Strings.Result res = Strings.nextToken(line, from, new char[] { '=', '{', '}' }, true, false);
+        if (res == null)
+            // nothing found
+            continue;
+        if (res.separator == (char) 0) {
+            if (res.token.length() > 0)
+                log.warning(">>Igored: a key, " + res.token + ", without value, line " + lno);
+            continue;
+        }
+        if (res.separator == '{') {
+            // res.token.lenth() could be zero
+            if (// non-space following '{'
+            Strings.skipWhitespaces(line, res.next) < len)
+                throw new IllegalSyntaxException("Invalid nest: '{' must be the last character, line " + lno);
+            prefixes.add(new Integer(res.token.length()));
+            prefix = prefix != null ? prefix + res.token : res.token;
+            continue;
+        }
+        if (res.separator == '}') {
+            if (// non-space following '}'
+            Strings.skipWhitespaces(line, res.next) < len)
+                throw new IllegalSyntaxException("Invalid nesting: '}' must be the last character, line " + lno);
+            if (prefixes.isEmpty())
+                throw new IllegalSyntaxException("Invalid nesting: '}' does have any preceding '{', line " + lno);
+            // pop
+            final Integer i = (Integer) prefixes.remove(prefixes.size() - 1);
+            prefix = prefixes.isEmpty() ? null : prefix.substring(0, prefix.length() - i.intValue());
+            continue;
+        }
+        if (res.token.length() == 0) {
+            log.warning(">>Ignored: wihout key, line " + lno);
+            continue;
+        }
+        // assert res.separator == '=': "Wrong separator: "+res.separator;
+        final String val;
+        String key = caseInsensitive ? res.token.toLowerCase() : res.token;
+        int j = Strings.skipWhitespaces(line, res.next);
+        int k = Strings.skipWhitespacesBackward(line, len - 1);
+        if (j == k && line.charAt(k) == '{') {
+            // pack multiple lines
+            final StringBuffer sb = new StringBuffer();
+            for (int lnoFrom = lno; ; ) {
+                line = in.readLine();
+                ++lno;
+                if (line == null) {
+                    log.warning(">>Ignored: invalid multiple-line format: '={' does not have following '}', " + lnoFrom);
+                    break;
+                }
+                len = line.length();
+                if (len > 0) {
+                    j = Strings.skipWhitespacesBackward(line, len - 1);
+                    if (j >= 0 && line.charAt(j) == '}') {
+                        if (j > 0)
+                            j = 1 + Strings.skipWhitespacesBackward(line, j - 1);
+                        if (// no non-space before }
+                        j == 0)
+                            break;
+                    }
+                }
+                if (sb.length() > 0)
+                    sb.append('\n');
+                sb.append(line);
+            }
+            val = sb.toString();
+        } else {
+            val = j <= k ? line.substring(j, k + 1) : "";
+        }
+        map.put(prefix != null ? prefix + key : key, val);
+    }
+    if (!prefixes.isEmpty())
+        log.warning(">>Ignored: unclosed nesting '{': " + prefixes.size());
+}

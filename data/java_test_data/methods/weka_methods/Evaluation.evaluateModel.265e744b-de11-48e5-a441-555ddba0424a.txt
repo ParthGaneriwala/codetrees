@@ -1,0 +1,698 @@
+public static String evaluateModel(Classifier classifier, String[] options) throws Exception {
+    StringBuffer schemeOptionsText = null;
+    long trainTimeStart = 0, trainTimeElapsed = 0, testTimeStart = 0, testTimeElapsed = 0;
+    // help requested?
+    if (Utils.getFlag("h", options) || Utils.getFlag("help", options)) {
+        // global info requested as well?
+        boolean globalInfo = Utils.getFlag("synopsis", options) || Utils.getFlag("info", options);
+        throw new Exception("\nHelp requested." + makeOptionString(classifier, globalInfo));
+    }
+    // do we get the input from XML instead of normal command-line parameters?
+    try {
+        String xml = Utils.getOption("xml", options);
+        if (!xml.equals("")) {
+            // All other options are ignored
+            options = new XMLOptions(xml).toArray();
+        }
+    } catch (Exception ex) {
+        throw new Exception("\nWeka exception: " + ex.getMessage() + makeOptionString(classifier, false));
+    }
+    // Store settings for (almost all) general options
+    boolean noCrossValidation = Utils.getFlag("no-cv", options);
+    String classIndexString = Utils.getOption('c', options);
+    String trainFileName = Utils.getOption('t', options);
+    String objectInputFileName = Utils.getOption('l', options);
+    String objectOutputFileName = Utils.getOption('d', options);
+    String testFileName = Utils.getOption('T', options);
+    String foldsString = Utils.getOption('x', options);
+    String seedString = Utils.getOption('s', options);
+    boolean outputModelsForTrainingSplits = Utils.getFlag("output-models-for-training-splits", options);
+    boolean classStatistics = !Utils.getFlag("do-not-output-per-class-statistics", options);
+    boolean noOutput = Utils.getFlag('o', options);
+    boolean trainStatistics = !Utils.getFlag('v', options);
+    boolean printComplexityStatistics = Utils.getFlag('k', options);
+    boolean printMargins = Utils.getFlag('r', options);
+    boolean printGraph = Utils.getFlag('g', options);
+    String sourceClass = Utils.getOption('z', options);
+    boolean printSource = (sourceClass.length() != 0);
+    String thresholdFile = Utils.getOption("threshold-file", options);
+    String thresholdLabel = Utils.getOption("threshold-label", options);
+    boolean forceBatchTraining = Utils.getFlag("force-batch-training", options);
+    String classifications = Utils.getOption("classifications", options);
+    String classificationsOld = Utils.getOption("p", options);
+    String splitPercentageString = Utils.getOption("split-percentage", options);
+    boolean preserveOrder = Utils.getFlag("preserve-order", options);
+    boolean discardPredictions = Utils.getFlag("no-predictions", options);
+    String metricsToToggle = Utils.getOption("toggle", options);
+    boolean continueIteratingIterative = Utils.getFlag("continue-iterating", options);
+    boolean cleanUpIterative = Utils.getFlag("clean-up", options);
+    // Some other variables that we might set later.
+    CostMatrix costMatrix = null;
+    double splitPercentage = -1;
+    int classIndex = -1, actualClassIndex = -1;
+    int seed = 1, folds = 10;
+    Instances train = null, test = null, template = null;
+    AbstractOutput classificationOutput = null;
+    List<String> toggleList = new ArrayList<String>();
+    int labelIndex = 0;
+    // We need to output help if something goes wrong with the option settings
+    try {
+        if (metricsToToggle.length() > 0) {
+            String[] parts = metricsToToggle.split(",");
+            for (String p : parts) {
+                toggleList.add(p.trim().toLowerCase());
+            }
+        }
+        // Read potential .xml model file that may hold scheme-specific options
+        if ((objectInputFileName.length() != 0) && (objectInputFileName.endsWith(".xml"))) {
+            try {
+                // Try to load scheme-specific options as XMLClassifier
+                OptionHandler cl = (OptionHandler) new XMLClassifier().read(objectInputFileName);
+                options = Stream.concat(Arrays.stream(cl.getOptions()), Arrays.stream(options)).toArray(String[]::new);
+                // We have not actually read a built model, only some options
+                objectInputFileName = "";
+            } catch (Exception ex) {
+            }
+        }
+        // Basic checking for global parameter settings
+        if (trainFileName.length() == 0) {
+            if (objectInputFileName.length() == 0) {
+                throw new IllegalArgumentException("No training file and no object input file given.");
+            }
+            if (testFileName.length() == 0) {
+                throw new IllegalArgumentException("No training file and no test file given.");
+            }
+        } else if ((objectInputFileName.length() != 0) && ((!(classifier instanceof UpdateableClassifier) && !(classifier instanceof IterativeClassifier) || forceBatchTraining) || (testFileName.length() == 0))) {
+            throw new IllegalArgumentException("Classifier not incremental or batch training forced, or no test file provided: can't use model file.");
+        }
+        if ((objectInputFileName.length() != 0) && ((splitPercentageString.length() != 0) || (foldsString.length() != 0))) {
+            throw new IllegalArgumentException("Cannot perform percentage split or cross-validation when model provided.");
+        }
+        if (splitPercentageString.length() != 0) {
+            if (foldsString.length() != 0) {
+                throw new IllegalArgumentException("Percentage split cannot be used in conjunction with cross-validation ('-x').");
+            }
+            splitPercentage = Double.parseDouble(splitPercentageString);
+            if ((splitPercentage <= 0) || (splitPercentage >= 100)) {
+                throw new IllegalArgumentException("Split percentage needs to be >0 and <100.");
+            }
+        }
+        if ((preserveOrder) && (splitPercentage == -1)) {
+            throw new IllegalArgumentException("Split percentage is missing.");
+        }
+        if (discardPredictions && (classifications.length() > 0 || classificationsOld.length() > 0)) {
+            throw new IllegalArgumentException("Cannot both discard and output predictions!");
+        }
+        if (thresholdFile.length() > 0 && (classifications.length() > 0 || classificationsOld.length() > 0)) {
+            throw new IllegalArgumentException("Cannot output predictions and also write threshold file!");
+        }
+        if (thresholdFile.length() > 0 && (!trainStatistics && noCrossValidation && splitPercentageString.length() <= 0 && testFileName.length() <= 0)) {
+            throw new IllegalArgumentException("Can only write a threshold file when performance statistics are computed!");
+        }
+        if (printMargins && (!trainStatistics && noCrossValidation && splitPercentageString.length() <= 0 && testFileName.length() <= 0)) {
+            throw new IllegalArgumentException("Can only print margins when performance statistics are computed!");
+        }
+        if ((trainFileName.length() == 0) && (printComplexityStatistics)) {
+            // if no training file given, we don't have any priors
+            throw new IllegalArgumentException("Cannot print complexity statistics without training file!");
+        }
+        if (printGraph && !(classifier instanceof Drawable)) {
+            throw new IllegalArgumentException("Can only print graph if classifier implements Drawable interface!");
+        }
+        if (printSource && !(classifier instanceof Sourcable)) {
+            throw new IllegalArgumentException("Can only print source if classifier implements Sourcable interface!");
+        }
+        if (printGraph && !(trainFileName.length() > 0) && !(objectInputFileName.length() > 0)) {
+            throw new IllegalArgumentException("Can only print graph if training file or model file is provided!");
+        }
+        if (printSource && !(trainFileName.length() > 0) && !(objectInputFileName.length() > 0)) {
+            throw new IllegalArgumentException("Can only print source if training file or model file is provided!");
+        }
+        if (objectInputFileName.length() > 0 && (trainFileName.length() > 0) && (!(classifier instanceof UpdateableClassifier) && !(classifier instanceof IterativeClassifier) || forceBatchTraining)) {
+            throw new IllegalArgumentException("Can't use batch training when updating/continue iterating with an existing classifier!");
+        }
+        if (noCrossValidation && testFileName.length() != 0) {
+            throw new IllegalArgumentException("Attempt to turn off cross-validation when explicit test file is provided!");
+        }
+        if (splitPercentageString.length() > 0 && testFileName.length() != 0) {
+            throw new IllegalArgumentException("Cannot perform percentage split when explicit test file is provided!");
+        }
+        if ((thresholdFile.length() != 0) && discardPredictions) {
+            throw new IllegalArgumentException("Can only output to threshold file when predictions are not discarded!");
+        }
+        if (outputModelsForTrainingSplits && (testFileName.length() > 0 || ((splitPercentageString.length() == 0) && noCrossValidation))) {
+            throw new IllegalArgumentException("Can only output models for training splits if cross-validation or " + "percentage split evaluation is performed!");
+        }
+        // Set seed, number of folds, and class index if required
+        if (seedString.length() != 0) {
+            seed = Integer.parseInt(seedString);
+        }
+        if (foldsString.length() != 0) {
+            folds = Integer.parseInt(foldsString);
+        }
+        if (classIndexString.length() != 0) {
+            if (classIndexString.equals("first")) {
+                classIndex = 1;
+            } else if (classIndexString.equals("last")) {
+                classIndex = -1;
+            } else {
+                classIndex = Integer.parseInt(classIndexString);
+            }
+        }
+        // Try to open training and/or test file
+        if (testFileName.length() != 0) {
+            try {
+                template = test = new DataSource(testFileName).getStructure();
+                if (classIndex != -1) {
+                    test.setClassIndex(classIndex - 1);
+                } else {
+                    if ((test.classIndex() == -1) || (classIndexString.length() != 0)) {
+                        test.setClassIndex(test.numAttributes() - 1);
+                    }
+                }
+                actualClassIndex = test.classIndex();
+            } catch (Exception e) {
+                throw new Exception("Can't open file " + testFileName + '.');
+            }
+        }
+        if (trainFileName.length() != 0) {
+            try {
+                template = train = new DataSource(trainFileName).getStructure();
+                if (classIndex != -1) {
+                    train.setClassIndex(classIndex - 1);
+                } else {
+                    if ((train.classIndex() == -1) || (classIndexString.length() != 0)) {
+                        train.setClassIndex(train.numAttributes() - 1);
+                    }
+                }
+                actualClassIndex = train.classIndex();
+            } catch (Exception e) {
+                throw new Exception("Can't open file " + trainFileName + '.');
+            }
+        }
+        // Need to check whether train and test file are compatible
+        if (!(classifier instanceof weka.classifiers.misc.InputMappedClassifier)) {
+            if ((test != null) && (train != null) && !test.equalHeaders(train)) {
+                throw new IllegalArgumentException("Train and test file not compatible!\n" + test.equalHeadersMsg(train));
+            }
+        }
+        // Need to check whether output of threshold file is possible if desired by user
+        if ((thresholdFile.length() != 0) && !template.classAttribute().isNominal()) {
+            throw new IllegalArgumentException("Can only output to threshold file when class attribute is nominal!");
+        }
+        // Need to check whether output of margins is possible if desired by user
+        if (printMargins && !template.classAttribute().isNominal()) {
+            throw new IllegalArgumentException("Can only print margins when class is nominal!");
+        }
+        // Read model file if appropriate (which may just hold scheme-specific options, and not a built model)
+        if (objectInputFileName.length() != 0) {
+            Classifier backedUpClassifier = classifier;
+            if (objectInputFileName.endsWith(".xml")) {
+                try {
+                    // Try to load scheme-specific options as XMLClassifier
+                    OptionHandler cl = (OptionHandler) new XMLClassifier().read(objectInputFileName);
+                    options = Stream.concat(Arrays.stream(cl.getOptions()), Arrays.stream(options)).toArray(String[]::new);
+                    // We have not actually read a built model, only some options
+                    objectInputFileName = "";
+                } catch (IllegalArgumentException ex) {
+                    classifier = getModelFromFile(objectInputFileName, template);
+                }
+            } else {
+                classifier = getModelFromFile(objectInputFileName, template);
+            }
+            if (!classifier.getClass().equals(backedUpClassifier.getClass())) {
+                throw new IllegalArgumentException("Loaded classifier is " + classifier.getClass().getCanonicalName() + ", not " + backedUpClassifier.getClass().getCanonicalName() + "!");
+            }
+            // set options if IterativeClassifier && continue iterating
+            if (continueIteratingIterative && classifier instanceof IterativeClassifier && classifier instanceof OptionHandler) {
+                if (train == null) {
+                    throw new IllegalArgumentException("IterativeClassifiers require training " + "data to continue iterating");
+                }
+                ((OptionHandler) classifier).setOptions(options);
+                ((IterativeClassifier) classifier).setResume(!cleanUpIterative);
+            }
+        }
+        // Check for cost matrix
+        costMatrix = handleCostOption(Utils.getOption('m', options), template.numClasses());
+        // Need to check whether use of cost matrix is possible if desired by user
+        if ((costMatrix != null) && !template.classAttribute().isNominal()) {
+            throw new IllegalArgumentException("Can only use cost matrix when class attribute is nominal!");
+        }
+        // Determine if predictions are to be output
+        if (classifications.length() > 0) {
+            classificationOutput = AbstractOutput.fromCommandline(classifications);
+            if (classificationOutput == null) {
+                throw new IllegalArgumentException("Failed to instantiate class for classification output: " + classifications);
+            }
+            classificationOutput.setHeader(template);
+        } else if (classificationsOld.length() > 0) {
+            // backwards compatible with old "-p range" and "-distribution" options
+            classificationOutput = new PlainText();
+            classificationOutput.setHeader(template);
+            if (!classificationsOld.equals("0")) {
+                classificationOutput.setAttributes(classificationsOld);
+            }
+            classificationOutput.setOutputDistribution(Utils.getFlag("distribution", options));
+        } else {
+            if (Utils.getFlag("distribution", options)) {
+                // -distribution flag needs -p option
+                throw new Exception("Cannot print distribution without '-p' option!");
+            }
+        }
+        if (thresholdLabel.length() != 0) {
+            labelIndex = template.classAttribute().indexOfValue(thresholdLabel);
+        }
+        if (labelIndex == -1) {
+            throw new IllegalArgumentException("Class label '" + thresholdLabel + "' is unknown!");
+        }
+        // (with the exception of IterativeClassifiers)
+        if (objectInputFileName.length() == 0) {
+            if (classifier instanceof OptionHandler) {
+                for (String option : options) {
+                    if (option.length() != 0) {
+                        if (schemeOptionsText == null) {
+                            schemeOptionsText = new StringBuffer();
+                        }
+                        if (option.indexOf(' ') != -1) {
+                            schemeOptionsText.append('"' + option + "\" ");
+                        } else {
+                            schemeOptionsText.append(option + " ");
+                        }
+                    }
+                }
+                ((OptionHandler) classifier).setOptions(options);
+            }
+        }
+        Utils.checkForRemainingOptions(options);
+    } catch (Exception ex) {
+        throw new Exception("\nWeka exception: " + ex.getMessage() + makeOptionString(classifier, false));
+    }
+    // Build classifier on full training set if necessary
+    Classifier classifierBackup = null;
+    if (objectInputFileName.length() == 0) {
+        // Back up configured classifier
+        classifierBackup = AbstractClassifier.makeCopy(classifier);
+    }
+    if (trainFileName.length() > 0) {
+        if (!noOutput || trainStatistics || printGraph || printSource || objectOutputFileName.length() > 0 || (testFileName.length() > 0) || (classificationOutput != null && noCrossValidation && splitPercentage == -1)) {
+            if ((classifier instanceof UpdateableClassifier) && !forceBatchTraining) {
+                // Build classifier incrementally
+                trainTimeStart = System.currentTimeMillis();
+                DataSource trainSource = new DataSource(trainFileName);
+                // Need to advance in the file to get to the data
+                trainSource.getStructure();
+                if (objectInputFileName.length() <= 0) {
+                    // Only need to initialize classifier if we haven't loaded one
+                    classifier.buildClassifier(new Instances(train, 0));
+                }
+                while (trainSource.hasMoreElements(train)) {
+                    ((UpdateableClassifier) classifier).updateClassifier(trainSource.nextElement(train));
+                }
+                if (classifier instanceof UpdateableBatchProcessor) {
+                    ((UpdateableBatchProcessor) classifier).batchFinished();
+                }
+                trainTimeElapsed = System.currentTimeMillis() - trainTimeStart;
+            } else if (classifier instanceof IterativeClassifier && continueIteratingIterative) {
+                IterativeClassifier iClassifier = (IterativeClassifier) classifier;
+                Instances tempTrain = new DataSource(trainFileName).getDataSet(actualClassIndex);
+                iClassifier.initializeClassifier(tempTrain);
+                while (iClassifier.next()) {
+                }
+                iClassifier.done();
+            } else {
+                // Build classifier in one go
+                Instances tempTrain = new DataSource(trainFileName).getDataSet(actualClassIndex);
+                if (classifier instanceof weka.classifiers.misc.InputMappedClassifier) {
+                    Instances mappedClassifierDataset = ((weka.classifiers.misc.InputMappedClassifier) classifier).getModelHeader(new Instances(template, 0));
+                    if (!mappedClassifierDataset.equalHeaders(tempTrain)) {
+                        for (int zz = 0; zz < tempTrain.numInstances(); zz++) {
+                            Instance mapped = ((weka.classifiers.misc.InputMappedClassifier) classifier).constructMappedInstance(tempTrain.instance(zz));
+                            mappedClassifierDataset.add(mapped);
+                        }
+                        tempTrain = mappedClassifierDataset;
+                    }
+                }
+                trainTimeStart = System.currentTimeMillis();
+                classifier.buildClassifier(tempTrain);
+                trainTimeElapsed = System.currentTimeMillis() - trainTimeStart;
+            }
+        }
+    }
+    // If classifier is drawable output string describing graph
+    if (printGraph) {
+        return ((Drawable) classifier).graph();
+    }
+    // Output the classifier as equivalent source
+    if (printSource) {
+        return wekaStaticWrapper((Sourcable) classifier, sourceClass);
+    }
+    // Save classifier if appropriate
+    if (objectOutputFileName.length() > 0) {
+        saveClassifier(classifier, template, objectOutputFileName);
+    }
+    // Output model
+    StringBuffer text = new StringBuffer();
+    if (!(noOutput || printMargins || classificationOutput != null)) {
+        if (classifier instanceof OptionHandler) {
+            if (schemeOptionsText != null) {
+                text.append("\nOptions: " + schemeOptionsText + "\n");
+            }
+        }
+        text.append("\n=== Classifier model (full training set) ===\n\n" + classifier.toString() + "\n");
+        text.append("\nTime taken to build model: " + Utils.doubleToString(trainTimeElapsed / 1000.0, 2) + " seconds\n");
+    }
+    // Stop here if no output of performance statistics or predictions is required and no threshold data is required
+    if (!trainStatistics && noCrossValidation && splitPercentage != -1 && testFileName.length() <= 0 && classificationOutput == null) {
+        if (noOutput) {
+            return "";
+        } else {
+            return text.toString();
+        }
+    }
+    if (!printMargins && (costMatrix != null)) {
+        text.append("\n=== Evaluation Cost Matrix ===\n\n");
+        text.append(costMatrix.toString());
+    }
+    // Do we need a mapped classifier header?
+    Instances mappedClassifierHeader = null;
+    if (classifier instanceof weka.classifiers.misc.InputMappedClassifier) {
+        mappedClassifierHeader = ((weka.classifiers.misc.InputMappedClassifier) classifier).getModelHeader(new Instances(template, 0));
+    }
+    // Do we just want to output predictions?
+    if (classificationOutput != null) {
+        // Set up appropriate header for input mapped classifier
+        if (classifier instanceof weka.classifiers.misc.InputMappedClassifier) {
+            classificationOutput.setHeader(mappedClassifierHeader);
+        }
+        // Set up buffer
+        StringBuffer predsBuff = new StringBuffer();
+        classificationOutput.setBuffer(predsBuff);
+        if (testFileName.length() > 0) {
+            // CASE 1: SEPARATE TEST SET
+            predsBuff.append("\n=== Predictions on test data ===\n\n");
+            classificationOutput.print(classifier, new DataSource(testFileName));
+        } else if (splitPercentage > 0) {
+            // CASE 2: PERCENTAGE SPLIT
+            Instances tmpInst = new DataSource(trainFileName).getDataSet(actualClassIndex);
+            if (!preserveOrder) {
+                tmpInst.randomize(new Random(seed));
+            }
+            int trainSize = (int) Math.round(tmpInst.numInstances() * splitPercentage / 100);
+            int testSize = tmpInst.numInstances() - trainSize;
+            Instances trainInst = new Instances(tmpInst, 0, trainSize);
+            classifier = AbstractClassifier.makeCopy(classifierBackup);
+            classifier.buildClassifier(trainInst);
+            trainInst = null;
+            Instances testInst = new Instances(tmpInst, trainSize, testSize);
+            predsBuff.append("\n=== Predictions on test split ===\n\n");
+            classificationOutput.print(classifier, testInst);
+        } else if (!noCrossValidation) {
+            // CASE 3: CROSS-VALIDATION
+            Random random = new Random(seed);
+            Evaluation testingEvaluation = new Evaluation(new Instances(template, 0), costMatrix);
+            if (classifier instanceof weka.classifiers.misc.InputMappedClassifier) {
+                testingEvaluation = new Evaluation(new Instances(mappedClassifierHeader, 0), costMatrix);
+            }
+            testingEvaluation.toggleEvalMetrics(toggleList);
+            classifier = AbstractClassifier.makeCopy(classifierBackup);
+            predsBuff.append("\n=== Predictions under cross-validation ===\n\n");
+            testingEvaluation.crossValidateModel(classifier, new DataSource(trainFileName).getDataSet(actualClassIndex), folds, random, classificationOutput);
+        } else {
+            predsBuff.append("\n=== Predictions on training data ===\n\n");
+            classificationOutput.print(classifier, new DataSource(trainFileName));
+        }
+        text.append("\n" + predsBuff);
+    } else {
+        // ================================================
+        // Code path for when performance is to be computed
+        // ================================================
+        Evaluation testingEvaluation = new Evaluation(new Instances(template, 0), costMatrix);
+        if (classifier instanceof weka.classifiers.misc.InputMappedClassifier) {
+            testingEvaluation = new Evaluation(new Instances(mappedClassifierHeader, 0), costMatrix);
+        }
+        testingEvaluation.setDiscardPredictions(discardPredictions);
+        testingEvaluation.toggleEvalMetrics(toggleList);
+        // CASE 1: SEPARATE TEST SET
+        if (testFileName.length() > 0) {
+            // Evaluation on the training data required?
+            if (train != null && trainStatistics && !printMargins) {
+                Evaluation trainingEvaluation = new Evaluation(new Instances(template, 0), costMatrix);
+                if (classifier instanceof weka.classifiers.misc.InputMappedClassifier) {
+                    trainingEvaluation = new Evaluation(new Instances(mappedClassifierHeader, 0), costMatrix);
+                }
+                trainingEvaluation.setDiscardPredictions(discardPredictions);
+                trainingEvaluation.toggleEvalMetrics(toggleList);
+                trainingEvaluation.setPriors(train);
+                testingEvaluation.setPriors(train);
+                DataSource trainSource = new DataSource(trainFileName);
+                // We already know the structure but need to advance to the data section
+                trainSource.getStructure();
+                while (trainSource.hasMoreElements(train)) {
+                    Instance trainInst = trainSource.nextElement(train);
+                    trainingEvaluation.updatePriors(trainInst);
+                    testingEvaluation.updatePriors(trainInst);
+                }
+                if ((classifier instanceof BatchPredictor) && (((BatchPredictor) classifier).implementsMoreEfficientBatchPrediction())) {
+                    testTimeStart = System.currentTimeMillis();
+                    trainingEvaluation.evaluateModel(classifier, new DataSource(trainFileName).getDataSet(actualClassIndex));
+                    testTimeElapsed = System.currentTimeMillis() - testTimeStart;
+                } else {
+                    trainSource = new DataSource(trainFileName);
+                    // We already know the structure but need to advance to the data section
+                    trainSource.getStructure();
+                    testTimeStart = System.currentTimeMillis();
+                    while (trainSource.hasMoreElements(train)) {
+                        trainingEvaluation.evaluateModelOnceAndRecordPrediction(classifier, trainSource.nextElement(train));
+                    }
+                    testTimeElapsed = System.currentTimeMillis() - testTimeStart;
+                }
+                text.append("\nTime taken to test model on training data: ");
+                text.append(Utils.doubleToString(testTimeElapsed / 1000.0, 2) + " seconds");
+                text.append(trainingEvaluation.toSummaryString("\n\n=== Error on training data ===\n", printComplexityStatistics));
+                if (template.classAttribute().isNominal()) {
+                    if (classStatistics) {
+                        text.append("\n\n" + trainingEvaluation.toClassDetailsString());
+                    }
+                    text.append("\n\n" + trainingEvaluation.toMatrixString());
+                }
+            }
+            // Evaluate on test data
+            if (train == null) {
+                testingEvaluation.useNoPriors();
+            }
+            if (classifier instanceof BatchPredictor && ((BatchPredictor) classifier).implementsMoreEfficientBatchPrediction()) {
+                testTimeStart = System.currentTimeMillis();
+                testingEvaluation.evaluateModel(classifier, new DataSource(testFileName).getDataSet(test.classIndex()));
+                testTimeElapsed = System.currentTimeMillis() - testTimeStart;
+            } else {
+                DataSource testSource = new DataSource(testFileName);
+                // We already know the structure but need to advance to the data section
+                testSource.getStructure();
+                testTimeStart = System.currentTimeMillis();
+                while (testSource.hasMoreElements(test)) {
+                    testingEvaluation.evaluateModelOnceAndRecordPrediction(classifier, testSource.nextElement(test));
+                }
+                testTimeElapsed = System.currentTimeMillis() - testTimeStart;
+            }
+            if (printMargins) {
+                return testingEvaluation.toCumulativeMarginDistributionString();
+            }
+            text.append("\nTime taken to test model on test data: ");
+            text.append(Utils.doubleToString(testTimeElapsed / 1000.0, 2) + " seconds");
+            text.append(testingEvaluation.toSummaryString("\n\n=== Error on test data ===\n", printComplexityStatistics));
+            if (template.classAttribute().isNominal()) {
+                if (classStatistics) {
+                    text.append("\n\n" + testingEvaluation.toClassDetailsString());
+                }
+                text.append("\n\n" + testingEvaluation.toMatrixString());
+            }
+        } else if (splitPercentage > 0) {
+            // Evaluation on the training data required?
+            if (train != null && trainStatistics && !printMargins) {
+                Evaluation trainingEvaluation = new Evaluation(new Instances(template, 0), costMatrix);
+                if (classifier instanceof weka.classifiers.misc.InputMappedClassifier) {
+                    trainingEvaluation = new Evaluation(new Instances(mappedClassifierHeader, 0), costMatrix);
+                }
+                trainingEvaluation.setDiscardPredictions(discardPredictions);
+                trainingEvaluation.toggleEvalMetrics(toggleList);
+                DataSource trainSource = new DataSource(trainFileName);
+                // We already know the structure but need to advance to the data section
+                trainSource.getStructure();
+                trainingEvaluation.setPriors(train);
+                while (trainSource.hasMoreElements(train)) {
+                    trainingEvaluation.updatePriors(trainSource.nextElement(train));
+                }
+                if ((classifier instanceof BatchPredictor) && (((BatchPredictor) classifier).implementsMoreEfficientBatchPrediction())) {
+                    testTimeStart = System.currentTimeMillis();
+                    trainingEvaluation.evaluateModel(classifier, new DataSource(trainFileName).getDataSet(actualClassIndex));
+                    testTimeElapsed = System.currentTimeMillis() - testTimeStart;
+                } else {
+                    trainSource = new DataSource(trainFileName);
+                    // We already know the structure but need to advance to the data section
+                    trainSource.getStructure();
+                    testTimeStart = System.currentTimeMillis();
+                    while (trainSource.hasMoreElements(train)) {
+                        trainingEvaluation.evaluateModelOnceAndRecordPrediction(classifier, trainSource.nextElement(train));
+                    }
+                    testTimeElapsed = System.currentTimeMillis() - testTimeStart;
+                }
+                text.append("\nTime taken to test model on training data: ");
+                text.append(Utils.doubleToString(testTimeElapsed / 1000.0, 2) + " seconds");
+                text.append(trainingEvaluation.toSummaryString("\n\n=== Error on training data ===\n", printComplexityStatistics));
+                if (template.classAttribute().isNominal()) {
+                    if (classStatistics) {
+                        text.append("\n\n" + trainingEvaluation.toClassDetailsString());
+                    }
+                    text.append("\n\n" + trainingEvaluation.toMatrixString());
+                }
+            }
+            Instances tmpInst = new DataSource(trainFileName).getDataSet(actualClassIndex);
+            if (!preserveOrder) {
+                tmpInst.randomize(new Random(seed));
+            }
+            int trainSize = (int) Math.round(tmpInst.numInstances() * splitPercentage / 100);
+            int testSize = tmpInst.numInstances() - trainSize;
+            Instances trainInst = new Instances(tmpInst, 0, trainSize);
+            classifier = AbstractClassifier.makeCopy(classifierBackup);
+            classifier.buildClassifier(trainInst);
+            if (outputModelsForTrainingSplits) {
+                text.append("\n=== Classifier model (training split) ===\n\n" + classifier.toString() + "\n");
+            }
+            testingEvaluation.setPriors(trainInst);
+            trainInst = null;
+            Instances testInst = new Instances(tmpInst, trainSize, testSize);
+            testTimeStart = System.currentTimeMillis();
+            testingEvaluation.evaluateModel(classifier, testInst);
+            testTimeElapsed = System.currentTimeMillis() - testTimeStart;
+            if (printMargins) {
+                return testingEvaluation.toCumulativeMarginDistributionString();
+            }
+            text.append("\nTime taken to test model on test split: ");
+            text.append(Utils.doubleToString(testTimeElapsed / 1000.0, 2) + " seconds");
+            text.append(testingEvaluation.toSummaryString("\n\n=== Error on test split ===\n", printComplexityStatistics));
+            if (template.classAttribute().isNominal()) {
+                if (classStatistics) {
+                    text.append("\n\n" + testingEvaluation.toClassDetailsString());
+                }
+                text.append("\n\n" + testingEvaluation.toMatrixString());
+            }
+        } else if (!noCrossValidation) {
+            // Evaluation on the training data required?
+            if (train != null && trainStatistics && !printMargins) {
+                Evaluation trainingEvaluation = new Evaluation(new Instances(template, 0), costMatrix);
+                if (classifier instanceof weka.classifiers.misc.InputMappedClassifier) {
+                    trainingEvaluation = new Evaluation(new Instances(mappedClassifierHeader, 0), costMatrix);
+                }
+                trainingEvaluation.setDiscardPredictions(discardPredictions);
+                trainingEvaluation.toggleEvalMetrics(toggleList);
+                DataSource trainSource = new DataSource(trainFileName);
+                // We already know the structure but need to advance to the data section
+                trainSource.getStructure();
+                trainingEvaluation.setPriors(train);
+                while (trainSource.hasMoreElements(train)) {
+                    trainingEvaluation.updatePriors(trainSource.nextElement(train));
+                }
+                if ((classifier instanceof BatchPredictor) && (((BatchPredictor) classifier).implementsMoreEfficientBatchPrediction())) {
+                    testTimeStart = System.currentTimeMillis();
+                    trainingEvaluation.evaluateModel(classifier, new DataSource(trainFileName).getDataSet(actualClassIndex));
+                    testTimeElapsed = System.currentTimeMillis() - testTimeStart;
+                } else {
+                    trainSource = new DataSource(trainFileName);
+                    // We already know the structure but need to advance to the data section
+                    trainSource.getStructure();
+                    testTimeStart = System.currentTimeMillis();
+                    while (trainSource.hasMoreElements(train)) {
+                        trainingEvaluation.evaluateModelOnceAndRecordPrediction(classifier, trainSource.nextElement(train));
+                    }
+                    testTimeElapsed = System.currentTimeMillis() - testTimeStart;
+                }
+                text.append("\nTime taken to test model on training data: ");
+                text.append(Utils.doubleToString(testTimeElapsed / 1000.0, 2) + " seconds");
+                text.append(trainingEvaluation.toSummaryString("\n\n=== Error on training data ===\n", printComplexityStatistics));
+                if (template.classAttribute().isNominal()) {
+                    if (classStatistics) {
+                        text.append("\n\n" + trainingEvaluation.toClassDetailsString());
+                    }
+                    text.append("\n\n" + trainingEvaluation.toMatrixString());
+                }
+            }
+            Random random = new Random(seed);
+            // use untrained (!) classifier for cross-validation
+            classifier = AbstractClassifier.makeCopy(classifierBackup);
+            testTimeStart = System.currentTimeMillis();
+            if (!outputModelsForTrainingSplits) {
+                testingEvaluation.crossValidateModel(classifier, new DataSource(trainFileName).getDataSet(actualClassIndex), folds, random);
+            } else {
+                testingEvaluation.crossValidateModel(classifier, new DataSource(trainFileName).getDataSet(actualClassIndex), folds, random, text);
+            }
+            testTimeElapsed = System.currentTimeMillis() - testTimeStart;
+            if (printMargins) {
+                return testingEvaluation.toCumulativeMarginDistributionString();
+            }
+            text.append("\nTime taken to perform cross-validation: ");
+            text.append(Utils.doubleToString(testTimeElapsed / 1000.0, 2) + " seconds");
+            if (template.classAttribute().isNumeric()) {
+                text.append("\n\n\n" + testingEvaluation.toSummaryString("=== Cross-validation ===\n", printComplexityStatistics));
+            } else {
+                text.append("\n\n\n" + testingEvaluation.toSummaryString("=== Stratified " + "cross-validation ===\n", printComplexityStatistics));
+            }
+            if (template.classAttribute().isNominal()) {
+                if (classStatistics) {
+                    text.append("\n\n" + testingEvaluation.toClassDetailsString());
+                }
+                text.append("\n\n" + testingEvaluation.toMatrixString());
+            }
+        } else if (trainStatistics) {
+            // Evaluation on the training data required?
+            if (train != null) {
+                Evaluation trainingEvaluation = new Evaluation(new Instances(template, 0), costMatrix);
+                if (classifier instanceof weka.classifiers.misc.InputMappedClassifier) {
+                    trainingEvaluation = new Evaluation(new Instances(mappedClassifierHeader, 0), costMatrix);
+                }
+                trainingEvaluation.setDiscardPredictions(discardPredictions);
+                trainingEvaluation.toggleEvalMetrics(toggleList);
+                DataSource trainSource = new DataSource(trainFileName);
+                // We already know the structure but need to advance to the data section
+                trainSource.getStructure();
+                trainingEvaluation.setPriors(train);
+                while (trainSource.hasMoreElements(train)) {
+                    trainingEvaluation.updatePriors(trainSource.nextElement(train));
+                }
+                if ((classifier instanceof BatchPredictor) && (((BatchPredictor) classifier).implementsMoreEfficientBatchPrediction())) {
+                    testTimeStart = System.currentTimeMillis();
+                    trainingEvaluation.evaluateModel(classifier, new DataSource(trainFileName).getDataSet(actualClassIndex));
+                    testTimeElapsed = System.currentTimeMillis() - testTimeStart;
+                } else {
+                    trainSource = new DataSource(trainFileName);
+                    // We already know the structure but need to advance to the data section
+                    trainSource.getStructure();
+                    testTimeStart = System.currentTimeMillis();
+                    while (trainSource.hasMoreElements(train)) {
+                        trainingEvaluation.evaluateModelOnceAndRecordPrediction(classifier, trainSource.nextElement(train));
+                    }
+                    testTimeElapsed = System.currentTimeMillis() - testTimeStart;
+                }
+                if (printMargins) {
+                    return trainingEvaluation.toCumulativeMarginDistributionString();
+                }
+                text.append("\nTime taken to test model on training data: ");
+                text.append(Utils.doubleToString(testTimeElapsed / 1000.0, 2) + " seconds");
+                text.append(trainingEvaluation.toSummaryString("\n\n=== Error on training data ===\n", printComplexityStatistics));
+                if (template.classAttribute().isNominal()) {
+                    if (classStatistics) {
+                        text.append("\n\n" + trainingEvaluation.toClassDetailsString());
+                    }
+                    text.append("\n\n" + trainingEvaluation.toMatrixString());
+                }
+                testingEvaluation = trainingEvaluation;
+            }
+        }
+        // Output threshold file
+        if (thresholdFile.length() != 0) {
+            ThresholdCurve tc = new ThresholdCurve();
+            Instances result = tc.getCurve(testingEvaluation.predictions(), labelIndex);
+            DataSink.write(thresholdFile, result);
+        }
+    }
+    return text.toString();
+}

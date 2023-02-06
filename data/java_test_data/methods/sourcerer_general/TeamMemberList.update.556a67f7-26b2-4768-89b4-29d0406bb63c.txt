@@ -1,0 +1,81 @@
+public boolean update(Connection db, int masterUserId, int groupId, ArrayList addedUsers) throws SQLException {
+    try {
+        db.setAutoCommit(false);
+        // Add new members
+        if (insertMembers != null && (!insertMembers.equals("")) && projectId > -1) {
+            if (System.getProperty("DEBUG") != null) {
+                System.out.println("TeamMemberList-> New: " + insertMembers);
+            }
+            StringTokenizer items = new StringTokenizer(insertMembers, "|");
+            while (items.hasMoreTokens()) {
+                int itemId = -1;
+                String itemIdValue = items.nextToken();
+                boolean byEmail = false;
+                if (itemIdValue.indexOf("@") > 0) {
+                    itemId = User.getIdByEmailAddress(db, itemIdValue);
+                    if (itemId > -1) {
+                        byEmail = true;
+                    }
+                } else {
+                    itemId = Integer.parseInt(itemIdValue);
+                }
+                if (itemId == -1) {
+                    // If not, add them to the TeamMemberList...
+                    // The lead will be asked whether to send an email and invite and to
+                    // enter their name.
+                    TeamMember member = new TeamMember();
+                    User user = new User();
+                    user.setEmail(itemIdValue);
+                    member.setUser(user);
+                    this.add(member);
+                } else {
+                    // See if ID is already on the team
+                    if (!isOnTeam(db, projectId, itemId)) {
+                        // Insert the member
+                        PreparedStatement pst = db.prepareStatement("INSERT INTO project_team " + "(project_id, user_id, userlevel, enteredby, modifiedby, status, tools) " + "VALUES (?, ?, ?, ?, ?, ?, ?) ");
+                        int i = 0;
+                        pst.setInt(++i, projectId);
+                        pst.setInt(++i, itemId);
+                        DatabaseUtils.setInt(pst, ++i, userLevel);
+                        pst.setInt(++i, enteredBy);
+                        pst.setInt(++i, modifiedBy);
+                        pst.setInt(++i, TeamMember.STATUS_PENDING);
+                        pst.setBoolean(++i, tools);
+                        pst.execute();
+                        pst.close();
+                        // Existing user will be sent an email
+                        User user = UserUtils.loadUser(itemId);
+                        addedUsers.add(user);
+                    }
+                }
+            }
+        }
+        // Removed deleted members
+        if ((deleteMembers != null) && (!deleteMembers.equals("")) && projectId > -1) {
+            if (System.getProperty("DEBUG") != null) {
+                System.out.println("TeamMemberList-> Del: " + deleteMembers);
+            }
+            // Delete everyone but self
+            StringTokenizer items = new StringTokenizer(deleteMembers, "|");
+            while (items.hasMoreTokens()) {
+                String itemId = items.nextToken();
+                if (Integer.parseInt(itemId) != modifiedBy) {
+                    PreparedStatement pst = db.prepareStatement("DELETE FROM project_team " + "WHERE project_id = ? " + "AND user_id = ?");
+                    pst.setInt(1, projectId);
+                    pst.setInt(2, Integer.parseInt(itemId));
+                    pst.execute();
+                    pst.close();
+                }
+            }
+        }
+        db.commit();
+        db.setAutoCommit(true);
+    } catch (SQLException e) {
+        db.rollback();
+        db.setAutoCommit(true);
+        throw new SQLException(e.getMessage());
+    } finally {
+        CacheUtils.invalidateValue(Constants.SYSTEM_PROJECT_CACHE, projectId);
+    }
+    return true;
+}

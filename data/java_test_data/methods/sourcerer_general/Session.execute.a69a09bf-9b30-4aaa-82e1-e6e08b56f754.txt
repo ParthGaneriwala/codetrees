@@ -1,0 +1,166 @@
+public synchronized Result execute(Result cmd) {
+    if (isClosed) {
+        return Result.newErrorResult(Error.error(ErrorCode.X_08503));
+    }
+    sessionContext.currentMaxRows = 0;
+    isBatch = false;
+    JavaSystem.gc();
+    switch(cmd.mode) {
+        case ResultConstants.LARGE_OBJECT_OP:
+            {
+                return performLOBOperation((ResultLob) cmd);
+            }
+        case ResultConstants.EXECUTE:
+            {
+                int maxRows = cmd.getUpdateCount();
+                if (maxRows == -1) {
+                    sessionContext.currentMaxRows = 0;
+                } else {
+                    sessionContext.currentMaxRows = maxRows;
+                }
+                Statement cs = cmd.statement;
+                if (cs == null || cs.compileTimestamp < database.schemaManager.schemaChangeTimestamp) {
+                    long csid = cmd.getStatementID();
+                    cs = statementManager.getStatement(this, csid);
+                    if (cs == null) {
+                        // invalid sql has been removed already
+                        return Result.newErrorResult(Error.error(ErrorCode.X_07502));
+                    }
+                }
+                Object[] pvals = (Object[]) cmd.valueData;
+                Result result = executeCompiledStatement(cs, pvals);
+                result = performPostExecute(cmd, result);
+                return result;
+            }
+        case ResultConstants.BATCHEXECUTE:
+            {
+                isBatch = true;
+                Result result = executeCompiledBatchStatement(cmd);
+                result = performPostExecute(cmd, result);
+                return result;
+            }
+        case ResultConstants.EXECDIRECT:
+            {
+                Result result = executeDirectStatement(cmd);
+                result = performPostExecute(cmd, result);
+                return result;
+            }
+        case ResultConstants.BATCHEXECDIRECT:
+            {
+                isBatch = true;
+                Result result = executeDirectBatchStatement(cmd);
+                result = performPostExecute(cmd, result);
+                return result;
+            }
+        case ResultConstants.PREPARE:
+            {
+                Statement cs;
+                try {
+                    cs = statementManager.compile(this, cmd);
+                } catch (Throwable t) {
+                    String errorString = cmd.getMainString();
+                    if (database.getProperties().getErrorLevel() == HsqlDatabaseProperties.NO_MESSAGE) {
+                        errorString = null;
+                    }
+                    return Result.newErrorResult(t, errorString);
+                }
+                Result result = Result.newPrepareResponse(cs);
+                if (cs.getType() == StatementTypes.SELECT_CURSOR || cs.getType() == StatementTypes.CALL) {
+                    sessionData.setResultSetProperties(cmd, result);
+                }
+                result = performPostExecute(cmd, result);
+                return result;
+            }
+        case ResultConstants.CLOSE_RESULT:
+            {
+                closeNavigator(cmd.getResultId());
+                return Result.updateZeroResult;
+            }
+        case ResultConstants.UPDATE_RESULT:
+            {
+                Result result = this.executeResultUpdate(cmd);
+                result = performPostExecute(cmd, result);
+                return result;
+            }
+        case ResultConstants.FREESTMT:
+            {
+                statementManager.freeStatement(cmd.getStatementID());
+                return Result.updateZeroResult;
+            }
+        case ResultConstants.GETSESSIONATTR:
+            {
+                int id = cmd.getStatementType();
+                return getAttributesResult(id);
+            }
+        case ResultConstants.SETSESSIONATTR:
+            {
+                return setAttributes(cmd);
+            }
+        case ResultConstants.ENDTRAN:
+            {
+                switch(cmd.getActionType()) {
+                    case ResultConstants.TX_COMMIT:
+                        try {
+                            commit(false);
+                        } catch (Throwable t) {
+                            return Result.newErrorResult(t);
+                        }
+                        break;
+                    case ResultConstants.TX_COMMIT_AND_CHAIN:
+                        try {
+                            commit(true);
+                        } catch (Throwable t) {
+                            return Result.newErrorResult(t);
+                        }
+                        break;
+                    case ResultConstants.TX_ROLLBACK:
+                        rollback(false);
+                        break;
+                    case ResultConstants.TX_ROLLBACK_AND_CHAIN:
+                        rollback(true);
+                        break;
+                    case ResultConstants.TX_SAVEPOINT_NAME_RELEASE:
+                        try {
+                            String name = cmd.getMainString();
+                            releaseSavepoint(name);
+                        } catch (Throwable t) {
+                            return Result.newErrorResult(t);
+                        }
+                        break;
+                    case ResultConstants.TX_SAVEPOINT_NAME_ROLLBACK:
+                        try {
+                            rollbackToSavepoint(cmd.getMainString());
+                        } catch (Throwable t) {
+                            return Result.newErrorResult(t);
+                        }
+                        break;
+                }
+                return Result.updateZeroResult;
+            }
+        case ResultConstants.SETCONNECTATTR:
+            {
+                switch(cmd.getConnectionAttrType()) {
+                    case ResultConstants.SQL_ATTR_SAVEPOINT_NAME:
+                        try {
+                            savepoint(cmd.getMainString());
+                        } catch (Throwable t) {
+                            return Result.newErrorResult(t);
+                        }
+                }
+                return Result.updateZeroResult;
+            }
+        case ResultConstants.REQUESTDATA:
+            {
+                return sessionData.getDataResultSlice(cmd.getResultId(), cmd.getUpdateCount(), cmd.getFetchSize());
+            }
+        case ResultConstants.DISCONNECT:
+            {
+                close();
+                return Result.updateZeroResult;
+            }
+        default:
+            {
+                return Result.newErrorResult(Error.runtimeError(ErrorCode.U_S0500, "Session"));
+            }
+    }
+}

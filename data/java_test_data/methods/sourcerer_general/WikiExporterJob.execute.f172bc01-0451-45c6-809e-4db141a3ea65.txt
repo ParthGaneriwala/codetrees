@@ -1,0 +1,66 @@
+public void execute(JobExecutionContext context) throws JobExecutionException {
+    LOG.debug("Starting job...");
+    SchedulerContext schedulerContext = null;
+    Connection db = null;
+    try {
+        schedulerContext = context.getScheduler().getContext();
+        ApplicationPrefs prefs = (ApplicationPrefs) schedulerContext.get("ApplicationPrefs");
+        String fs = System.getProperty("file.separator");
+        db = SchedulerUtils.getConnection(schedulerContext);
+        Vector exportList = (Vector) schedulerContext.get(WIKI_EXPORT_ARRAY);
+        Vector availableList = (Vector) schedulerContext.get(WIKI_AVAILABLE_ARRAY);
+        while (exportList.size() > 0) {
+            WikiExportBean bean = (WikiExportBean) exportList.get(0);
+            LOG.debug("Exporting a wiki (" + bean.getWikiId() + ")...");
+            User user = UserUtils.loadUser(bean.getUserId());
+            if (user == null) {
+                user = UserUtils.createGuestUser();
+            }
+            // Load the project
+            Project thisProject = new Project(db, bean.getProjectId());
+            // Load the wiki
+            Wiki wiki = new Wiki(db, bean.getWikiId(), thisProject.getId());
+            // See if a recent export is already available
+            long currentDate = System.currentTimeMillis();
+            String destDir = prefs.get("FILELIBRARY") + user.getGroupId() + fs + "wiki" + fs + DateUtils.getDatePath(new Date(currentDate));
+            File destPath = new File(destDir);
+            destPath.mkdirs();
+            String filename = "wiki-" + bean.getWikiId() + "-" + bean.getIncludeTitle() + "-" + bean.getFollowLinks() + "-" + WikiUtils.getLatestModifiedDate(wiki, bean.getFollowLinks(), db).getTime();
+            File exportFile = new File(destDir + filename);
+            WikiExportBean existingBean = getExisting(exportFile, availableList);
+            if (existingBean != null) {
+                if (existingBean.getUserId() == bean.getUserId()) {
+                    // This user already has a valid file ready so a new record isn't needed
+                    LOG.debug("Exported file already exists (" + existingBean.getWikiId() + ") and was requested by this user");
+                } else {
+                    // Tell the new bean the existing bean's details which another user ran
+                    LOG.debug("Exported file already exists (" + existingBean.getWikiId() + ") and will be reused for this user");
+                    bean.setExportedFile(existingBean.getExportedFile());
+                    availableList.add(bean);
+                }
+            } else {
+                // No existing PDF exists so export to PDF
+                if (exportFile.exists()) {
+                    LOG.debug("Found the requested file in the FileLibrary (" + wiki.getId() + ")...");
+                } else {
+                    LOG.debug("Generating a new file for wiki (" + wiki.getId() + ")...");
+                    // Load wiki image library dimensions (cache in future)
+                    HashMap<String, ImageInfo> imageList = WikiUtils.buildImageInfo(db, wiki.getProjectId());
+                    // Use a context to hold a bunch of stuff
+                    WikiPDFContext pdfContext = new WikiPDFContext(thisProject, wiki, exportFile, imageList, prefs.get("FILELIBRARY"), bean);
+                    // Execute the export
+                    WikiPDFUtils.exportToFile(pdfContext, db);
+                }
+                bean.setExportedFile(exportFile);
+                bean.setFileSize(exportFile.length());
+                availableList.add(bean);
+            }
+            exportList.remove(0);
+        }
+    } catch (Exception e) {
+        LOG.error("WikiExporterJob Exception", e);
+        throw new JobExecutionException(e.getMessage());
+    } finally {
+        SchedulerUtils.freeConnection(schedulerContext, db);
+    }
+}

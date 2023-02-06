@@ -1,0 +1,90 @@
+private void connectWithRetries(boolean isForReconnect, Properties mergedProps) throws SQLException {
+    double timeout = getInitialTimeout();
+    boolean connectionGood = false;
+    Exception connectionException = null;
+    for (int attemptCount = 0; (attemptCount < getMaxReconnects()) && !connectionGood; attemptCount++) {
+        try {
+            if (this.io != null) {
+                this.io.forceClose();
+            }
+            coreConnect(mergedProps);
+            pingInternal(false, 0);
+            this.connectionId = this.io.getThreadId();
+            this.isClosed = false;
+            // save state from old connection
+            boolean oldAutoCommit = getAutoCommit();
+            int oldIsolationLevel = this.isolationLevel;
+            boolean oldReadOnly = isReadOnly();
+            String oldCatalog = getCatalog();
+            this.io.setStatementInterceptors(this.statementInterceptors);
+            // Server properties might be different
+            // from previous connection, so initialize
+            // again...
+            initializePropsFromServer();
+            if (isForReconnect) {
+                // Restore state from old connection
+                setAutoCommit(oldAutoCommit);
+                if (this.hasIsolationLevels) {
+                    setTransactionIsolation(oldIsolationLevel);
+                }
+                setCatalog(oldCatalog);
+                setReadOnly(oldReadOnly);
+            }
+            connectionGood = true;
+            break;
+        } catch (Exception EEE) {
+            connectionException = EEE;
+            connectionGood = false;
+        }
+        if (connectionGood) {
+            break;
+        }
+        if (attemptCount > 0) {
+            try {
+                Thread.sleep((long) timeout * 1000);
+            } catch (InterruptedException IE) {
+            // ignore
+            }
+        }
+    }
+    if (!connectionGood) {
+        // We've really failed!
+        SQLException chainedEx = SQLError.createSQLException(Messages.getString("Connection.UnableToConnectWithRetries", new Object[] { new Integer(getMaxReconnects()) }), SQLError.SQL_STATE_UNABLE_TO_CONNECT_TO_DATASOURCE, getExceptionInterceptor());
+        chainedEx.initCause(connectionException);
+        throw chainedEx;
+    }
+    if (getParanoid() && !getHighAvailability()) {
+        this.password = null;
+        this.user = null;
+    }
+    if (isForReconnect) {
+        // 
+        // Retrieve any 'lost' prepared statements if re-connecting
+        // 
+        Iterator statementIter = this.openStatements.values().iterator();
+        // 
+        // We build a list of these outside the map of open statements,
+        // because
+        // in the process of re-preparing, we might end up having to
+        // close
+        // a prepared statement, thus removing it from the map, and
+        // generating
+        // a ConcurrentModificationException
+        // 
+        Stack serverPreparedStatements = null;
+        while (statementIter.hasNext()) {
+            Object statementObj = statementIter.next();
+            if (statementObj instanceof ServerPreparedStatement) {
+                if (serverPreparedStatements == null) {
+                    serverPreparedStatements = new Stack();
+                }
+                serverPreparedStatements.add(statementObj);
+            }
+        }
+        if (serverPreparedStatements != null) {
+            while (!serverPreparedStatements.isEmpty()) {
+                ((ServerPreparedStatement) serverPreparedStatements.pop()).rePrepare();
+            }
+        }
+    }
+}

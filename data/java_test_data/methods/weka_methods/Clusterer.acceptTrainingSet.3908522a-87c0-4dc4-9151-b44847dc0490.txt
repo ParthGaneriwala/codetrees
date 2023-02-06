@@ -1,0 +1,98 @@
+@Override
+public void acceptTrainingSet(final TrainingSetEvent e) {
+    if (e.isStructureOnly()) {
+        // no need to build a clusterer, instead just generate a dummy
+        // BatchClustererEvent in order to pass on instance structure to
+        // any listeners
+        BatchClustererEvent ce = new BatchClustererEvent(this, m_Clusterer, new DataSetEvent(this, e.getTrainingSet()), e.getSetNumber(), e.getMaxSetNumber(), 1);
+        notifyBatchClustererListeners(ce);
+        return;
+    }
+    if (m_buildThread == null) {
+        try {
+            if (m_state == IDLE) {
+                synchronized (this) {
+                    m_state = BUILDING_MODEL;
+                }
+                m_trainingSet = e.getTrainingSet();
+                // final String oldText = m_visual.getText();
+                m_buildThread = new Thread() {
+
+                    @SuppressWarnings("deprecation")
+                    @Override
+                    public void run() {
+                        try {
+                            if (m_trainingSet != null) {
+                                m_visual.setAnimated();
+                                // m_visual.setText("Building clusters...");
+                                if (m_log != null) {
+                                    m_log.statusMessage(statusMessagePrefix() + "Building clusters...");
+                                }
+                                buildClusterer();
+                                if (m_batchClustererListeners.size() > 0) {
+                                    BatchClustererEvent ce = new BatchClustererEvent(this, m_Clusterer, new DataSetEvent(this, e.getTrainingSet()), e.getSetNumber(), e.getMaxSetNumber(), 1);
+                                    notifyBatchClustererListeners(ce);
+                                }
+                                if (m_Clusterer instanceof weka.core.Drawable && m_graphListeners.size() > 0) {
+                                    String grphString = ((weka.core.Drawable) m_Clusterer).graph();
+                                    int grphType = ((weka.core.Drawable) m_Clusterer).graphType();
+                                    String grphTitle = m_Clusterer.getClass().getName();
+                                    grphTitle = grphTitle.substring(grphTitle.lastIndexOf('.') + 1, grphTitle.length());
+                                    grphTitle = "Set " + e.getSetNumber() + " (" + e.getTrainingSet().relationName() + ") " + grphTitle;
+                                    GraphEvent ge = new GraphEvent(Clusterer.this, grphString, grphTitle, grphType);
+                                    notifyGraphListeners(ge);
+                                }
+                                if (m_textListeners.size() > 0) {
+                                    String modelString = m_Clusterer.toString();
+                                    String titleString = m_Clusterer.getClass().getName();
+                                    titleString = titleString.substring(titleString.lastIndexOf('.') + 1, titleString.length());
+                                    modelString = "=== Clusterer model ===\n\n" + "Scheme:   " + titleString + "\n" + "Relation: " + m_trainingSet.relationName() + ((e.getMaxSetNumber() > 1) ? "\nTraining Fold: " + e.getSetNumber() : "") + "\n\n" + modelString;
+                                    titleString = "Model: " + titleString;
+                                    TextEvent nt = new TextEvent(Clusterer.this, modelString, titleString);
+                                    notifyTextListeners(nt);
+                                }
+                            }
+                        } catch (Exception ex) {
+                            // stop processing
+                            Clusterer.this.stop();
+                            if (m_log != null) {
+                                m_log.statusMessage(statusMessagePrefix() + "ERROR (See log for details");
+                                m_log.logMessage("[Clusterer] " + statusMessagePrefix() + " problem training clusterer. " + ex.getMessage());
+                            }
+                            ex.printStackTrace();
+                        } finally {
+                            // m_visual.setText(oldText);
+                            m_visual.setStatic();
+                            m_state = IDLE;
+                            if (isInterrupted()) {
+                                // prevent any clusterer events from being fired
+                                m_trainingSet = null;
+                                if (m_log != null) {
+                                    m_log.logMessage("[Clusterer]" + statusMessagePrefix() + " Build clusterer interrupted!");
+                                    m_log.statusMessage(statusMessagePrefix() + "INTERRUPTED");
+                                }
+                            } else {
+                                // save header
+                                m_trainingSet = new Instances(m_trainingSet, 0);
+                                if (m_log != null) {
+                                    m_log.statusMessage(statusMessagePrefix() + "Finished.");
+                                }
+                            }
+                            block(false);
+                        }
+                    }
+                };
+                m_buildThread.setPriority(Thread.MIN_PRIORITY);
+                m_buildThread.start();
+                // make sure the thread is still running before we block
+                // if (m_buildThread.isAlive()) {
+                block(true);
+                // }
+                m_buildThread = null;
+                m_state = IDLE;
+            }
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+    }
+}

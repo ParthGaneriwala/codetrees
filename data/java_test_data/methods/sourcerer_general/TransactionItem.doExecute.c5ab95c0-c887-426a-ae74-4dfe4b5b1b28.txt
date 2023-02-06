@@ -1,0 +1,75 @@
+public static Object doExecute(Object object, Connection db, int action, PacketContext packetContext, String executeMethod, boolean hook, boolean cached) throws Exception {
+    // Prepare the objects for execution
+    Class[] argClass = new Class[] { Class.forName("java.sql.Connection") };
+    Object[] argObject = new Object[] { db };
+    Method method = null;
+    if (action == DELETE) {
+        try {
+            // load the method that takes the fileLibrary path as an argument
+            argClass = new Class[] { Class.forName("java.sql.Connection"), Class.forName("java.lang.String") };
+            argObject = new Object[] { db, packetContext.getBaseFilePath() };
+            object.getClass().getMethod(executeMethod, argClass);
+        } catch (NoSuchMethodException nsme) {
+            // method does not exist
+            argClass = new Class[] { Class.forName("java.sql.Connection") };
+            argObject = new Object[] { db };
+        }
+    }
+    method = object.getClass().getMethod(executeMethod, argClass);
+    // Retrieve the previous object before executing an action
+    Object previousObject = null;
+    if (hook && packetContext.getObjectHookManager() != null) {
+        if (action == UPDATE || action == DELETE) {
+            try {
+                previousObject = ObjectUtils.constructObject(object.getClass(), db, Integer.parseInt(ObjectUtils.getParam(object, "id")));
+            // TODO: it's possible that if the previous object wasn't found, it doesn't cause an exception
+            // you would know by if the ID field isn't populated by the DAO, so check for id = -1
+            } catch (Exception e) {
+                // already deleted
+                if (action == DELETE) {
+                    return true;
+                }
+                LOG.error("Previous object does not exist... update and delete actions require a previous object");
+            }
+        }
+    }
+    // Execute the action
+    Object result = (method.invoke(object, argObject));
+    // Update the Lucene Index
+    Scheduler scheduler = packetContext.getScheduler();
+    if (scheduler != null) {
+        if (action == INSERT || action == UPDATE) {
+            IndexEvent indexEvent = new IndexEvent(object, IndexEvent.ADD);
+            ((Vector) scheduler.getContext().get("IndexArray")).add(indexEvent);
+        } else if (action == DELETE) {
+            IndexEvent indexEvent = new IndexEvent(object, IndexEvent.DELETE);
+            ((Vector) scheduler.getContext().get("IndexArray")).add(indexEvent);
+        }
+        scheduler.triggerJob("indexer", (String) scheduler.getContext().get(ScheduledJobs.CONTEXT_SCHEDULER_GROUP));
+    }
+    // Process any hooks
+    if (hook && packetContext.getObjectHookManager() != null) {
+        // Prepare required objects for ObjectHookManager
+        ApplicationPrefs prefs = packetContext.getApplicationPrefs();
+        boolean sslEnabled = "true".equals(prefs.get("SSL"));
+        String url = ("http://" + RequestUtils.getServerUrl(packetContext.getActionContext().getRequest()));
+        String secureUrl = ("http" + (sslEnabled ? "s" : "") + "://" + RequestUtils.getServerUrl(packetContext.getActionContext().getRequest()));
+        // Execute the process asynchronously
+        switch(action) {
+            case INSERT:
+                packetContext.getObjectHookManager().process(ObjectHookAction.INSERT, null, object, -1, url, secureUrl);
+                break;
+            case UPDATE:
+                packetContext.getObjectHookManager().process(ObjectHookAction.UPDATE, previousObject, object, -1, url, secureUrl);
+                break;
+            case DELETE:
+                if (previousObject != null) {
+                    packetContext.getObjectHookManager().process(ObjectHookAction.DELETE, previousObject, null, -1, url, secureUrl);
+                }
+                break;
+            default:
+                break;
+        }
+    }
+    return result;
+}

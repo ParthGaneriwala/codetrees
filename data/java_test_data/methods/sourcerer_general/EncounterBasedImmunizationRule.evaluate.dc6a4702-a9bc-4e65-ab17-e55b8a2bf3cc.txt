@@ -1,0 +1,40 @@
+@Override
+protected Result evaluate(final LogicContext context, final Integer patientId, final Map<String, Object> parameters) throws LogicException {
+    Result result = new Result();
+    // check if the caller already pass encounter list object in the parameter
+    Object encounters = parameters.get(EvaluableConstants.OBS_ENCOUNTER);
+    if (encounters != null) {
+        ObsWithRestrictionRule obsWithRestrictionRule = new ObsWithStringRestrictionRule();
+        // evaluate both concept to get the entire history of patient immunization
+        parameters.put(EvaluableConstants.OBS_ENCOUNTER, encounters);
+        parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.IMMUNIZATIONS_COMPLETE));
+        parameters.put(EvaluableConstants.OBS_VALUE_CODED, Arrays.asList(EvaluableNameConstants.YES));
+        Result completeImmunizationResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+        if (CollectionUtils.isNotEmpty(completeImmunizationResults))
+            return new Result(Context.getConceptService().getConcept(EvaluableNameConstants.IMMUNIZATIONS_COMPLETE));
+        // immunization is not complete
+        parameters.remove(EvaluableConstants.OBS_VALUE_CODED);
+        parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.IMMUNIZATIONS_ORDERED_DETAILED));
+        Result immunizationResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+        // immunization ordered concept structure
+        Concept immunizationOrderedConcept = CacheUtils.getConcept(EvaluableNameConstants.IMMUNIZATIONS_ORDERED);
+        Concept dosesOrderedConcept = CacheUtils.getConcept(EvaluableNameConstants.NUMBER_OF_DOSES_ORDERED);
+        Concept noneConcept = CacheUtils.getConcept(EvaluableNameConstants.NONE);
+        for (Result immunizationResult : immunizationResults) {
+            Obs immunizationObs = (Obs) immunizationResult.getResultObject();
+            if (immunizationObs.isObsGrouping()) {
+                Set<Obs> immunizationObsMembers = immunizationObs.getGroupMembers();
+                for (Obs immunizationObsMember : immunizationObsMembers) {
+                    Result administeredResult = new Result();
+                    Concept immunizationObsMemberConcept = immunizationObsMember.getConcept();
+                    if (OpenmrsUtil.nullSafeEquals(immunizationObsMemberConcept, immunizationOrderedConcept) && !OpenmrsUtil.nullSafeEquals(immunizationObsMember.getValueCoded(), noneConcept))
+                        administeredResult = new Result(immunizationObsMember.getValueCoded());
+                    if (OpenmrsUtil.nullSafeEquals(immunizationObsMemberConcept, dosesOrderedConcept))
+                        administeredResult.setValueNumeric(immunizationObsMember.getValueNumeric());
+                    result.add(administeredResult);
+                }
+            }
+        }
+    }
+    return result;
+}

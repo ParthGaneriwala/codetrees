@@ -1,0 +1,54 @@
+private void smhandleInternal(XmlPullParser parser, IoSession session) {
+    String streamId = session.getAttribute("streamId").toString();
+    if (streamId != null) {
+        String smName = parser.getAttributeValue("", "smname");
+        String password = parser.getAttributeValue("", "password");
+        if (!smName.startsWith("sm_")) {
+            StreamError error = new StreamError(StreamError.Condition.undefined_condition);
+            session.write(error);
+            session.write(CloseStream.getCloseStream());
+            session.close();
+            return;
+        }
+        if (smSessions.containsKey(smName)) {
+            StreamError error = new StreamError(StreamError.Condition.conflict);
+            session.write(error);
+            session.write(CloseStream.getCloseStream());
+            session.close();
+            return;
+        }
+        if (!registeredSmModules.containsKey(smName)) {
+            session.write("<error>" + "<unregistered xmlns=\"christy:internal:sm2router:auth\"/>" + "</error> ");
+            session.write(CloseStream.getCloseStream());
+            session.close();
+            return;
+        }
+        String registeredPwd = registeredSmModules.get(smName);
+        if (password.equals(registeredPwd)) {
+            SmSessionImpl smSession = new SmSessionImpl(streamId, smName, session, RouterManagerImpl.this, routerToSmInterceptorServiceTracker);
+            session.setAttachment(smSession);
+            smSession.write("<success xmlns='" + SMROUTER_AUTH_NAMESPACE + "' />");
+            notifySmAboutC2sSessions(smSession);
+            try {
+                dispatcherServiceTracker.getDispatcher().smSessionAdded(smSession);
+            } catch (Exception e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+                loggerServiceTracker.error("resourceBinder add smsession error");
+                session.write("<error>" + "<internal-error xmlns=\"christy:internal:sm2router:auth\"/>" + "</error> ");
+                session.write(CloseStream.getCloseStream());
+                session.close();
+            }
+            return;
+        } else {
+            session.write("<failed xmlns='" + SMROUTER_AUTH_NAMESPACE + "'>" + "<reason>password error</reason>" + "</failed>");
+            session.write(CloseStream.getCloseStream());
+            session.close();
+            return;
+        }
+    } else // not open stream
+    {
+        session.close();
+        return;
+    }
+}

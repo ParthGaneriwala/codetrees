@@ -1,0 +1,45 @@
+public void handleRequest(SipRequest request) throws ServletException, IOException {
+    String branch = request.getTopVia().getBranch();
+    if (branch == null || !branch.startsWith(SipGrammar.MAGIC_COOKIE)) {
+        if (!("0".equals(branch) && request.isAck())) {
+            Log.debug("Not 3261 branch: {}. Dropping request", branch);
+            return;
+        }
+    }
+    if (request.isCancel())
+        branch = "cancel-" + branch;
+    ServerTransaction transaction = request.getCallSession().getServerTransaction(branch);
+    if (transaction != null) {
+        if (Log.isDebugEnabled())
+            Log.debug("request {} in transaction {}", request.getRequestLine(), transaction);
+        request.setTransaction(transaction);
+        if (request.isAck()) {
+            transaction.handleAck(request);
+        } else {
+            retransReceived();
+            transaction.handleRetransmission(request);
+        }
+    } else {
+        transaction = new ServerTransaction(request);
+        if (!request.isAck())
+            request.getCallSession().addServerTransaction(transaction);
+        if (Log.isDebugEnabled())
+            Log.debug("new transaction {} for request {}", transaction, request.getRequestLine());
+        // TODO move to Session
+        if (request.isCancel()) {
+            String txBranch = request.getTopVia().getBranch();
+            ServerTransaction stx = request.getCallSession().getServerTransaction(txBranch);
+            if (stx == null) {
+                if (Log.isDebugEnabled())
+                    Log.debug("No transaction for cancelled branch {}", txBranch, null);
+                SipResponse unknown = (SipResponse) request.createResponse(SipServletResponse.SC_CALL_LEG_DONE);
+                transaction.send(unknown);
+            } else {
+                SipResponse ok = (SipResponse) request.createResponse(SipServletResponse.SC_OK);
+                transaction.send(ok);
+                stx.cancel(request);
+            }
+        } else
+            ((SipHandler) getHandler()).handle(request);
+    }
+}

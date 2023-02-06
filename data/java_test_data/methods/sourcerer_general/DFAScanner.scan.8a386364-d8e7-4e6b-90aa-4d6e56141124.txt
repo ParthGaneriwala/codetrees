@@ -1,0 +1,59 @@
+public void scan(CharStream charStream, TokenReceiver tokenReceiver) throws IOException, ScanningException {
+    // 解析时状态 ----
+    // 缓存字符
+    StringBuffer buffer = new StringBuffer();
+    // 残存字符
+    StringBuffer remain = new StringBuffer();
+    // 已被接收token的最后位置
+    Position last = Position.ZERO;
+    // 当前状态
+    int state = 0;
+    // 当前字符
+    char ch;
+    // 逐字解析 ----
+    for (; ; ) {
+        if (remain.length() > 0) {
+            // 先处理残存字符
+            ch = remain.charAt(0);
+            remain.deleteCharAt(0);
+        } else {
+            // 没有残存字符则读取字符流
+            ch = charStream.nextChar();
+            if (// 直到流读完
+            ch == CharStream.END)
+                break;
+        }
+        // 将字符加入缓存
+        buffer.append(ch);
+        // 获取字符类型
+        int type = typeResolver.resolveType(ch);
+        // 从状态机图中取下一状态
+        state = stateMap.getNextState(state, type);
+        if (state < 0) {
+            // 负数表示接收状态
+            Accepter accepter = (Accepter) accepters.get(new Integer(state));
+            if (accepter == null)
+                throw new ScanningException(state, ch, new Token(buffer.toString(), last, state).getEndPosition(), "DFAScanner.state.error");
+            int acceptLength = accepter.accept(buffer.toString());
+            if (acceptLength < 0 || acceptLength > buffer.length())
+                throw new ScanningException(state, ch, new Token(buffer.toString(), last, state).getEndPosition(), "DFAScanner.accepter.error");
+            if (acceptLength != 0) {
+                Token token = new Token(buffer.substring(0, acceptLength), last, state);
+                // 记录当前接收token的结束位置，作为下一token的起始位置
+                last = token.getNextBeginPosition();
+                // 完成接收
+                tokenReceiver.receive(token);
+            }
+            if (acceptLength != buffer.length())
+                // 将未接收的缓存记入残存
+                remain.insert(0, buffer.substring(acceptLength));
+            // 清空缓存
+            buffer.setLength(0);
+            // 回归到初始状态
+            state = 0;
+        }
+    }
+    // 接收最后缓存中的内容
+    if (buffer.length() > 0)
+        tokenReceiver.receive(new Token(buffer.toString(), last, 0));
+}

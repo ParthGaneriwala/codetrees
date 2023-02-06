@@ -1,0 +1,56 @@
+// ------------------------------------------------------------------------
+public synchronized void ReceiveAppMigrate(Integer MachineID, Integer TaskID) {
+    SA.AddLogEntry("CMM", "Info - Received an \"Application Migrate Task\" message from MachineID=" + MachineID + " for TaskID=" + TaskID);
+    // check that the MachineID is valid
+    if (!MachineDB.containsKey(MachineID)) {
+        SA.AddLogEntry("CMM", "Error - MachineID=" + MachineID + " does not exist in the Machine Database.");
+        SA.UnrecoverableClusterError();
+        return;
+    }
+    // check that the TaskID is valid
+    if (!TaskDB.containsKey(TaskID)) {
+        SA.AddLogEntry("CMM", "Error - TaskID=" + TaskID + "does not exist in the TaskDatabase.");
+        SA.UnrecoverableClusterError();
+        return;
+    }
+    TaskEntry MigratingTask = TaskDB.get(TaskID);
+    // check that the Task is of APPLICATION type
+    if (MigratingTask.getContext().getType() != TaskType.APPLICATION) {
+        SA.AddLogEntry("CMM", "Error - Task " + TaskID + " is not of APPLICATION type.");
+        SA.UnrecoverableClusterError();
+        return;
+    }
+    // Find the previous owner of the task
+    Integer PrevOwner = MigratingTask.getAssignedServerID();
+    // if the previous owner of the task is still in the Machine Database
+    if ((PrevOwner != null) && (MachineDB.containsKey(PrevOwner))) {
+        // decrese it's task count
+        MachineDB.get(PrevOwner).decTaskCount();
+    }
+    // Assign the Task the new Machine
+    MigratingTask.putAssignedServerID(MachineID);
+    // Increase the task count of the receiving Machine
+    MachineDB.get(MachineID).incTaskCount();
+    SA.AddLogEntry("CMM", "Info - Moved Application Task " + TaskID + " to the ownership of Machine " + MachineID);
+    // they should be executed only if the Machine is in Active State
+    if (LocalMachineEntry.getMachineState() != MachineState.ACTIVE)
+        return;
+    // This machine should take the ownership of the Task.
+    if (MachineID.equals(MachineDBLocalID)) {
+        SA.AddLogEntry("CMM", "Info - Task " + TaskID + " is being transfered to this Machine. Notifying the Server Application.");
+        // Instruct the SA to start servicing this Task
+        SA.StartServicingTask(TaskID, (SAGenTaskContext) MigratingTask.getContext());
+        LocalMachineEntry.incTaskCount();
+        SA.AddLogEntry("CMM", "Info - Task " + TaskID + " has successfully migrated to this Machine.");
+        return;
+    }
+    // note: PrevOwner may be null in case of Machine leave
+    if ((PrevOwner != null) && (MachineDBLocalID.equals(PrevOwner))) {
+        SA.AddLogEntry("CMM", "Info - Task " + TaskID + " is being transfered from this Machine. Notifying the Server Application.");
+        // Instruct the SA to stop servicing this Task
+        SA.StopServicingTask(TaskID);
+        LocalMachineEntry.decTaskCount();
+        SA.AddLogEntry("CMM", "Info - Task " + TaskID + " has successfully migrated from this Machine.");
+        return;
+    }
+}

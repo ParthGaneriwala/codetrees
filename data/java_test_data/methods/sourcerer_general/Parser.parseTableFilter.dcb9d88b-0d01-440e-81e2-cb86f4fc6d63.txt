@@ -1,0 +1,53 @@
+private TableFilter parseTableFilter(boolean outerjoin) throws HsqlException {
+    Table t = null;
+    SubQuery sq = null;
+    String sAlias = null;
+    HashMappedList columnList = null;
+    if (tokenizer.isGetThis(Token.T_OPENBRACKET)) {
+        int brackets = parseOpenBrackets();
+        tokenizer.getThis(Token.T_SELECT);
+        // fredt - not correlated - a joined subquery table must resolve fully
+        sq = parseSubquery(brackets, null, true, Expression.QUERY);
+        tokenizer.getThis(Token.T_CLOSEBRACKET);
+        t = sq.table;
+    } else {
+        String token = tokenizer.getName();
+        String schema = session.getSchemaName(tokenizer.getLongNameFirst());
+        t = database.schemaManager.getTable(session, token, schema);
+        session.check(t.getName(), UserManager.SELECT);
+        if (t.isView()) {
+            sq = getViewSubquery((View) t);
+            sq.select = ((View) t).viewSelect;
+            t = sq.table;
+            sAlias = token;
+        }
+    }
+    // fredt - we removed LEFT from the list of reserved words in Tokenizer
+    // to allow LEFT() to work. Thus wasName() will return true for LEFT
+    // and we check separately for this token
+    String token = tokenizer.getString();
+    if (tokenizer.wasLongName()) {
+        tokenizer.throwUnexpected();
+    }
+    if ((token.equals(Token.T_LEFT) || token.equals(Token.T_RIGHT)) && !tokenizer.wasQuotedIdentifier()) {
+        tokenizer.back();
+    } else if (token.equals(Token.T_AS) && !tokenizer.wasQuotedIdentifier()) {
+        sAlias = tokenizer.getSimpleName();
+        if (tokenizer.isGetThis(Token.T_OPENBRACKET)) {
+            tokenizer.back();
+            columnList = parseColumnList();
+        }
+    } else if (tokenizer.wasSimpleName()) {
+        sAlias = token;
+        if (tokenizer.isGetThis(Token.T_OPENBRACKET)) {
+            tokenizer.back();
+            columnList = parseColumnList();
+        }
+    } else {
+        tokenizer.back();
+    }
+    if (columnList != null && t.getColumnCount() != columnList.size()) {
+        throw Trace.error(Trace.COLUMN_COUNT_DOES_NOT_MATCH);
+    }
+    return new TableFilter(t, sAlias, columnList, outerjoin);
+}

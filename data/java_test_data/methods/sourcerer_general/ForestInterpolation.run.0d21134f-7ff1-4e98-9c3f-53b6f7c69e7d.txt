@@ -1,0 +1,73 @@
+@Override
+public void run() {
+    try {
+        final double[] partialGradient = new double[gradient.length];
+        partialGradients[dataid] = partialGradient;
+        ObjectInputStream ois = new ObjectInputStream(IO.getInputStream(new File(dataDir, makeHeldoutFilename(dataid))));
+        long totalCount = 0;
+        double foldEntropy = 0;
+        while (true) {
+            try {
+                HeldoutDataRecord rec = new HeldoutDataRecord(ois);
+                for (int i = 0; i < rec.contexts.length; ++i) {
+                    int[] clusters = rec.contexts[i].clusters;
+                    double[] probs = rec.probabilities[i];
+                    double sumProbs = 0;
+                    double sumWeights = 0;
+                    for (int lmNum = 0; lmNum < nrModels; ++lmNum) {
+                        int pos = modelCluster2pos[lmNum][clusters[lmNum]];
+                        double weight = params[pos];
+                        if (weight < MIN_WEIGHT) {
+                            params[pos] = MIN_WEIGHT;
+                            weight = MIN_WEIGHT;
+                        // System.err.print("");
+                        }
+                        sumWeights += weight;
+                        sumProbs += weight * probs[lmNum];
+                    }
+                    if (sumProbs <= 0) {
+                        // oops!
+                        StringBuilder sb = new StringBuilder();
+                        sb.append(String.format("sumProbs=%f, sumWeights=%f, word=%s\n", sumProbs, sumWeights, FactorTuple.toStringNoNull(rec.word)));
+                        for (int lmNum = 0; lmNum < nrModels; ++lmNum) {
+                            int pos = modelCluster2pos[lmNum][clusters[lmNum]];
+                            double weight = params[pos];
+                            sb.append(String.format(" [%d]: cluster=%d, weight=%f, prob=%f\n", lmNum, clusters[lmNum], weight, probs[lmNum]));
+                        }
+                        System.err.print(sb.toString());
+                    }
+                    if (sumWeights > 0) {
+                        double prob = sumProbs / sumWeights;
+                        int count = rec.counts[i];
+                        totalCount += count;
+                        double addition = count * ProbMath.log2(prob);
+                        if (Double.isNaN(addition)) {
+                            System.err.print("");
+                        }
+                        foldEntropy -= addition;
+                        for (int lmNum = 0; lmNum < nrModels; ++lmNum) {
+                            double update = count / sumWeights * (probs[lmNum] / prob - 1);
+                            partialGradient[modelCluster2pos[lmNum][clusters[lmNum]]] -= update;
+                        }
+                    } else {
+                        System.err.printf("sumWeights = %f\n", sumWeights);
+                    }
+                }
+            } catch (IOException e) {
+                break;
+            }
+        }
+        totalCounts[dataid] = totalCount;
+        // double revTotalCount = 1.0 / totalCount / nrDataFiles;
+        // foldEntropy *= revTotalCount;
+        totalEntropies[dataid] = foldEntropy;
+        /*
+							for(int i=0; i<partialGradient.length; ++i) {
+								partialGradient[i] *= revTotalCount;
+							}
+							*/
+        ois.close();
+    } catch (IOException e) {
+        e.printStackTrace();
+    }
+}

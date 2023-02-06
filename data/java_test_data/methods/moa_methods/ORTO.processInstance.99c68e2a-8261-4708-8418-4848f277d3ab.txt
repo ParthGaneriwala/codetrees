@@ -1,0 +1,84 @@
+public void processInstance(Instance inst, Node node, double prediction, double normalError, boolean growthAllowed, boolean inAlternate) {
+    if (node instanceof OptionNode) {
+        processInstanceOptionNode(inst, (OptionNode) node, prediction, normalError, growthAllowed, inAlternate);
+    } else {
+        Node currentNode = node;
+        while (true) {
+            if (currentNode instanceof LeafNode) {
+                ((LeafNode) currentNode).learnFromInstance(inst, growthAllowed);
+                break;
+            } else {
+                currentNode.examplesSeen += inst.weight();
+                currentNode.sumOfAbsErrors += inst.weight() * normalError;
+                InnerNode iNode = (InnerNode) currentNode;
+                if (!inAlternate && iNode.alternateTree != null) {
+                    boolean altTree = true;
+                    double lossO = Math.pow(inst.classValue() - prediction, 2);
+                    double lossA = Math.pow(inst.classValue() - currentNode.alternateTree.getPrediction(inst), 2);
+                    // Loop for compatibility with bagging methods
+                    for (int i = 0; i < inst.weight(); i++) {
+                        iNode.lossFadedSumOriginal = lossO + alternateTreeFadingFactorOption.getValue() * iNode.lossFadedSumOriginal;
+                        iNode.lossFadedSumAlternate = lossA + alternateTreeFadingFactorOption.getValue() * iNode.lossFadedSumAlternate;
+                        iNode.lossExamplesSeen++;
+                        double Qi = Math.log((iNode.lossFadedSumOriginal) / (iNode.lossFadedSumAlternate));
+                        iNode.lossSumQi += Qi;
+                        iNode.lossNumQiTests += 1;
+                    }
+                    double Qi = Math.log((iNode.lossFadedSumOriginal) / (iNode.lossFadedSumAlternate));
+                    double previousQiAverage = iNode.lossSumQi / iNode.lossNumQiTests;
+                    double QiAverage = iNode.lossSumQi / iNode.lossNumQiTests;
+                    if (iNode.lossExamplesSeen - iNode.previousWeight >= alternateTreeTMinOption.getValue()) {
+                        iNode.previousWeight = iNode.lossExamplesSeen;
+                        if (Qi > 0) {
+                            // Switch the subtrees
+                            Node parent = currentNode.parent;
+                            if (parent != null) {
+                                Node replacementTree = iNode.alternateTree;
+                                parent.setChild(parent.getChildIndex(iNode), replacementTree);
+                                if (growthAllowed)
+                                    replacementTree.restartChangeDetection();
+                            } else {
+                                treeRoot = iNode.alternateTree;
+                                treeRoot.restartChangeDetection();
+                            }
+                            optionNodeCount += currentNode.alternateTree.getNumSubtrees() - currentNode.getNumSubtrees();
+                            removeExcessTrees();
+                            currentNode = iNode.alternateTree;
+                            currentNode.originalNode = null;
+                            altTree = false;
+                        } else if (QiAverage < previousQiAverage && iNode.lossExamplesSeen >= (10 * alternateTreeTMinOption.getValue()) || iNode.lossExamplesSeen >= alternateTreeTimeOption.getValue()) {
+                            // Remove the alternate tree
+                            iNode.alternateTree = null;
+                            if (growthAllowed)
+                                iNode.restartChangeDetection();
+                            altTree = false;
+                        }
+                    }
+                    if (altTree) {
+                        // this is the growth of the original tree
+                        growthAllowed = false;
+                        // growth is allowed in the alt tree
+                        processInstance(inst, currentNode.alternateTree, prediction, normalError, true, true);
+                    } else if (currentNode instanceof OptionNode) {
+                        // this happens when an option node is switched into the tree
+                        for (Node child : ((OptionNode) currentNode).children) {
+                            processInstance(inst, child, child.getPrediction(inst), normalError, growthAllowed, inAlternate);
+                        }
+                        break;
+                    }
+                }
+                if (iNode.changeDetection && !inAlternate) {
+                    if (iNode.PageHinckleyTest(normalError - iNode.sumOfAbsErrors / iNode.examplesSeen - PageHinckleyAlphaOption.getValue(), PageHinckleyThresholdOption.getValue())) {
+                        iNode.initializeAlternateTree();
+                    }
+                }
+                if (currentNode instanceof SplitNode) {
+                    currentNode = ((SplitNode) currentNode).descendOneStep(inst);
+                } else if (currentNode instanceof OptionNode) {
+                    processInstanceOptionNode(inst, (OptionNode) currentNode, prediction, normalError, growthAllowed, inAlternate);
+                    break;
+                }
+            }
+        }
+    }
+}

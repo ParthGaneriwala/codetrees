@@ -1,0 +1,75 @@
+@Override
+public void run() {
+    try {
+        BufferedReader reader = IO.getReader(IO.getInputStream(dataFile));
+        for (String line = reader.readLine(); line != null; line = reader.readLine()) {
+            String[] tokens = InputParser.splitLine(line);
+            String[][] sentValues = new String[tokens.length + 2][];
+            sentValues[0] = startValues;
+            sentValues[sentValues.length - 1] = endValues;
+            for (int i = 0; i < tokens.length; ++i) {
+                String token = tokens[i];
+                String[] tokenValues = new String[numFactors];
+                sentValues[i + 1] = tokenValues;
+                for (String f : FLMInputParser.factorDelimiter.split(token)) {
+                    Matcher matcher = FLMInputParser.factorRE.matcher(f);
+                    if (matcher.matches()) {
+                        String factor = matcher.group(1);
+                        String value = FLMInputParser.unquote(matcher.group(2));
+                        int factorIdx = indexOf(factor, factors);
+                        if (factorIdx == -1)
+                            continue;
+                        tokenValues[factorIdx] = value;
+                    }
+                }
+                for (int factorIdx = 0; factorIdx < factors.length; ++factorIdx) {
+                    String value = tokenValues[factorIdx];
+                    if (value == null) {
+                        FactorDescription desc = descs[factorIdx];
+                        if (desc.getWordToOvertFactor() == null) {
+                            System.err.printf("No parent? token='%s', value='%s', factor=%s\n", token, value, desc.getId());
+                            System.err.printf("line: %s\n", line);
+                            System.err.printf("tokens: %s\n", Arrays.toString(tokens));
+                            throw new Error("whoopsie!");
+                        }
+                        value = desc.getWordToOvertFactor().wordToOvertFactor(tokenValues[mainFactorIndex]);
+                        tokenValues[factorIdx] = value;
+                    }
+                }
+            }
+            WordClassParam param = new WordClassParam();
+            synchronized (algo) {
+                for (int i = 1; i < sentValues.length - 1; ++i) {
+                    String word = sentValues[i][mainFactorIndex];
+                    Integer wordIndex = word2idx.get(word);
+                    if (wordIndex == null) {
+                        // not-for-clustering word
+                        continue;
+                    }
+                    int wordIdx = wordIndex.intValue();
+                    for (byte factorIdx = 0; factorIdx < numFactors; ++factorIdx) {
+                        if (descs[factorIdx].getParent() != null) {
+                            // do not use dependent factors
+                            continue;
+                        }
+                        param.factorIdx = factorIdx;
+                        for (byte offset = -1; offset <= 1; ++offset) {
+                            String value = sentValues[i + offset][factorIdx];
+                            if (factorIdx == mainFactorIndex && offset == 0) {
+                            // the word itset
+                            } else {
+                                param.offset = offset;
+                                param.value = value;
+                                int paramIdx = param2idx.get(param);
+                                algo.addProb(wordIdx, paramIdx, 1.0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        reader.close();
+    } catch (IOException e) {
+        e.printStackTrace();
+    }
+}

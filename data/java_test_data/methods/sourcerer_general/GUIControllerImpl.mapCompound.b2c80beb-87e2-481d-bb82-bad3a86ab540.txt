@@ -1,0 +1,65 @@
+private void mapCompound(Compound compound, Map<String, String> map) throws SQLException {
+    Map<String, Object> propsImported = compound.getProperties();
+    Map<String, Object> propsProcessed = new HashMap<String, Object>();
+    for (String propName : propsImported.keySet()) {
+        Object prop = propsImported.get(propName);
+        // process it and add it to the map.
+        if (!map.containsKey(propName)) {
+            boolean doneMapping = false;
+            boolean triedDirectMatch = false;
+            while (!doneMapping) {
+                ColumnField sel = null;
+                // Try matching it to an existing column with .equals
+                if (!triedDirectMatch) {
+                    sel = getColumnFromDatabase(propName);
+                    triedDirectMatch = true;
+                }
+                // Direct match didn't work, get user input
+                if (sel == null) {
+                    String[] propMaps = getColumnNames(false);
+                    m_importDisplay.setPropertiesMaps(propMaps);
+                    m_importDisplay.setProperty(propName);
+                    m_importDisplay.display();
+                    String candProp = m_importDisplay.getPropertyMap();
+                    // If user is creating a new column
+                    if (m_importDisplay.isNewcolumn()) {
+                        // Check new column will work before wasting time
+                        // setting it up
+                        DataType dt = m_importDisplay.getNewColumnDatatype();
+                        ColumnField col = new ColumnField(candProp, dt, 0);
+                        try {
+                            parseProperty(col, prop);
+                            m_dba.addColumnField(candProp, col.getDataType());
+                        } catch (NumberFormatException e) {
+                            m_errorDisplay.setMessage(propName + " data type did not match " + col.getName());
+                            m_errorDisplay.display();
+                        } catch (SQLException e) {
+                            m_errorDisplay.setMessage(e.getMessage());
+                            m_errorDisplay.display();
+                        }
+                    }
+                    sel = getColumnFromDatabase(candProp);
+                    if (sel == null) {
+                        m_errorDisplay.setMessage("Property not found in the database.");
+                        m_errorDisplay.display();
+                    }
+                }
+                // not, show error and loop (try) again.
+                if (sel != null) {
+                    try {
+                        parseProperty(sel, prop);
+                        map.put(propName, sel.getName());
+                        doneMapping = true;
+                    } catch (NumberFormatException e) {
+                        m_errorDisplay.setMessage(propName + " data type did not match " + sel.getName());
+                        m_errorDisplay.display();
+                    }
+                }
+            }
+        }
+        String mapProp = map.get(propName);
+        propsProcessed.put(mapProp, prop);
+    }
+    // Finally, update the compound with mapped properties.
+    compound.setProperties(propsProcessed);
+}

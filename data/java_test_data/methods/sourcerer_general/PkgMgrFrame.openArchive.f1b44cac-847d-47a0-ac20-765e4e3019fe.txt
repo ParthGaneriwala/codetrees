@@ -1,0 +1,87 @@
+private boolean openArchive(File archive) {
+    JarInputStream jarInStream = null;
+    try {
+        // first need to determine the output path. If the jar file
+        // contains a root-level (eg bluej.pkg) entry, extract into a directory
+        // whose name is the basename of the archive file. Otherwise, if
+        // all entries have a common ancestor, extract to that directory
+        // (after checking it doesn't exist).
+        String prefixFolder = getArchivePrefixFolder(archive);
+        // Determine the output path.
+        File oPath = archive.getParentFile();
+        if (prefixFolder == null) {
+            // Try to extract to directory which has same name as the jar
+            // file, with the .jar or .bjar extension stripped.
+            String archiveName = archive.getName();
+            int dotIndex = archiveName.lastIndexOf('.');
+            String strippedName = null;
+            if (dotIndex != -1) {
+                strippedName = archiveName.substring(0, dotIndex);
+            } else {
+                strippedName = archiveName;
+            }
+            oPath = new File(oPath, strippedName);
+            if (oPath.exists()) {
+                DialogManager.showErrorWithText(this, "jar-output-dir-exists", oPath.toString());
+                return false;
+            } else if (!oPath.mkdir()) {
+                DialogManager.showErrorWithText(this, "jar-output-no-write", archive.toString());
+                return false;
+            }
+        } else {
+            File prefixFolderFile = new File(oPath, prefixFolder);
+            if (prefixFolderFile.exists()) {
+                DialogManager.showErrorWithText(this, "jar-output-dir-exists", prefixFolderFile.toString());
+                return false;
+            }
+            if (!prefixFolderFile.mkdir()) {
+                DialogManager.showErrorWithText(this, "jar-output-no-write", archive.toString());
+                return false;
+            }
+        }
+        // Need to extract the project somewhere, then open it
+        FileInputStream is = new FileInputStream(archive);
+        jarInStream = new JarInputStream(is);
+        // Extract entries in the jar file
+        JarEntry je = jarInStream.getNextJarEntry();
+        while (je != null) {
+            File outFile = new File(oPath, je.getName());
+            // An entry could represent a file or directory
+            if (je.getName().endsWith("/"))
+                outFile.mkdirs();
+            else {
+                outFile.getParentFile().mkdirs();
+                OutputStream os = new FileOutputStream(outFile);
+                // try to read 8k at a time
+                byte[] buffer = new byte[8192];
+                int rlength = jarInStream.read(buffer);
+                while (rlength != -1) {
+                    os.write(buffer, 0, rlength);
+                    rlength = jarInStream.read(buffer);
+                }
+                jarInStream.closeEntry();
+            }
+            je = jarInStream.getNextJarEntry();
+        }
+        if (prefixFolder != null)
+            oPath = new File(oPath, prefixFolder);
+        if (Project.isProject(oPath.getPath())) {
+            return openProject(oPath.getPath());
+        } else {
+            // Convert to a BlueJ project
+            if (Import.convertNonBlueJ(this, oPath)) {
+                return openProject(oPath.getPath());
+            }
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+        DialogManager.showError(this, "jar-extraction-error");
+    } finally {
+        try {
+            if (jarInStream != null)
+                jarInStream.close();
+        } catch (IOException ioe) {
+        }
+    }
+    return false;
+}

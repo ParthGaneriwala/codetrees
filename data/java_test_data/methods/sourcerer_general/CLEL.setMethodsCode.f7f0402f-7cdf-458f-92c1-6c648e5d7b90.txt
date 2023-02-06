@@ -1,0 +1,143 @@
+public void setMethodsCode(MethodDescriptor method, ArrayList<CLInstruction> code, ArrayList<ClassDescriptor> locals) throws MethodNotFoundException, IllegalArgumentException {
+    if (code == null)
+        throw new IllegalArgumentException("Code cannot be null");
+    if (method.getName() != null && method.getClassDescriptor() != null && method.getParameters() != null) {
+        StreamTable st = parser.getPoundTildaStream().getStreamTable(CLELConstants.METHODDEF_TABLE);
+        ArrayList<StreamTableRow> rows = st.getRows();
+        StreamTableRow r;
+        int i, j, rva;
+        ArrayList<MethodHeader> headers = parser.getMethodHeaders();
+        MethodHeader mh;
+        Token temp;
+        ArrayList<Byte> bytes;
+        for (i = 0; i < rows.size(); i++) {
+            r = rows.get(i);
+            if (method.getName().equals(getValueStringHeap(r.getMethodDefName())) && parametersEqual(method.getParameters(), getMethodParameters(getBlobFromHeap(r.getMethodDefSignature())))) {
+                // is method in class
+                if (isMethodInClass(method.getClassDescriptor(), i + 1)) {
+                    rva = r.getMethodDefRVA();
+                    for (j = 0; j < headers.size(); j++) {
+                        mh = headers.get(j);
+                        if (mh.getRVA() == rva) {
+                            int orig_size = mh.getLengthBytes();
+                            boolean orig_type = mh.isTiny();
+                            bytes = CLInstructionConversion.toBytes(code);
+                            boolean new_type = true;
+                            ArrayList<Byte> local_bytes = new ArrayList<Byte>();
+                            // check code size
+                            if (bytes.size() > CLELConstants.MAX_TINY_METHOD_CODE_SIZE)
+                                new_type = false;
+                            // check local variables
+                            if (locals != null && locals.size() != 0) {
+                                new_type = false;
+                                local_bytes = localsToBytes(locals);
+                            }
+                            short stack = 0;
+                            short max_stack = 0;
+                            int k;
+                            byte optcode;
+                            ObjectModel om;
+                            byte fun;
+                            int diff;
+                            ArrayList<Integer> row_count = parser.getPoundTildaStream().getRows();
+                            // if not sure its fat yet
+                            for (k = 0; k < code.size(); k++) {
+                                optcode = code.get(k).getOptcode();
+                                fun = (byte) -1;
+                                if (optcode == CLOptcode.OBJECTMODEL) {
+                                    om = (ObjectModel) code.get(k);
+                                    fun = om.getFunction();
+                                }
+                                // check for exceptions
+                                if (isExceptionOptcode(optcode, fun))
+                                    new_type = false;
+                                // caculate max stack
+                                if (optcode == CLOptcode.CALL || optcode == CLOptcode.CALLI || optcode == CLOptcode.CALLVIRT || optcode == CLOptcode.JMP || optcode == CLOptcode.NEWOBJ) {
+                                    stack = 1;
+                                } else {
+                                    stack += code.get(k).stackSizeModified();
+                                    if (stack < 0)
+                                        stack = 0;
+                                    if (stack > max_stack)
+                                        max_stack = stack;
+                                }
+                            }
+                            // check max stack
+                            if (max_stack > CLELConstants.DEFAULT_TINY_MAXSTACK)
+                                new_type = false;
+                            // fat -> fat and tiny -> fat
+                            if (!new_type) {
+                                st = parser.getPoundTildaStream().getStreamTable(CLELConstants.STANDALONESIG_TABLE);
+                                rows = st.getRows();
+                                // if was fat remove locals
+                                if (!orig_type) {
+                                    // remove old local variable signature token
+                                    // and blob value
+                                    temp = new Token(mh.getLocalVarSigToken());
+                                    r = rows.get(temp.getRow() - 1);
+                                    removeBlobFromBlobHeap(r.getStandAloneSigSignature());
+                                    // remove from stand alone sig table
+                                    Token t;
+                                    for (int z = 0; z < headers.size(); z++) {
+                                        t = new Token(headers.get(z).getLocalVarSigToken());
+                                        if (t.getRow() > temp.getRow()) {
+                                            t.setRow(t.getRow() - 1);
+                                            headers.get(z).setLocalVarSigToken(t.getEncodedToken());
+                                        }
+                                    }
+                                    rows.remove(temp.getRow() - 1);
+                                    // update row count
+                                    row_count.set(CLELConstants.STANDALONESIG_TABLE, row_count.get(CLELConstants.STANDALONESIG_TABLE) - 1);
+                                }
+                                // going to fat so add locals
+                                int blob_offset = addBlobToBlobHeap(local_bytes);
+                                int row = rows.size() + 1;
+                                // add stream table row
+                                rows.add(new StreamTableRow(CLELConstants.STANDALONESIG_TABLE, blob_offset));
+                                // set token to stream table row
+                                mh.setLocalVarSigToken((CLELConstants.STANDALONESIG_TABLE << 24) | row);
+                                // update row count
+                                row_count.set(CLELConstants.STANDALONESIG_TABLE, row_count.get(CLELConstants.STANDALONESIG_TABLE) + 1);
+                                // set max stack
+                                mh.setMaxStack(max_stack);
+                                // set size
+                                mh.setSize(CLELConstants.FAT_STRUCTURE_SIZE);
+                                // set flags
+                                mh.setFlags(CLELConstants.DEFAULT_FAT_FLAGS);
+                            }
+                            // fat -> tiny
+                            if (!orig_type && new_type) {
+                                // done
+                                // set flags
+                                mh.setFlags(CLELConstants.TINY_METHOD);
+                                // remove old local variable signature token
+                                // and blob value
+                                temp = new Token(mh.getLocalVarSigToken());
+                                st = parser.getPoundTildaStream().getStreamTable(CLELConstants.STANDALONESIG_TABLE);
+                                r = st.getRows().get(temp.getRow() - 1);
+                                removeBlobFromBlobHeap(r.getStandAloneSigSignature());
+                                // remove from stand alone sig table
+                                st.getRows().remove(temp.getRow() - 1);
+                                // update row count
+                                row_count.set(CLELConstants.STANDALONESIG_TABLE, row_count.get(CLELConstants.STANDALONESIG_TABLE) - 1);
+                                // tiny does not have localvarsig token
+                                mh.setLocalVarSigToken(0);
+                                // set tiny default stack
+                                mh.setMaxStack(CLELConstants.DEFAULT_TINY_MAXSTACK);
+                                mh.setSize(0);
+                            }
+                            // nothing special for tiny -> tiny
+                            mh.setCode(bytes);
+                            mh.setCodeSize(bytes.size());
+                            diff = Tools.roundToNearest4(mh.getLengthBytes()) - Tools.roundToNearest4(orig_size);
+                            if (diff != 0)
+                                moveTextSections(rva, diff);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    throw new MethodNotFoundException("Error: Specified class does not exist");
+}

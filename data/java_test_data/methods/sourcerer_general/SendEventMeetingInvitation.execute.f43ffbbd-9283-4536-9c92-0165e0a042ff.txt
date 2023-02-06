@@ -1,0 +1,82 @@
+public boolean execute(ComponentContext context) {
+    try {
+        // set freemarker configuration
+        freeMarkerConfiguration = (Configuration) context.getAttribute(ComponentContext.FREEMARKER_CONFIGURATION);
+        if (freeMarkerConfiguration == null) {
+            LOG.error("freeMarkerConfiguration is null");
+            return false;
+        }
+        // get the invitees object
+        meetingInviteesBean = (MeetingInviteesBean) context.getThisObject();
+        if (meetingInviteesBean == null) {
+            LOG.error("Cannot find meeting details.");
+            return false;
+        }
+        // check mail is to be send
+        if (meetingInviteesBean.getAction() != DimDimUtils.ACTION_MEETING_STATUS_CHANGE && meetingInviteesBean.getAction() != DimDimUtils.ACTION_MEETING_USER_JOIN && meetingInviteesBean.getAction() != DimDimUtils.ACTION_MEETING_APPROVE_JOIN && meetingInviteesBean.getMeetingChangeUsers().isEmpty() && meetingInviteesBean.getMembersFoundList().isEmpty() && meetingInviteesBean.getRejectedUsers().isEmpty() && meetingInviteesBean.getCancelledUsers().isEmpty()) {
+            return false;
+        }
+        // get meeting host
+        hostUser = UserUtils.loadUser(meetingInviteesBean.getMeeting().getOwner());
+        if (hostUser == null) {
+            LOG.error("Cannot find meeting host details.");
+            return false;
+        }
+        // mail settings
+        Map<String, String> prefs = context.getApplicationPrefs();
+        message = SMTPMessageFactory.createSMTPMessageInstance(prefs);
+        message.setFrom(prefs.get("EMAILADDRESS"));
+        message.setType("text/html");
+        // message map parameters
+        subjectMap = new HashMap<String, String>();
+        bodyMap = new HashMap<String, Object>();
+        // set mail parameter maps
+        bodyMap.put("meeting", meetingInviteesBean.getMeeting());
+        bodyMap.put("host", hostUser);
+        String url = context.getParameter("url");
+        bodyMap.put("url", url);
+        // This uses the host's startDate, but a user can override this when sent
+        bodyMap.put("startDate", formatUserTimestamp(meetingInviteesBean.getMeeting().getStartDate(), hostUser));
+        Project project = meetingInviteesBean.getProject();
+        bodyMap.put("eventUrl", url + "/show/" + project.getUniqueId() + "/calendar/" + generateCalendarURL(meetingInviteesBean.getMeeting().getStartDate(), LocalizationUtils.getLocale(prefs.get(ApplicationPrefs.LANGUAGE))));
+        switch(meetingInviteesBean.getAction()) {
+            case DimDimUtils.ACTION_MEETING_DIMDIM_EDIT:
+                if (!meetingInviteesBean.getMeetingChangeUsers().isEmpty() && meetingInviteesBean.getIsModifiedMeeting()) {
+                    sendMeetingChangeMail();
+                }
+                if (!meetingInviteesBean.getMembersFoundList().isEmpty()) {
+                    sendMeetingInvitationMail();
+                }
+                if (!meetingInviteesBean.getRejectedUsers().isEmpty()) {
+                    sendMeetingInvitationRejectMail();
+                }
+                if (!meetingInviteesBean.getCancelledUsers().isEmpty()) {
+                    sendMeetingCancellationMail();
+                }
+                break;
+            case DimDimUtils.ACTION_MEETING_DIMDIM_SCHEDULE:
+                sendMeetingInvitationMail();
+                break;
+            case DimDimUtils.ACTION_MEETING_STATUS_CHANGE:
+                sendInvitationStatusMail();
+                break;
+            case DimDimUtils.ACTION_MEETING_DIMDIM_CANCEL:
+                sendMeetingCancellationMail();
+                break;
+            case DimDimUtils.ACTION_MEETING_USER_JOIN:
+                sendUserJoinedMail();
+                break;
+            case DimDimUtils.ACTION_MEETING_APPROVE_JOIN:
+                sendUserJoinStatusMail();
+                break;
+            default:
+                LOG.error("Meeting action not known - " + meetingInviteesBean.getAction());
+                return false;
+        }
+        return true;
+    } catch (Exception e) {
+        LOG.error("Exception when trying to send mail");
+        e.printStackTrace(System.out);
+        return false;
+    }
+}

@@ -1,0 +1,121 @@
+/*
+	private boolean stateItemReconcile(ESMFStateItem siIn, ESMFStateItem siOut) {
+		
+		//only handle arrays for now
+		if (!(isESMFArray(siIn) && isESMFArray(siOut)))
+			return false;
+		
+		ESMFArray arrayIn = (ESMFArray) siIn;
+		ESMFArray arrayOut = (ESMFArray) siOut;
+		
+		return arrayIn.getDistGrid().congruentWith(arrayOut.getDistGrid());
+		
+	}
+	*/
+private void handleRunSubroutine() {
+    // assuming single phase for now
+    String run = subRun.get(0);
+    SubroutineSubprogram ss = fomFactory.createSubroutineSubprogram(run);
+    ss.setSpecificationPart(fomFactory.createSpecificationPart());
+    ss.setExecutionPart(fomFactory.createExecutionPart());
+    ss.addFormalArgument("ESMF_CplComp", "comp");
+    ss.addFormalArgument("ESMF_State", "importState");
+    ss.addFormalArgument("ESMF_State", "exportState");
+    ss.addFormalArgument("ESMF_Clock", "clock");
+    ss.addFormalArgument(IntrinsicType.INTEGER, "rc", IntentSpec.OUT);
+    // initialize rc
+    AssignmentStatement as = fomFactory.createAssignmentStatementWithNamedConstant("rc", "ESMF_SUCCESS");
+    ss.addExecutionPartConstruct(as);
+    for (ESMFStateItemConnection sic : conn.getStateItemConnection()) {
+        // assume neither are null; need to validate using OCL constraints
+        ESMFStateItem siIn, siOut;
+        if (sic.getDirection().isAtoB()) {
+            siIn = sic.getEndpointA();
+            siOut = sic.getEndpointB();
+        } else {
+            siIn = sic.getEndpointB();
+            siOut = sic.getEndpointA();
+        }
+        // create local variables
+        TypeDeclarationStatement tds;
+        CallStatement cs;
+        String siInArrayName = "imp_" + siIn.getName() + "_array";
+        String siOutArrayName = "exp_" + siOut.getName() + "_array";
+        if (isESMFField(siIn)) {
+            String siInFieldName = "imp_" + siIn.getName() + "_field";
+            tds = fomFactory.createTypeDeclarationStatement("ESMF_Field", siInFieldName);
+            ss.getSpecificationPart().getDeclarationConstruct().add(tds);
+            tds = fomFactory.createTypeDeclarationStatement("ESMF_Array", siInArrayName);
+            ss.getSpecificationPart().getDeclarationConstruct().add(tds);
+            // retrieve the field from the import state
+            cs = fomFactory.createCallStatement("ESMF_StateGet");
+            cs.addActualArgumentWithNamedConstant(null, "importState");
+            cs.addActualArgumentWithNamedConstant(null, "\"" + siIn.getName() + "\"");
+            cs.addActualArgumentWithNamedConstant(null, siInFieldName);
+            cs.addActualArgumentWithNamedConstant("rc", "rc");
+            ss.addExecutionPartConstruct(cs);
+            // get the underlying array
+            cs = fomFactory.createCallStatement("ESMF_FieldGet");
+            cs.addActualArgumentWithNamedConstant(null, siInFieldName);
+            cs.addActualArgumentWithNamedConstant("array", siInArrayName);
+            cs.addActualArgumentWithNamedConstant("rc", "rc");
+            ss.addExecutionPartConstruct(cs);
+        } else if (isESMFArray(siIn)) {
+            tds = fomFactory.createTypeDeclarationStatement("ESMF_Array", siInArrayName);
+            ss.getSpecificationPart().getDeclarationConstruct().add(tds);
+            // retrieve the array from the import state
+            cs = fomFactory.createCallStatement("ESMF_StateGet");
+            cs.addActualArgumentWithNamedConstant(null, "importState");
+            cs.addActualArgumentWithNamedConstant(null, "\"" + siIn.getName() + "\"");
+            cs.addActualArgumentWithNamedConstant(null, siInArrayName);
+            cs.addActualArgumentWithNamedConstant("rc", "rc");
+            ss.addExecutionPartConstruct(cs);
+        }
+        if (isESMFField(siOut)) {
+            String siOutFieldName = "exp_" + siOut.getName() + "_field";
+            tds = fomFactory.createTypeDeclarationStatement("ESMF_Field", siOutFieldName);
+            ss.getSpecificationPart().getDeclarationConstruct().add(tds);
+            tds = fomFactory.createTypeDeclarationStatement("ESMF_Array", siOutArrayName);
+            ss.getSpecificationPart().getDeclarationConstruct().add(tds);
+            // retrieve the field from the export state
+            cs = fomFactory.createCallStatement("ESMF_StateGet");
+            cs.addActualArgumentWithNamedConstant(null, "exportState");
+            cs.addActualArgumentWithNamedConstant(null, "\"" + siOut.getName() + "\"");
+            cs.addActualArgumentWithNamedConstant(null, siOutFieldName);
+            cs.addActualArgumentWithNamedConstant("rc", "rc");
+            ss.addExecutionPartConstruct(cs);
+            // get the underlying array
+            cs = fomFactory.createCallStatement("ESMF_FieldGet");
+            cs.addActualArgumentWithNamedConstant(null, siOutFieldName);
+            cs.addActualArgumentWithNamedConstant("array", siOutArrayName);
+            cs.addActualArgumentWithNamedConstant("rc", "rc");
+            ss.addExecutionPartConstruct(cs);
+        } else if (isESMFArray(siOut)) {
+            tds = fomFactory.createTypeDeclarationStatement("ESMF_Array", siOutArrayName);
+            ss.getSpecificationPart().getDeclarationConstruct().add(tds);
+            // retrieve the array from the import state
+            cs = fomFactory.createCallStatement("ESMF_StateGet");
+            cs.addActualArgumentWithNamedConstant(null, "expotState");
+            cs.addActualArgumentWithNamedConstant(null, "\"" + siOut.getName() + "\"");
+            cs.addActualArgumentWithNamedConstant(null, siOutArrayName);
+            cs.addActualArgumentWithNamedConstant("rc", "rc");
+            ss.addExecutionPartConstruct(cs);
+        }
+        if (sic.getCommunication() == ESMFCommunication.ESMF_REDISTRIBUTE) {
+            cs = fomFactory.createCallStatement("ESMF_ArrayRedist");
+            cs.addActualArgumentWithNamedConstant("srcArray", siInArrayName);
+            cs.addActualArgumentWithNamedConstant("dstArray", siOutArrayName);
+            cs.addActualArgumentWithNamedConstant("routehandle", "rh_" + siIn.getName());
+            cs.addActualArgumentWithNamedConstant("rc", "rc");
+            ss.addExecutionPartConstruct(cs);
+        } else if (sic.getCommunication() == ESMFCommunication.ESMF_REGRID) {
+            cs = fomFactory.createCallStatement("ESMF_ArraySMM");
+            cs.addActualArgumentWithNamedConstant("srcArray", siInArrayName);
+            cs.addActualArgumentWithNamedConstant("dstArray", siOutArrayName);
+            cs.addActualArgumentWithNamedConstant("routehandle", "rh_" + siIn.getName());
+            cs.addActualArgumentWithNamedConstant("rc", "rc");
+            ss.addExecutionPartConstruct(cs);
+        }
+    }
+    m.getModuleSubprogramPart().getModuleSubprogram().add(ss);
+}

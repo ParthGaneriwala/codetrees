@@ -1,0 +1,77 @@
+private HashMap<Integer, Topic> getTopics(Vector<TopicReference> references, String contextText, int docLength, RelatednessCache cache) throws Exception {
+    HashMap<Integer, Topic> chosenTopics = new HashMap<Integer, Topic>();
+    // get context articles from unambiguous anchors
+    Vector<Anchor> unambigAnchors = new Vector<Anchor>();
+    for (TopicReference ref : references) {
+        Anchor anchor = ref.getAnchor();
+        SortedVector<Anchor.Sense> senses = anchor.getSenses();
+        if (senses.size() > 0) {
+            if (senses.size() == 1 || senses.first().getProbability() > 1 - disambiguator.getMinSenseProbability())
+                unambigAnchors.add(anchor);
+        }
+    }
+    // Vector<String> contextSentences = ss.getSentences(, SentenceSplitter.MULTIPLE_NEWLINES) ;
+    for (TopicReference ref : getReferences(contextText)) {
+        Anchor anchor = ref.getAnchor();
+        SortedVector<Anchor.Sense> senses = anchor.getSenses();
+        if (senses.size() > 0) {
+            if (senses.size() == 1 || senses.first().getProbability() > 1 - disambiguator.getMinSenseProbability()) {
+                unambigAnchors.add(anchor);
+            }
+        }
+    }
+    Context context = new Context(unambigAnchors, cache, disambiguator.getMaxContextSize());
+    unambigAnchors = null;
+    // now disambiguate all references
+    // unambig references are still processed here, because we need to calculate relatedness to context anyway.
+    // build a cache of valid senses for each phrase, since the same phrase may occur more than once, but will always be disambiguated the same way
+    HashMap<String, TreeSet<CachedSense>> disambigCache = new HashMap<String, TreeSet<CachedSense>>();
+    for (TopicReference ref : references) {
+        // System.out.println("disambiguating ref: " + ref.getAnchor().getText()) ;
+        TreeSet<CachedSense> validSenses = disambigCache.get(ref.getAnchor().getText());
+        if (validSenses == null) {
+            // we havent seen this anchor in this document before
+            validSenses = new TreeSet<CachedSense>();
+            for (Anchor.Sense sense : ref.getAnchor().getSenses()) {
+                if (sense.getProbability() < disambiguator.getMinSenseProbability())
+                    break;
+                if (!allowDisambiguations && sense.getType() == Page.DISAMBIGUATION)
+                    continue;
+                double relatedness = context.getRelatednessTo(sense);
+                double commonness = sense.getProbability();
+                double disambigProb = disambiguator.getProbabilityOfSense(commonness, relatedness, context);
+                if (disambigProb > 0.5) {
+                    // this is a valid sense for the link (there may be more than one)
+                    CachedSense vs = new CachedSense(sense.getId(), commonness, relatedness, disambigProb);
+                    validSenses.add(vs);
+                }
+            }
+            disambigCache.put(ref.getAnchor().getText(), validSenses);
+        }
+        if (strictDisambiguation) {
+            // just get top sense
+            if (!validSenses.isEmpty()) {
+                CachedSense sense = validSenses.first();
+                Topic topic = chosenTopics.get(sense.id);
+                if (topic == null) {
+                    // we havent seen this topic before
+                    topic = new Topic(wikipedia, sense.id, sense.relatedness, docLength);
+                    chosenTopics.put(sense.id, topic);
+                }
+                topic.addReference(ref, sense.disambigConfidence);
+            }
+        } else {
+            // get all senses
+            for (CachedSense sense : validSenses) {
+                Topic topic = chosenTopics.get(sense.id);
+                if (topic == null) {
+                    // we haven't seen this topic before
+                    topic = new Topic(wikipedia, sense.id, sense.relatedness, docLength);
+                    chosenTopics.put(sense.id, topic);
+                }
+                topic.addReference(ref, sense.disambigConfidence);
+            }
+        }
+    }
+    return chosenTopics;
+}

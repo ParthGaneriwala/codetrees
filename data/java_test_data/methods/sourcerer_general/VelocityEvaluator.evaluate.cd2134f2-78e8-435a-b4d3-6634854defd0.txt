@@ -1,0 +1,35 @@
+public void evaluate(final Summary summary, final Patient patient, final Boolean keepArtifact) {
+    try {
+        VelocityEngine engine = new VelocityEngine();
+        engine.setProperty(RuntimeConstants.RUNTIME_LOG_LOGSYSTEM_CLASS, Log4JLogChute.class.getName());
+        engine.setProperty("runtime.log.logsystem.log4j.logger", VelocityEvaluator.class.getName());
+        engine.init();
+        VelocityContext context = new VelocityContext();
+        context.put("patient", patient);
+        context.put("patientId", patient.getPatientId());
+        context.put("summary", summary);
+        // custom utility functions
+        context.put("fn", new VelocityUtils());
+        StringWriter writer = new StringWriter();
+        engine.evaluate(context, writer, VelocityEvaluator.class.getName(), summary.getXml());
+        String artifact = postProcessArtifact(patient, summary, writer.toString());
+        if (keepArtifact) {
+            String xmlFilename = StringUtils.join(Arrays.asList(patient.getPatientId(), Evaluator.FILE_TYPE_XML), ".");
+            File xmlFile = new File(EvaluatorUtils.getOutputDirectory(summary), xmlFilename);
+            saveArtifact(artifact, xmlFile);
+        }
+        String filename = StringUtils.join(Arrays.asList(patient.getPatientId(), Evaluator.FILE_TYPE_PDF), ".");
+        File file = new File(EvaluatorUtils.getOutputDirectory(summary), filename);
+        OutputStream out = new BufferedOutputStream(new FileOutputStream(file));
+        FOUserAgent agent = fopFactory.newFOUserAgent();
+        Fop fop = fopFactory.newFop(MimeConstants.MIME_PDF, agent, out);
+        Source xsltSource = new StreamSource(new StringReader(summary.getXslt()));
+        Transformer transformer = transformerFactory.newTransformer(xsltSource);
+        Result result = new SAXResult(fop.getDefaultHandler());
+        Source source = new StreamSource(new StringReader(artifact));
+        transformer.transform(source, result);
+        out.close();
+    } catch (Exception e) {
+        log.error("Evaluating " + summary.getName() + " on patient " + patient.getPatientId() + " failed ...", e);
+    }
+}

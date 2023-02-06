@@ -1,0 +1,63 @@
+List<JSModule> createJsModules(List<String> specs, List<String> jsFiles) throws FlagUsageException, IOException {
+    if (isInTestMode()) {
+        return modulesSupplierForTesting.get();
+    }
+    Preconditions.checkState(specs != null);
+    Preconditions.checkState(!specs.isEmpty());
+    Preconditions.checkState(jsFiles != null);
+    final int totalNumJsFiles = jsFiles.size();
+    int nextJsFileIndex = 0;
+    Map<String, JSModule> modulesByName = Maps.newLinkedHashMap();
+    for (String spec : specs) {
+        // Format is "<name>:<num-js-files>[:[<dep>,...][:]]".
+        String[] parts = spec.split(":");
+        if (parts.length < 2 || parts.length > 4) {
+            throw new FlagUsageException("Expected 2-4 colon-delimited parts in " + "module spec: " + spec);
+        }
+        // Parse module name.
+        String name = parts[0];
+        checkModuleName(name);
+        if (modulesByName.containsKey(name)) {
+            throw new FlagUsageException("Duplicate module name: " + name);
+        }
+        JSModule module = new JSModule(name);
+        // Parse module inputs.
+        int numJsFiles = -1;
+        try {
+            numJsFiles = Integer.parseInt(parts[1]);
+        } catch (NumberFormatException ignored) {
+            numJsFiles = -1;
+        }
+        // We will allow modules of zero input.
+        if (numJsFiles < 0) {
+            throw new FlagUsageException("Invalid js file count '" + parts[1] + "' for module: " + name);
+        }
+        if (nextJsFileIndex + numJsFiles > totalNumJsFiles) {
+            throw new FlagUsageException("Not enough js files specified. Expected " + (nextJsFileIndex + numJsFiles - totalNumJsFiles) + " more in module:" + name);
+        }
+        List<String> moduleJsFiles = jsFiles.subList(nextJsFileIndex, nextJsFileIndex + numJsFiles);
+        for (JSSourceFile input : createInputs(moduleJsFiles, false)) {
+            module.add(input);
+        }
+        nextJsFileIndex += numJsFiles;
+        if (parts.length > 2) {
+            // Parse module dependencies.
+            String depList = parts[2];
+            if (depList.length() > 0) {
+                String[] deps = depList.split(",");
+                for (String dep : deps) {
+                    JSModule other = modulesByName.get(dep);
+                    if (other == null) {
+                        throw new FlagUsageException("Module '" + name + "' depends on unknown module '" + dep + "'. Be sure to list modules in dependency order.");
+                    }
+                    module.addDependency(other);
+                }
+            }
+        }
+        modulesByName.put(name, module);
+    }
+    if (nextJsFileIndex < totalNumJsFiles) {
+        throw new FlagUsageException("Too many js files specified. Expected " + nextJsFileIndex + " but found " + totalNumJsFiles);
+    }
+    return Lists.newArrayList(modulesByName.values());
+}

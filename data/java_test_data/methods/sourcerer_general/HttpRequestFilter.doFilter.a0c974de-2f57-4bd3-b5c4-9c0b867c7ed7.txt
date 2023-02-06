@@ -1,0 +1,121 @@
+public void doFilter(ServletRequest req, ServletResponse res, FilterChain next) throws IOException, ServletException {
+    // If security is not enabled, we just let it pass.
+    if (!enable) {
+        next.doFilter(req, res);
+        return;
+    }
+    if (req instanceof HttpServletRequest) {
+        HttpServletRequest request = (HttpServletRequest) req;
+        HttpSession httpSession = request.getSession(true);
+        // we set the session manager to http session then we can get and use it in JSPs.
+        if (httpSession.getAttribute(KEY_SESSION_MGR) == null) {
+            httpSession.setAttribute(KEY_SESSION_MGR, sessionMgr);
+        }
+        String uri = request.getRequestURI();
+        String relativeUri = uri.substring(request.getContextPath().length());
+        // we by pass those information pages.
+        if (relativeUri.equals(loginPage) || relativeUri.equals(errorPage) || relativeUri.equals(atnFailPage) || relativeUri.equals(atzFailPage)) {
+            next.doFilter(req, res);
+            return;
+        }
+        // do login
+        if (relativeUri.equals(loginAction)) {
+            // If uri is login action, we are trying to do authentication.
+            doAuthentication(request, (HttpServletResponse) res);
+            return;
+        }
+        // do logout
+        if (relativeUri.equals(logoutUrl)) {
+            logout(request);
+            logger.debug("Logged out, forward to home page.");
+            ((HttpServletResponse) res).sendRedirect(request.getContextPath());
+            return;
+        }
+        // Any other pages.
+        String queryString = request.getQueryString();
+        String url = uri + (queryString == null ? "" : ("?" + queryString));
+        logger.debug("Coming request : " + url);
+        // Construct authorization request. Set current subject as anonymous
+        Subject[] subjects = new Subject[] { Subject.ANONYMOUS };
+        Resource[] resources = processResource(uri);
+        Action action = new Action(request.getMethod());
+        Context ctx = createContextFromRequest(request);
+        try {
+            AuthorizationResult result = null;
+            Session session = sessionMgr.getSession(httpSession.getId());
+            Subject subject = session.getSubject();
+            // page.
+            if (subject == null) {
+                logger.debug("Current session is not logged in, we are authorizing as Anonymous.");
+                result = doAuthorization(subjects, resources, action, ctx);
+                if (!(result.getDecision() == Decision.Permit)) {
+                    logger.debug("Anonymous is not allowed, we forward it to login page.");
+                    // We save the accessed url to session, then if logged in, we will redirect to the original url.
+                    httpSession.setAttribute(KEY_ORIGINAL_URL, url);
+                    request.getRequestDispatcher(loginPage).forward(req, res);
+                    return;
+                }
+            } else {
+                logger.debug("Got subject from session, doing authorization.");
+                subjects = new Subject[] { subject };
+                result = doAuthorization(subjects, resources, action, ctx);
+            }
+            Decision decision = result.getDecision();
+            String msg = result.getMessage();
+            Context responseCtx = result.getResponseContext();
+            logger.debug("Decsion=" + decision + ";Subject=" + subject.getSubjectName() + ";Resource=" + uri + ";Action=" + action.getActionName() + (responseCtx == null ? "" : ";ResponseContext=[" + responseCtx + "]"));
+            // Set the returned message to request
+            if (msg != null) {
+                logger.debug("\n" + msg);
+                request.setAttribute(PARAM_MESSAGE, msg);
+            }
+            // Set the response context's attributes to request
+            if (responseCtx != null) {
+                Collection<Attribute> attrs = responseCtx.getAllAttributes();
+                for (Attribute each : attrs) {
+                    request.setAttribute(each.getName(), each.isArray() ? each.getArrayValueAsString() : each.getValue());
+                }
+            }
+            if (decision == Decision.Permit) {
+                logger.debug("Request '" + url + "' was permit to be access.");
+                next.doFilter(req, res);
+            } else {
+                String atzFailMsg = "Request '" + url + "' was not permit to be access.";
+                logger.debug(atzFailMsg);
+                request.setAttribute(PARAM_MESSAGE, atzFailMsg);
+                if (atzFailPage == null) {
+                    ((HttpServletResponse) res).sendError(HttpServletResponse.SC_FORBIDDEN);
+                } else {
+                    request.getRequestDispatcher(atzFailPage).forward(req, res);
+                }
+            }
+        } catch (SessionSizeExceedCapacityException se) {
+            String msg = "Session pool full: " + se.getMessage();
+            logger.error(msg, se);
+            request.setAttribute(PARAM_MESSAGE, msg);
+            if (errorPage == null) {
+                ((HttpServletResponse) res).sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            } else {
+                request.getRequestDispatcher(errorPage).forward(req, res);
+            }
+        } catch (AuthorizationFailedException ae) {
+            String msg = "Error occurs while authorizing: " + ae.getMessage();
+            logger.error(msg, ae);
+            request.setAttribute(PARAM_MESSAGE, msg);
+            if (errorPage == null) {
+                ((HttpServletResponse) res).sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            } else {
+                request.getRequestDispatcher(errorPage).forward(req, res);
+            }
+        }
+    } else {
+        String msg = "We got a non-HttpServletRequest.";
+        logger.warn(msg);
+        req.setAttribute(PARAM_MESSAGE, msg);
+        if (errorPage == null) {
+            ((HttpServletResponse) res).sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+        } else {
+            req.getRequestDispatcher(errorPage).forward(req, res);
+        }
+    }
+}

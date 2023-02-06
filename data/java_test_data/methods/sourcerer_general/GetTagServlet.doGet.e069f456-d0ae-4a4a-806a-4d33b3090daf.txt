@@ -1,0 +1,137 @@
+/**
+ * (non-Javadoc)
+ *
+ * @see javax.servlet.http.HttpServlet#doGet(javax.servlet.http.HttpServletRequest,
+ * javax.servlet.http.HttpServletResponse)
+ */
+protected void doGet(HttpServletRequest request, HttpServletResponse response) {
+    try {
+        response.setCharacterEncoding("UTF-8");
+        response.setHeader("Pragma", "no-cache");
+        response.setHeader("Cache-Control", "no-cache");
+        response.setDateHeader("Expires", 0);
+        PrintWriter writer = response.getWriter();
+        String readerId = (String) request.getParameter("type");
+        List<MermoryBean> d = MemoryData.getDataList();
+        MermoryBean tag = null;
+        if (d != null && d.size() > 0) {
+            tag = MemoryData.getTag();
+        }
+        if ("createCard".equals(readerId)) {
+            Visitor v = MemoryData.getVisitor();
+            if (tag != null) {
+                writer.write(tag.getTagId() + "||");
+            } else {
+                writer.write("||");
+            }
+            if (v != null) {
+                writer.write(toBlank(v.getAttr1()) + ";" + toBlank(v.getUserName()) + ";" + toBlank(v.getCompany()) + ";" + toBlank(v.getEmail()) + ";" + toBlank(v.getMobile()));
+            } else {
+                writer.write("none");
+            }
+            if (tag != null && v != null) {
+                MemoryData.setVisitor(null);
+            }
+            MemoryData.getDataList().clear();
+        } else if ("vipIn".equals(readerId)) {
+            if (tag != null) {
+                addTrack(tag);
+                writer.write(tag.getTagId());
+                MemoryData.getDataList().clear();
+            }
+        } else if ("vipIn2".equals(readerId)) {
+            if (tag != null) {
+                addTrack(tag);
+                StringBuffer bf = new StringBuffer();
+                ManufacturerManager mgr = (ManufacturerManager) SpringUtil.getBean("manufacturerManager");
+                Manufacturer manufacturer = mgr.getManufacturerByManufacturerId(tag.getReaderId());
+                VisitorManager vMgr = (VisitorManager) SpringUtil.getBean("visitorManager");
+                Visitor visitor = vMgr.getVisitorByTagId(tag.getTagId());
+                if (manufacturer != null) {
+                    bf.append(toBlank(manufacturer.getCompany()) + "||");
+                    if (visitor != null) {
+                        String company = visitor.getCompany();
+                        if (company.length() > 5) {
+                            bf.append("" + "||");
+                        } else {
+                            bf.append(toBlank(company) + "||");
+                        }
+                        if (StringUtils.isNotEmpty(visitor.getMobile()) && StringUtils.isNotEmpty(visitor.getEmail())) {
+                            if (!CacheData.contains(tag.getReaderId() + "_" + tag.getTagId())) {
+                                SmsManager smgr = (SmsManager) SpringUtil.getBean("smsManager");
+                                Sms sms = new Sms();
+                                sms.setType("M");
+                                sms.setPhoneNo(visitor.getMobile());
+                                sms.setStatus("N");
+                                // 感谢您垂询  展台，相关资料已经发送到您的免费邮箱！
+                                sms.setMessage("感谢您垂询 " + manufacturer.getCompany() + " 展台，相关资料已经发送到您的免费邮箱 " + visitor.getEmail() + ".");
+                                smgr.saveSms(sms);
+                                MailManager mmgr = (MailManager) SpringUtil.getBean("mailManager");
+                                Mail mail = new Mail();
+                                mail.setReaderId(tag.getReaderId());
+                                mail.setTagId(tag.getTagId());
+                                mail.setStatus("N");
+                                mmgr.saveMail(mail);
+                                CacheData.add(tag.getReaderId() + "_" + tag.getTagId());
+                            }
+                        }
+                        bf.append(toBlank(visitor.getUserName()));
+                    } else {
+                        bf.append("none||none");
+                    }
+                    writer.write(bf.toString());
+                }
+                MemoryData.getDataList().clear();
+            }
+        } else if ("vipOut".equals(readerId)) {
+            String tId = request.getParameter("t");
+            if (StringUtils.isNotEmpty(tId)) {
+                tag = new MermoryBean();
+                tag.setReaderId("vipOut");
+                tag.setTagId(tId);
+            }
+            if (tag != null) {
+                addTrack(tag);
+                Dao dao = (Dao) SpringUtil.getBean("dao");
+                String sql = "select m.company " + " from TrackHis t, " + "      Manufacturer m " + " where " + // "         TO_DAYS(NOW()) = to_days(t.created_date) " +
+                "       t.tagId = '" + trimAll(tag.getTagId()) + "'" + "     and t.readerId = m.manufacturerId";
+                List datas = dao.getObjects(sql);
+                if (datas != null && datas.size() > 0) {
+                    for (int i = 0; datas.size() > i; i++) {
+                        Object o = (Object) datas.get(i);
+                        String company = o.toString();
+                        writer.write(toBlank(company) + "<br/>");
+                    }
+                }
+                writer.write("||");
+                sql = "select createdDate from TrackHis " + " where " + "         tagId = '" + trimAll(tag.getTagId()) + "'" + "     and readerId = 'vipIn'";
+                List ds = dao.getObjects(sql);
+                Long inDate = System.currentTimeMillis() - 5 * 60 * 1000;
+                if (ds != null && ds.size() > 0) {
+                    for (int i = 0; ds.size() > i; i++) {
+                        Object o = (Object) ds.get(i);
+                        inDate = ((Date) o).getTime();
+                        break;
+                    }
+                }
+                writer.write(String.valueOf((System.currentTimeMillis() - inDate) / (60 * 1000)));
+                MemoryData.getDataList().clear();
+            }
+        } else {
+            String tagId = (String) request.getParameter("t");
+            String rId = (String) request.getParameter("r");
+            if (StringUtils.isNotEmpty(tagId) && StringUtils.isNotEmpty(rId)) {
+                FreeMail f = FreeMailService.getFreeMail();
+                MermoryBean t = new MermoryBean();
+                t.setReaderId(rId);
+                t.setTagId(tagId);
+                addTrack(t);
+            }
+        }
+        writer.flush();
+        writer.close();
+    } catch (Exception e) {
+        logger.error(e);
+        e.printStackTrace();
+    }
+}

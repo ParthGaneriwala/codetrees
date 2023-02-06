@@ -1,0 +1,97 @@
+public BlockWriteStreams writeToBlock(Block b, boolean isRecovery) throws IOException {
+    // 
+    if (isValidBlock(b)) {
+        if (!isRecovery) {
+            throw new IOException("Block " + b + " is valid, and cannot be written to.");
+        }
+        // If the block was successfully finalized because all packets
+        // were successfully processed at the Datanode but the ack for
+        // some of the packets were not received by the client. The client
+        // re-opens the connection and retries sending those packets.
+        // The other reason is that an "append" is occurring to this block.
+        detachBlock(b, 1);
+    }
+    long blockSize = b.getNumBytes();
+    // 
+    // Serialize access to /tmp, and check if file already there.
+    // 
+    File f = null;
+    List<Thread> threads = null;
+    synchronized (this) {
+        // 
+        // Is it already in the create process?
+        // 
+        ActiveFile activeFile = ongoingCreates.get(b);
+        if (activeFile != null) {
+            f = activeFile.file;
+            threads = activeFile.threads;
+            if (!isRecovery) {
+                throw new IOException("Block " + b + " has already been started (though not completed), and thus cannot be created.");
+            } else {
+                for (Thread thread : threads) {
+                    thread.interrupt();
+                }
+            }
+            ongoingCreates.remove(b);
+        }
+        FSVolume v = null;
+        if (!isRecovery) {
+            v = volumes.getNextVolume(blockSize);
+            // create temporary file to hold block in the designated volume
+            f = createTmpFile(v, b);
+            volumeMap.put(b, new DatanodeBlockInfo(v));
+        } else if (f != null) {
+            DataNode.LOG.info("Reopen already-open Block for append " + b);
+            // create or reuse temporary file to hold block in the designated volume
+            v = volumeMap.get(b).getVolume();
+            volumeMap.put(b, new DatanodeBlockInfo(v));
+        } else {
+            // reopening block for appending to it.
+            DataNode.LOG.info("Reopen Block for append " + b);
+            v = volumeMap.get(b).getVolume();
+            f = createTmpFile(v, b);
+            File blkfile = getBlockFile(b);
+            File oldmeta = getMetaFile(b);
+            File newmeta = getMetaFile(f, b);
+            // rename meta file to tmp directory
+            DataNode.LOG.debug("Renaming " + oldmeta + " to " + newmeta);
+            if (!oldmeta.renameTo(newmeta)) {
+                throw new IOException("Block " + b + " reopen failed. " + " Unable to move meta file  " + oldmeta + " to tmp dir " + newmeta);
+            }
+            // rename block file to tmp directory
+            DataNode.LOG.debug("Renaming " + blkfile + " to " + f);
+            if (!blkfile.renameTo(f)) {
+                if (!f.delete()) {
+                    throw new IOException("Block " + b + " reopen failed. " + " Unable to remove file " + f);
+                }
+                if (!blkfile.renameTo(f)) {
+                    throw new IOException("Block " + b + " reopen failed. " + " Unable to move block file " + blkfile + " to tmp dir " + f);
+                }
+            }
+            volumeMap.put(b, new DatanodeBlockInfo(v));
+        }
+        if (f == null) {
+            DataNode.LOG.warn("Block " + b + " reopen failed " + " Unable to locate tmp file.");
+            throw new IOException("Block " + b + " reopen failed " + " Unable to locate tmp file.");
+        }
+        ongoingCreates.put(b, new ActiveFile(f, threads));
+    }
+    try {
+        if (threads != null) {
+            for (Thread thread : threads) {
+                thread.join();
+            }
+        }
+    } catch (InterruptedException e) {
+        throw new IOException("Recovery waiting for thread interrupted.");
+    }
+    // 
+    // Finally, allow a writer to the block file
+    // REMIND - mjc - make this a filter stream that enforces a max
+    // block size, so clients can't go crazy
+    // 
+    File metafile = getMetaFile(f, b);
+    DataNode.LOG.debug("writeTo blockfile is " + f + " of size " + f.length());
+    DataNode.LOG.debug("writeTo metafile is " + metafile + " of size " + metafile.length());
+    return createBlockWriteStreams(f, metafile);
+}

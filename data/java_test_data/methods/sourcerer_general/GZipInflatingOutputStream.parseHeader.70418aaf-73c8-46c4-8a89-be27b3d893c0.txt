@@ -1,0 +1,82 @@
+private void parseHeader(byte[] b, int off, int len) throws IOException {
+    // Store all potential header bytes in a buffer.
+    for (int i = 0; i < len && headerLength < headerBytes.length; i++) {
+        headerBytes[headerLength++] = b[off + i];
+    }
+    // Once we have the first 4 bytes, check for validity and flag values.
+    if (headerOffset == 0 && headerLength >= 4) {
+        // Check header magic
+        int GZIP_MAGIC = 0x8b1f;
+        if (bytesToShort(headerBytes, 0) != GZIP_MAGIC) {
+            outputStream.close();
+            throw new IOException("Not in GZIP format");
+        }
+        // Check compression method
+        if ((headerBytes[2] & 0xFF) != Deflater.DEFLATED) {
+            outputStream.close();
+            throw new IOException("Unexpected compression method");
+        }
+        // Read header content flags
+        headerFlag = (headerBytes[3] & 0xFF);
+        // Skip MTIME, XFL, and OS fields
+        expectedHeaderLength += 6;
+        headerOffset = 10;
+        if ((headerFlag & FEXTRA) == FEXTRA)
+            expectedHeaderLength += 2;
+        if ((headerFlag & FNAME) == FNAME)
+            expectedHeaderLength++;
+        if ((headerFlag & FCOMMENT) == FCOMMENT) {
+            expectedHeaderLength++;
+        }
+        if ((headerFlag & FHCRC) == FHCRC) {
+            expectedHeaderLength += 2;
+        }
+    }
+    // Once we have enough bytes to start checking flag values, do so.
+    while (headerOffset != expectedHeaderLength && headerLength >= expectedHeaderLength) {
+        // Skip optional extra field
+        if ((headerFlag & FEXTRA) == FEXTRA) {
+            // Skip past this variable-length field.
+            int fieldLength = bytesToShort(headerBytes, headerOffset);
+            expectedHeaderLength += fieldLength;
+            headerOffset += 2 + fieldLength;
+        } else // Skip optional file name
+        if ((headerFlag & FNAME) == FNAME) {
+            char fnameChar = (char) headerBytes[headerOffset++];
+            if (fnameChar != 0) {
+                // More filename characters to come.
+                expectedHeaderLength++;
+            }
+        } else // Skip optional file comment
+        if ((headerFlag & FCOMMENT) == FCOMMENT) {
+            // Consume bytes until we get to the end of the comments.
+            while ((headerBytes[headerOffset] & 0xFF) != 0) {
+                headerOffset++;
+                expectedHeaderLength++;
+            }
+        } else // Check optional header CRC
+        if ((headerFlag & FHCRC) == FHCRC) {
+            crc.update(headerBytes, 0, headerOffset);
+            int v = (int) crc.getValue() & 0xffff;
+            if (bytesToShort(headerBytes, headerOffset) != v) {
+                outputStream.close();
+                throw new IOException("Corrupt GZIP header");
+            }
+            crc.reset();
+            headerOffset++;
+            expectedHeaderLength++;
+        }
+    }
+    if (headerOffset == expectedHeaderLength && headerLength >= expectedHeaderLength) {
+        // Finished parsing the header.
+        finishedHeader = true;
+        // Pass any remaining bytes in the header buffer to the inflater.
+        if (headerLength > headerOffset) {
+            inflater.setInput(headerBytes, headerOffset, headerLength - headerOffset);
+        }
+        // Pass all other remaining bytes to the inflater.
+        if (len > headerLength) {
+            inflater.setInput(b, headerOffset, len - headerOffset);
+        }
+    }
+}

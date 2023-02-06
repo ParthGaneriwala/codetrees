@@ -1,0 +1,106 @@
+public void processSubscribe(Request request, ServerTransaction serverTransaction) {
+    DebugIM.println("Processing SUBSCRIBE in progress ");
+    try {
+        MessageFactory messageFactory = imUA.getMessageFactory();
+        HeaderFactory headerFactory = imUA.getHeaderFactory();
+        AddressFactory addressFactory = imUA.getAddressFactory();
+        Dialog dialog = serverTransaction.getDialog();
+        // ********** Terminating subscriptions **********
+        ExpiresHeader expiresHeader = (ExpiresHeader) request.getHeader(ExpiresHeader.NAME);
+        System.out.println("expirseͷ��" + " " + expiresHeader);
+        if (expiresHeader != null && expiresHeader.getExpires() == 0) {
+            if (dialog != null) {
+                // Terminating an existing subscription
+                System.out.println("�ص����ڵ�subscripton");
+                Response response = messageFactory.createResponse(Response.OK, // 200
+                request);
+                expiresHeader = headerFactory.createExpiresHeader(3600);
+                response.setExpires(expiresHeader);
+                serverTransaction.sendResponse(response);
+                IMNotifyProcessing imNotifyProcessing = imUA.getIMNotifyProcessing();
+                imNotifyProcessing.sendNotify(response, null, dialog);
+                return;
+            } else {
+                // Terminating an non existing subscription
+                System.out.println("�ص������ڵ�subscripton");
+                Response response = messageFactory.createResponse(// 481
+                Response.CALL_OR_TRANSACTION_DOES_NOT_EXIST, request);
+                serverTransaction.sendResponse(response);
+                return;
+            }
+        }
+        // ********** Non-terminating subscriptions ************
+        // send a 202 Accepted while waiting for authorization from user
+        System.out.println("send a 202 Accepted while waiting for authorization from user");
+        Response response = messageFactory.createResponse(Response.ACCEPTED, request);
+        // Tag:
+        ToHeader toHeader = (ToHeader) response.getHeader(ToHeader.NAME);
+        if (toHeader.getTag() == null)
+            toHeader.setTag(new Integer((int) (Math.random() * 10000)).toString());
+        expiresHeader = headerFactory.createExpiresHeader(3600);
+        response.setExpires(expiresHeader);
+        System.out.println("*******" + response);
+        serverTransaction.sendResponse(response);
+        DebugIM.println(response.toString());
+        // We have to ask the user to authorize the guy to be in his buddy
+        // list
+        String presentityURL = IMUtilities.getKey(request, "From");
+        SipProvider sipProvider = imUA.getSipProvider();
+        InstantMessagingGUI imGUI = imUA.getInstantMessagingGUI();
+        boolean authorization = imGUI.getAuthorizationForBuddy(presentityURL);
+        if (authorization) {
+            DebugIM.println("DEBUG: SubscribeProcessing, processSubscribe(), " + " Response 202 Accepted sent.");
+            // We have to create or update the subscriber!
+            PresenceManager presenceManager = imUA.getPresenceManager();
+            String subscriberURL = IMUtilities.getKey(request, "From");
+            if (dialog != null)
+                presenceManager.addSubscriber(subscriberURL, response, dialog);
+            else {
+                DebugIM.println("ERROR, IMSubscribeProcessing, processSubscribe(), the" + " dialog for the SUBSCRIBE we received is null!!! No subscriber added....");
+                return;
+            }
+            // Let's see if this buddy is in our buddy list
+            // if not let's ask to add him!
+            BuddyList buddyList = imGUI.getBuddyList();
+            ListenerInstantMessaging listenerIM = imGUI.getListenerInstantMessaging();
+            if (!buddyList.hasBuddy(subscriberURL)) {
+                // Let's ask:
+                listenerIM.addContact(subscriberURL);
+            }
+            /**
+             * ********************* send NOTIFY *************************
+             */
+            // We send a NOTIFY for any of our status but offline
+            String localStatus = listenerIM.getLocalStatus();
+            if (!localStatus.equals("offline")) {
+                IMNotifyProcessing imNotifyProcessing = imUA.getIMNotifyProcessing();
+                Subscriber subscriber = presenceManager.getSubscriber(subscriberURL);
+                // Response okSent=subscriber.getOkSent();
+                subscriberURL = subscriber.getSubscriberName();
+                String contactAddress = imUA.getIMAddress() + ":" + imUA.getIMPort();
+                String subStatus = listenerIM.getLocalStatus();
+                String status = null;
+                if (subStatus.equals("offline"))
+                    status = "closed";
+                else
+                    status = "open";
+                String xmlBody = imNotifyProcessing.xmlPidfParser.createXMLBody(status, subStatus, subscriberURL, contactAddress);
+                imNotifyProcessing.sendNotify(response, xmlBody, dialog);
+            }
+        } else {
+            // User did not authorize subscription. Terminate it!
+            DebugIM.println("DEBUG, IMSubsribeProcessing, processSubscribe(), " + " Subscription declined!");
+            DebugIM.println("DEBUG, IMSubsribeProcessing, processSubscribe(), " + " Sending a Notify with Subscribe-state=terminated");
+            IMNotifyProcessing imNotifyProcessing = imUA.getIMNotifyProcessing();
+            if (dialog != null) {
+                imNotifyProcessing.sendNotify(response, null, dialog);
+                DebugIM.println("DEBUG, IMSubsribeProcessing, processSubscribe(), " + " Sending a Notify with Subscribe-state=terminated");
+            } else {
+                DebugIM.println("ERROR, IMSubscribeProcessing, processSubscribe(), the" + " dialog for the SUBSCRIBE we received is null!!! \n" + "   No terminating Notify sent");
+            }
+            imNotifyProcessing.sendNotify(response, null, dialog);
+        }
+    } catch (Exception ex) {
+        ex.printStackTrace();
+    }
+}

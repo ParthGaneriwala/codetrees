@@ -1,0 +1,77 @@
+public void solveVelocityConstraints(final BBTimeStep step) {
+    BBBody b1 = m_bodyA;
+    BBBody b2 = m_bodyB;
+    BBVec2 v1 = b1.m_linearVelocity;
+    float w1 = b1.m_angularVelocity;
+    BBVec2 v2 = b2.m_linearVelocity;
+    float w2 = b2.m_angularVelocity;
+    float m1 = b1.m_invMass, m2 = b2.m_invMass;
+    float i1 = b1.m_invI, i2 = b2.m_invI;
+    // solve motor constraint.
+    if (m_enableMotor & m_limitState != e_equalLimits) {
+        float Cdot = w2 - w1 - m_motorSpeed;
+        float impulse = m_motorMass * (-Cdot);
+        float oldImpulse = m_motorImpulse;
+        float maxImpulse = step.dt * m_maxMotorTorque;
+        m_motorImpulse = clamp(m_motorImpulse + impulse, -maxImpulse, maxImpulse);
+        impulse = m_motorImpulse - oldImpulse;
+        w1 -= i1 * impulse;
+        w2 += i2 * impulse;
+    }
+    // solve limit constraint.
+    if (m_enableLimit & m_limitState != e_inactiveLimit) {
+        BBVec2 r1 = mul(b1.getTransform().R, sub(m_localAnchor1, b1.getLocalCenter()));
+        BBVec2 r2 = mul(b2.getTransform().R, sub(m_localAnchor2, b2.getLocalCenter()));
+        // solve point-to-point constraint
+        BBVec2 Cdot1 = sub(sub(add(v2, cross(w2, r2)), v1), cross(w1, r1));
+        float Cdot2 = w2 - w1;
+        BBVec3 Cdot = new BBVec3(Cdot1.x, Cdot1.y, Cdot2);
+        BBVec3 impulse = m_mass.solve33(Cdot.neg());
+        if (m_limitState == e_equalLimits) {
+            m_impulse.add(impulse);
+        } else if (m_limitState == e_atLowerLimit) {
+            float newImpulse = m_impulse.z + impulse.z;
+            if (newImpulse < 0.0f) {
+                BBVec2 reduced = m_mass.solve22(Cdot1.neg());
+                impulse.x = reduced.x;
+                impulse.y = reduced.y;
+                impulse.z = -m_impulse.z;
+                m_impulse.x += reduced.x;
+                m_impulse.y += reduced.y;
+                m_impulse.z = 0.0f;
+            }
+        } else if (m_limitState == e_atUpperLimit) {
+            float newImpulse = m_impulse.z + impulse.z;
+            if (newImpulse > 0.0f) {
+                BBVec2 reduced = m_mass.solve22(Cdot1.neg());
+                impulse.x = reduced.x;
+                impulse.y = reduced.y;
+                impulse.z = -m_impulse.z;
+                m_impulse.x += reduced.x;
+                m_impulse.y += reduced.y;
+                m_impulse.z = 0.0f;
+            }
+        }
+        BBVec2 P = new BBVec2(impulse.x, impulse.y);
+        v1.sub(mul(m1, P));
+        w1 -= i1 * (cross(r1, P) + impulse.z);
+        v2.add(mul(m2, P));
+        w2 += i2 * (cross(r2, P) + impulse.z);
+    } else {
+        BBVec2 r1 = mul(b1.getTransform().R, sub(m_localAnchor1, b1.getLocalCenter()));
+        BBVec2 r2 = mul(b2.getTransform().R, sub(m_localAnchor2, b2.getLocalCenter()));
+        // solve point-to-point constraint
+        BBVec2 Cdot = sub(sub(add(v2, cross(w2, r2)), v1), cross(w1, r1));
+        BBVec2 impulse = m_mass.solve22(Cdot.neg());
+        m_impulse.x += impulse.x;
+        m_impulse.y += impulse.y;
+        v1.sub(mul(m1, impulse));
+        w1 -= i1 * cross(r1, impulse);
+        v2.add(mul(m2, impulse));
+        w2 += i2 * cross(r2, impulse);
+    }
+    b1.m_linearVelocity = v1;
+    b1.m_angularVelocity = w1;
+    b2.m_linearVelocity = v2;
+    b2.m_angularVelocity = w2;
+}

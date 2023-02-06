@@ -1,0 +1,221 @@
+private void generateStatement(Node node) {
+    updateLineNumber(node);
+    int type = node.getType();
+    Node child = node.getFirstChild();
+    switch(type) {
+        case Token.LOOP:
+        case Token.LABEL:
+        case Token.WITH:
+        case Token.SCRIPT:
+        case Token.BLOCK:
+        case Token.EMPTY:
+            // no-ops.
+            if (compilerEnv.isGenerateObserverCount()) {
+                // Need to add instruction count even for no-ops to catch
+                // cases like while (1) {}
+                addInstructionCount(1);
+            }
+            while (child != null) {
+                generateStatement(child);
+                child = child.getNext();
+            }
+            break;
+        case Token.LOCAL_BLOCK:
+            {
+                int local = getNewWordLocal();
+                if (isGenerator) {
+                    cfw.add(ByteCode.ACONST_NULL);
+                    cfw.addAStore(local);
+                }
+                node.putIntProp(Node.LOCAL_PROP, local);
+                while (child != null) {
+                    generateStatement(child);
+                    child = child.getNext();
+                }
+                releaseWordLocal((short) local);
+                node.removeProp(Node.LOCAL_PROP);
+                break;
+            }
+        case Token.FUNCTION:
+            {
+                int fnIndex = node.getExistingIntProp(Node.FUNCTION_PROP);
+                OptFunctionNode ofn = OptFunctionNode.get(scriptOrFn, fnIndex);
+                int t = ofn.fnode.getFunctionType();
+                if (t == FunctionNode.FUNCTION_EXPRESSION_STATEMENT) {
+                    visitFunction(ofn, t);
+                } else {
+                    if (t != FunctionNode.FUNCTION_STATEMENT) {
+                        throw Codegen.badTree();
+                    }
+                }
+                break;
+            }
+        case Token.TRY:
+            visitTryCatchFinally((Jump) node, child);
+            break;
+        case Token.CATCH_SCOPE:
+            {
+                // nothing stays on the stack on entry into a catch scope
+                cfw.setStackTop((short) 0);
+                int local = getLocalBlockRegister(node);
+                int scopeIndex = node.getExistingIntProp(Node.CATCH_SCOPE_PROP);
+                // name of exception
+                String name = child.getString();
+                child = child.getNext();
+                // load expression object
+                generateExpression(child, node);
+                if (scopeIndex == 0) {
+                    cfw.add(ByteCode.ACONST_NULL);
+                } else {
+                    // Load previous catch scope object
+                    cfw.addALoad(local);
+                }
+                cfw.addPush(name);
+                cfw.addALoad(contextLocal);
+                cfw.addALoad(variableObjectLocal);
+                addScriptRuntimeInvoke("newCatchScope", "(Ljava/lang/Throwable;" + "Lorg/mozilla/javascript/Scriptable;" + "Ljava/lang/String;" + "Lorg/mozilla/javascript/Context;" + "Lorg/mozilla/javascript/Scriptable;" + ")Lorg/mozilla/javascript/Scriptable;");
+                cfw.addAStore(local);
+            }
+            break;
+        case Token.THROW:
+            generateExpression(child, node);
+            if (compilerEnv.isGenerateObserverCount())
+                addInstructionCount();
+            generateThrowJavaScriptException();
+            break;
+        case Token.RETHROW:
+            if (compilerEnv.isGenerateObserverCount())
+                addInstructionCount();
+            cfw.addALoad(getLocalBlockRegister(node));
+            cfw.add(ByteCode.ATHROW);
+            break;
+        case Token.RETURN_RESULT:
+        case Token.RETURN:
+            if (!isGenerator) {
+                if (child != null) {
+                    generateExpression(child, node);
+                } else if (type == Token.RETURN) {
+                    Codegen.pushUndefined(cfw);
+                } else {
+                    if (popvLocal < 0)
+                        throw Codegen.badTree();
+                    cfw.addALoad(popvLocal);
+                }
+            }
+            if (compilerEnv.isGenerateObserverCount())
+                addInstructionCount();
+            if (epilogueLabel == -1) {
+                if (!hasVarsInRegs)
+                    throw Codegen.badTree();
+                epilogueLabel = cfw.acquireLabel();
+            }
+            cfw.add(ByteCode.GOTO, epilogueLabel);
+            break;
+        case Token.SWITCH:
+            if (compilerEnv.isGenerateObserverCount())
+                addInstructionCount();
+            visitSwitch((Jump) node, child);
+            break;
+        case Token.ENTERWITH:
+            generateExpression(child, node);
+            cfw.addALoad(contextLocal);
+            cfw.addALoad(variableObjectLocal);
+            addScriptRuntimeInvoke("enterWith", "(Ljava/lang/Object;" + "Lorg/mozilla/javascript/Context;" + "Lorg/mozilla/javascript/Scriptable;" + ")Lorg/mozilla/javascript/Scriptable;");
+            cfw.addAStore(variableObjectLocal);
+            incReferenceWordLocal(variableObjectLocal);
+            break;
+        case Token.LEAVEWITH:
+            cfw.addALoad(variableObjectLocal);
+            addScriptRuntimeInvoke("leaveWith", "(Lorg/mozilla/javascript/Scriptable;" + ")Lorg/mozilla/javascript/Scriptable;");
+            cfw.addAStore(variableObjectLocal);
+            decReferenceWordLocal(variableObjectLocal);
+            break;
+        case Token.ENUM_INIT_KEYS:
+        case Token.ENUM_INIT_VALUES:
+        case Token.ENUM_INIT_ARRAY:
+            generateExpression(child, node);
+            cfw.addALoad(contextLocal);
+            int enumType = type == Token.ENUM_INIT_KEYS ? ScriptRuntime.ENUMERATE_KEYS : type == Token.ENUM_INIT_VALUES ? ScriptRuntime.ENUMERATE_VALUES : ScriptRuntime.ENUMERATE_ARRAY;
+            cfw.addPush(enumType);
+            addScriptRuntimeInvoke("enumInit", "(Ljava/lang/Object;" + "Lorg/mozilla/javascript/Context;" + "I" + ")Ljava/lang/Object;");
+            cfw.addAStore(getLocalBlockRegister(node));
+            break;
+        case Token.EXPR_VOID:
+            if (child.getType() == Token.SETVAR) {
+                /* special case this so as to avoid unnecessary
+                    load's & pop's */
+                visitSetVar(child, child.getFirstChild(), false);
+            } else if (child.getType() == Token.SETCONSTVAR) {
+                /* special case this so as to avoid unnecessary
+                    load's & pop's */
+                visitSetConstVar(child, child.getFirstChild(), false);
+            } else if (child.getType() == Token.YIELD) {
+                generateYieldPoint(child, false);
+            } else {
+                generateExpression(child, node);
+                if (node.getIntProp(Node.ISNUMBER_PROP, -1) != -1)
+                    cfw.add(ByteCode.POP2);
+                else
+                    cfw.add(ByteCode.POP);
+            }
+            break;
+        case Token.EXPR_RESULT:
+            generateExpression(child, node);
+            if (popvLocal < 0) {
+                popvLocal = getNewWordLocal();
+            }
+            cfw.addAStore(popvLocal);
+            break;
+        case Token.TARGET:
+            {
+                if (compilerEnv.isGenerateObserverCount())
+                    addInstructionCount();
+                int label = getTargetLabel(node);
+                cfw.markLabel(label);
+                if (compilerEnv.isGenerateObserverCount())
+                    saveCurrentCodeOffset();
+            }
+            break;
+        case Token.JSR:
+        case Token.GOTO:
+        case Token.IFEQ:
+        case Token.IFNE:
+            if (compilerEnv.isGenerateObserverCount())
+                addInstructionCount();
+            visitGoto((Jump) node, type, child);
+            break;
+        case Token.FINALLY:
+            {
+                if (compilerEnv.isGenerateObserverCount())
+                    saveCurrentCodeOffset();
+                // there is exactly one value on the stack when enterring
+                // finally blocks: the return address (or its int encoding)
+                cfw.setStackTop((short) 1);
+                // Save return address in a new local
+                int finallyRegister = getNewWordLocal();
+                if (isGenerator)
+                    generateIntegerWrap();
+                cfw.addAStore(finallyRegister);
+                while (child != null) {
+                    generateStatement(child);
+                    child = child.getNext();
+                }
+                if (isGenerator) {
+                    cfw.addALoad(finallyRegister);
+                    cfw.add(ByteCode.CHECKCAST, "java/lang/Integer");
+                    generateIntegerUnwrap();
+                    FinallyReturnPoint ret = finallys.get(node);
+                    ret.tableLabel = cfw.acquireLabel();
+                    cfw.add(ByteCode.GOTO, ret.tableLabel);
+                } else {
+                    cfw.add(ByteCode.RET, finallyRegister);
+                }
+                releaseWordLocal((short) finallyRegister);
+            }
+            break;
+        case Token.DEBUGGER:
+            break;
+        default:
+            throw Codegen.badTree();
+    }
+}

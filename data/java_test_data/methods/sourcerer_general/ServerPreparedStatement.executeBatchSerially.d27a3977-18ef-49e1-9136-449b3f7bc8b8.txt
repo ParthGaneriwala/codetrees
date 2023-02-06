@@ -1,0 +1,109 @@
+protected int[] executeBatchSerially(int batchTimeout) throws SQLException {
+    MySQLConnection locallyScopedConn = this.connection;
+    if (locallyScopedConn == null) {
+        checkClosed();
+    }
+    if (locallyScopedConn.isReadOnly()) {
+        throw SQLError.createSQLException(Messages.getString(// $NON-NLS-1$
+        "ServerPreparedStatement.2") + // $NON-NLS-1$
+        Messages.getString("ServerPreparedStatement.3"), SQLError.SQL_STATE_ILLEGAL_ARGUMENT, getExceptionInterceptor());
+    }
+    checkClosed();
+    synchronized (locallyScopedConn.getMutex()) {
+        clearWarnings();
+        // Store this for later, we're going to 'swap' them out
+        // as we execute each batched statement...
+        BindValue[] oldBindValues = this.parameterBindings;
+        try {
+            int[] updateCounts = null;
+            if (this.batchedArgs != null) {
+                int nbrCommands = this.batchedArgs.size();
+                updateCounts = new int[nbrCommands];
+                if (this.retrieveGeneratedKeys) {
+                    this.batchedGeneratedKeys = new ArrayList(nbrCommands);
+                }
+                for (int i = 0; i < nbrCommands; i++) {
+                    updateCounts[i] = -3;
+                }
+                SQLException sqlEx = null;
+                int commandIndex = 0;
+                BindValue[] previousBindValuesForBatch = null;
+                CancelTask timeoutTask = null;
+                try {
+                    if (locallyScopedConn.getEnableQueryTimeouts() && batchTimeout != 0 && locallyScopedConn.versionMeetsMinimum(5, 0, 0)) {
+                        timeoutTask = new CancelTask(this);
+                        locallyScopedConn.getCancelTimer().schedule(timeoutTask, batchTimeout);
+                    }
+                    for (commandIndex = 0; commandIndex < nbrCommands; commandIndex++) {
+                        Object arg = this.batchedArgs.get(commandIndex);
+                        if (arg instanceof String) {
+                            updateCounts[commandIndex] = executeUpdate((String) arg);
+                        } else {
+                            this.parameterBindings = ((BatchedBindValues) arg).batchedParameterValues;
+                            try {
+                                if (previousBindValuesForBatch != null) {
+                                    for (int j = 0; j < this.parameterBindings.length; j++) {
+                                        if (this.parameterBindings[j].bufferType != previousBindValuesForBatch[j].bufferType) {
+                                            this.sendTypesToServer = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                try {
+                                    updateCounts[commandIndex] = executeUpdate(false, true);
+                                } finally {
+                                    previousBindValuesForBatch = this.parameterBindings;
+                                }
+                                if (this.retrieveGeneratedKeys) {
+                                    java.sql.ResultSet rs = null;
+                                    try {
+                                        // we don't want to use our version,
+                                        // because we've altered the behavior of
+                                        // ours to support batch updates
+                                        // (catch-22)
+                                        // Ideally, what we need here is
+                                        // super.super.getGeneratedKeys()
+                                        // but that construct doesn't exist in
+                                        // Java, so that's why there's
+                                        // this kludge.
+                                        rs = getGeneratedKeysInternal();
+                                        while (rs.next()) {
+                                            this.batchedGeneratedKeys.add(new ByteArrayRow(new byte[][] { rs.getBytes(1) }, getExceptionInterceptor()));
+                                        }
+                                    } finally {
+                                        if (rs != null) {
+                                            rs.close();
+                                        }
+                                    }
+                                }
+                            } catch (SQLException ex) {
+                                updateCounts[commandIndex] = EXECUTE_FAILED;
+                                if (this.continueBatchOnError && !(ex instanceof MySQLTimeoutException) && !(ex instanceof MySQLStatementCancelledException) && !hasDeadlockOrTimeoutRolledBackTx(ex)) {
+                                    sqlEx = ex;
+                                } else {
+                                    int[] newUpdateCounts = new int[commandIndex];
+                                    System.arraycopy(updateCounts, 0, newUpdateCounts, 0, commandIndex);
+                                    throw new java.sql.BatchUpdateException(ex.getMessage(), ex.getSQLState(), ex.getErrorCode(), newUpdateCounts);
+                                }
+                            }
+                        }
+                    }
+                } finally {
+                    if (timeoutTask != null) {
+                        timeoutTask.cancel();
+                        locallyScopedConn.getCancelTimer().purge();
+                    }
+                    resetCancelledState();
+                }
+                if (sqlEx != null) {
+                    throw new java.sql.BatchUpdateException(sqlEx.getMessage(), sqlEx.getSQLState(), sqlEx.getErrorCode(), updateCounts);
+                }
+            }
+            return (updateCounts != null) ? updateCounts : new int[0];
+        } finally {
+            this.parameterBindings = oldBindValues;
+            this.sendTypesToServer = true;
+            clearBatch();
+        }
+    }
+}

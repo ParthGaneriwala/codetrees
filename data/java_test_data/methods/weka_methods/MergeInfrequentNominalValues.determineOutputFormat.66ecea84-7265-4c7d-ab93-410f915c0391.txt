@@ -1,0 +1,102 @@
+@Override
+protected Instances determineOutputFormat(Instances inputFormat) {
+    // Set the upper limit of the range
+    m_SelectCols.setUpper(inputFormat.numAttributes() - 1);
+    // Get the selected attributes
+    m_SelectedAttributes = m_SelectCols.getSelection();
+    // Allocate arrays to store frequencies
+    int[][] freqs = new int[inputFormat.numAttributes()][];
+    for (int m_SelectedAttribute : m_SelectedAttributes) {
+        int current = m_SelectedAttribute;
+        Attribute att = inputFormat.attribute(current);
+        if ((current != inputFormat.classIndex()) && (att.isNominal())) {
+            freqs[current] = new int[att.numValues()];
+        }
+    }
+    // Go through all the instances and compute frequencies
+    for (Instance inst : inputFormat) {
+        for (int m_SelectedAttribute : m_SelectedAttributes) {
+            int current = m_SelectedAttribute;
+            if ((current != inputFormat.classIndex()) && (inputFormat.attribute(current).isNominal())) {
+                if (!inst.isMissing(current)) {
+                    freqs[current][(int) inst.value(current)]++;
+                }
+            }
+        }
+    }
+    // Get the number of infrequent values for the corresponding attributes
+    int[] numInfrequentValues = new int[inputFormat.numAttributes()];
+    for (int m_SelectedAttribute : m_SelectedAttributes) {
+        int current = m_SelectedAttribute;
+        Attribute att = inputFormat.attribute(current);
+        if ((current != inputFormat.classIndex()) && (att.isNominal())) {
+            for (int k = 0; k < att.numValues(); k++) {
+                if (m_Debug) {
+                    System.err.println("Attribute: " + att.name() + " Value: " + att.value(k) + " Freq.: " + freqs[current][k]);
+                }
+                if (freqs[current][k] < m_MinimumFrequency) {
+                    numInfrequentValues[current]++;
+                }
+            }
+        }
+    }
+    // Establish which attributes need to be modified.
+    // Also, compute mapping of indices.
+    m_AttToBeModified = new boolean[inputFormat.numAttributes()];
+    m_NewValues = new int[inputFormat.numAttributes()][];
+    for (int m_SelectedAttribute : m_SelectedAttributes) {
+        int current = m_SelectedAttribute;
+        Attribute att = inputFormat.attribute(current);
+        if ((numInfrequentValues[current] > 1)) {
+            // Attribute needs to be modified
+            m_AttToBeModified[current] = true;
+            // Start with index one because 0 refers to merged values
+            int j = 1;
+            m_NewValues[current] = new int[att.numValues()];
+            for (int k = 0; k < att.numValues(); k++) {
+                if (freqs[current][k] < m_MinimumFrequency) {
+                    m_NewValues[current][k] = 0;
+                } else {
+                    m_NewValues[current][k] = j++;
+                }
+            }
+        }
+    }
+    // Create new header
+    ArrayList<Attribute> atts = new ArrayList<Attribute>();
+    for (int i = 0; i < inputFormat.numAttributes(); i++) {
+        int current = i;
+        Attribute att = inputFormat.attribute(current);
+        if (m_AttToBeModified[i]) {
+            ArrayList<String> vals = new ArrayList<String>();
+            StringBuilder sb = new StringBuilder();
+            // Placeholder
+            vals.add("");
+            for (int j = 0; j < att.numValues(); j++) {
+                if (m_NewValues[current][j] == 0) {
+                    if (sb.length() != 0) {
+                        sb.append("_or_");
+                    }
+                    sb.append(att.value(j));
+                } else {
+                    vals.add(att.value(j));
+                }
+            }
+            if (m_UseShortIDs) {
+                vals.set(0, new StringBuilder().append("").append(sb.toString().hashCode()).toString());
+            } else {
+                // Replace empty string
+                vals.set(0, sb.toString());
+            }
+            Attribute a = new Attribute(att.name() + "_merged_infrequent_values", vals);
+            a.setWeight(att.weight());
+            atts.add(a);
+        } else {
+            atts.add((Attribute) att.copy());
+        }
+    }
+    // Return modified header
+    Instances data = new Instances(inputFormat.relationName(), atts, 0);
+    data.setClassIndex(inputFormat.classIndex());
+    return data;
+}

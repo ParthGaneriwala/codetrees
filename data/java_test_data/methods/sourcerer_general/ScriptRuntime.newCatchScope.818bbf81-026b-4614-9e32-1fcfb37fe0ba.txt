@@ -1,0 +1,83 @@
+public static Scriptable newCatchScope(Throwable t, Scriptable lastCatchScope, String exceptionName, Context cx, Scriptable scope) {
+    Object obj;
+    boolean cacheObj;
+    getObj: if (t instanceof JavaScriptException) {
+        cacheObj = false;
+        obj = ((JavaScriptException) t).getValue();
+    } else {
+        cacheObj = true;
+        if (lastCatchScope != null) {
+            NativeObject last = (NativeObject) lastCatchScope;
+            obj = last.getAssociatedValue(t);
+            if (obj == null)
+                Kit.codeBug();
+            break getObj;
+        }
+        RhinoException re;
+        String errorName;
+        String errorMsg;
+        Throwable javaException = null;
+        if (t instanceof EcmaError) {
+            EcmaError ee = (EcmaError) t;
+            re = ee;
+            errorName = ee.getName();
+            errorMsg = ee.getErrorMessage();
+        } else if (t instanceof WrappedException) {
+            WrappedException we = (WrappedException) t;
+            re = we;
+            javaException = we.getWrappedException();
+            errorName = "JavaException";
+            errorMsg = javaException.getClass().getName() + ": " + javaException.getMessage();
+        } else if (t instanceof EvaluatorException) {
+            // Pure evaluator exception, nor WrappedException instance
+            EvaluatorException ee = (EvaluatorException) t;
+            re = ee;
+            errorName = "InternalError";
+            errorMsg = ee.getMessage();
+        } else if (cx.hasFeature(Context.FEATURE_ENHANCED_JAVA_ACCESS)) {
+            // With FEATURE_ENHANCED_JAVA_ACCESS, scripts can catch
+            // all exception types
+            re = new WrappedException(t);
+            errorName = "JavaException";
+            errorMsg = t.toString();
+        } else {
+            // EcmaError and EvaluatorException
+            throw Kit.codeBug();
+        }
+        String sourceUri = re.sourceName();
+        if (sourceUri == null) {
+            sourceUri = "";
+        }
+        int line = re.lineNumber();
+        Object[] args;
+        if (line > 0) {
+            args = new Object[] { errorMsg, sourceUri, Integer.valueOf(line) };
+        } else {
+            args = new Object[] { errorMsg, sourceUri };
+        }
+        Scriptable errorObject = cx.newObject(scope, errorName, args);
+        ScriptableObject.putProperty(errorObject, "name", errorName);
+        if (javaException != null && isVisible(cx, javaException)) {
+            Object wrap = cx.getWrapFactory().wrap(cx, scope, javaException, null);
+            ScriptableObject.defineProperty(errorObject, "javaException", wrap, ScriptableObject.PERMANENT | ScriptableObject.READONLY);
+        }
+        if (isVisible(cx, re)) {
+            Object wrap = cx.getWrapFactory().wrap(cx, scope, re, null);
+            ScriptableObject.defineProperty(errorObject, "rhinoException", wrap, ScriptableObject.PERMANENT | ScriptableObject.READONLY);
+        }
+        obj = errorObject;
+    }
+    NativeObject catchScopeObject = new NativeObject();
+    // See ECMA 12.4
+    catchScopeObject.defineProperty(exceptionName, obj, ScriptableObject.PERMANENT);
+    if (isVisible(cx, t)) {
+        // Add special Rhino object __exception__ defined in the catch
+        // scope that can be used to retrieve the Java exception associated
+        // with the JavaScript exception (to get stack trace info, etc.)
+        catchScopeObject.defineProperty("__exception__", Context.javaToJS(t, scope), ScriptableObject.PERMANENT | ScriptableObject.DONTENUM);
+    }
+    if (cacheObj) {
+        catchScopeObject.associateValue(t, obj);
+    }
+    return catchScopeObject;
+}

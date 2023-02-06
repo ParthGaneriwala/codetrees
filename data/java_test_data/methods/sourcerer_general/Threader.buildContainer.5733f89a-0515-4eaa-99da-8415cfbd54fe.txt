@@ -1,0 +1,72 @@
+private void buildContainer(Threadable threadable) {
+    String id = threadable.messageThreadId();
+    ThreadContainer container = idTable.get(id);
+    // be a duplicate id, in which case we will need to generate a bogus placeholder id
+    if (container != null) {
+        if (container.threadable != null) {
+            // oops! duplicate ids...
+            id = "<Bogus-id:" + (bogusIdCount++) + ">";
+            container = null;
+        } else {
+            // The container just contained a forward reference to this message, so let's
+            // fill in the threadable field of the container with this message
+            container.threadable = threadable;
+        }
+    }
+    // No container exists for that message Id. Create one and insert it into the hash table.
+    if (container == null) {
+        container = new ThreadContainer();
+        container.threadable = threadable;
+        idTable.put(id, container);
+    }
+    // Iterate through all of the references and create ThreadContainers for any references that
+    // don't have them.
+    ThreadContainer parentRef = null;
+    {
+        String[] references = threadable.messageThreadReferences();
+        for (int i = 0; i < references.length; ++i) {
+            String refString = references[i];
+            ThreadContainer ref = idTable.get(refString);
+            // if this id doesnt have a container, create one
+            if (ref == null) {
+                ref = new ThreadContainer();
+                idTable.put(refString, ref);
+            }
+            // IF it will not cause a circular reference
+            if ((parentRef != null) && (ref.parent == null) && (parentRef != ref) && !(parentRef.findChild(ref))) {
+                // Link ref into the parent's child list
+                ref.parent = parentRef;
+                ref.next = parentRef.child;
+                parentRef.child = ref;
+            }
+            parentRef = ref;
+        }
+    }
+    // be the parent of this container, unless doing so causes a circular reference
+    if (parentRef != null && (parentRef == container || container.findChild(parentRef)))
+        parentRef = null;
+    // throw away the old parent and use this new one
+    if (container.parent != null) {
+        ThreadContainer rest, prev;
+        for (prev = null, rest = container.parent.child; rest != null; prev = rest, rest = rest.next) {
+            if (rest == container)
+                break;
+        }
+        if (rest == null) {
+            throw new RuntimeException("Didnt find " + container + " in parent" + container.parent);
+        }
+        // Unlink this container from the parent's child list
+        if (prev == null)
+            container.parent.child = container.next;
+        else
+            prev.next = container.next;
+        container.next = null;
+        container.parent = null;
+    }
+    // If we have a parent, link container into the parents child list
+    if (parentRef != null) {
+        container.parent = parentRef;
+        container.next = parentRef.child;
+        parentRef.child = container;
+    }
+}

@@ -1,0 +1,162 @@
+/**
+ * Find the midpoint of the shortest edit script for a specified
+ * portion of the two files.
+ *
+ * We scan from the beginnings of the files, and simultaneously from the ends,
+ * doing a breadth-first search through the space of edit-sequence.
+ * When the two searches meet, we have found the midpoint of the shortest
+ * edit sequence.
+ *
+ * The value returned is the number of the diagonal on which the midpoint lies.
+ * The diagonal number equals the number of inserted lines minus the number
+ * of deleted lines (counting only lines before the midpoint).
+ * The edit cost is stored into COST; this is the total number of
+ * lines inserted or deleted (counting only lines before the midpoint).
+ *
+ * This function assumes that the first lines of the specified portions
+ * of the two files do not match, and likewise that the last lines do not
+ * match.  The caller must trim matching lines from the beginning and end
+ * of the portions it is going to specify.
+ *
+ * Note that if we return the "wrong" diagonal value, or if
+ * the value of bdiag at that diagonal is "wrong",
+ * the worst this can do is cause suboptimal diff output.
+ * It cannot cause incorrect diff output.
+ */
+private int diag(int xoff, int xlim, int yoff, int ylim) {
+    // Give the compiler a chance.
+    final int[] fd = fdiag;
+    // Additional help for the compiler.
+    final int[] bd = bdiag;
+    // Still more help for the compiler.
+    final int[] xv = xvec;
+    // And more and more . . .
+    final int[] yv = yvec;
+    // Minimum valid diagonal.
+    final int dmin = xoff - ylim;
+    // Maximum valid diagonal.
+    final int dmax = xlim - yoff;
+    // Center diagonal of top-down search.
+    final int fmid = xoff - yoff;
+    // Center diagonal of bottom-up search.
+    final int bmid = xlim - ylim;
+    // Limits of top-down search.
+    int fmin = fmid, fmax = fmid;
+    // Limits of bottom-up search.
+    int bmin = bmid, bmax = bmid;
+    /* True if southeast corner is on an odd
+                                     diagonal with respect to the northwest. */
+    final boolean odd = (fmid - bmid & 1) != 0;
+    fd[fdiagoff + fmid] = xoff;
+    bd[bdiagoff + bmid] = xlim;
+    for (int c = 1; ; ++c) {
+        int d;
+        /* Active diagonal. */
+        boolean big_snake = false;
+        /* Extend the top-down search by an edit step in each diagonal. */
+        if (fmin > dmin)
+            fd[fdiagoff + --fmin - 1] = -1;
+        else
+            ++fmin;
+        if (fmax < dmax)
+            fd[fdiagoff + ++fmax + 1] = -1;
+        else
+            --fmax;
+        for (d = fmax; d >= fmin; d -= 2) {
+            int x, y, oldx, tlo = fd[fdiagoff + d - 1], thi = fd[fdiagoff + d + 1];
+            if (tlo >= thi)
+                x = tlo + 1;
+            else
+                x = thi;
+            oldx = x;
+            y = x - d;
+            while (x < xlim && y < ylim && xv[x] == yv[y]) {
+                ++x;
+                ++y;
+            }
+            if (x - oldx > 20)
+                big_snake = true;
+            fd[fdiagoff + d] = x;
+            if (odd && bmin <= d && d <= bmax && bd[bdiagoff + d] <= fd[fdiagoff + d]) {
+                cost = 2 * c - 1;
+                return d;
+            }
+        }
+        /* Similar extend the bottom-up search. */
+        if (bmin > dmin)
+            bd[bdiagoff + --bmin - 1] = Integer.MAX_VALUE;
+        else
+            ++bmin;
+        if (bmax < dmax)
+            bd[bdiagoff + ++bmax + 1] = Integer.MAX_VALUE;
+        else
+            --bmax;
+        for (d = bmax; d >= bmin; d -= 2) {
+            int x, y, oldx, tlo = bd[bdiagoff + d - 1], thi = bd[bdiagoff + d + 1];
+            if (tlo < thi)
+                x = tlo;
+            else
+                x = thi - 1;
+            oldx = x;
+            y = x - d;
+            while (x > xoff && y > yoff && xv[x - 1] == yv[y - 1]) {
+                --x;
+                --y;
+            }
+            if (oldx - x > 20)
+                big_snake = true;
+            bd[bdiagoff + d] = x;
+            if (!odd && fmin <= d && d <= fmax && bd[bdiagoff + d] <= fd[fdiagoff + d]) {
+                cost = 2 * c;
+                return d;
+            }
+        }
+        if (c > 200 && big_snake && heuristic) {
+            int best = 0;
+            int bestpos = -1;
+            for (d = fmax; d >= fmin; d -= 2) {
+                int dd = d - fmid;
+                if ((fd[fdiagoff + d] - xoff) * 2 - dd > 12 * (c + (dd > 0 ? dd : -dd))) {
+                    if (fd[fdiagoff + d] * 2 - dd > best && fd[fdiagoff + d] - xoff > 20 && fd[fdiagoff + d] - d - yoff > 20) {
+                        int k;
+                        int x = fd[fdiagoff + d];
+                        /* We have a good enough best diagonal;
+                           now insist that it end with a significant snake.  */
+                        for (k = 1; k <= 20; k++) if (xvec[x - k] != yvec[x - d - k])
+                            break;
+                        if (k == 21) {
+                            best = fd[fdiagoff + d] * 2 - dd;
+                            bestpos = d;
+                        }
+                    }
+                }
+            }
+            if (best > 0) {
+                cost = 2 * c - 1;
+                return bestpos;
+            }
+            best = 0;
+            for (d = bmax; d >= bmin; d -= 2) {
+                int dd = d - bmid;
+                if ((xlim - bd[bdiagoff + d]) * 2 + dd > 12 * (c + (dd > 0 ? dd : -dd))) {
+                    if ((xlim - bd[bdiagoff + d]) * 2 + dd > best && xlim - bd[bdiagoff + d] > 20 && ylim - (bd[bdiagoff + d] - d) > 20) {
+                        /* We have a good enough best diagonal;
+                           now insist that it end with a significant snake.  */
+                        int k;
+                        int x = bd[bdiagoff + d];
+                        for (k = 0; k < 20; k++) if (xvec[x + k] != yvec[x - d + k])
+                            break;
+                        if (k == 20) {
+                            best = (xlim - bd[bdiagoff + d]) * 2 + dd;
+                            bestpos = d;
+                        }
+                    }
+                }
+            }
+            if (best > 0) {
+                cost = 2 * c - 1;
+                return bestpos;
+            }
+        }
+    }
+}

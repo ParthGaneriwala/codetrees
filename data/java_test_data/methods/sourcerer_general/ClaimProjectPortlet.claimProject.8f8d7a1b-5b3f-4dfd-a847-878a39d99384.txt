@@ -1,0 +1,75 @@
+private boolean claimProject(Project project, User user, ActionRequest request, Connection db) throws SQLException {
+    // Process the form
+    ProjectFormBean claimForm = new ProjectFormBean();
+    // Request parameters
+    claimForm.setEmail(request.getParameter("email"));
+    claimForm.setIsOwner(request.getParameter("owner"));
+    claimForm.setComments(request.getParameter("comments"));
+    // Generated parameters
+    claimForm.setUserId(user.getId());
+    claimForm.setFirstName(user.getFirstName());
+    claimForm.setLastName(user.getLastName());
+    claimForm.setProjectId(project.getId());
+    claimForm.setProjectTitle(project.getTitle());
+    claimForm.setAddressLine1(project.getAddressLine1());
+    claimForm.setAddressLine2(project.getAddressLine2());
+    claimForm.setAddressLine3(project.getAddressLine3());
+    claimForm.setCity(project.getCity());
+    claimForm.setState(project.getState());
+    claimForm.setPostalCode(project.getPostalCode());
+    claimForm.setCountry(project.getCountry());
+    claimForm.setWebPage(project.getWebPage());
+    claimForm.setPhone(project.getBusinessPhone());
+    claimForm.setFax(project.getBusinessFax());
+    claimForm.setUniqueId(project.getUniqueId());
+    // Form validation
+    if (!claimForm.getIsOwner()) {
+        claimForm.addError("verifyError", "Verification of ownership is required");
+    }
+    if (!StringUtils.hasText(claimForm.getEmail())) {
+        claimForm.addError("emailError", "Email is required");
+    } else {
+        boolean validEmail = EmailUtils.checkEmail(claimForm.getEmail());
+        if (!validEmail) {
+            claimForm.addError("emailError", "A valid email address is required");
+        }
+    }
+    // Record validation
+    if (project.getOwner() > -1) {
+        claimForm.addError("actionError", "This listing has a claim already pending");
+    }
+    if (claimForm.hasErrors()) {
+        // Need to add the form bean to the portlet session because the portal
+        // uses redirects which voids the request; the request will immediately
+        // remove the bean from the session
+        PortalUtils.setFormBean(request, claimForm);
+        return false;
+    }
+    // 1. Save the user as the new owner
+    int resultCount = claimForm.saveProjectOwner(db);
+    // If there is a save error, let the view know
+    if (resultCount != 1) {
+        return false;
+    } else {
+        // 2. If user is not currently a team member, then create a member with ROLE = MEMBER
+        TeamMemberList members = new TeamMemberList();
+        members.setProjectId(project.getId());
+        members.setUserId(user.getId());
+        members.buildList(db);
+        if (members.isEmpty()) {
+            LookupList roleList = CacheUtils.getLookupList("lookup_project_role");
+            int roleLevel = roleList.getIdFromLevel(TeamMember.MEMBER);
+            TeamMember thisMember = new TeamMember();
+            thisMember.setProjectId(project.getId());
+            thisMember.setUserId(user.getId());
+            thisMember.setUserLevel(roleLevel);
+            thisMember.setEnteredBy(user.getId());
+            thisMember.setModifiedBy(user.getId());
+            thisMember.insert(db);
+            PortalUtils.processInsertHook(request, thisMember);
+        }
+    }
+    // Trigger any workflow
+    PortalUtils.processInsertHook(request, claimForm);
+    return true;
+}

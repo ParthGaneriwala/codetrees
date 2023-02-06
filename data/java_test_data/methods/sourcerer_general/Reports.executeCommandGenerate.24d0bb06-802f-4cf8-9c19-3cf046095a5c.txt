@@ -1,0 +1,53 @@
+public String executeCommandGenerate(ActionContext context) {
+    if (!getUser(context).getAccessRunReports()) {
+        return "PermissionError";
+    }
+    Connection db = null;
+    try {
+        ReportQueue queue = (ReportQueue) context.getFormBean();
+        db = getConnection(context);
+        // Load the report
+        Report thisReport = new Report(db, queue.getReportId());
+        if (thisReport.getAdminReport() && !getUser(context).getAccessAdmin()) {
+            return "PermissionError";
+        }
+        context.getRequest().setAttribute("report", thisReport);
+        // Read in the Jasper Report and and test some values
+        JasperReport jasperReport = null;
+        if (thisReport.getCustom()) {
+            String file = getPath(context, "reports") + thisReport.getFilename();
+            jasperReport = JasperReportUtils.getReport(file);
+        } else {
+            // Read in the Jasper Report and return the parameters to the user
+            jasperReport = JasperReportUtils.getReport(context.getServletContext(), "/WEB-INF/reports/" + thisReport.getFilename());
+        }
+        // Generate the allowable parameter list
+        ParameterList params = new ParameterList();
+        params.setParameters(jasperReport);
+        boolean valid = params.setParameters(context.getRequest());
+        if (params.getParameter("projectId") != null) {
+            retrieveAuthorizedProject(params.getValueAsInt("projectId"), context);
+        }
+        if (!valid) {
+            context.getRequest().setAttribute("parameterList", params);
+            context.getRequest().setAttribute("Error", "The form did not validate");
+            processErrors(context, params.getErrors());
+            return "CriteriaERROR";
+        }
+        // queue.setReportId(thisReport.getId());
+        queue.setEnteredBy(getUserId(context));
+        if (queue.getCleanup() > 90) {
+            queue.setCleanup(90);
+        }
+        queue.insert(db, params);
+        if (!queue.hasSchedule()) {
+            executeJob(context, "reports");
+        }
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return ("SystemError");
+    } finally {
+        freeConnection(context, db);
+    }
+    return "GenerateOK";
+}

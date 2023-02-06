@@ -1,0 +1,65 @@
+public void intercept(Rendition rendition) {
+    // 获取调试器
+    final DebugManager debugManager = DebugManager.getInstance();
+    // 获取当前上下文
+    final Context context = rendition.getContext();
+    final Element element = rendition.getElement();
+    // 判断是否需要单步运行
+    if (// 前置条件：模板元素不为空
+    element != null && // 前置条件：调试器存在
+    !debugManager.isDebugListenerEmpty() && // 前置条件：配置中开启了调试模式
+    context.isDebug() && ((// 运行在调试状态中
+    context.getRootLocalContext().getBooleanStatus(STEP_STATUS) && // 非跳跃状态
+    context.getProperty(STEP_OVER_KEY) != Boolean.TRUE) || (// 运行在非调试状态中
+    !context.getRootLocalContext().getBooleanStatus(STEP_STATUS) && !context.getRootLocalContext().getBooleanStatus(BREAKPOINT_OVER_STATUS) && isBreakpoint(element.getTemplate().getName(), element)))) {
+        // 当前模板元素在断点位置
+        // 构造执行过程封装体
+        final ExecutionImpl execution = new ExecutionImpl(rendition, Thread.currentThread().getName());
+        // 挂起
+        synchronized (execution) {
+            // 添加挂起过程
+            debugManager.addSuspendedExecution(execution);
+            // 守护挂起状态
+            while (execution.isSuspended()) {
+                try {
+                    // 挂起当前线程, 等待调试界面notify通知.
+                    execution.wait();
+                } catch (InterruptedException e) {
+                // 忽略意外中断, 恢复挂起状态
+                }
+            }
+            // 移除挂起过程
+            debugManager.removeSuspendedExecution(execution);
+            // 设置运行状态
+            if (execution.getStatus() == ExecutionImpl.STEP_OVER) {
+                context.getRootLocalContext().setBooleanStatus(STEP_STATUS, true);
+                context.pushLocalContext();
+                try {
+                    context.putProperty(STEP_OVER_KEY, Boolean.TRUE);
+                    // 注：doRender必需在wait恢复之后运行
+                    rendition.doRender();
+                    return;
+                } finally {
+                    context.popLocalContext();
+                }
+            } else if (execution.getStatus() == ExecutionImpl.STEP_RETURN) {
+                context.getRootLocalContext().setBooleanStatus(STEP_STATUS, true);
+                context.putProperty(STEP_OVER_KEY, Boolean.TRUE);
+            } else if (execution.getStatus() == ExecutionImpl.RESUME) {
+                context.getRootLocalContext().setBooleanStatus(STEP_STATUS, false);
+            } else if (execution.getStatus() == ExecutionImpl.RESUME_ALL) {
+                context.getRootLocalContext().setBooleanStatus(STEP_STATUS, false);
+                context.getRootLocalContext().setBooleanStatus(BREAKPOINT_OVER_STATUS, true);
+            } else if (execution.getStatus() == ExecutionImpl.TERMINATE) {
+                throw new TerminateException();
+            } else {
+                context.getRootLocalContext().setBooleanStatus(STEP_STATUS, true);
+            }
+            // 注：doRender必需在wait恢复之后运行
+            rendition.doRender();
+        }
+    } else {
+        // 正常运行
+        rendition.doRender();
+    }
+}

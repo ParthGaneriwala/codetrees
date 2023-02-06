@@ -1,0 +1,52 @@
+static void checkRecords(Configuration defaults, Path sortInput, Path sortOutput) throws IOException {
+    FileSystem inputfs = sortInput.getFileSystem(defaults);
+    FileSystem outputfs = sortOutput.getFileSystem(defaults);
+    FileSystem defaultfs = FileSystem.get(defaults);
+    JobConf jobConf = new JobConf(defaults, RecordStatsChecker.class);
+    jobConf.setJobName("sortvalidate-recordstats-checker");
+    int noSortReduceTasks = outputfs.listStatus(sortOutput, sortPathsFilter).length;
+    jobConf.setInt("sortvalidate.sort.reduce.tasks", noSortReduceTasks);
+    int noSortInputpaths = inputfs.listStatus(sortInput).length;
+    jobConf.setInputFormat(NonSplitableSequenceFileInputFormat.class);
+    jobConf.setOutputFormat(SequenceFileOutputFormat.class);
+    jobConf.setOutputKeyClass(IntWritable.class);
+    jobConf.setOutputValueClass(RecordStatsChecker.RecordStatsWritable.class);
+    jobConf.setMapperClass(Map.class);
+    jobConf.setCombinerClass(Reduce.class);
+    jobConf.setReducerClass(Reduce.class);
+    jobConf.setNumMapTasks(noSortReduceTasks);
+    jobConf.setNumReduceTasks(1);
+    FileInputFormat.setInputPaths(jobConf, sortInput);
+    FileInputFormat.addInputPath(jobConf, sortOutput);
+    Path outputPath = new Path("/tmp/sortvalidate/recordstatschecker");
+    if (defaultfs.exists(outputPath)) {
+        defaultfs.delete(outputPath, true);
+    }
+    FileOutputFormat.setOutputPath(jobConf, outputPath);
+    // Uncomment to run locally in a single process
+    // job_conf.set("mapred.job.tracker", "local");
+    Path[] inputPaths = FileInputFormat.getInputPaths(jobConf);
+    System.out.println("\nSortValidator.RecordStatsChecker: Validate sort " + "from " + inputPaths[0] + " (" + noSortInputpaths + " files), " + inputPaths[1] + " (" + noSortReduceTasks + " files) into " + FileOutputFormat.getOutputPath(jobConf) + " with 1 reducer.");
+    Date startTime = new Date();
+    System.out.println("Job started: " + startTime);
+    JobClient.runJob(jobConf);
+    Date end_time = new Date();
+    System.out.println("Job ended: " + end_time);
+    System.out.println("The job took " + (end_time.getTime() - startTime.getTime()) / 1000 + " seconds.");
+    // Check to ensure that the statistics of the
+    // framework's sort-input and sort-output match
+    SequenceFile.Reader stats = new SequenceFile.Reader(defaultfs, new Path(outputPath, "part-00000"), defaults);
+    IntWritable k1 = new IntWritable();
+    IntWritable k2 = new IntWritable();
+    RecordStatsWritable v1 = new RecordStatsWritable();
+    RecordStatsWritable v2 = new RecordStatsWritable();
+    if (!stats.next(k1, v1)) {
+        throw new IOException("Failed to read record #1 from reduce's output");
+    }
+    if (!stats.next(k2, v2)) {
+        throw new IOException("Failed to read record #2 from reduce's output");
+    }
+    if ((v1.getBytes() != v2.getBytes()) || (v1.getRecords() != v2.getRecords()) || v1.getChecksum() != v2.getChecksum()) {
+        throw new IOException("(" + v1.getBytes() + ", " + v1.getRecords() + ", " + v1.getChecksum() + ") v/s (" + v2.getBytes() + ", " + v2.getRecords() + ", " + v2.getChecksum() + ")");
+    }
+}

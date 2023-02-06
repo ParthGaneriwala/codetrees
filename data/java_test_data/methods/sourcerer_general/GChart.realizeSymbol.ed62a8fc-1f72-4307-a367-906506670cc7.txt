@@ -1,0 +1,188 @@
+void realizeSymbol(PlotPanel pp, GraphicsRenderingPanel grp, AnnotationRenderingPanel arp, Symbol symbol, Annotation annotation, boolean onY2, boolean clipPlotArea, boolean clipDecoratedChart, double renderPaddingFactor, boolean drawMainSymbol, double x, double y, double prevX, double prevY, double nextX, double nextY) {
+    if (// this point undefined (isNaN)
+    (x != x) || (y != y))
+        return;
+    double xPx = pp.xToPixel(x);
+    double yPx = pp.yToPixel(y, onY2);
+    double prevXPx = pp.xToPixel(prevX);
+    double prevYPx = pp.yToPixel(prevY, onY2);
+    double nextXPx = pp.xToPixel(nextX);
+    double nextYPx = pp.yToPixel(nextY, onY2);
+    double spacing = symbol.getFillSpacing();
+    int thickness = symbol.getFillThickness();
+    GChartCanvasLite canvas = grp.getCanvas();
+    if (0 == spacing && null != canvas && thickness > 0) {
+        // if canvas rendered
+        if (null == isHorizontallyBanded) {
+            /*
+           * Continuous fill, canvas available, and not explicitly horizontally
+           * or vertically banded. For example, BOX_* symbol types are not
+           * explicitly oriented, but VBAR_* (vertically) and HBAR_*
+           * (horizontally) are: use canvas to draw a straight line between
+           * points. <p>
+           * 
+           * Code in this branch also gets executed by the LINE symbol type.
+           */
+            int borderWidth = symbol.getBorderWidth();
+            // negative (external) border widens line by 2*|borderWidth|
+            int externalLineWidth = (borderWidth >= 0) ? thickness : (thickness + 2 * Math.abs(borderWidth));
+            int internalLineWidth = (borderWidth >= 0) ? Math.max(thickness - 2 * borderWidth, 0) : thickness;
+            String borderColor = symbol.getBorderColor();
+            String backgroundColor = symbol.getBackgroundColor();
+            if (externalLineWidth > 0 && ((TRANSPARENT_BORDER_COLOR != borderColor && "transparent" != borderColor) || (TRANSPARENT_BORDER_COLOR != backgroundColor && "transparent" != backgroundColor))) {
+                if (prevX != prevX || prevY != prevY) {
+                    // first defined point after an undefined point ==> new
+                    // path (need to draw zero-thickness lines for possible
+                    // line endings user may have defined by overriding
+                    // beginPath)
+                    canvas.beginPath();
+                    canvas.moveTo(xPx - grp.x0, yPx - grp.y0);
+                }
+                if (nextX != nextX || nextY != nextY) {
+                    // draw accumulated path
+                    if (TRANSPARENT_BORDER_COLOR != borderColor && "transparent" != borderColor && externalLineWidth > 0) {
+                        canvas.setStrokeStyle(borderColor);
+                        canvas.setLineWidth(externalLineWidth);
+                        canvas.stroke();
+                    }
+                    if (TRANSPARENT_BORDER_COLOR != backgroundColor && "transparent" != backgroundColor && internalLineWidth > 0) {
+                        canvas.setLineWidth(internalLineWidth);
+                        canvas.setStrokeStyle(backgroundColor);
+                        canvas.stroke();
+                    }
+                } else
+                    // not at end of chain ==> add one more segment to the
+                    // path (need to draw doubled points for possibly "line
+                    // join" user may have defined via overriding beginPath)
+                    canvas.lineTo(nextXPx - grp.x0, nextYPx - grp.y0);
+            }
+        // else lines are 0-width or transparent, so not rendered
+        } else {
+            /*
+           * Explicitly oriented bandedness occurs only for vert or horizontal
+           * bars. x,y coordinates are connected into a path (as in a line
+           * chart), and then that path is extended into a closed polygon by
+           * adding a closing segment formed from an appropriate section of an
+           * axis or baseline.
+           */
+            /*
+           * Draw area interpolated between successive bars.
+           * 
+           * Note that the "opposite" edge could be a point on an x or y axis,
+           * or on the curve's baseline, depending on the kind of bar chart
+           * involved: it's the edge of the bar that is furthest from the x,y
+           * point.
+           */
+            boolean closeStrokeAndFill = false;
+            if (Boolean.FALSE == isHorizontallyBanded) {
+                if (prevX != prevX || prevY != prevY) {
+                    // 1st point, or 1st point after a break in the line
+                    oppositeEdge = getEdgeOppositeVertically(pp, symbol, y, onY2);
+                    canvas.beginPath();
+                    canvas.moveTo(xPx - grp.x0, oppositeEdge - grp.y0);
+                    canvas.lineTo(xPx - grp.x0, yPx - grp.y0);
+                }
+                if (nextX != nextX || nextY != nextY) {
+                    // last point, or last point before a break in the line
+                    canvas.lineTo(xPx - grp.x0, oppositeEdge - grp.y0);
+                    closeStrokeAndFill = true;
+                } else {
+                    canvas.lineTo(nextXPx - grp.x0, nextYPx - grp.y0);
+                }
+            } else {
+                if (prevX != prevX || prevY != prevY) {
+                    // 1st point, or 1st point after a break in the line
+                    oppositeEdge = getEdgeOppositeHorizontally(pp, symbol, x, onY2);
+                    canvas.beginPath();
+                    canvas.moveTo(oppositeEdge - grp.x0, yPx - grp.y0);
+                    canvas.lineTo(xPx - grp.x0, yPx - grp.y0);
+                }
+                if (nextX != nextX || nextY != nextY) {
+                    // last point, or last point before a break in the line
+                    canvas.lineTo(oppositeEdge - grp.x0, yPx - grp.y0);
+                    closeStrokeAndFill = true;
+                } else {
+                    canvas.lineTo(nextXPx - grp.x0, nextYPx - grp.y0);
+                }
+            }
+            if (closeStrokeAndFill) {
+                canvas.closePath();
+                int borderWidth = symbol.getBorderWidth();
+                // negative (external) border requires double-wide stroke
+                int lineWidth = (borderWidth >= 0) ? borderWidth : (2 * Math.abs(borderWidth));
+                String borderColor = symbol.getBorderColor();
+                String backgroundColor = symbol.getBackgroundColor();
+                // stroke overwrites internal half of border)
+                if (borderWidth >= 0 && thickness > 0 && TRANSPARENT_BORDER_COLOR != backgroundColor && "transparent" != backgroundColor) {
+                    canvas.setFillStyle(backgroundColor);
+                    canvas.fill();
+                }
+                // stroke whenever a border is present
+                if (borderWidth != 0 && TRANSPARENT_BORDER_COLOR != borderColor && "transparent" != borderColor) {
+                    canvas.setStrokeStyle(borderColor);
+                    canvas.setLineWidth(lineWidth);
+                    canvas.stroke();
+                }
+                // the internal half of the stroked border).
+                if (borderWidth < 0 && thickness > 0 && TRANSPARENT_BORDER_COLOR != backgroundColor && "transparent" != backgroundColor) {
+                    canvas.setFillStyle(backgroundColor);
+                    canvas.fill();
+                }
+            }
+        }
+    } else // if (0 == spacing && null != canvas && thickness > 0)
+    if (// next point defined
+    nextX == nextX && nextY == nextY && // not a zero thickness connection
+    thickness > 0 && (x != nextX || y != nextY)) {
+        // this/next point not overlayed
+        if (// 1px is as close as HTML-element
+        0 == spacing)
+            // based filling can get to continuous
+            spacing = 1;
+        double d = distance(xPx, yPx, nextXPx, nextYPx);
+        int nChunks = (int) Math.round(d / spacing);
+        if (nChunks > 1) {
+            double deltaX = nextXPx - xPx;
+            double deltaY = nextYPx - yPx;
+            boolean dXIsLonger = deltaX * deltaX > deltaY * deltaY;
+            if (dXIsLonger) {
+                // from now on, dy is really dy/dx
+                deltaY /= deltaX;
+                // from now on, dx is for 1 chunk
+                deltaX /= nChunks;
+            } else {
+                // from now on, dx is really dx/dy
+                deltaX /= deltaY;
+                // from now on, dy is for 1 chunk
+                deltaY /= nChunks;
+            }
+            // (x,y).
+            for (int i = 1; i < nChunks; i++) {
+                // linearly interpolate forwards towards the next
+                // point; forward interpolation (usually) lets us
+                // place the "main" symbol for the original point on
+                // top of these interpolated symbols, in one pass.
+                double xi;
+                double yi;
+                // GChartExample03, for example.
+                if (dXIsLonger) {
+                    xi = Math.round(xPx + deltaX * i);
+                    yi = Math.round(yPx + deltaY * (xi - xPx));
+                } else {
+                    // delta y is longer
+                    yi = Math.round(yPx + deltaY * i);
+                    xi = Math.round(xPx + deltaX * (yi - yPx));
+                }
+                // interpolated symbols set width & height to
+                // thickness, but are otherwise the same as main
+                // symbol at (x,y)
+                realizeOneImageOfSymbol(pp, grp, arp, symbol, null, onY2, clipPlotArea, clipDecoratedChart, renderPaddingFactor, xi, yi, prevXPx, prevYPx, nextXPx, nextYPx, thickness, thickness);
+            }
+        }
+    // else points too close to require any "filler" elements
+    }
+    // is also where any annotation on the point gets rendered.
+    if (drawMainSymbol) {
+        realizeOneImageOfSymbol(pp, grp, arp, symbol, annotation, onY2, clipPlotArea, clipDecoratedChart, renderPaddingFactor, xPx, yPx, prevXPx, prevYPx, nextXPx, nextYPx, symbol.getWidth(pp), symbol.getHeight(pp, onY2));
+    }
+}

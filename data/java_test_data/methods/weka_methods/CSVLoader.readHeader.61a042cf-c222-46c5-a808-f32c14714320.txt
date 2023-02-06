@@ -1,0 +1,131 @@
+private void readHeader() throws IOException {
+    m_rowCount = 1;
+    m_incrementalReader = null;
+    m_current = new ArrayList<Object>();
+    openTempFiles();
+    m_rowBuffer = new ArrayList<String>();
+    String firstRow = m_sourceReader.readLine();
+    if (firstRow == null) {
+        throw new IOException("No data in the file!");
+    }
+    if (m_noHeaderRow) {
+        m_rowBuffer.add(firstRow);
+    }
+    ArrayList<Attribute> attribNames = new ArrayList<Attribute>();
+    // now tokenize to determine attribute names (or create att names if
+    // no header row
+    StringReader sr = new StringReader(firstRow + "\n");
+    // System.out.print(firstRow + "\n");
+    m_st = new StreamTokenizer(sr);
+    initTokenizer(m_st);
+    m_st.ordinaryChar(m_FieldSeparator.charAt(0));
+    int attNum = 1;
+    StreamTokenizerUtils.getFirstToken(m_st);
+    if (m_st.ttype == StreamTokenizer.TT_EOF) {
+        StreamTokenizerUtils.errms(m_st, "premature end of file");
+    }
+    boolean first = true;
+    boolean wasSep;
+    while (m_st.ttype != StreamTokenizer.TT_EOL && m_st.ttype != StreamTokenizer.TT_EOF) {
+        if (!first) {
+            StreamTokenizerUtils.getToken(m_st);
+        }
+        if (m_st.ttype == m_FieldSeparator.charAt(0) || m_st.ttype == StreamTokenizer.TT_EOL) {
+            wasSep = true;
+        } else {
+            wasSep = false;
+            String attName = null;
+            if (m_noHeaderRow) {
+                attName = "att" + attNum;
+                attNum++;
+            } else {
+                attName = m_st.sval;
+            }
+            attribNames.add(new Attribute(attName, (java.util.List<String>) null));
+        }
+        if (!wasSep) {
+            StreamTokenizerUtils.getToken(m_st);
+        }
+        first = false;
+    }
+    String relationName;
+    if (m_sourceFile != null) {
+        relationName = (m_sourceFile.getName()).replaceAll("\\.[cC][sS][vV]$", "");
+    } else {
+        relationName = "stream";
+    }
+    m_structure = new Instances(relationName, attribNames, 0);
+    m_NominalAttributes.setUpper(m_structure.numAttributes() - 1);
+    m_StringAttributes.setUpper(m_structure.numAttributes() - 1);
+    m_dateAttributes.setUpper(m_structure.numAttributes() - 1);
+    m_numericAttributes.setUpper(m_structure.numAttributes() - 1);
+    m_nominalVals = new HashMap<Integer, LinkedHashSet<String>>();
+    m_types = new TYPE[m_structure.numAttributes()];
+    for (int i = 0; i < m_structure.numAttributes(); i++) {
+        if (m_NominalAttributes.isInRange(i)) {
+            m_types[i] = TYPE.NOMINAL;
+            LinkedHashSet<String> ts = new LinkedHashSet<String>();
+            m_nominalVals.put(i, ts);
+        } else if (m_StringAttributes.isInRange(i)) {
+            m_types[i] = TYPE.STRING;
+        } else if (m_dateAttributes.isInRange(i)) {
+            m_types[i] = TYPE.DATE;
+        } else if (m_numericAttributes.isInRange(i)) {
+            m_types[i] = TYPE.NUMERIC;
+        } else {
+            m_types[i] = TYPE.UNDETERMINED;
+        }
+    }
+    if (m_nominalLabelSpecs.size() > 0) {
+        for (String spec : m_nominalLabelSpecs) {
+            String[] attsAndLabels = spec.split(":");
+            if (attsAndLabels.length == 2) {
+                String[] labels = attsAndLabels[1].split(",");
+                try {
+                    // try as a range string first
+                    Range tempR = new Range();
+                    tempR.setRanges(attsAndLabels[0].trim());
+                    tempR.setUpper(m_structure.numAttributes() - 1);
+                    int[] rangeIndexes = tempR.getSelection();
+                    for (int i = 0; i < rangeIndexes.length; i++) {
+                        m_types[rangeIndexes[i]] = TYPE.NOMINAL;
+                        LinkedHashSet<String> ts = new LinkedHashSet<String>();
+                        for (String lab : labels) {
+                            ts.add(lab);
+                        }
+                        m_nominalVals.put(rangeIndexes[i], ts);
+                    }
+                } catch (IllegalArgumentException e) {
+                    // one or more named attributes?
+                    String[] attNames = attsAndLabels[0].split(",");
+                    for (String attN : attNames) {
+                        Attribute a = m_structure.attribute(attN.trim());
+                        if (a != null) {
+                            int attIndex = a.index();
+                            m_types[attIndex] = TYPE.NOMINAL;
+                            LinkedHashSet<String> ts = new LinkedHashSet<String>();
+                            for (String lab : labels) {
+                                ts.add(lab);
+                            }
+                            m_nominalVals.put(attIndex, ts);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // running in batch mode
+    if (m_noHeaderRow && getRetrieval() == BATCH) {
+        StreamTokenizer tempT = new StreamTokenizer(new StringReader(firstRow));
+        initTokenizer(tempT);
+        tempT.ordinaryChar(m_FieldSeparator.charAt(0));
+        String checked = getInstance(tempT);
+        dumpRow(checked);
+    }
+    m_st = new StreamTokenizer(m_sourceReader);
+    initTokenizer(m_st);
+    m_st.ordinaryChar(m_FieldSeparator.charAt(0));
+    // try and determine a more accurate structure from the first batch
+    readData(false || getRetrieval() == BATCH);
+    makeStructure();
+}

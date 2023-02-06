@@ -1,0 +1,51 @@
+public void process(Connection db, LookupContribution lookupContribution) throws SQLException {
+    lastRun = lookupContribution.getRunDate();
+    currentRun = new Timestamp(System.currentTimeMillis());
+    userPoints = new HashMap<String, Integer>();
+    // Page through the updates just in case there are lots of users do 100 at a time...
+    PagedListInfo pagedListInfo = new PagedListInfo();
+    pagedListInfo.setItemsPerPage(100);
+    pagedListInfo.setDefaultSort("entered", "DESC");
+    // Use the paged list to paged through all users
+    RatingList ratingList = new RatingList();
+    ratingList.setPagedListInfo(pagedListInfo);
+    ratingList.setTable(ProjectRating.TABLE);
+    ratingList.setUniqueField(ProjectRating.PRIMARY_KEY);
+    ratingList.setPrimaryKeyField(Rating.PRIMARY_KEY_RECORD_ID);
+    ratingList.setHasInappropriate(true);
+    ratingList.setEnteredRangeStart(lastRun);
+    ratingList.setEnteredRangeEnd(currentRun);
+    ratingList.buildList(db);
+    ArrayList<Integer> projectRatingIdList = new ArrayList<Integer>();
+    while (ratingList.size() > 0) {
+        for (Rating rating : ratingList) {
+            int ratingId = rating.getObjectId();
+            if (!projectRatingIdList.contains(ratingId)) {
+                int givenRating = rating.getRating();
+                // currently does not consider how many people marked it as inappropriate
+                if (givenRating == 1) {
+                    // Insure that a project rating is counted only once
+                    ProjectRating projectRating = new ProjectRating(db, ratingId);
+                    projectRatingIdList.add(ratingId);
+                    int userId = projectRating.getEnteredBy();
+                    int projectId = projectRating.getProjectId();
+                    String userIdAndProjectId = userId + "-" + projectId;
+                    if (userPoints.containsKey(userIdAndProjectId)) {
+                        int currentPoints = userPoints.get(userIdAndProjectId);
+                        currentPoints = currentPoints + lookupContribution.getPointsAwarded();
+                        userPoints.put(userIdAndProjectId, currentPoints);
+                    } else {
+                        userPoints.put(userIdAndProjectId, lookupContribution.getPointsAwarded());
+                    }
+                }
+            }
+        }
+        // Always reset the list or else the records are included on buildList again
+        ratingList.clear();
+        if (pagedListInfo.getPage() < pagedListInfo.getNumberOfPages()) {
+            pagedListInfo.setCurrentPage(pagedListInfo.getPage() + 1);
+            ratingList.buildList(db);
+        }
+    }
+    updatePoints(db, lookupContribution);
+}

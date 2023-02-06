@@ -1,0 +1,63 @@
+private User createUserSession(ServletContext context, String UserId) {
+    // Retrieve prefs
+    ApplicationPrefs prefs = (ApplicationPrefs) context.getAttribute("applicationPrefs");
+    // Connection info
+    ConnectionElement ce = new ConnectionElement();
+    ce.setDriver(prefs.get("SITE.DRIVER"));
+    ce.setUrl(prefs.get("SITE.URL"));
+    ce.setUsername(prefs.get("SITE.USER"));
+    ce.setPassword(prefs.get("SITE.PASSWORD"));
+    ConnectionPool sqlDriver = (ConnectionPool) context.getAttribute("ConnectionPool");
+    if (sqlDriver == null) {
+        if (System.getProperty("DEBUG") != null) {
+            System.out.println("Connect321SessionValidator-> Database attribute not found...");
+        }
+        return null;
+    }
+    User thisUser = null;
+    Connection db = null;
+    boolean hasInvitations = false;
+    boolean upgradeMode = false;
+    try {
+        db = sqlDriver.getConnection(ce);
+        if (System.getProperty("DEBUG") != null) {
+            System.out.println("Login-> Got database connection...");
+        }
+        // Check to see if system is upgraded
+        if (ApplicationVersion.isOutOfDate(prefs)) {
+            upgradeMode = true;
+        }
+        // Check user credentials
+        int i = 0;
+        PreparedStatement pst = db.prepareStatement("SELECT u.*, d.description AS department, p.projecttextid " + "FROM users u " + "LEFT JOIN departments d ON (u.department_id = d.code) " + "LEFT JOIN projects p ON (u.profile_project_id = p.project_id) " + "WHERE lower(username) = ? ");
+        pst.setString(++i, UserId.toLowerCase());
+        ResultSet rs = pst.executeQuery();
+        if (rs.next()) {
+            thisUser = new User(rs);
+        }
+        rs.close();
+        pst.close();
+        // Further validate user fields
+        if (thisUser == null) {
+        // Do nothing at this time...
+        } else if (!thisUser.getEnabled()) {
+            thisUser = null;
+        } else if (thisUser.getExpiration() != null && (new Timestamp(System.currentTimeMillis())).after(thisUser.getExpiration())) {
+            thisUser = null;
+        }
+        // Valid user -- Log the user in
+        if (thisUser != null) {
+            UserUtils.createLoggedInUser(thisUser, db, prefs, context);
+            // hasInvitations = (InvitationList.queryCount(db, thisUser.getId()) > 0);
+            // thisUser.queryRecentlyAccessedProjects(db);
+            // Determine content editing capability
+            thisUser.getWebSiteLanguageList().setMemberId(thisUser.getId());
+            thisUser.getWebSiteLanguageList().buildList(db);
+        }
+    } catch (Exception e) {
+        e.printStackTrace(System.out);
+    } finally {
+        sqlDriver.free(db);
+    }
+    return thisUser;
+}

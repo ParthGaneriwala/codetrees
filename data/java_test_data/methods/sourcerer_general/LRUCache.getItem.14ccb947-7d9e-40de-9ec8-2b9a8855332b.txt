@@ -1,0 +1,97 @@
+public T getItem(K key) {
+    if (!enabled) {
+        return loadItem(key);
+    }
+    getLock();
+    requests.incrementAndGet();
+    // check if someone is already loading the value
+    PendingRequest<T> pending = pendingRequests.get(key);
+    if (pending != null) {
+        pendingRequestCount.incrementAndGet();
+        while (!pending.isFulfilled()) {
+            try {
+                // System.out.printf("%s: waiting for cluster #%s\n", Thread.currentThread().toString(), key.toString());
+                pending.condition.await();
+            // System.out.printf("%s: awaken on cluster #%s\n", Thread.currentThread().toString(), key.toString());
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+        hits.incrementAndGet();
+        lock.unlock();
+        return pending.item;
+    }
+    if (System.currentTimeMillis() - lastCleanup > CLEANUP_INTERVAL) {
+        cleanup();
+    }
+    long start = System.nanoTime();
+    long end = 0;
+    boolean missed = false;
+    T item = hardLRU.get(key);
+    if (item == null) {
+        if (useSoftCache) {
+            SoftReference<T> softRef = softLRU.get(key);
+            if (softRef != null)
+                item = softRef.get();
+        }
+        if (item == null) {
+            WeakReference<T> weakRef = null;
+            if (useWeakCache) {
+                weakRef = weakCache.get(key);
+                if (weakRef != null)
+                    item = weakRef.get();
+            }
+            if (item == null) {
+                misses.incrementAndGet();
+                missed = true;
+                pending = new PendingRequest<T>(lock.newCondition());
+                pendingRequests.put(key, pending);
+                // System.out.printf("%s: adding cluster #%s\n", Thread.currentThread().toString(), key.toString());
+                end = System.nanoTime();
+                getTime.addAndGet(end - start);
+                lock.unlock();
+                item = loadItem(key);
+                getLock();
+                start = System.nanoTime();
+                pending.setItem(item);
+                // System.out.printf("%s: waking up for cluster #%s\n", Thread.currentThread().toString(), key.toString());
+                pending.condition.signalAll();
+                pendingRequests.remove(key);
+                if (item == null) {
+                    lock.unlock();
+                    return null;
+                }
+                if (useWeakCache) {
+                    weakCache.put(key, new WeakReference<T>(item));
+                }
+            }
+            if (useSoftCache) {
+                softLRU.put(key, new SoftReference<T>(item));
+            }
+        }
+        hardLRU.put(key, item);
+    }
+    end = System.nanoTime();
+    putTime.addAndGet(end - start);
+    /*
+		start = end;
+		K evicted[] = softLRU.touch(key);
+		if (evicted != null) {
+			for(K k : evicted) {
+				softCache.remove(k);
+			}
+		}
+		evicted = hardLRU.touch(key);
+		if (evicted != null) {
+			for(K k : evicted) {
+				hardCache.remove(k);
+			}
+		}
+		end = System.nanoTime();
+		evictionTime += end - start;
+		*/
+    if (!missed)
+        hits.incrementAndGet();
+    lock.unlock();
+    return item;
+}

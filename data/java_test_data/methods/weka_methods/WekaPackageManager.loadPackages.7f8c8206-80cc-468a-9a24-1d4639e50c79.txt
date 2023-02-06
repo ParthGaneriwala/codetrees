@@ -1,0 +1,80 @@
+public static synchronized void loadPackages(boolean verbose, boolean avoidTriggeringFullClassDiscovery, boolean refreshGOEProperties) {
+    if (!verbose) {
+        // debug property overrides
+        String debug = System.getProperty("weka.core.classloader.debug", "false");
+        verbose = debug.equalsIgnoreCase("true");
+    } else {
+        System.setProperty("weka.core.classloader.debug", "true");
+    }
+    List<File> goePropsFiles = new ArrayList<File>();
+    if (!m_loadPackages) {
+        return;
+    }
+    if (m_packagesLoaded) {
+        return;
+    }
+    m_packagesLoaded = true;
+    m_initialPackageLoadingInProcess = true;
+    if (establishWekaHome()) {
+        // try and load any jar files and add to the classpath
+        File[] contents = PACKAGES_DIR.listFiles();
+        // the integrity of our cache first
+        if (contents.length > 0) {
+            // establishCacheIfNeeded(System.out);
+            startupCheck(false, System.out);
+        }
+        // dynamic injection of dependencies between packages
+        Map<String, List<String>> injectDependencies = new HashMap<>();
+        for (File content : contents) {
+            if (content.isDirectory()) {
+                try {
+                    Package toLoad = getInstalledPackageInfo(content.getName());
+                    boolean load;
+                    // a Description.props file
+                    if (toLoad != null) {
+                        load = loadCheck(toLoad, content, System.err);
+                        if (load) {
+                            if (verbose) {
+                                System.out.println("[WekaPackageManager] loading package " + content.getName());
+                            }
+                            checkForInjectDependencies(toLoad, injectDependencies);
+                            WekaPackageClassLoaderManager.getWekaPackageClassLoaderManager().addPackageToClassLoader(content);
+                        }
+                    }
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                    System.err.println("[WekaPackageManager] Problem loading package " + content.getName() + " skipping...");
+                }
+            }
+        }
+        // now inject any package dependencies
+        injectPackageDependencies(injectDependencies);
+        // now check overall integrity
+        WekaPackageClassLoaderManager.getWekaPackageClassLoaderManager().performIntegrityCheck();
+        // now process the various properties files in the packages
+        for (File content : contents) {
+            try {
+                if (content.isDirectory() && WekaPackageClassLoaderManager.getWekaPackageClassLoaderManager().getPackageClassLoader(content.getName()) != null) {
+                    processPackageDirectory(content, verbose, goePropsFiles, avoidTriggeringFullClassDiscovery);
+                }
+            } catch (Exception ex) {
+                ex.printStackTrace();
+                System.err.println("[WekaPackageManager] Problem loading package " + content.getName() + " skipping...");
+            }
+        }
+    }
+    m_initialPackageLoadingInProcess = false;
+    // dependencies between packages
+    if (!avoidTriggeringFullClassDiscovery) {
+        for (File f : goePropsFiles) {
+            processGenericPropertiesCreatorProps(f);
+        }
+    }
+    // the command line)
+    if (refreshGOEProperties) {
+        if (verbose) {
+            System.err.println("Refreshing GOE props...");
+        }
+        refreshGOEProperties();
+    }
+}

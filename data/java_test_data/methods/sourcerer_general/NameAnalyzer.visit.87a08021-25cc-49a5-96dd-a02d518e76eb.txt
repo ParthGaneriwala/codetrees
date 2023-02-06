@@ -1,0 +1,80 @@
+@Override
+public void visit(NodeTraversal t, Node n, Node parent) {
+    if (!(NodeUtil.isName(n) || NodeUtil.isGet(n) && !NodeUtil.isGetProp(parent))) {
+        // This is not a simple or qualified name.
+        return;
+    }
+    NameInformation nameInfo = createNameInformation(t, n, parent);
+    if (nameInfo == null) {
+        // The name is not a global name
+        return;
+    }
+    if (nameInfo.onlyAffectsClassDef) {
+        if (nameInfo.superclass != null) {
+            recordReference(nameInfo.name, nameInfo.superclass, RefType.INHERITANCE);
+        }
+        // Make sure that we record a reference to the function that does
+        // the inheritance, so that the inherits() function itself does
+        // not get stripped.
+        String nodeName = n.getQualifiedName();
+        if (nodeName != null) {
+            recordReference(nameInfo.name, nodeName, RefType.REGULAR);
+        }
+        return;
+    }
+    if (parent.getType() == Token.INSTANCEOF && parent.getLastChild() == n && // Don't cover GETELEMs with a global root node.
+    n.isQualifiedName()) {
+        JsName checkedClass = getName(nameInfo.name, true);
+        refNodes.add(new InstanceOfCheckNode(checkedClass, n, parent, parent.getParent()));
+        checkedClass.hasInstanceOfReference = true;
+        return;
+    }
+    // Determine which name might be potentially referring to this one by
+    // looking up the nearest enclosing dependency scope. It's unnecessary to
+    // determine all enclosing dependency scopes because this callback should
+    // create a chain of references between them.
+    NameInformation referring = getDependencyScope(n);
+    String referringName = "";
+    if (referring != null) {
+        referringName = referring.isPrototype ? referring.prototypeClass : referring.name;
+    }
+    String name = nameInfo.name;
+    // to act as a placeholder for the actual (unnamed) value.
+    if (maybeHiddenAlias(name, n)) {
+        recordAlias(name, WINDOW);
+    }
+    // reference to it from the global scope (a.k.a. window).
+    if (nameInfo.isExternallyReferenceable) {
+        recordReference(WINDOW, name, RefType.REGULAR);
+        maybeRecordAlias(name, parent, referring, referringName);
+        return;
+    }
+    // For example, foo references bar in: function foo() {bar=5}.
+    if (NodeUtil.isVarOrSimpleAssignLhs(n, parent)) {
+        if (referring != null) {
+            recordReference(referringName, name, RefType.REGULAR);
+        }
+        return;
+    }
+    if (nodesToKeep.contains(n)) {
+        NameInformation functionScope = getEnclosingFunctionDependencyScope(t);
+        if (functionScope != null) {
+            recordReference(functionScope.name, name, RefType.REGULAR);
+        } else {
+            recordReference(WINDOW, name, RefType.REGULAR);
+        }
+    } else if (referring != null) {
+        if (!maybeRecordAlias(name, parent, referring, referringName)) {
+            RefType depType = referring.onlyAffectsClassDef ? RefType.INHERITANCE : RefType.REGULAR;
+            recordReference(referringName, name, depType);
+        }
+    } else {
+        // protect this node by creating a reference to WINDOW.
+        for (Node ancestor : n.getAncestors()) {
+            if (NodeUtil.isAssignmentOp(ancestor) || NodeUtil.isFunction(ancestor)) {
+                recordReference(WINDOW, name, RefType.REGULAR);
+                break;
+            }
+        }
+    }
+}

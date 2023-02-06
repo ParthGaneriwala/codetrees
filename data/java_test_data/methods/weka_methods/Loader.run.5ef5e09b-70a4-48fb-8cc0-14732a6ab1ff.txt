@@ -1,0 +1,151 @@
+@SuppressWarnings("deprecation")
+@Override
+public void run() {
+    String stm = getCustomName() + "$" + hashCode() + 99 + "| - overall flow throughput -|";
+    try {
+        m_visual.setAnimated();
+        // m_visual.setText("Loading...");
+        boolean instanceGeneration = true;
+        /*
+         * for (int i = 0; i < m_listeners.size(); i++) { if
+         * (m_listeners.elementAt(i) instanceof DataSourceListener) {
+         * instanceGeneration = false; break; } }
+         */
+        if (m_dataSetEventTargets > 0) {
+            instanceGeneration = false;
+            m_state = BATCH_LOADING;
+        }
+        // Set environment variables
+        if (m_Loader instanceof EnvironmentHandler && m_env != null) {
+            ((EnvironmentHandler) m_Loader).setEnvironment(m_env);
+        }
+        String msg = statusMessagePrefix();
+        if (m_Loader instanceof FileSourcedConverter) {
+            msg += "Loading " + ((FileSourcedConverter) m_Loader).retrieveFile().getName();
+        } else {
+            msg += "Loading...";
+        }
+        if (m_log != null) {
+            m_log.statusMessage(msg);
+        }
+        if (instanceGeneration) {
+            m_throughput = new StreamThroughput(statusMessagePrefix());
+            m_flowThroughput = new StreamThroughput(stm, "Starting flow...", m_log);
+            m_state = INCREMENTAL_LOADING;
+            // boolean start = true;
+            Instance nextInstance = null;
+            // load and pass on the structure first
+            Instances structure = null;
+            Instances structureCopy = null;
+            Instances currentStructure = null;
+            boolean stringAttsPresent = false;
+            try {
+                m_Loader.reset();
+                m_Loader.setRetrieval(weka.core.converters.Loader.INCREMENTAL);
+                // System.err.println("NOTIFYING STRUCTURE AVAIL");
+                structure = m_Loader.getStructure();
+                if (structure.checkForStringAttributes()) {
+                    structureCopy = (Instances) (new SerializedObject(structure).getObject());
+                    stringAttsPresent = true;
+                }
+                currentStructure = structure;
+                m_ie.m_formatNotificationOnly = false;
+                notifyStructureAvailable(structure);
+            } catch (IOException e) {
+                if (m_log != null) {
+                    m_log.statusMessage(statusMessagePrefix() + "ERROR (See log for details");
+                    m_log.logMessage("[Loader] " + statusMessagePrefix() + " " + e.getMessage());
+                }
+                e.printStackTrace();
+            }
+            try {
+                nextInstance = m_Loader.getNextInstance(structure);
+            } catch (IOException e) {
+                if (m_log != null) {
+                    m_log.statusMessage(statusMessagePrefix() + "ERROR (See log for details");
+                    m_log.logMessage("[Loader] " + statusMessagePrefix() + " " + e.getMessage());
+                }
+                e.printStackTrace();
+            }
+            while (nextInstance != null) {
+                if (m_stopped) {
+                    break;
+                }
+                m_throughput.updateStart();
+                m_flowThroughput.updateStart();
+                // nextInstance.setDataset(structure);
+                // format.add(nextInstance);
+                /*
+             * InstanceEvent ie = (start) ? new InstanceEvent(m_DP,
+             * nextInstance, InstanceEvent.FORMAT_AVAILABLE) : new
+             * InstanceEvent(m_DP, nextInstance,
+             * InstanceEvent.INSTANCE_AVAILABLE);
+             */
+                // if (start) {
+                // m_ie.setStatus(InstanceEvent.FORMAT_AVAILABLE);
+                // } else {
+                m_ie.setStatus(InstanceEvent.INSTANCE_AVAILABLE);
+                // }
+                m_ie.setInstance(nextInstance);
+                // value in the header at any one time).
+                if (stringAttsPresent) {
+                    if (currentStructure == structure) {
+                        currentStructure = structureCopy;
+                    } else {
+                        currentStructure = structure;
+                    }
+                }
+                nextInstance = m_Loader.getNextInstance(currentStructure);
+                if (nextInstance == null) {
+                    m_ie.setStatus(InstanceEvent.BATCH_FINISHED);
+                }
+                m_throughput.updateEnd(m_log);
+                notifyInstanceLoaded(m_ie);
+                m_flowThroughput.updateEnd(m_log);
+            }
+            m_visual.setStatic();
+        // m_visual.setText(structure.relationName());
+        } else {
+            m_Loader.reset();
+            m_Loader.setRetrieval(weka.core.converters.Loader.BATCH);
+            m_dataSet = m_Loader.getDataSet();
+            m_visual.setStatic();
+            if (m_log != null) {
+                m_log.logMessage("[Loader] " + statusMessagePrefix() + " loaded " + m_dataSet.relationName());
+            }
+            // m_visual.setText(m_dataSet.relationName());
+            notifyDataSetLoaded(new DataSetEvent(m_DP, m_dataSet));
+        }
+    } catch (Exception ex) {
+        if (m_log != null) {
+            m_log.statusMessage(statusMessagePrefix() + "ERROR (See log for details");
+            m_log.logMessage("[Loader] " + statusMessagePrefix() + " " + ex.getMessage());
+        }
+        ex.printStackTrace();
+    } finally {
+        if (Thread.currentThread().isInterrupted()) {
+            if (m_log != null) {
+                m_log.logMessage("[Loader] " + statusMessagePrefix() + " loading interrupted!");
+            }
+        }
+        m_ioThread = null;
+        // m_visual.setText("Finished");
+        // m_visual.setIcon(m_inactive.getVisual());
+        m_visual.setStatic();
+        m_state = IDLE;
+        m_stopped = false;
+        if (m_log != null) {
+            if (m_throughput != null) {
+                String finalMessage = m_throughput.finished() + " (read speed); ";
+                m_flowThroughput.finished(m_log);
+                m_log.statusMessage(stm + "remove");
+                int flowSpeed = m_flowThroughput.getAverageInstancesPerSecond();
+                finalMessage += ("" + flowSpeed + " insts/sec (flow throughput)");
+                m_log.statusMessage(statusMessagePrefix() + finalMessage);
+            } else {
+                m_log.statusMessage(statusMessagePrefix() + "Finished.");
+            }
+        }
+        block(false);
+    }
+}

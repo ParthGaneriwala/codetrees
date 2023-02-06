@@ -1,0 +1,119 @@
+@Override
+protected Object doMainTask(TaskMonitor monitor, ObjectRepository repository) {
+    Random random = new Random(this.randomSeedOption.getValue());
+    ExampleStream stream = (ExampleStream) getPreparedClassOption(this.streamOption);
+    Learner[] learners = new Learner[this.numFoldsOption.getValue()];
+    Learner baseLearner = (Learner) getPreparedClassOption(this.learnerOption);
+    baseLearner.resetLearning();
+    LearningPerformanceEvaluator[] evaluators = new LearningPerformanceEvaluator[this.numFoldsOption.getValue()];
+    LearningPerformanceEvaluator baseEvaluator = (LearningPerformanceEvaluator) getPreparedClassOption(this.evaluatorOption);
+    for (int i = 0; i < learners.length; i++) {
+        learners[i] = (Learner) baseLearner.copy();
+        learners[i].setModelContext(stream.getHeader());
+        evaluators[i] = (LearningPerformanceEvaluator) baseEvaluator.copy();
+    }
+    LearningCurve learningCurve = new LearningCurve("learning evaluation instances");
+    int maxInstances = this.instanceLimitOption.getValue();
+    long instancesProcessed = 0;
+    int maxSeconds = this.timeLimitOption.getValue();
+    int secondsElapsed = 0;
+    monitor.setCurrentActivity("Evaluating learner...", -1.0);
+    this.trainInstances = new LinkedList<LinkedList<Example>>();
+    for (int i = 0; i < learners.length; i++) {
+        this.trainInstances.add(new LinkedList<Example>());
+    }
+    File dumpFile = this.dumpFileOption.getFile();
+    PrintStream immediateResultStream = null;
+    if (dumpFile != null) {
+        try {
+            if (dumpFile.exists()) {
+                immediateResultStream = new PrintStream(new FileOutputStream(dumpFile, true), true);
+            } else {
+                immediateResultStream = new PrintStream(new FileOutputStream(dumpFile), true);
+            }
+        } catch (Exception ex) {
+            throw new RuntimeException("Unable to open immediate result file: " + dumpFile, ex);
+        }
+    }
+    boolean firstDump = true;
+    boolean preciseCPUTiming = TimingUtils.enablePreciseTiming();
+    long evaluateStartTime = TimingUtils.getNanoCPUTimeOfCurrentThread();
+    long lastEvaluateStartTime = evaluateStartTime;
+    double RAMHours = 0.0;
+    while (stream.hasMoreInstances() && ((maxInstances < 0) || (instancesProcessed < maxInstances)) && ((maxSeconds < 0) || (secondsElapsed < maxSeconds))) {
+        Example trainInst = stream.nextInstance();
+        Example testInst = (Example) trainInst;
+        instancesProcessed++;
+        for (int i = 0; i < learners.length; i++) {
+            double[] prediction = learners[i].getVotesForInstance(testInst);
+            evaluators[i].addResult(testInst, prediction);
+            int k = 1;
+            switch(this.validationMethodologyOption.getChosenIndex()) {
+                case // Cross-Validation;
+                0:
+                    // Test all except one
+                    k = instancesProcessed % learners.length == i ? 0 : 1;
+                    break;
+                case // Bootstrap;
+                1:
+                    k = MiscUtils.poisson(1, random);
+                    break;
+                case // Split-Validation;
+                2:
+                    // Test only one
+                    k = instancesProcessed % learners.length == i ? 1 : 0;
+                    break;
+            }
+            if (k > 0) {
+                this.trainInstances.get(i).addLast(trainInst);
+            }
+            if (this.delayLengthOption.getValue() < this.trainInstances.get(i).size()) {
+                Example trainInstI = this.trainInstances.get(i).removeFirst();
+                learners[i].trainOnInstance(trainInstI);
+            }
+        }
+        if (instancesProcessed % this.sampleFrequencyOption.getValue() == 0 || stream.hasMoreInstances() == false) {
+            long evaluateTime = TimingUtils.getNanoCPUTimeOfCurrentThread();
+            double time = TimingUtils.nanoTimeToSeconds(evaluateTime - evaluateStartTime);
+            double timeIncrement = TimingUtils.nanoTimeToSeconds(evaluateTime - lastEvaluateStartTime);
+            for (int i = 0; i < learners.length; i++) {
+                // GBs
+                double RAMHoursIncrement = learners[i].measureByteSize() / (1024.0 * 1024.0 * 1024.0);
+                // Hours
+                RAMHoursIncrement *= (timeIncrement / 3600.0);
+                RAMHours += RAMHoursIncrement;
+            }
+            lastEvaluateStartTime = evaluateTime;
+            learningCurve.insertEntry(new LearningEvaluation(getEvaluationMeasurements(new Measurement[] { new Measurement("learning evaluation instances", instancesProcessed), new Measurement("evaluation time (" + (preciseCPUTiming ? "cpu " : "") + "seconds)", time), new Measurement("model cost (RAM-Hours)", RAMHours) }, evaluators)));
+            if (immediateResultStream != null) {
+                if (firstDump) {
+                    immediateResultStream.println(learningCurve.headerToString());
+                    firstDump = false;
+                }
+                immediateResultStream.println(learningCurve.entryToString(learningCurve.numEntries() - 1));
+                immediateResultStream.flush();
+            }
+        }
+        if (instancesProcessed % INSTANCES_BETWEEN_MONITOR_UPDATES == 0) {
+            if (monitor.taskShouldAbort()) {
+                return null;
+            }
+            long estimatedRemainingInstances = stream.estimatedRemainingInstances();
+            if (maxInstances > 0) {
+                long maxRemaining = maxInstances - instancesProcessed;
+                if ((estimatedRemainingInstances < 0) || (maxRemaining < estimatedRemainingInstances)) {
+                    estimatedRemainingInstances = maxRemaining;
+                }
+            }
+            monitor.setCurrentActivityFractionComplete(estimatedRemainingInstances < 0 ? -1.0 : (double) instancesProcessed / (double) (instancesProcessed + estimatedRemainingInstances));
+            if (monitor.resultPreviewRequested()) {
+                monitor.setLatestResultPreview(learningCurve.copy());
+            }
+            secondsElapsed = (int) TimingUtils.nanoTimeToSeconds(TimingUtils.getNanoCPUTimeOfCurrentThread() - evaluateStartTime);
+        }
+    }
+    if (immediateResultStream != null) {
+        immediateResultStream.close();
+    }
+    return learningCurve;
+}

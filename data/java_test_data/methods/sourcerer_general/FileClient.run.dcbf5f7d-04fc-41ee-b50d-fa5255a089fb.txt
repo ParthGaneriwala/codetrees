@@ -1,0 +1,106 @@
+public void run() {
+    LogFile = new server.Logger();
+    try {
+        LogFile.OpenLog(LogFileName);
+    } catch (FileNotFoundException e) {
+        System.out.println("cannot create log file");
+        e.printStackTrace();
+        return;
+    }
+    LogEntry("Info - Client started");
+    ProxyConnInfo = new ConnectionInformation();
+    try {
+        ProxyConnInfo.putIP(InetAddress.getByName(ProxyAddress));
+    } catch (UnknownHostException e1) {
+        e1.printStackTrace();
+        LogEntry("Could not resolve Proxy Address " + ProxyAddress);
+        return;
+    }
+    ProxyConnInfo.putPort(ProxyPort);
+    try {
+        ServerConnInfo = GetServerInfo(ProxyConnInfo);
+    } catch (Exception e) {
+        LogEntry("Error - Communicaiton with Proxy failed !");
+        e.printStackTrace();
+        return;
+    }
+    LogEntry("Info - obtained connection information for server " + ServerConnInfo.getIP());
+    DatagramSocket FromServer;
+    try {
+        FromServer = new DatagramSocket();
+    } catch (SocketException e) {
+        e.printStackTrace();
+        LogEntry("Could not create a datagram socket for incoming traffic");
+        return;
+    }
+    ConnectionInformation MyConnInfo = new ConnectionInformation();
+    try {
+        MyConnInfo.putIP(InetAddress.getLocalHost());
+    } catch (UnknownHostException e2) {
+        LogEntry("Error - failed to obtain local address");
+        // TODO Auto-generated catch block
+        e2.printStackTrace();
+    }
+    short sh = new Integer(FromServer.getLocalPort()).shortValue();
+    MyConnInfo.putPort(sh);
+    NewSessionPacket NewSessionReq = new NewSessionPacket();
+    NewSessionReq.setClientData(MyConnInfo);
+    NewSessionReq.setRequestedFile(FileNumber);
+    LogEntry("sending request to Server: requested file number is " + FileNumber);
+    LogEntry("my connection information is: IP=" + MyConnInfo.getIP() + " Port=" + MyConnInfo.getPort());
+    filePackets.Sender mySender = new Sender();
+    try {
+        mySender.WriteObjectTo(NewSessionReq, FromServer, ServerConnInfo.getIP(), ServerConnInfo.getPort());
+    } catch (Exception e2) {
+        LogEntry("Error writing to socket");
+        e2.printStackTrace();
+        return;
+    }
+    filePackets.Receiver myReceiver = new Receiver();
+    String myOutputFile = new String("myfile" + SerialNumber + ".out");
+    LogEntry("opening local output file: " + myOutputFile);
+    FileOutputStream OutFile;
+    try {
+        OutFile = new FileOutputStream(myOutputFile);
+    } catch (FileNotFoundException e1) {
+        LogEntry("error creating file for output");
+        e1.printStackTrace();
+        return;
+    }
+    LogEntry("starting to receive file...");
+    boolean done;
+    int ExpectedBlockNumber = 0;
+    DataPacket InData = new DataPacket();
+    do {
+        try {
+            InData = (DataPacket) myReceiver.ReadObjectFrom(FromServer);
+        } catch (IOException e1) {
+            LogEntry("error reading from socket");
+            e1.printStackTrace();
+        }
+        System.out.println("Client " + SerialNumber + ": Got block number " + InData.getBlockNumber());
+        LogEntry("Client " + SerialNumber + ": Got block number " + InData.getBlockNumber());
+        if (InData.getBlockNumber() == ExpectedBlockNumber) {
+            try {
+                OutFile.write(InData.getBlockData(), 0, InData.getValidBytes());
+            } catch (IOException e) {
+                LogEntry("Error writing block to file");
+                e.printStackTrace();
+                return;
+            }
+            ExpectedBlockNumber++;
+        } else {
+            LogEntry("expected to get block number " + ExpectedBlockNumber + " instead got block number " + InData.getBlockNumber() + " - ignoring");
+        }
+        done = (InData.getMaxBlocks() == InData.getBlockNumber() + 1);
+    } while (!done);
+    try {
+        OutFile.close();
+    } catch (IOException e) {
+        LogEntry("Error closing file");
+        e.printStackTrace();
+        return;
+    }
+    LogEntry("Client " + SerialNumber + ": done receiving file");
+    System.out.println("Client: done receiving file");
+}

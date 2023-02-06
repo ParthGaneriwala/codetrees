@@ -1,0 +1,47 @@
+private Node extractExpression(Node expr, Node injectionPoint) {
+    Node parent = expr.getParent();
+    boolean isLhsOfAssignOp = NodeUtil.isAssignmentOp(parent) && !NodeUtil.isAssign(parent) && parent.getFirstChild() == expr;
+    Node firstExtractedNode = null;
+    // t1.foo = t1.foo + 2;
+    if (isLhsOfAssignOp && NodeUtil.isGet(expr)) {
+        for (Node n : expr.children()) {
+            if (n.getType() != Token.STRING && !isConstantName(n, knownConstants)) {
+                Node extractedNode = extractExpression(n, injectionPoint);
+                if (firstExtractedNode == null) {
+                    firstExtractedNode = extractedNode;
+                }
+            }
+        }
+    }
+    // The temp is known to be constant.
+    String tempName = getTempConstantValueName();
+    Node replacementValueNode = Node.newString(Token.NAME, tempName).copyInformationFrom(expr);
+    Node tempNameValue;
+    // original value of the LHS operand.
+    if (isLhsOfAssignOp) {
+        Preconditions.checkState(NodeUtil.isName(expr) || NodeUtil.isGet(expr));
+        // Transform "x += 2" into "x = temp + 2"
+        Node opNode = new Node(NodeUtil.getOpFromAssignmentOp(parent)).copyInformationFrom(parent);
+        Node rightOperand = parent.getLastChild();
+        parent.setType(Token.ASSIGN);
+        parent.replaceChild(rightOperand, opNode);
+        opNode.addChildToFront(replacementValueNode);
+        opNode.addChildToBack(rightOperand);
+        // The original expression is still being used, so make a clone.
+        tempNameValue = expr.cloneTree();
+    } else {
+        // Replace the expression with the temporary name.
+        parent.replaceChild(expr, replacementValueNode);
+        // Keep the original node so that CALL expressions can still be found
+        // and inlined properly.
+        tempNameValue = expr;
+    }
+    // Re-add the expression in the declaration of the temporary name.
+    Node tempVarNode = NodeUtil.newVarNode(tempName, tempNameValue);
+    Node injectionPointParent = injectionPoint.getParent();
+    injectionPointParent.addChildBefore(tempVarNode, injectionPoint);
+    if (firstExtractedNode == null) {
+        firstExtractedNode = tempVarNode;
+    }
+    return firstExtractedNode;
+}

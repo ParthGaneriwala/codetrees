@@ -1,0 +1,202 @@
+private String getNativeConvertToString(int columnIndex, Field field) throws SQLException {
+    int sqlType = field.getSQLType();
+    int mysqlType = field.getMysqlType();
+    switch(sqlType) {
+        case Types.BIT:
+            return String.valueOf(getNumericRepresentationOfSQLBitType(columnIndex));
+        case Types.BOOLEAN:
+            boolean booleanVal = getBoolean(columnIndex);
+            if (this.wasNullFlag) {
+                return null;
+            }
+            return String.valueOf(booleanVal);
+        case Types.TINYINT:
+            byte tinyintVal = getNativeByte(columnIndex, false);
+            if (this.wasNullFlag) {
+                return null;
+            }
+            if (!field.isUnsigned() || tinyintVal >= 0) {
+                return String.valueOf(tinyintVal);
+            }
+            short unsignedTinyVal = (short) (tinyintVal & 0xff);
+            return String.valueOf(unsignedTinyVal);
+        case Types.SMALLINT:
+            int intVal = getNativeInt(columnIndex, false);
+            if (this.wasNullFlag) {
+                return null;
+            }
+            if (!field.isUnsigned() || intVal >= 0) {
+                return String.valueOf(intVal);
+            }
+            intVal = intVal & 0xffff;
+            return String.valueOf(intVal);
+        case Types.INTEGER:
+            intVal = getNativeInt(columnIndex, false);
+            if (this.wasNullFlag) {
+                return null;
+            }
+            if (!field.isUnsigned() || intVal >= 0 || field.getMysqlType() == MysqlDefs.FIELD_TYPE_INT24) {
+                return String.valueOf(intVal);
+            }
+            long longVal = intVal & 0xffffffffL;
+            return String.valueOf(longVal);
+        case Types.BIGINT:
+            if (!field.isUnsigned()) {
+                longVal = getNativeLong(columnIndex, false, true);
+                if (this.wasNullFlag) {
+                    return null;
+                }
+                return String.valueOf(longVal);
+            }
+            longVal = getNativeLong(columnIndex, false, false);
+            if (this.wasNullFlag) {
+                return null;
+            }
+            return String.valueOf(convertLongToUlong(longVal));
+        case Types.REAL:
+            float floatVal = getNativeFloat(columnIndex);
+            if (this.wasNullFlag) {
+                return null;
+            }
+            return String.valueOf(floatVal);
+        case Types.FLOAT:
+        case Types.DOUBLE:
+            double doubleVal = getNativeDouble(columnIndex);
+            if (this.wasNullFlag) {
+                return null;
+            }
+            return String.valueOf(doubleVal);
+        case Types.DECIMAL:
+        case Types.NUMERIC:
+            String stringVal = StringUtils.toAsciiString((byte[]) this.thisRow.getColumnValue(columnIndex - 1));
+            BigDecimal val;
+            if (stringVal != null) {
+                this.wasNullFlag = false;
+                if (stringVal.length() == 0) {
+                    val = new BigDecimal(0);
+                    return val.toString();
+                }
+                try {
+                    val = new BigDecimal(stringVal);
+                } catch (NumberFormatException ex) {
+                    throw SQLError.createSQLException(Messages.getString("ResultSet.Bad_format_for_BigDecimal", new Object[] { stringVal, Constants.integerValueOf(columnIndex) }), SQLError.SQL_STATE_ILLEGAL_ARGUMENT, getExceptionInterceptor());
+                }
+                return val.toString();
+            }
+            this.wasNullFlag = true;
+            return null;
+        case Types.CHAR:
+        case Types.VARCHAR:
+        case Types.LONGVARCHAR:
+            return extractStringFromNativeColumn(columnIndex, mysqlType);
+        case Types.BINARY:
+        case Types.VARBINARY:
+        case Types.LONGVARBINARY:
+            if (!field.isBlob()) {
+                return extractStringFromNativeColumn(columnIndex, mysqlType);
+            } else if (!field.isBinary()) {
+                return extractStringFromNativeColumn(columnIndex, mysqlType);
+            } else {
+                byte[] data = getBytes(columnIndex);
+                Object obj = data;
+                if ((data != null) && (data.length >= 2)) {
+                    if ((data[0] == -84) && (data[1] == -19)) {
+                        // Serialized object?
+                        try {
+                            ByteArrayInputStream bytesIn = new ByteArrayInputStream(data);
+                            ObjectInputStream objIn = new ObjectInputStream(bytesIn);
+                            obj = objIn.readObject();
+                            objIn.close();
+                            bytesIn.close();
+                        } catch (ClassNotFoundException cnfe) {
+                            throw SQLError.createSQLException(Messages.getString(// $NON-NLS-1$
+                            "ResultSet.Class_not_found___91") + cnfe.toString() + Messages.getString("ResultSet._while_reading_serialized_object_92"), // $NON-NLS-1$
+                            getExceptionInterceptor());
+                        } catch (IOException ex) {
+                            // not serialized?
+                            obj = data;
+                        }
+                    }
+                    return obj.toString();
+                }
+                return extractStringFromNativeColumn(columnIndex, mysqlType);
+            }
+        case Types.DATE:
+            // The YEAR datatype needs to be handled differently here.
+            if (mysqlType == MysqlDefs.FIELD_TYPE_YEAR) {
+                short shortVal = getNativeShort(columnIndex);
+                if (!this.connection.getYearIsDateType()) {
+                    if (this.wasNullFlag) {
+                        return null;
+                    }
+                    return String.valueOf(shortVal);
+                }
+                if (field.getLength() == 2) {
+                    if (shortVal <= 69) {
+                        shortVal = (short) (shortVal + 100);
+                    }
+                    shortVal += 1900;
+                }
+                return fastDateCreate(null, shortVal, 1, 1).toString();
+            }
+            if (this.connection.getNoDatetimeStringSync()) {
+                byte[] asBytes = getNativeBytes(columnIndex, true);
+                if (asBytes == null) {
+                    return null;
+                }
+                if (asBytes.length == 0) /* newer versions of the server 
+					seem to do this when they see all-zero datetime data */
+                {
+                    return "0000-00-00";
+                }
+                int year = (asBytes[0] & 0xff) | ((asBytes[1] & 0xff) << 8);
+                int month = asBytes[2];
+                int day = asBytes[3];
+                if (year == 0 && month == 0 && day == 0) {
+                    return "0000-00-00";
+                }
+            }
+            Date dt = getNativeDate(columnIndex);
+            if (dt == null) {
+                return null;
+            }
+            return String.valueOf(dt);
+        case Types.TIME:
+            Time tm = getNativeTime(columnIndex, null, this.defaultTimeZone, false);
+            if (tm == null) {
+                return null;
+            }
+            return String.valueOf(tm);
+        case Types.TIMESTAMP:
+            if (this.connection.getNoDatetimeStringSync()) {
+                byte[] asBytes = getNativeBytes(columnIndex, true);
+                if (asBytes == null) {
+                    return null;
+                }
+                if (asBytes.length == 0) /* newer versions of the server 
+					seem to do this when they see all-zero datetime data */
+                {
+                    return "0000-00-00 00:00:00";
+                }
+                int year = (asBytes[0] & 0xff) | ((asBytes[1] & 0xff) << 8);
+                int month = asBytes[2];
+                int day = asBytes[3];
+                if (year == 0 && month == 0 && day == 0) {
+                    return "0000-00-00 00:00:00";
+                }
+            }
+            Timestamp tstamp = getNativeTimestamp(columnIndex, null, this.defaultTimeZone, false);
+            if (tstamp == null) {
+                return null;
+            }
+            String result = String.valueOf(tstamp);
+            if (!this.connection.getNoDatetimeStringSync()) {
+                return result;
+            }
+            if (result.endsWith(".0")) {
+                return result.substring(0, result.length() - 2);
+            }
+        default:
+            return extractStringFromNativeColumn(columnIndex, mysqlType);
+    }
+}

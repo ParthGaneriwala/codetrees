@@ -1,0 +1,156 @@
+public Properties parseURL(String url, Properties defaults) throws java.sql.SQLException {
+    Properties urlProps = (defaults != null) ? new Properties(defaults) : new Properties();
+    if (url == null) {
+        return null;
+    }
+    if (!StringUtils.startsWithIgnoreCase(url, URL_PREFIX) && !StringUtils.startsWithIgnoreCase(url, MXJ_URL_PREFIX) && !StringUtils.startsWithIgnoreCase(url, LOADBALANCE_URL_PREFIX) && !StringUtils.startsWithIgnoreCase(url, REPLICATION_URL_PREFIX)) {
+        return null;
+    }
+    int beginningOfSlashes = url.indexOf("//");
+    if (StringUtils.startsWithIgnoreCase(url, MXJ_URL_PREFIX)) {
+        urlProps.setProperty("socketFactory", "com.mysql.management.driverlaunched.ServerLauncherSocketFactory");
+    }
+    /*
+		 * Parse parameters after the ? in the URL and remove them from the
+		 * original URL.
+		 */
+    // $NON-NLS-1$
+    int index = url.indexOf("?");
+    if (index != -1) {
+        String paramString = url.substring(index + 1, url.length());
+        url = url.substring(0, index);
+        // $NON-NLS-1$
+        StringTokenizer queryParams = new StringTokenizer(paramString, "&");
+        while (queryParams.hasMoreTokens()) {
+            String parameterValuePair = queryParams.nextToken();
+            int indexOfEquals = StringUtils.indexOfIgnoreCase(0, parameterValuePair, "=");
+            String parameter = null;
+            String value = null;
+            if (indexOfEquals != -1) {
+                parameter = parameterValuePair.substring(0, indexOfEquals);
+                if (indexOfEquals + 1 < parameterValuePair.length()) {
+                    value = parameterValuePair.substring(indexOfEquals + 1);
+                }
+            }
+            if ((value != null && value.length() > 0) && (parameter != null && parameter.length() > 0)) {
+                try {
+                    urlProps.put(parameter, URLDecoder.decode(value, "UTF-8"));
+                } catch (UnsupportedEncodingException badEncoding) {
+                    // punt
+                    urlProps.put(parameter, URLDecoder.decode(value));
+                } catch (NoSuchMethodError nsme) {
+                    // punt again
+                    urlProps.put(parameter, URLDecoder.decode(value));
+                }
+            }
+        }
+    }
+    url = url.substring(beginningOfSlashes + 2);
+    String hostStuff = null;
+    // $NON-NLS-1$
+    int slashIndex = StringUtils.indexOfIgnoreCaseRespectMarker(0, url, "/", ALLOWED_QUOTES, ALLOWED_QUOTES, true);
+    if (slashIndex != -1) {
+        hostStuff = url.substring(0, slashIndex);
+        if ((slashIndex + 1) < url.length()) {
+            // $NON-NLS-1$
+            urlProps.put(// $NON-NLS-1$
+            DBNAME_PROPERTY_KEY, url.substring((slashIndex + 1), url.length()));
+        }
+    } else {
+        hostStuff = url;
+    }
+    int numHosts = 0;
+    if ((hostStuff != null) && (hostStuff.trim().length() > 0)) {
+        List<String> hosts = StringUtils.split(hostStuff, ",", ALLOWED_QUOTES, ALLOWED_QUOTES, false);
+        for (String hostAndPort : hosts) {
+            numHosts++;
+            String[] hostPortPair = parseHostPortPair(hostAndPort);
+            if (hostPortPair[HOST_NAME_INDEX] != null && hostPortPair[HOST_NAME_INDEX].trim().length() > 0) {
+                urlProps.setProperty(HOST_PROPERTY_KEY + "." + numHosts, hostPortPair[HOST_NAME_INDEX]);
+            } else {
+                urlProps.setProperty(HOST_PROPERTY_KEY + "." + numHosts, "localhost");
+            }
+            if (hostPortPair[PORT_NUMBER_INDEX] != null) {
+                urlProps.setProperty(PORT_PROPERTY_KEY + "." + numHosts, hostPortPair[PORT_NUMBER_INDEX]);
+            } else {
+                urlProps.setProperty(PORT_PROPERTY_KEY + "." + numHosts, "3306");
+            }
+        }
+    } else {
+        numHosts = 1;
+        urlProps.setProperty(HOST_PROPERTY_KEY + ".1", "localhost");
+        urlProps.setProperty(PORT_PROPERTY_KEY + ".1", "3306");
+    }
+    urlProps.setProperty(NUM_HOSTS_PROPERTY_KEY, String.valueOf(numHosts));
+    urlProps.setProperty(HOST_PROPERTY_KEY, urlProps.getProperty(HOST_PROPERTY_KEY + ".1"));
+    urlProps.setProperty(PORT_PROPERTY_KEY, urlProps.getProperty(PORT_PROPERTY_KEY + ".1"));
+    String propertiesTransformClassName = urlProps.getProperty(PROPERTIES_TRANSFORM_KEY);
+    if (propertiesTransformClassName != null) {
+        try {
+            ConnectionPropertiesTransform propTransformer = (ConnectionPropertiesTransform) Class.forName(propertiesTransformClassName).newInstance();
+            urlProps = propTransformer.transformProperties(urlProps);
+        } catch (InstantiationException e) {
+            throw SQLError.createSQLException("Unable to create properties transform instance '" + propertiesTransformClassName + "' due to underlying exception: " + e.toString(), SQLError.SQL_STATE_INVALID_CONNECTION_ATTRIBUTE, null);
+        } catch (IllegalAccessException e) {
+            throw SQLError.createSQLException("Unable to create properties transform instance '" + propertiesTransformClassName + "' due to underlying exception: " + e.toString(), SQLError.SQL_STATE_INVALID_CONNECTION_ATTRIBUTE, null);
+        } catch (ClassNotFoundException e) {
+            throw SQLError.createSQLException("Unable to create properties transform instance '" + propertiesTransformClassName + "' due to underlying exception: " + e.toString(), SQLError.SQL_STATE_INVALID_CONNECTION_ATTRIBUTE, null);
+        }
+    }
+    if (Util.isColdFusion() && urlProps.getProperty("autoConfigureForColdFusion", "true").equalsIgnoreCase("true")) {
+        String configs = urlProps.getProperty(USE_CONFIG_PROPERTY_KEY);
+        StringBuffer newConfigs = new StringBuffer();
+        if (configs != null) {
+            newConfigs.append(configs);
+            newConfigs.append(",");
+        }
+        newConfigs.append("coldFusion");
+        urlProps.setProperty(USE_CONFIG_PROPERTY_KEY, newConfigs.toString());
+    }
+    // If we use a config, it actually should get overridden by anything in
+    // the URL or passed-in properties
+    String configNames = null;
+    if (defaults != null) {
+        configNames = defaults.getProperty(USE_CONFIG_PROPERTY_KEY);
+    }
+    if (configNames == null) {
+        configNames = urlProps.getProperty(USE_CONFIG_PROPERTY_KEY);
+    }
+    if (configNames != null) {
+        List splitNames = StringUtils.split(configNames, ",", true);
+        Properties configProps = new Properties();
+        Iterator namesIter = splitNames.iterator();
+        while (namesIter.hasNext()) {
+            String configName = (String) namesIter.next();
+            try {
+                InputStream configAsStream = getClass().getResourceAsStream("configs/" + configName + ".properties");
+                if (configAsStream == null) {
+                    throw SQLError.createSQLException("Can't find configuration template named '" + configName + "'", SQLError.SQL_STATE_INVALID_CONNECTION_ATTRIBUTE, null);
+                }
+                configProps.load(configAsStream);
+            } catch (IOException ioEx) {
+                SQLException sqlEx = SQLError.createSQLException("Unable to load configuration template '" + configName + "' due to underlying IOException: " + ioEx, SQLError.SQL_STATE_INVALID_CONNECTION_ATTRIBUTE, null);
+                sqlEx.initCause(ioEx);
+                throw sqlEx;
+            }
+        }
+        Iterator propsIter = urlProps.keySet().iterator();
+        while (propsIter.hasNext()) {
+            String key = propsIter.next().toString();
+            String property = urlProps.getProperty(key);
+            configProps.setProperty(key, property);
+        }
+        urlProps = configProps;
+    }
+    if (defaults != null) {
+        Iterator propsIter = defaults.keySet().iterator();
+        while (propsIter.hasNext()) {
+            String key = propsIter.next().toString();
+            if (!key.equals(NUM_HOSTS_PROPERTY_KEY)) {
+                String property = defaults.getProperty(key);
+                urlProps.setProperty(key, property);
+            }
+        }
+    }
+    return urlProps;
+}

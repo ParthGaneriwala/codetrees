@@ -1,0 +1,128 @@
+private boolean _acquire(long timeoutMS) throws SecurityException {
+    /* GPS emulator */
+    /* *
+        if (GPS_EMULATOR) {
+            while (!this.acquireThread.shouldStop()) {
+                try { Thread.sleep(1000L); } catch (Throwable t) {}
+                long fixtime = DateTime.getCurrentTimeSec();
+                double lat =  (double)((long)(((double)fixtime * GeoPoint.PI) *  10000.0) %  900000L) / 10000.0;
+                double lon = -(double)((long)(((double)fixtime * GeoPoint.PI) * 100000.0) % 1800000L) / 10000.0;
+                synchronized (this.gpsLock) {
+                    this.gpsGPRMC_time = fixtime;
+                    this.gpsEvent.setTimestamp(fixtime);
+                    this.gpsEvent.setLatitude (lat);
+                    this.gpsEvent.setLongitude(lon);
+                    this.gpsEvent.setSpeedKPH (75.0);
+                    this.gpsEvent.setHeading  (133.0);
+                    this.gpsEvent.setAltitude (720.0);
+                }
+                synchronized (this.sampleLock) {
+                    this.sampleCount_A++;
+                    this.lastSampleTime = DateTime.getCurrentTimeSec();
+                    this.lastValidTime = fixtime; 
+                }
+                if (this.acquireThread == null) {
+                    // we aren't running in a thread, return now
+                    return true;
+                }
+            }
+            // Control never reaches here
+        }
+        /* */
+    /* timeout */
+    // Timeouts are ignore if running in a thread
+    // A 'timeout' simply means that we've timed-out attempting to read a "valid"
+    // GPS record.  It is assumed that if we are connected to the GPS device, it
+    // is always sending us GPS data (possibly 'invalid', but still sending us data).
+    long timeoutTime = ((timeoutMS > 0L) && (this.acquireThread == null)) ? (DateTime.getCurrentTimeMillis() + timeoutMS) : 0L;
+    /* GPS acquisition loop */
+    acquireCount++;
+    try {
+        /* find gps receiver */
+        if (!this.gpsDevice.isOpen()) {
+            // Log.debug(LOG_NAME, "Open GPS ...");
+            Log.setMessage(0, "Open GPS ...");
+            boolean didOpen = this.gpsDevice.openDevice();
+            if ((this.acquireThread != null) && this.acquireThread.shouldStop()) {
+                throw new GPSException("Thread should stop");
+            }
+            if (!didOpen) {
+                // still null
+                // GPS receiver was not found
+                Log.debug(LOG_NAME, "GPS open failed ...");
+                Log.setMessage(0, "GPS failed");
+                try {
+                    Thread.sleep(4000L);
+                } catch (Throwable t) {
+                }
+                throw new GPSException("GPS Receiver not found");
+            }
+        // Log.setMessage(0, "... GPS Opened");
+        }
+        /* GPS read loop */
+        // Hang here until one of the following occurs:
+        // - We get a GPS error
+        // - We parse a valid record and we're not running in a thread
+        // - A timeout has been specified and we've timed out
+        StringBuffer sb = new StringBuffer();
+        while (true) {
+            /* stop thread? */
+            if ((this.acquireThread != null) && this.acquireThread.shouldStop()) {
+                throw new GPSException("Thread should stop");
+            }
+            /* read line */
+            // Log.debug(LOG_NAME, "GPS Read ...");
+            Log.setMessage(0, "GPS Acquire ...");
+            sb.setLength(0);
+            int count = this.gpsDevice.readLine(sb, 15000L);
+            // Log.debug(LOG_NAME, sb.toString());
+            boolean readValid = this._parseNMEA0183(sb.toString());
+            Log.setMessage(0, "");
+            /* not in a thread */
+            if (this.acquireThread == null) {
+                // not in a thread
+                if (readValid) {
+                    // Log.setMessage(0, "GPS Valid ...");
+                    return true;
+                } else if ((timeoutMS > 0L) && (timeoutTime < DateTime.getCurrentTimeMillis())) {
+                    // we haven't read a valid record within the timeout period
+                    Log.setMessage(0, "GPS Invalid ...");
+                    return false;
+                }
+            }
+        }
+    // Control never reaches here
+    } catch (GPSException gpse) {
+        Log.error(LOG_NAME, gpse.getMessage(), gpse.getException());
+        Log.setMessage(0, gpse.getMessage());
+    } catch (InterruptedException ie) {
+        // thread interrupted
+        Log.error(LOG_NAME, "Thread interrupted");
+        Log.setMessage(0, "GPS Interrupted!");
+    } catch (InterruptedIOException iioe) {
+        // timeout
+        Log.error(LOG_NAME, "Read timeout");
+        Log.setMessage(0, "GPS Timeout!");
+    } catch (SecurityException se) {
+        // We could get a security exception if the user has denied us access
+        // to the Bluetooth 'rfcm' device.
+        Log.error(LOG_NAME, "Access denied", se);
+        Log.setMessage(0, "GPS Denied!");
+        this.gpsDevice.closeDevice();
+        throw se;
+    } catch (Throwable t) {
+        Log.error(LOG_NAME, "Error", t);
+        Log.setMessage(0, "GPS Error!");
+        t.printStackTrace();
+    }
+    /* the only way we get here is if there was a GPS error */
+    // reset the gps receiver
+    // Log.setMessage(0, "GPS Close ...");
+    this.gpsDevice.closeDevice();
+    // sleep a few seconds
+    try {
+        Thread.sleep(5000L);
+    } catch (Throwable t) {
+    }
+    return false;
+}

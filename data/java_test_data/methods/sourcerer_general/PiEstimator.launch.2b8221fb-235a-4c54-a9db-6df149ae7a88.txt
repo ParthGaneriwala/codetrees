@@ -1,0 +1,55 @@
+double launch(int numMaps, long numPoints, String jt, String dfs) throws IOException {
+    JobConf jobConf = new JobConf(getConf(), PiEstimator.class);
+    if (jt != null) {
+        jobConf.set("mapred.job.tracker", jt);
+    }
+    if (dfs != null) {
+        FileSystem.setDefaultUri(jobConf, dfs);
+    }
+    jobConf.setJobName("test-mini-mr");
+    // turn off speculative execution, because DFS doesn't handle
+    // multiple writers to the same file.
+    jobConf.setSpeculativeExecution(false);
+    jobConf.setInputFormat(SequenceFileInputFormat.class);
+    jobConf.setOutputKeyClass(LongWritable.class);
+    jobConf.setOutputValueClass(LongWritable.class);
+    jobConf.setOutputFormat(SequenceFileOutputFormat.class);
+    jobConf.setMapperClass(PiMapper.class);
+    jobConf.setReducerClass(PiReducer.class);
+    jobConf.setNumReduceTasks(1);
+    Path tmpDir = new Path("test-mini-mr");
+    Path inDir = new Path(tmpDir, "in");
+    Path outDir = new Path(tmpDir, "out");
+    FileSystem fileSys = FileSystem.get(jobConf);
+    fileSys.delete(tmpDir, true);
+    if (!fileSys.mkdirs(inDir)) {
+        throw new IOException("Mkdirs failed to create " + inDir.toString());
+    }
+    FileInputFormat.setInputPaths(jobConf, inDir);
+    FileOutputFormat.setOutputPath(jobConf, outDir);
+    jobConf.setNumMapTasks(numMaps);
+    for (int idx = 0; idx < numMaps; ++idx) {
+        Path file = new Path(inDir, "part" + idx);
+        SequenceFile.Writer writer = SequenceFile.createWriter(fileSys, jobConf, file, LongWritable.class, LongWritable.class, CompressionType.NONE);
+        writer.append(new LongWritable(numPoints), new LongWritable(0));
+        writer.close();
+        System.out.println("Wrote input for Map #" + idx);
+    }
+    double estimate = 0.0;
+    try {
+        System.out.println("Starting Job");
+        long startTime = System.currentTimeMillis();
+        JobClient.runJob(jobConf);
+        System.out.println("Job Finished in " + (System.currentTimeMillis() - startTime) / 1000.0 + " seconds");
+        Path inFile = new Path(outDir, "reduce-out");
+        SequenceFile.Reader reader = new SequenceFile.Reader(fileSys, inFile, jobConf);
+        LongWritable numInside = new LongWritable();
+        LongWritable numOutside = new LongWritable();
+        reader.next(numInside, numOutside);
+        reader.close();
+        estimate = (numInside.get() * 4.0) / (numMaps * numPoints);
+    } finally {
+        fileSys.delete(tmpDir, true);
+    }
+    return estimate;
+}

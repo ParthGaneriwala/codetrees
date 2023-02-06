@@ -1,0 +1,72 @@
+protected void optimizeVertexOrder(boolean generateTangents) {
+    // start by compiling a list of triangles cross-linked with the vertices they use
+    // (we use a linked hash set to ensure consistent iteration order for serialization)
+    LinkedHashSet<Triangle> triangles = new LinkedHashSet<Triangle>();
+    for (int ii = 0, nn = indices.size(); ii < nn; ii += 3) {
+        Vertex[] tverts = new Vertex[] { vertices.get(indices.get(ii)), vertices.get(indices.get(ii + 1)), vertices.get(indices.get(ii + 2)) };
+        Triangle triangle = new Triangle(tverts);
+        for (Vertex tvert : tverts) {
+            if (tvert.triangles == null) {
+                tvert.triangles = new ArrayList<Triangle>();
+            }
+            tvert.triangles.add(triangle);
+        }
+        triangles.add(triangle);
+    }
+    // generate the tangents with that information
+    if (generateTangents) {
+        for (Vertex vertex : vertices) {
+            vertex.generateTangent();
+        }
+    }
+    // init the scores
+    for (Vertex vertex : vertices) {
+        vertex.updateScore(Integer.MAX_VALUE);
+    }
+    // clear the vertices and indices to prepare for readdition
+    vertices.clear();
+    indices.clear();
+    // while there are triangles remaining, keep adding the one with the best score
+    // (as determined by its LRU cache position and number of remaining triangles)
+    HashArrayList<Vertex> vcache = new HashArrayList<Vertex>();
+    while (!triangles.isEmpty()) {
+        // first look for triangles in the cache
+        Triangle bestTriangle = null;
+        float bestScore = -1f;
+        for (Vertex vertex : vcache) {
+            for (Triangle triangle : vertex.triangles) {
+                float score = triangle.getScore();
+                if (score > bestScore) {
+                    bestTriangle = triangle;
+                    bestScore = score;
+                }
+            }
+        }
+        // if that didn't work, scan the full list
+        if (bestTriangle == null) {
+            for (Triangle triangle : triangles) {
+                float score = triangle.getScore();
+                if (score > bestScore) {
+                    bestTriangle = triangle;
+                    bestScore = score;
+                }
+            }
+        }
+        // add and update the vertices from the best triangle
+        triangles.remove(bestTriangle);
+        for (Vertex vertex : bestTriangle.vertices) {
+            addVertex(vertex);
+            vertex.triangles.remove(bestTriangle);
+            vcache.remove(vertex);
+            vcache.add(0, vertex);
+        }
+        // update the scores of the vertices in the cache
+        for (int ii = 0, nn = vcache.size(); ii < nn; ii++) {
+            vcache.get(ii).updateScore(ii);
+        }
+        // trim the excess (if any) from the end of the cache
+        while (vcache.size() > 64) {
+            vcache.remove(vcache.size() - 1);
+        }
+    }
+}

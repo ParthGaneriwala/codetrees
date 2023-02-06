@@ -1,0 +1,276 @@
+// ------------------------------------------------------------------------
+// http://www.scientificcomponent.com/nmea0183.htm
+// http://home.mira.net/~gnb/gps/nmea.html
+// $GPGGA - Global Positioning System Fix Data
+// $GPGGA,015402.240,0000.0000,N,00000.0000,E,0,00,50.0,0.0,M,18.0,M|0.0,0000*4B
+// $GPGGA,025425.494,3509.0743,N,11907.6314,W,1,04,2.3,530.3,M,-21.9,M|0.0,0000*4D
+// ,    1     ,    2    ,3,     4    ,5,6,7 , 8 ,  9 ,10,  11,12,13 , 14
+// 1   UTC time of position HHMMSS
+// 2   current latitude in ddmm.mm format
+// 3   latitude hemisphere ("N" = northern, "S" = southern)
+// 4   current longitude in dddmm.mm format
+// 5   longitude hemisphere ("E" = eastern, "W" = western)
+// 6   (0=no fix, 1=GPS, 2=DGPS, 3=PPS?, 6=dead-reckoning)
+// 7   number of satellites (00-12)
+// 8   Horizontal Dilution of Precision
+// 9   Height above/below mean geoid (above mean sea level, not WGS-84 ellipsoid height)
+// 10   Unit of height, always 'M' meters
+// 11   Geoidal separation (add to #9 to get WGS-84 ellipsoid height)
+// 12   Unit of Geoidal separation (meters)
+// 13   Age of differential GPS
+// 14   Differential reference station ID (always '0000')
+// $GPGLL - Geographic Position, Latitude/Longitude
+// $GPGLL,36000.0000,N,72000.0000,E,015402.240,V*17
+// $GPGLL,3209.0943,N,11907.9313,W,025426.493,A*2F
+// $GPGLL,    1    ,2,     3    ,4,      5   ,6
+// 1    Current latitude
+// 2    North/South
+// 3    Current longitude
+// 4    East/West
+// 5    UTC in hhmmss format
+// 6    A=valid, V=invalid
+// $GPGSA - GPS DOP and Active Satellites
+// $GPGSA|A|1|||||||||||||50.0|50.0|50.0*05|
+// $GPGSA|A|3|16|20|13|23|||||||||4.3|2.3|3.7*36|
+// $GPGSV - GPS Satellites in View
+// $GPGSV|3|1|9|16|35|51|32|4|9|269|0|20|32|177|33|13|62|329|37*4E|
+// $GPGSV|3|2|9|3|14|113|0|24|5|230|0|8|12|251|0|23|71|71|39*70|
+// $GPGSV|3|3|9|131|0|0|0*43|
+// $GPRMC - Recommended Minimum Specific GPS/TRANSIT Data
+// $GPRMC|015402.240|V|36000.0000|N|72000.0000|E|0.000000||200505||*3C|
+// $GPRMC,025423.494,A,3709.0642,N,11907.8315,W,0.094824,108.52,200505,,*12
+// $GPRMC,      1   ,2,    3    ,4,     5    ,6, 7      ,   8  ,  9   ,A,B*M
+// Where:
+// 1   UTC time of position HHMMSS
+// 2   validity of the fix ("A" = valid, "V" = invalid)
+// 3   current latitude in ddmm.mm format
+// 4   latitude hemisphere ("N" = northern, "S" = southern)
+// 5   current longitude in dddmm.mm format
+// 6   longitude hemisphere ("E" = eastern, "W" = western)
+// 7   speed in knots
+// 8   true course in degrees
+// 9   date in DDMMYY format
+// A   magnetic variation in degrees
+// B   direction of magnetic variation ("E" = east, "W" = west)
+// M   checksum
+// $GPVTG - Track Made Good and Ground Speed
+// $GPVTG,054.7,T,034.4,M,005.5,N,010.2,K*41
+// 1  2    3  4    5  6    7  8
+// 1   True course made good over ground, degrees
+// 2   Magnetic course made good over ground, degrees
+// 3   Ground speed, N=Knots
+// 4   Ground speed, K=Kilometers per hour
+private boolean _parseNMEA0183(String rawData) {
+    /* proper header? */
+    if ((rawData == null) || !rawData.startsWith("$")) {
+        // Log.warn(LOG_NAME, "Rcd does not start with '$'");
+        return false;
+    }
+    /* parse record */
+    String[] fld = StringTools.parseString(rawData.toUpperCase(), ',');
+    if ((fld == null) || (fld.length < 2)) {
+        Log.warn(LOG_NAME, "Invalid number of fields");
+        return false;
+    }
+    /* unexpected sentences */
+    if (// <-- Garmin sentences
+    fld[0].startsWith("$PG") || fld[0].startsWith("$GPGSV")) {
+        // <-- Satellite info sentence
+        // reconfigure Garmin device
+        // Log.warn(LOG_NAME, "Found satellite sentence '$GPGSV'");
+        String receiver = Props.getString(Props.PROP_CFG_GPS_MODEL, "");
+        if (receiver.equalsIgnoreCase(GPS_RECEIVER_GARMIN)) {
+        // If the serial port is configured for RX-only, then this section should
+        // be commented out.  Otherwise the Garmin config strings will be continually
+        // sent and may slow down communication with the receiver.
+        // this._configGarmin(com);
+        } else {
+        // don't know how to trim out these sentences
+        }
+        return false;
+    }
+    /* valid parsed record indicator */
+    boolean validFix_GPRMC = false;
+    boolean validFix_GPGGA = false;
+    /* special case custom format */
+    if (fld[0].startsWith(GPSReceiver.GPS_CUSTOM_RECORD)) {
+        // $DMTP,timestamp,latitude,longitude,accuracy,altitudeM,altUncMM,speedKPH,speedUnc,heading,cellLat,cellLon,#sats,assist
+        if (fld.length >= 10) {
+            /* parse */
+            // seconds
+            long fixtime = StringTools.parseLong(fld[1], 0L);
+            // degrees
+            double latitude = StringTools.parseDouble(fld[2], 0.0);
+            // degrees
+            double longitude = StringTools.parseDouble(fld[3], 0.0);
+            // meters
+            double accuracyM = StringTools.parseDouble(fld[4], -1.0);
+            // meters
+            double altMeters = StringTools.parseDouble(fld[5], 0.0);
+            // double altUncM   = StringTools.parseDouble(fld[6], 0.0);    // meters
+            // kph
+            double speedKPH = StringTools.parseDouble(fld[7], 0.0);
+            // double speedUnc  = StringTools.parseDouble(fld[8], 0.0);    // kph
+            // degrees
+            double heading = StringTools.parseDouble(fld[9], -1.0);
+            /* horizontal accuracy? */
+            // Reject this fix if the accuracy is too far off?
+            // If enabled, PROP_GPS_ACCURACY should not be less than about 50.0 meters
+            double minAccuracyM = Props.getDouble(Props.PROP_GPS_ACCURACY, 0, 0.0);
+            // absolute minimum
+            if (minAccuracyM < 15.0) {
+                minAccuracyM = 15.0;
+            }
+            boolean accuracyIsOK = ((minAccuracyM <= 0.0) || (accuracyM < minAccuracyM));
+            /* valid lat/lon? */
+            if (!accuracyIsOK) {
+                // out of acceptable accuracy range
+                Log.warn(LOG_NAME, "Unacceptable accuracy: " + accuracyM);
+            } else if ((latitude >= 90.0) || (latitude <= -90.0) || (longitude >= 180.0) || (longitude <= -180.0)) {
+                // lat/lon appears to be invalid!
+                Log.warn(LOG_NAME, "Invalid lat/lon: " + latitude + "/" + longitude);
+            } else {
+                // Log.warn(LOG_NAME, "Valid DMTP lat/lon: " + latitude + "/" + longitude);
+                synchronized (this.gpsLock) {
+                    this.gpsGPRMC_time = fixtime;
+                    this.gpsGPGGA_time = fixtime;
+                    this.gpsEvent.setTimestamp(fixtime);
+                    this.gpsEvent.setLatitude(latitude);
+                    this.gpsEvent.setLongitude(longitude);
+                    this.gpsEvent.setAccuracy(accuracyM);
+                    this.gpsEvent.setSpeedKPH(speedKPH);
+                    this.gpsEvent.setHeading(heading);
+                    this.gpsEvent.setAltitude(altMeters);
+                }
+                validFix_GPRMC = true;
+                validFix_GPGGA = true;
+            }
+            /* count valid fix */
+            synchronized (this.sampleLock) {
+                if (validFix_GPRMC) {
+                    this.sampleCount_A++;
+                    this.lastValidTime = fixtime;
+                } else {
+                    this.sampleCount_V++;
+                }
+                this.lastSampleTime = DateTime.getCurrentTimeSec();
+            }
+            return validFix_GPRMC;
+        } else {
+            /* count invalid fix */
+            synchronized (this.sampleLock) {
+                this.sampleCount_V++;
+                this.lastSampleTime = DateTime.getCurrentTimeSec();
+            }
+            return false;
+        }
+    }
+    /* proper NMEA-0183 records below this line */
+    if (!fld[0].startsWith("$GP")) {
+        // Log.warn("GP", "Does not start with '$GP'");
+        return false;
+    }
+    // checksum (XOR sum of all characters between '$' and '*', exclusive)
+    if (!this._hasValidChecksum(rawData)) {
+        Log.warn(LOG_NAME, "Failed Checksum");
+        return false;
+    }
+    // $GPRMC
+    if (fld[0].startsWith("$GPRMC")) {
+        // Log.warn(LOG_NAME, "Found '$GPRMC'");
+        if (fld.length < 9) {
+            return false;
+        } else if (fld[2].equals("A")) {
+            // "A" - valid gps fix
+            /* parse */
+            long hms = StringTools.parseLong(fld[1], 0L);
+            long dmy = StringTools.parseLong(fld[9], 0L);
+            long fixtime = this._getUTCSeconds(dmy, hms);
+            double latitude = this._parseLatitude(fld[3], fld[4]);
+            double longitude = this._parseLongitude(fld[5], fld[6]);
+            double knots = StringTools.parseDouble(fld[7], -1.0);
+            double heading = StringTools.parseDouble(fld[8], -1.0);
+            double speedKPH = (knots >= 0.0) ? (knots * KILOMETERS_PER_KNOT) : -1.0;
+            /* valid lat/lon? */
+            if ((latitude < 90.0) && (latitude > -90.0) && (longitude < 180.0) && (longitude > -180.0)) {
+                // Log.warn(LOG_NAME, "Valid GPRMC lat/lon: " + latitude + "/" + longitude);
+                synchronized (this.gpsLock) {
+                    this.gpsGPRMC_time = fixtime;
+                    this.gpsEvent.setTimestamp(fixtime);
+                    this.gpsEvent.setLatitude(latitude);
+                    this.gpsEvent.setLongitude(longitude);
+                    this.gpsEvent.setSpeedKPH(speedKPH);
+                    this.gpsEvent.setHeading(heading);
+                }
+                validFix_GPRMC = true;
+            } else {
+                // We have an valid record, but the lat/lon appears to be invalid!
+                Log.warn(LOG_NAME, "Invalid GPRMC lat/lon");
+            }
+            /* count valid fix */
+            synchronized (this.sampleLock) {
+                this.sampleCount_A++;
+                this.lastSampleTime = DateTime.getCurrentTimeSec();
+                if (validFix_GPRMC) {
+                    this.lastValidTime = fixtime;
+                }
+            }
+            return validFix_GPRMC;
+        } else {
+            /* count invalid fix */
+            synchronized (this.sampleLock) {
+                this.sampleCount_V++;
+                this.lastSampleTime = DateTime.getCurrentTimeSec();
+            }
+            return false;
+        }
+    }
+    // $GPGGA
+    if (fld[0].startsWith("$GPGGA")) {
+        // Log.warn(LOG_NAME, "Found '$GPGGA'");
+        if (fld.length < 10) {
+            return false;
+        } else if (!fld[6].equals("0")) {
+            // "1" = GPS
+            // "2" = DGPS
+            /* parse */
+            long hms = StringTools.parseLong(fld[1], 0L);
+            // we don't know the day
+            long dmy = 0L;
+            long fixtime = this._getUTCSeconds(dmy, hms);
+            double latitude = this._parseLatitude(fld[2], fld[3]);
+            double longitude = this._parseLongitude(fld[4], fld[5]);
+            double hdop = StringTools.parseDouble(fld[8], 0.0);
+            // 1=GPS, 2=DGPS, 3=PPS?, ...
+            int fixtype = (int) StringTools.parseLong(fld[6], 1L);
+            double altitude = StringTools.parseDouble(fld[9], 0.0);
+            /* valid lat/lon? */
+            if ((latitude < 90.0) && (latitude > -90.0) && (longitude < 180.0) && (longitude > -180.0)) {
+                synchronized (this.gpsLock) {
+                    this.gpsGPGGA_time = fixtime;
+                    this.gpsEvent.setTimestamp(fixtime);
+                    this.gpsEvent.setLatitude(latitude);
+                    this.gpsEvent.setLongitude(longitude);
+                    this.gpsEvent.setAltitude(altitude);
+                    this.gpsEvent.setHDOP(hdop);
+                }
+                validFix_GPGGA = true;
+            } else {
+                // We have an valid record, but the lat/lon appears to be invalid!
+                Log.warn(LOG_NAME, "Invalid GPGGA lat/lon");
+            }
+            /* count valid fix */
+            synchronized (this.sampleLock) {
+                if (validFix_GPGGA) {
+                    this.lastValidTime = fixtime;
+                }
+            }
+            return true;
+        } else {
+            // no valid fix
+            return false;
+        }
+    }
+    /* unrecognized record */
+    return false;
+}

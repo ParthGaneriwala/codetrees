@@ -1,0 +1,102 @@
+private void processSQL() throws SQLException, SqlToolError {
+    requireConnection();
+    if (buffer == null)
+        throw new RuntimeException("Internal assertion failed.  No buffer in processSQL().");
+    if (buffer.type != Token.SQL_TYPE)
+        throw new RuntimeException("Internal assertion failed.  " + "Token type " + buffer.getTypeString() + " in processSQL().");
+    // No reason to check autoCommit constantly.  If we need to roll
+    // back, we will check the autocommit state at that time.
+    lastSqlStatement = (plMode ? dereference(buffer.val, true) : buffer.val);
+    // statement which we attempted to execute.
+    if ((!permitEmptySqlStatements) && buffer.val == null || buffer.val.trim().length() < 1) {
+        throw new SqlToolError(SqltoolRB.sqlstatement_empty.getString());
+    // There is nothing inherently wrong with issuing
+    // an empty command, like to test DB server health.
+    // But, this check effectively catches many syntax
+    // errors early.
+    }
+    Statement statement = null;
+    long startTime = 0;
+    if (reportTimes)
+        startTime = (new java.util.Date()).getTime();
+    try {
+        // VERY outer block just to ensure we close "statement"
+        try {
+            if (doPrepare) {
+                if (lastSqlStatement.indexOf('?') < 1) {
+                    lastSqlStatement = null;
+                    throw new SqlToolError(SqltoolRB.prepare_demandqm.getString());
+                }
+                doPrepare = false;
+                PreparedStatement ps = shared.jdbcConn.prepareStatement(lastSqlStatement);
+                statement = ps;
+                if (prepareVar == null) {
+                    if (binBuffer == null) {
+                        lastSqlStatement = null;
+                        throw new SqlToolError(SqltoolRB.binbuffer_empty.getString());
+                    }
+                    ps.setBytes(1, binBuffer);
+                } else {
+                    String val = shared.userVars.get(prepareVar);
+                    if (val == null) {
+                        lastSqlStatement = null;
+                        throw new SqlToolError(SqltoolRB.plvar_undefined.getString(prepareVar));
+                    }
+                    prepareVar = null;
+                    ps.setString(1, val);
+                }
+                ps.executeUpdate();
+            } else {
+                statement = shared.jdbcConn.createStatement();
+                statement.execute(lastSqlStatement);
+            }
+        } finally {
+            if (reportTimes) {
+                long elapsed = (new java.util.Date().getTime()) - startTime;
+                // condlPrintln("</TABLE>", true);
+                condlPrintln(SqltoolRB.exectime_report.getString((int) elapsed), false);
+            }
+        }
+        /* This catches about the only very safe way to know a COMMIT
+         * is not needed. */
+        try {
+            shared.possiblyUncommitteds = !shared.jdbcConn.getAutoCommit() && !commitOccursPattern.matcher(lastSqlStatement).matches();
+        } catch (java.sql.SQLException se) {
+            // If connection is closed by instance shutdown or whatever, we'll
+            // get here.
+            // I forget what this is for
+            lastSqlStatement = null;
+            try {
+                shared.jdbcConn.close();
+            } catch (Exception anye) {
+            // Intentionally empty
+            }
+            shared.jdbcConn = null;
+            shared.possiblyUncommitteds = false;
+            stdprintln(SqltoolRB.disconnect_success.getString());
+            return;
+        }
+        ResultSet rs = null;
+        try {
+            rs = statement.getResultSet();
+            displayResultSet(statement, rs, null, null);
+        } finally {
+            if (rs != null) {
+                try {
+                    rs.close();
+                } catch (SQLException se) {
+                // We already got what we want from it, or have/are
+                // processing a more specific error.
+                }
+            }
+        }
+    } finally {
+        try {
+            if (statement != null)
+                statement.close();
+        } catch (SQLException se) {
+        // Purposefully doing nothing
+        }
+    }
+    lastSqlStatement = null;
+}

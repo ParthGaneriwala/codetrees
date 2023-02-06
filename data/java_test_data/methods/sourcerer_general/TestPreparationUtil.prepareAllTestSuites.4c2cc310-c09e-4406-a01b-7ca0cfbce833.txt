@@ -1,0 +1,68 @@
+@SuppressWarnings("unchecked")
+static void prepareAllTestSuites(final TestProfile testProfile, Techspec techspec, Appspec appspec, String filterName, final FileFilter fileFilter) throws Exception {
+    File suiteSourceDirectory = new File("src" + File.separator + "test" + File.separator + "selenium" + File.separator + "clickframes");
+    File suiteTargetDirectory = new File("target" + File.separator + "clickframes" + File.separator + "selenium" + File.separator + ClickframeUtils.convertSlashToPathSeparator(filterName) + File.separator + "tests");
+    // copy selected tests from source to suite directory
+    FileUtils.deleteDirectory(suiteTargetDirectory);
+    suiteTargetDirectory.mkdirs();
+    // select for suites which match the given pattern
+    IOFileFilter regexIOFilter = new IOFileFilter() {
+
+        @Override
+        public boolean accept(File file) {
+            return fileFilter.accept(file);
+        }
+
+        @Override
+        public boolean accept(File dir, String name) {
+            return fileFilter.accept(new File(dir, name));
+        }
+    };
+    Collection<File> filesFound;
+    if (suiteSourceDirectory.exists() && suiteSourceDirectory.isDirectory()) {
+        filesFound = FileUtils.listFiles(suiteSourceDirectory, regexIOFilter, FileFilterUtils.makeSVNAware(FileFilterUtils.makeCVSAware(TrueFileFilter.INSTANCE)));
+    } else {
+        filesFound = new ArrayList<File>();
+    }
+    log.info(filesFound.size() + " files found for " + fileFilter + " => " + filesFound);
+    Map<File, String> listOfFlattenedSuites = new LinkedHashMap<File, String>();
+    StepFilter profileStepFilter = new StepFilter() {
+
+        @Override
+        public SeleniumTestStep filter(SeleniumTestCase testCase, SeleniumTestStep testStep) {
+            if (testCase.getFile().getName().equals("applicationInitialize.html")) {
+                String target = testStep.getTarget();
+                // apply profile
+                target = VelocityHelper.resolveText(testProfile.getProperties(), target);
+                // modify step
+                testStep.setTarget(target);
+            }
+            return testStep;
+        }
+    };
+    for (File sourceSuiteFile : filesFound) {
+        int counter = 1;
+        File targetSuiteFile;
+        do {
+            // name is 'some-suite.html'
+            // remove suite - as multisuite runner uses suite as a keyword
+            targetSuiteFile = new File(suiteTargetDirectory, sourceSuiteFile.getName().replaceAll(".html$", counter++ + ".html").replaceAll("suite", ""));
+        } while (targetSuiteFile.exists());
+        validateFilePathLength(targetSuiteFile);
+        // flatten
+        SeleniumUtils.flattenTestSuiteToTestCase(sourceSuiteFile, targetSuiteFile, profileStepFilter);
+        // store names
+        listOfFlattenedSuites.put(targetSuiteFile, getRelativePath(sourceSuiteFile.getAbsolutePath()));
+    }
+    // write one master suite to suite target directory
+    File masterTestSuite = new File(suiteTargetDirectory, "master-test-suite.html");
+    SeleniumUtils.testCasesToTestSuite(listOfFlattenedSuites, masterTestSuite);
+    File resultsDir = new File("target" + File.separator + "clickframes" + File.separator + "selenium" + File.separator + ClickframeUtils.convertSlashToPathSeparator(filterName) + File.separator + "results");
+    FileUtils.deleteDirectory(resultsDir);
+    resultsDir.mkdirs();
+    // prepare user extensions
+    File userExtensionsFile = new File(System.getProperty("java.io.tmpdir"), "user-extensions.js");
+    if (userExtensionsFile.exists()) {
+        userExtensionsFile.delete();
+    }
+}

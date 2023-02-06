@@ -1,0 +1,60 @@
+public void process(Object row, ObjectInspector rowInspector) throws HiveException {
+    try {
+        // Compute the keys
+        ArrayList<Object> newKeys = new ArrayList<Object>(keyFields.length);
+        for (int i = 0; i < keyFields.length; i++) {
+            keyFields[i].evaluate(row, rowInspector, tempInspectableObject);
+            newKeys.add(tempInspectableObject.o);
+            if (firstRow) {
+                objectInspectors.set(i, tempInspectableObject.oi);
+            }
+        }
+        if (firstRow) {
+            firstRow = false;
+            ArrayList<String> fieldNames = new ArrayList<String>(objectInspectors.size());
+            for (int i = 0; i < objectInspectors.size(); i++) {
+                fieldNames.add(Integer.valueOf(i).toString());
+            }
+            outputObjectInspector = ObjectInspectorFactory.getStandardStructObjectInspector(fieldNames, objectInspectors);
+        }
+        // Prepare aggs for updating
+        UDAF[] aggs = null;
+        Object[][] lastInvoke = null;
+        if (aggregations != null) {
+            // sort-based aggregation
+            // Need to forward?
+            boolean keysAreEqual = newKeys.equals(currentKeys);
+            if (currentKeys != null && !keysAreEqual) {
+                forward(currentKeys, aggregations);
+            }
+            // Need to update the keys?
+            if (currentKeys == null || !keysAreEqual) {
+                currentKeys = newKeys;
+                // init aggregations
+                for (UDAF aggregation : aggregations) {
+                    aggregation.init();
+                }
+                // clear parameters in last-invoke
+                for (int i = 0; i < aggregationsParametersLastInvoke.length; i++) {
+                    aggregationsParametersLastInvoke[i] = null;
+                }
+            }
+            aggs = aggregations;
+            lastInvoke = aggregationsParametersLastInvoke;
+        } else {
+            // hash-based aggregations
+            aggs = hashAggregations.get(newKeys);
+            if (aggs == null) {
+                aggs = newAggregations();
+                hashAggregations.put(newKeys, aggs);
+                // TODO: Hash aggregation does not support DISTINCT now
+                lastInvoke = null;
+            }
+        }
+        // Update the aggs
+        updateAggregations(aggs, row, rowInspector, lastInvoke);
+    } catch (Exception e) {
+        e.printStackTrace();
+        throw new HiveException(e);
+    }
+}

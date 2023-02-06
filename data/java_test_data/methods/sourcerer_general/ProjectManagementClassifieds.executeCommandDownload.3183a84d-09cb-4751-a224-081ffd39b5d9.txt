@@ -1,0 +1,61 @@
+public String executeCommandDownload(ActionContext context) {
+    String projectId = context.getRequest().getParameter("pid");
+    String classifiedId = context.getRequest().getParameter("cid");
+    String itemId = context.getRequest().getParameter("fid");
+    String view = context.getRequest().getParameter("view");
+    // 210x150
+    String size = context.getRequest().getParameter("size");
+    if (size != null && size.trim().length() > 0) {
+        size = "-" + size + "-TH";
+    } else {
+        size = "";
+    }
+    FileItem thisItem = null;
+    Connection db = null;
+    try {
+        db = getConnection(context);
+        Project thisProject = retrieveAuthorizedProject(Integer.parseInt(projectId), context);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-classifieds-view")) {
+            return "PermissionError";
+        }
+        if (classifiedId != null) {
+            Classified classified = new Classified(db, Integer.parseInt(classifiedId));
+            thisItem = new FileItem(db, Integer.parseInt(itemId), classified.getId(), Constants.PROJECT_CLASSIFIEDS_FILES);
+        }
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return ("SystemError");
+    } finally {
+        this.freeConnection(context, db);
+    }
+    // Start the download
+    try {
+        FileItem itemToDownload = thisItem;
+        itemToDownload.setEnteredBy(getUserId(context));
+        String filePath = this.getPath(context, "projects") + getDatePath(itemToDownload.getModified()) + itemToDownload.getFilename() + size;
+        FileDownload fileDownload = new FileDownload();
+        fileDownload.setFullPath(filePath);
+        fileDownload.setDisplayName(itemToDownload.getClientFilename());
+        if (fileDownload.fileExists()) {
+            if (view != null && "true".equals(view)) {
+                fileDownload.setFileTimestamp(itemToDownload.getModificationDate().getTime());
+                fileDownload.streamContent(context);
+            } else {
+                fileDownload.sendFile(context);
+            }
+            // Get a db connection now that the download is complete
+            db = getConnection(context);
+            itemToDownload.updateCounter(db);
+        } else {
+            System.err.println(new java.util.Date() + ":: ProjectManagementClassified-> Trying to send a file that does not exist");
+        }
+    } catch (java.net.SocketException se) {
+    // User either canceled the download or lost connection
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return ("SystemError");
+    } finally {
+        this.freeConnection(context, db);
+    }
+    return ("-none-");
+}

@@ -1,0 +1,54 @@
+public JsExpr genObjToPass(CallNode callNode, Deque<Map<String, JsExpr>> localVarTranslations) {
+    // ------ Generate the expression for the original data to pass ------
+    JsExpr dataToPass;
+    if (callNode.isPassingAllData()) {
+        dataToPass = new JsExpr("opt_data", Integer.MAX_VALUE);
+    } else if (callNode.isPassingData()) {
+        dataToPass = jsExprTranslator.translateToJsExpr(callNode.getDataRef(), callNode.getDataRefText(), localVarTranslations);
+    } else {
+        dataToPass = new JsExpr("null", Integer.MAX_VALUE);
+    }
+    // ------ Case 1: No additional params ------
+    if (callNode.numChildren() == 0) {
+        return dataToPass;
+    }
+    // ------ Build an object literal containing the additional params ------
+    StringBuilder paramsObjSb = new StringBuilder();
+    paramsObjSb.append("{");
+    boolean isFirst = true;
+    for (CallParamNode child : callNode.getChildren()) {
+        if (isFirst) {
+            isFirst = false;
+        } else {
+            paramsObjSb.append(", ");
+        }
+        String key = child.getKey();
+        paramsObjSb.append(key).append(": ");
+        if (child instanceof CallParamValueNode) {
+            CallParamValueNode cpvn = (CallParamValueNode) child;
+            JsExpr valueJsExpr = jsExprTranslator.translateToJsExpr(cpvn.getValueExpr(), cpvn.getValueExprText(), localVarTranslations);
+            paramsObjSb.append(valueJsExpr.getText());
+        } else {
+            CallParamContentNode cpcn = (CallParamContentNode) child;
+            if (isComputableAsJsExprsVisitor.exec(cpcn)) {
+                List<JsExpr> cpcnJsExprs = genJsExprsVisitorFactory.create(localVarTranslations).exec(cpcn);
+                JsExpr valueJsExpr = JsExprUtils.concatJsExprs(cpcnJsExprs);
+                paramsObjSb.append(valueJsExpr.getText());
+            } else {
+                // that code has been generated to define the temporary variable 'param<n>'.
+                if (jsSrcOptions.getCodeStyle() == SoyJsSrcOptions.CodeStyle.STRINGBUILDER) {
+                    paramsObjSb.append("param").append(cpcn.getId()).append(".toString()");
+                } else {
+                    paramsObjSb.append("param").append(cpcn.getId());
+                }
+            }
+        }
+    }
+    paramsObjSb.append("}");
+    // ------ Cases 2 and 3: Additional params with and without original data to pass ------
+    if (callNode.isPassingData()) {
+        return new JsExpr("soy.$$augmentData(" + dataToPass.getText() + ", " + paramsObjSb.toString() + ")", Integer.MAX_VALUE);
+    } else {
+        return new JsExpr(paramsObjSb.toString(), Integer.MAX_VALUE);
+    }
+}

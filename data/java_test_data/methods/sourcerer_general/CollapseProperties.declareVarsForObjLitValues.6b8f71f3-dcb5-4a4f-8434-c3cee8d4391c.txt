@@ -1,0 +1,67 @@
+private int declareVarsForObjLitValues(Name objlitName, String alias, Node objlit, Node varNode, Node nameToAddAfter, Node varParent) {
+    int numVars = 0;
+    int arbitraryNameCounter = 0;
+    boolean discardKeys = !objlitName.shouldKeepKeys();
+    for (Node key = objlit.getFirstChild(), nextKey; key != null; key = nextKey) {
+        Node value = key.getFirstChild();
+        nextKey = key.getNext();
+        // A get or a set can not be rewritten as a VAR.
+        if (key.getType() == Token.GET || key.getType() == Token.SET) {
+            continue;
+        }
+        // We generate arbitrary names for keys that aren't valid JavaScript
+        // identifiers, since those keys are never referenced. (If they were,
+        // this object literal's child names wouldn't be collapsible.) The only
+        // reason that we don't eliminate them entirely is the off chance that
+        // their values are expressions that have side effects.
+        boolean isJsIdentifier = key.getType() != Token.NUMBER && TokenStream.isJSIdentifier(key.getString());
+        String propName = isJsIdentifier ? key.getString() : String.valueOf(++arbitraryNameCounter);
+        // If the name cannot be collapsed, skip it.
+        String qName = objlitName.getFullName() + '.' + propName;
+        Name p = nameMap.get(qName);
+        if (p != null && !p.canCollapse()) {
+            continue;
+        }
+        String propAlias = appendPropForAlias(alias, propName);
+        Node refNode = null;
+        if (discardKeys) {
+            objlit.removeChild(key);
+            value.detachFromParent();
+        } else {
+            // Substitute a reference for the value.
+            refNode = Node.newString(Token.NAME, propAlias);
+            if (key.getBooleanProp(Node.IS_CONSTANT_NAME)) {
+                refNode.putBooleanProp(Node.IS_CONSTANT_NAME, true);
+            }
+            key.replaceChild(value, refNode);
+        }
+        // Declare the collapsed name as a variable with the original value.
+        Node nameNode = Node.newString(Token.NAME, propAlias);
+        nameNode.addChildToFront(value);
+        if (key.getBooleanProp(Node.IS_CONSTANT_NAME)) {
+            nameNode.putBooleanProp(Node.IS_CONSTANT_NAME, true);
+        }
+        Node newVar = new Node(Token.VAR, nameNode).copyInformationFromForTree(key);
+        if (nameToAddAfter != null) {
+            varParent.addChildAfter(newVar, nameToAddAfter);
+        } else {
+            varParent.addChildBefore(newVar, varNode);
+        }
+        compiler.reportCodeChange();
+        nameToAddAfter = newVar;
+        // for the same global name.)
+        if (isJsIdentifier && p != null) {
+            if (!discardKeys) {
+                Ref newAlias = p.getDeclaration().cloneAndReclassify(Ref.Type.ALIASING_GET);
+                newAlias.node = refNode;
+                p.addRef(newAlias);
+            }
+            p.getDeclaration().node = nameNode;
+            if (value.getType() == Token.FUNCTION) {
+                checkForHosedThisReferences(value, value.getJSDocInfo(), p);
+            }
+        }
+        numVars++;
+    }
+    return numVars;
+}

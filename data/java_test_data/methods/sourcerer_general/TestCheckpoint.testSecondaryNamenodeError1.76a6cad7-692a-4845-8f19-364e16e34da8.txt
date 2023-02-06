@@ -1,0 +1,67 @@
+private void testSecondaryNamenodeError1(Configuration conf) throws IOException {
+    System.out.println("Starting testSecondaryNamenodeError 1");
+    Path file1 = new Path("checkpointxx.dat");
+    MiniDFSCluster cluster = new MiniDFSCluster(conf, numDatanodes, false, null);
+    cluster.waitActive();
+    FileSystem fileSys = cluster.getFileSystem();
+    try {
+        assertTrue(!fileSys.exists(file1));
+        // 
+        // Make the checkpoint fail after rolling the edits log.
+        // 
+        SecondaryNameNode secondary = startSecondaryNameNode(conf);
+        ErrorSimulator.setErrorSimulation(0);
+        try {
+            // this should fail
+            secondary.doCheckpoint();
+            assertTrue(false);
+        } catch (IOException e) {
+        }
+        ErrorSimulator.clearErrorSimulation(0);
+        secondary.shutdown();
+        // 
+        // Create a new file
+        // 
+        writeFile(fileSys, file1, replication);
+        checkFile(fileSys, file1, replication);
+    } finally {
+        fileSys.close();
+        cluster.shutdown();
+    }
+    // 
+    // Restart cluster and verify that file exists.
+    // Then take another checkpoint to verify that the
+    // namenode restart accounted for the rolled edit logs.
+    // 
+    System.out.println("Starting testSecondaryNamenodeError 2");
+    cluster = new MiniDFSCluster(conf, numDatanodes, false, null);
+    cluster.waitActive();
+    // Also check that the edits file is empty here
+    // and that temporary checkpoint files are gone.
+    FSImage image = cluster.getNameNode().getFSImage();
+    int nrDirs = image.getNumStorageDirs();
+    for (Iterator<StorageDirectory> it = image.dirIterator(NameNodeDirType.IMAGE); it.hasNext(); ) {
+        StorageDirectory sd = it.next();
+        assertFalse(FSImage.getImageFile(sd, NameNodeFile.IMAGE_NEW).exists());
+    }
+    for (Iterator<StorageDirectory> it = image.dirIterator(NameNodeDirType.EDITS); it.hasNext(); ) {
+        StorageDirectory sd = it.next();
+        assertFalse(image.getEditNewFile(sd).exists());
+        File edits = image.getEditFile(sd);
+        // edits should exist and be empty
+        assertTrue(edits.exists());
+        long editsLen = edits.length();
+        assertTrue(editsLen == Integer.SIZE / Byte.SIZE);
+    }
+    fileSys = cluster.getFileSystem();
+    try {
+        checkFile(fileSys, file1, replication);
+        cleanupFile(fileSys, file1);
+        SecondaryNameNode secondary = startSecondaryNameNode(conf);
+        secondary.doCheckpoint();
+        secondary.shutdown();
+    } finally {
+        fileSys.close();
+        cluster.shutdown();
+    }
+}

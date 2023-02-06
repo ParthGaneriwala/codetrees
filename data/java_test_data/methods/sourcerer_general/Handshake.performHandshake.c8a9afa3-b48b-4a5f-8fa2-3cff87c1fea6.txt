@@ -1,0 +1,139 @@
+static void performHandshake(SocketWrapper socket, InetSocketAddress endpoint, String resourceName, String origin, Random random) throws IOException {
+    for (int i = 0; i < origin.length(); i++) {
+        char ch = origin.charAt(i);
+        if (ch >= 'A' && ch <= 'Z') {
+            throw new IllegalArgumentException();
+        }
+    }
+    OutputStream output = socket.getLoggableOutput().getOutputStream();
+    Writer outputWriter = new OutputStreamWriter(output, UTF_8_CHARSET);
+    outputWriter.write("GET " + resourceName + " HTTP/1.1\r\n");
+    List<String> fields = new ArrayList<String>();
+    fields.add("Upgrade: WebSocket");
+    fields.add("Connection: Upgrade");
+    String portSuffix = endpoint.getPort() == 80 ? "" : ":" + endpoint.getPort();
+    fields.add("Host: " + endpoint.getHostName() + portSuffix);
+    fields.add("Origin: " + origin);
+    WsKey key1 = new WsKey(random);
+    WsKey key2 = new WsKey(random);
+    fields.add("Sec-WebSocket-Key1: " + key1.getKeySocketField());
+    fields.add("Sec-WebSocket-Key2: " + key2.getKeySocketField());
+    Collections.shuffle(fields, random);
+    for (String field : fields) {
+        outputWriter.write(field);
+        outputWriter.write("\r\n");
+    }
+    outputWriter.write("\r\n");
+    byte[] key3 = new byte[8];
+    random.nextBytes(key3);
+    outputWriter.flush();
+    output.write(key3);
+    output.flush();
+    byte[] expectedMd5Bytes;
+    {
+        // Challenge.
+        ByteArrayOutputStream challengeBytes = new ByteArrayOutputStream(16);
+        writeIntBigEndian(key1.getNumber(), challengeBytes);
+        writeIntBigEndian(key2.getNumber(), challengeBytes);
+        challengeBytes.write(key3);
+        MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("MD5");
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException(e);
+        }
+        expectedMd5Bytes = digest.digest(challengeBytes.toByteArray());
+    }
+    InputStream input = socket.getLoggableInput().getInputStream();
+    // First line.
+    {
+        byte[] firstLine = readUpTo0x0D0A(input);
+        if (firstLine.length < 7 - 2) {
+            throw new IOException("Malformed response");
+        }
+        int space1Pos = byteIndexOf((byte) ' ', firstLine, 0);
+        if (space1Pos == -1) {
+            throw new IOException("Malformed response");
+        }
+        int space2Pos = byteIndexOf((byte) ' ', firstLine, space1Pos + 1);
+        if (space2Pos == -1) {
+            throw new IOException("Malformed response");
+        }
+        if (space2Pos - space1Pos != 4) {
+            throw new IOException("Malformed response");
+        }
+        int code = 0;
+        for (int i = space1Pos + 1; i < space2Pos; i++) {
+            code = code * 10 + firstLine[i] - (byte) '0';
+        }
+        if (code != 101) {
+            throw new IOException("Unexpected response code " + code);
+        }
+    }
+    // Fields.
+    {
+        Map<String, String> responseFields = new HashMap<String, String>();
+        while (true) {
+            byte[] line = readUpTo0x0D0A(input);
+            if (line.length == 0) {
+                break;
+            }
+            String lineStr = new String(line, UTF_8_CHARSET);
+            int colonPos = lineStr.indexOf(':');
+            if (colonPos == -1) {
+                throw new IOException("Malformed response field");
+            }
+            if (colonPos == 0) {
+                throw new IOException("Malformed response field: empty key");
+            }
+            String key = lineStr.substring(0, colonPos).toLowerCase();
+            if (!EXPECTED_FIELDS.contains(key)) {
+                continue;
+            }
+            if (lineStr.length() > colonPos + 1 && lineStr.charAt(colonPos + 1) == ' ') {
+                colonPos++;
+            }
+            String value = lineStr.substring(colonPos + 1);
+            Object conflict = responseFields.put(key, value);
+            if (conflict != null) {
+                throw new IOException("Malformed response field: duplicated field: " + key);
+            }
+        }
+        if (responseFields.size() != EXPECTED_FIELDS.size()) {
+            throw new IOException("Malformed response");
+        }
+        if (!responseFields.keySet().containsAll(EXPECTED_FIELDS)) {
+            throw new IOException("Malformed response");
+        }
+        if (!"WebSocket".equals(responseFields.get("upgrade"))) {
+            throw new IOException("Malformed response");
+        }
+        if (!"upgrade".equalsIgnoreCase(responseFields.get("connection"))) {
+            throw new IOException("Malformed response");
+        }
+        if (!origin.equals(responseFields.get("sec-websocket-origin"))) {
+            throw new IOException("Malformed response");
+        }
+        String expectedUrl = createUrl(endpoint, resourceName, false);
+        if (!expectedUrl.equals(responseFields.get("sec-websocket-location"))) {
+            throw new IOException("Malformed response: unexpected sec-websocket-location");
+        }
+    }
+    {
+        // Challenge response.
+        byte[] actualMd5Bytes = new byte[16];
+        {
+            int readPos = 0;
+            while (readPos < actualMd5Bytes.length) {
+                int readRes = input.read(actualMd5Bytes, readPos, actualMd5Bytes.length - readPos);
+                if (readRes == -1) {
+                    throw new IOException("End of stream");
+                }
+                readPos += readRes;
+            }
+        }
+        if (!Arrays.equals(expectedMd5Bytes, actualMd5Bytes)) {
+            throw new IOException("Wrong challenge response: expected=" + Arrays.toString(expectedMd5Bytes) + " recieved=" + Arrays.toString(actualMd5Bytes));
+        }
+    }
+}

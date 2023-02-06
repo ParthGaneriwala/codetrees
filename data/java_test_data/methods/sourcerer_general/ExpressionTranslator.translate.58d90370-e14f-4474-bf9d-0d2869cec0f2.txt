@@ -1,0 +1,83 @@
+List translate(final List tokens) throws ParsingException {
+    if (tokens == null || tokens.size() == 0)
+        return null;
+    List expressions = new ArrayList(tokens.size());
+    boolean dotNamed = false;
+    StringBuffer dotNamedBuffer = new StringBuffer();
+    for (int i = 0, n = tokens.size(); i < n; i++) {
+        Token token = (Token) tokens.get(i);
+        // 在连续的两个括号之间加null，即：() 变成 (null)
+        if (i > 0) {
+            String pre = ((Token) tokens.get(i - 1)).getMessage().trim();
+            String cur = token.getMessage().trim();
+            if (("(".equals(pre) && (")".equals(cur)) || ("[".equals(pre) && "]".equals(cur)))) {
+                // TODO 丢失Location信息
+                expressions.add(expressionFactory.createConstant(null));
+            }
+        }
+        // 处理带点号名称
+        if (dotNamed) {
+            String cur = token.getMessage().trim();
+            if (".".equals(cur) || TypeUtils.isNamed(cur)) {
+                dotNamedBuffer.append(cur);
+                continue;
+            } else {
+                if ("(".equals(cur)) {
+                    // TODO 丢失Location信息
+                    appendFunction(expressions, new Token(dotNamedBuffer.toString(), Position.ZERO));
+                } else {
+                    // TODO 丢失Location信息
+                    expressions.add(expressionFactory.createConstant(dotNamedBuffer.toString()));
+                }
+                dotNamedBuffer.setLength(0);
+                dotNamed = false;
+            }
+        }
+        // 处理函数
+        boolean isFunction = TypeUtils.isNamed(token.getMessage().trim()) && i + 1 < n && "(".equals(((Token) tokens.get(i + 1)).getMessage().trim());
+        if (isFunction) {
+            if (!functionAvailable)
+                throw new ParsingException(token.getLocation(), "" + "ExpressionFactory.function.forbidden", new Object[] { token.getMessage().trim() });
+            if (expressions.size() > 0) {
+                Expression prev = (Expression) expressions.get(expressions.size() - 1);
+                if (prev instanceof BinaryOperatorImpl) {
+                    BinaryOperatorImpl prevOperator = (BinaryOperatorImpl) prev;
+                    if (prevOperator.isRightOperandFunctioned()) {
+                        appendFunction(expressions, token);
+                        continue;
+                    }
+                } else if (prev instanceof UnaryOperatorImpl) {
+                    UnaryOperatorImpl prevOperator = (UnaryOperatorImpl) prev;
+                    if (prevOperator.isOperandFunctioned()) {
+                        appendFunction(expressions, token);
+                        continue;
+                    }
+                }
+            }
+        }
+        // 正常添加
+        appendExpression(expressions, token, isFunction);
+        if (expressions.size() > 0) {
+            Expression prev = (Expression) expressions.get(expressions.size() - 1);
+            if (prev instanceof BinaryOperatorImpl) {
+                BinaryOperatorImpl prevOperator = (BinaryOperatorImpl) prev;
+                if (prevOperator.isRightOperandDotNamed()) {
+                    dotNamed = true;
+                }
+            } else if (prev instanceof UnaryOperatorImpl) {
+                UnaryOperatorImpl prevOperator = (UnaryOperatorImpl) prev;
+                if (prevOperator.isOperandDotNamed()) {
+                    dotNamed = true;
+                }
+            }
+        }
+        if ("[".equals(token.getMessage().trim()))
+            appendExpression(expressions, new Token("(", token.getBeginPosition()), false);
+    }
+    if (dotNamed) {
+        // 处理最后的点号名称
+        // TODO 丢失Location信息
+        expressions.add(expressionFactory.createConstant(dotNamedBuffer.toString()));
+    }
+    return expressions;
+}

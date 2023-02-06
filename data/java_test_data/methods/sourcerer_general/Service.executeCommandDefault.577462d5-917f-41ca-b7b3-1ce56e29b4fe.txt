@@ -1,0 +1,69 @@
+public String executeCommandDefault(ActionContext context) {
+    TransactionStatusList statusMessages = null;
+    Connection db = null;
+    String encoding = "UTF-8";
+    PacketContext packetContext = new PacketContext();
+    packetContext.setInstanceId(getInstance(context).getId());
+    ConnectionPool sqlDriver = (ConnectionPool) context.getServletContext().getAttribute("ConnectionPoolAPI");
+    try {
+        // Put the request into an XML document for validation;
+        // use XMLStreamReader for future processing
+        XMLUtils xml = new XMLUtils(RequestUtils.getData(context.getRequest()), true);
+        if (System.getProperty("DEBUG") != null) {
+            System.out.println("Service-> Parsing data");
+        }
+        ApplicationPrefs applicationPrefs = (ApplicationPrefs) context.getServletContext().getAttribute("applicationPrefs");
+        // Verify the client
+        AuthenticationItem auth = new AuthenticationItem();
+        XMLUtils.populateObject(auth, xml.getFirstChild("authentication"));
+        encoding = auth.getEncoding();
+        // Get database connection using the dedicated connection pool
+        ApplicationPrefs prefs = getApplicationPrefs(context);
+        ConnectionElement ce = new ConnectionElement();
+        ce.setDriver(prefs.get("SITE.DRIVER"));
+        ce.setUrl(prefs.get("SITE.URL"));
+        ce.setUsername(prefs.get("SITE.USER"));
+        ce.setPassword(prefs.get("SITE.PASSWORD"));
+        db = sqlDriver.getConnection(ce, false);
+        // Validate the syncClient or throw an exception
+        if (auth.getClientId() > -1) {
+            // Client based authentication
+            SyncClient syncClient = new SyncClient(db, auth.getClientId(), auth.getCode());
+        } else {
+            // System based authentication
+            String compCode = prefs.get("SYSTEM_API.CODE");
+            if (!StringUtils.hasText(compCode) || !auth.getCode().equals(compCode)) {
+                throw new Exception("Service-> API authentication invalid");
+            }
+        }
+        // Environment variables for this packet request
+        packetContext.setActionContext(context);
+        packetContext.setObjectHookManager((ObjectHookManager) context.getServletContext().getAttribute("ObjectHookManager"));
+        packetContext.setScheduler((Scheduler) context.getServletContext().getAttribute("Scheduler"));
+        packetContext.setObjectMap(getObjectMap(context, db, auth.getSystemId()));
+        packetContext.setConnectionPool(sqlDriver);
+        packetContext.setConnectionElement(ce);
+        packetContext.setApplicationPrefs(applicationPrefs);
+        packetContext.setBaseFilePath(getPref(context, "FILELIBRARY") + "1" + fs + "projects" + fs);
+        packetContext.setResponse(context.getResponse());
+        // Process the transactions and keep a running status list
+        statusMessages = TransactionUtils.processTransactions(db, xml, packetContext);
+    } catch (Exception e) {
+        // The transaction usually catches errors, but not always
+        e.printStackTrace();
+        TransactionStatus thisStatus = new TransactionStatus();
+        thisStatus.setStatusCode(TransactionUtils.TRANSACTION_ERROR);
+        thisStatus.setMessage("Error: " + e.getMessage());
+        statusMessages = new TransactionStatusList();
+        statusMessages.add(thisStatus);
+    } finally {
+        sqlDriver.free(db);
+    }
+    if (packetContext.getReturnType() == PacketContext.RETURN_DATARECORDS) {
+        return null;
+    } else {
+        String statusXML = TransactionUtils.constructXMLResponse(statusMessages, encoding);
+        context.getRequest().setAttribute("statusXML", statusXML);
+        return "ServiceOK";
+    }
+}

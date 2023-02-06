@@ -1,0 +1,145 @@
+public boolean processSceneDelta(SceneDeltaEvent event) {
+    // update the ping estimate (used to compute the input advance)
+    _pingAverage.record(_ping = event.getPing());
+    // update the interval estimate (used to compute the buffer delay)
+    int elapsed = event.getElapsed();
+    _elapsedAverage.record(elapsed);
+    // look for the previous update in order to compute the jitter
+    int timestamp = event.getTimestamp();
+    long now = RunAnywhere.currentTimeMillis();
+    UpdateRecord lrecord = _records.get(_records.size() - 1);
+    if (lrecord.getTimestamp() + elapsed == timestamp) {
+        noteJitter((int) (now - lrecord.getReceived()) - elapsed);
+    }
+    // create/update the time smoothers
+    int delayed = timestamp - getBufferDelay();
+    int advanced = timestamp + getInputAdvance();
+    if (_smoother == null) {
+        _smoother = new TimeSmoother(_smoothedTime = timestamp);
+        _delayedSmoother = new TimeSmoother(_delayedTime = delayed);
+        _advancedSmoother = new TimeSmoother(_advancedTime = advanced);
+    } else {
+        _smoother.update(timestamp);
+        _delayedSmoother.update(delayed);
+        _advancedSmoother.update(advanced);
+    }
+    // find the reference and remove all records before it
+    if (!pruneRecords(event.getReference())) {
+        return false;
+    }
+    HashIntMap<Actor> oactors = _records.get(0).getActors();
+    HashIntMap<Actor> actors = new HashIntMap<Actor>();
+    // start with all the old actors
+    actors.putAll(oactors);
+    // add any new actors
+    Actor[] added = event.getAddedActors();
+    if (added != null) {
+        for (Actor actor : added) {
+            actor.init(_ctx.getConfigManager());
+            Actor oactor = actors.put(actor.getId(), actor);
+            if (oactor != null) {
+                log.warning("Replacing existing actor.", "oactor", oactor, "nactor", actor);
+            }
+        }
+    }
+    // update any updated actors
+    ActorDelta[] updated = event.getUpdatedActorDeltas();
+    if (updated != null) {
+        for (ActorDelta delta : updated) {
+            int id = delta.getId();
+            Actor oactor = actors.get(id);
+            if (oactor != null) {
+                Actor nactor = (Actor) delta.apply(oactor);
+                nactor.init(_ctx.getConfigManager());
+                actors.put(id, nactor);
+            } else {
+                log.warning("Missing actor for delta.", "delta", delta);
+            }
+        }
+    }
+    // remove any removed actors
+    int[] removed = event.getRemovedActorIds();
+    if (removed != null) {
+        for (int id : removed) {
+            actors.remove(id);
+        }
+    }
+    // record the update
+    _records.add(new UpdateRecord(timestamp, now, actors));
+    // at this point, if we are to preload, we have enough information to begin
+    if (_loadingWindow != null && _preloads == null) {
+        ((TudeySceneModel) _ctx.getSceneDirector().getScene().getSceneModel()).getPreloads(_preloads = new PreloadableSet(_ctx));
+        ConfigManager cfgmgr = _ctx.getConfigManager();
+        for (Actor actor : actors.values()) {
+            actor.getPreloads(cfgmgr, _preloads);
+        }
+        _loadingActors = Lists.newArrayList(actors.values());
+        addExtraPreloads();
+        return true;
+    }
+    // update loading actors, create/update the sprites for actors in the set
+    OUTER: for (Actor actor : actors.values()) {
+        int id = actor.getId();
+        if (_loadingActors != null) {
+            for (int ii = 0, nn = _loadingActors.size(); ii < nn; ii++) {
+                if (_loadingActors.get(ii).getId() == id) {
+                    _loadingActors.set(ii, actor);
+                    continue OUTER;
+                }
+            }
+        }
+        ActorSprite sprite = _actorSprites.get(id);
+        if (sprite != null) {
+            if (_ctrl.isControlledId(id)) {
+                _ctrl.controlledActorUpdated(timestamp, actor);
+            } else {
+                sprite.update(timestamp, actor);
+            }
+            continue;
+        }
+        addActorSprite(actor);
+    }
+    // remove sprites for actors no longer in the set
+    for (Iterator<IntEntry<ActorSprite>> it = _actorSprites.intEntrySet().iterator(); it.hasNext(); ) {
+        IntEntry<ActorSprite> entry = it.next();
+        int id = entry.getIntKey();
+        if (id < 0) {
+            ActorSprite sprite = entry.getValue();
+            if (sprite.getActor().getCreated() <= timestamp) {
+                sprite.remove(timestamp);
+                it.remove();
+            }
+        } else if (!actors.containsKey(id)) {
+            ActorSprite sprite = entry.getValue();
+            sprite.remove(timestamp);
+            if (_controlledSprite == sprite) {
+                _controlledSprite = null;
+                _ctrl.controlledSpriteRemoved(timestamp);
+            }
+            if (_targetSprite == sprite) {
+                _targetSprite = _controlledSprite;
+            }
+            it.remove();
+        }
+    }
+    // same deal with loading actors
+    if (_loadingActors != null) {
+        for (int ii = _loadingActors.size() - 1; ii >= 0; ii--) {
+            if (!actors.containsKey(_loadingActors.get(ii).getId())) {
+                _loadingActors.remove(ii);
+            }
+        }
+    }
+    // create handlers for any effects fired since the last update
+    Effect[] fired = event.getEffectsFired();
+    if (fired != null) {
+        int last = _records.get(_records.size() - 2).getTimestamp();
+        for (Effect effect : fired) {
+            if (effect.getTimestamp() > last && !(effect instanceof Prefireable && ((Prefireable) effect).getClientOid() == _ctx.getClient().getClientOid())) {
+                effect.init(_ctx.getConfigManager());
+                new EffectSprite(_ctx, this, effect);
+            }
+        }
+    }
+    return true;
+}

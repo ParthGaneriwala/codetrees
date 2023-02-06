@@ -1,0 +1,220 @@
+void doHandshake(String user, String password, String database) throws SQLException {
+    // Read the first packet
+    this.checkPacketSequence = false;
+    this.readPacketSequence = 0;
+    Buffer buf = readPacket();
+    // Get the protocol version
+    this.protocolVersion = buf.readByte();
+    if (this.protocolVersion == -1) {
+        try {
+            this.mysqlConnection.close();
+        } catch (Exception e) {
+        // ignore
+        }
+        int errno = 2000;
+        errno = buf.readInt();
+        String serverErrorMessage = buf.readString("ASCII", getExceptionInterceptor());
+        StringBuffer errorBuf = new StringBuffer(Messages.getString(// $NON-NLS-1$
+        "MysqlIO.10"));
+        errorBuf.append(serverErrorMessage);
+        // $NON-NLS-1$
+        errorBuf.append("\"");
+        String xOpen = SQLError.mysqlToSqlState(errno, this.connection.getUseSqlStateCodes());
+        throw SQLError.createSQLException(// $NON-NLS-1$
+        SQLError.get(xOpen) + ", " + errorBuf.toString(), xOpen, errno, getExceptionInterceptor());
+    }
+    this.serverVersion = buf.readString("ASCII", getExceptionInterceptor());
+    // Parse the server version into major/minor/subminor
+    // $NON-NLS-1$
+    int point = this.serverVersion.indexOf('.');
+    if (point != -1) {
+        try {
+            int n = Integer.parseInt(this.serverVersion.substring(0, point));
+            this.serverMajorVersion = n;
+        } catch (NumberFormatException NFE1) {
+        // ignore
+        }
+        String remaining = this.serverVersion.substring(point + 1, this.serverVersion.length());
+        // $NON-NLS-1$
+        point = remaining.indexOf('.');
+        if (point != -1) {
+            try {
+                int n = Integer.parseInt(remaining.substring(0, point));
+                this.serverMinorVersion = n;
+            } catch (NumberFormatException nfe) {
+            // ignore
+            }
+            remaining = remaining.substring(point + 1, remaining.length());
+            int pos = 0;
+            while (pos < remaining.length()) {
+                if ((remaining.charAt(pos) < '0') || (remaining.charAt(pos) > '9')) {
+                    break;
+                }
+                pos++;
+            }
+            try {
+                int n = Integer.parseInt(remaining.substring(0, pos));
+                this.serverSubMinorVersion = n;
+            } catch (NumberFormatException nfe) {
+            // ignore
+            }
+        }
+    }
+    if (versionMeetsMinimum(4, 0, 8)) {
+        this.maxThreeBytes = (256 * 256 * 256) - 1;
+        this.useNewLargePackets = true;
+    } else {
+        this.maxThreeBytes = 255 * 255 * 255;
+        this.useNewLargePackets = false;
+    }
+    this.colDecimalNeedsBump = versionMeetsMinimum(3, 23, 0);
+    // guess? Not noted in changelog
+    this.colDecimalNeedsBump = !versionMeetsMinimum(3, 23, 15);
+    this.useNewUpdateCounts = versionMeetsMinimum(3, 22, 5);
+    threadId = buf.readLong();
+    this.seed = buf.readString("ASCII", getExceptionInterceptor());
+    this.serverCapabilities = 0;
+    if (buf.getPosition() < buf.getBufLength()) {
+        this.serverCapabilities = buf.readInt();
+    }
+    if ((versionMeetsMinimum(4, 1, 1) || ((this.protocolVersion > 9) && (this.serverCapabilities & CLIENT_PROTOCOL_41) != 0))) {
+        int position = buf.getPosition();
+        /* New protocol with 16 bytes to describe server characteristics */
+        this.serverCharsetIndex = buf.readByte() & 0xff;
+        this.serverStatus = buf.readInt();
+        checkTransactionState(0);
+        buf.setPosition(position + 16);
+        String seedPart2 = buf.readString("ASCII", getExceptionInterceptor());
+        StringBuffer newSeed = new StringBuffer(20);
+        newSeed.append(this.seed);
+        newSeed.append(seedPart2);
+        this.seed = newSeed.toString();
+    }
+    if (((this.serverCapabilities & CLIENT_COMPRESS) != 0) && this.connection.getUseCompression()) {
+        this.clientParam |= CLIENT_COMPRESS;
+    }
+    this.useConnectWithDb = (database != null) && (database.length() > 0) && !this.connection.getCreateDatabaseIfNotExist();
+    if (this.useConnectWithDb) {
+        this.clientParam |= CLIENT_CONNECT_WITH_DB;
+    }
+    if (((this.serverCapabilities & CLIENT_SSL) == 0) && this.connection.getUseSSL()) {
+        if (this.connection.getRequireSSL()) {
+            this.connection.close();
+            forceClose();
+            throw // $NON-NLS-1$
+            SQLError.createSQLException(// $NON-NLS-1$
+            Messages.getString("MysqlIO.15"), SQLError.SQL_STATE_UNABLE_TO_CONNECT_TO_DATASOURCE, getExceptionInterceptor());
+        }
+        this.connection.setUseSSL(false);
+    }
+    if ((this.serverCapabilities & CLIENT_LONG_FLAG) != 0) {
+        // We understand other column flags, as well
+        this.clientParam |= CLIENT_LONG_FLAG;
+        this.hasLongColumnInfo = true;
+    }
+    // return FOUND rows
+    if (!this.connection.getUseAffectedRows()) {
+        this.clientParam |= CLIENT_FOUND_ROWS;
+    }
+    if (this.connection.getAllowLoadLocalInfile()) {
+        this.clientParam |= CLIENT_LOCAL_FILES;
+    }
+    if (this.isInteractiveClient) {
+        this.clientParam |= CLIENT_INTERACTIVE;
+    }
+    // Authenticate
+    if (this.protocolVersion > 9) {
+        // for long passwords
+        this.clientParam |= CLIENT_LONG_PASSWORD;
+    } else {
+        this.clientParam &= ~CLIENT_LONG_PASSWORD;
+    }
+    // 
+    if ((versionMeetsMinimum(4, 1, 0) || ((this.protocolVersion > 9) && (this.serverCapabilities & CLIENT_RESERVED) != 0))) {
+        if ((versionMeetsMinimum(4, 1, 1) || ((this.protocolVersion > 9) && (this.serverCapabilities & CLIENT_PROTOCOL_41) != 0))) {
+            this.clientParam |= CLIENT_PROTOCOL_41;
+            this.has41NewNewProt = true;
+            // Need this to get server status values
+            this.clientParam |= CLIENT_TRANSACTIONS;
+            // We always allow multiple result sets
+            this.clientParam |= CLIENT_MULTI_RESULTS;
+            // (by default, this is disabled).
+            if (this.connection.getAllowMultiQueries()) {
+                this.clientParam |= CLIENT_MULTI_QUERIES;
+            }
+        } else {
+            this.clientParam |= CLIENT_RESERVED;
+            this.has41NewNewProt = false;
+        }
+        this.use41Extensions = true;
+    }
+    int passwordLength = 16;
+    int userLength = (user != null) ? user.length() : 0;
+    int databaseLength = (database != null) ? database.length() : 0;
+    int packLength = ((userLength + passwordLength + databaseLength) * 2) + 7 + HEADER_LENGTH + AUTH_411_OVERHEAD;
+    Buffer packet = null;
+    if (!this.connection.getUseSSL()) {
+        if ((this.serverCapabilities & CLIENT_SECURE_CONNECTION) != 0) {
+            this.clientParam |= CLIENT_SECURE_CONNECTION;
+            if ((versionMeetsMinimum(4, 1, 1) || ((this.protocolVersion > 9) && (this.serverCapabilities & CLIENT_PROTOCOL_41) != 0))) {
+                secureAuth411(null, packLength, user, password, database, true);
+            } else {
+                secureAuth(null, packLength, user, password, database, true);
+            }
+        } else {
+            // Passwords can be 16 chars long
+            packet = new Buffer(packLength);
+            if ((this.clientParam & CLIENT_RESERVED) != 0) {
+                if ((versionMeetsMinimum(4, 1, 1) || ((this.protocolVersion > 9) && (this.serverCapabilities & CLIENT_PROTOCOL_41) != 0))) {
+                    packet.writeLong(this.clientParam);
+                    packet.writeLong(this.maxThreeBytes);
+                    // charset, JDBC will connect as 'latin1',
+                    // and use 'SET NAMES' to change to the desired
+                    // charset after the connection is established.
+                    packet.writeByte((byte) 8);
+                    // Set of bytes reserved for future use.
+                    packet.writeBytesNoNull(new byte[23]);
+                } else {
+                    packet.writeLong(this.clientParam);
+                    packet.writeLong(this.maxThreeBytes);
+                }
+            } else {
+                packet.writeInt((int) this.clientParam);
+                packet.writeLongInt(this.maxThreeBytes);
+            }
+            // User/Password data
+            packet.writeString(user, CODE_PAGE_1252, this.connection);
+            if (this.protocolVersion > 9) {
+                packet.writeString(Util.newCrypt(password, this.seed), CODE_PAGE_1252, this.connection);
+            } else {
+                packet.writeString(Util.oldCrypt(password, this.seed), CODE_PAGE_1252, this.connection);
+            }
+            if (this.useConnectWithDb) {
+                packet.writeString(database, CODE_PAGE_1252, this.connection);
+            }
+            send(packet, packet.getPosition());
+        }
+    } else {
+        negotiateSSLConnection(user, password, database, packLength);
+    }
+    // if (!versionMeetsMinimum(4, 1, 1)) {
+    if (!(versionMeetsMinimum(4, 1, 1) || !((this.protocolVersion > 9) && (this.serverCapabilities & CLIENT_PROTOCOL_41) != 0))) {
+        checkErrorPacket();
+    }
+    // 
+    if (((this.serverCapabilities & CLIENT_COMPRESS) != 0) && this.connection.getUseCompression()) {
+        // The following matches with ZLIB's
+        // compress()
+        this.deflater = new Deflater();
+        this.useCompression = true;
+        this.mysqlInput = new CompressedInputStream(this.connection, this.mysqlInput);
+    }
+    if (!this.useConnectWithDb) {
+        changeDatabaseTo(database);
+    }
+    try {
+        this.mysqlConnection = this.socketFactory.afterHandshake();
+    } catch (IOException ioEx) {
+        throw SQLError.createCommunicationsException(this.connection, this.lastPacketSentTimeMs, this.lastPacketReceivedTimeMs, ioEx, getExceptionInterceptor());
+    }
+}

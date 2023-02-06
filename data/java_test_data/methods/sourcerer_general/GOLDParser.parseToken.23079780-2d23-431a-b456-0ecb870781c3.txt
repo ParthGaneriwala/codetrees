@@ -1,0 +1,99 @@
+private int parseToken(Token nextToken) {
+    // This function analyzes a token and either:
+    // 1. Makes a SINGLE reduction and pushes a complete Reduction object on the stack
+    // 2. Accepts the token and shifts
+    // 3. Errors and places the expected symbol indexes in the Tokens list
+    // The Token is assumed to be valid and WILL be checked
+    // If an action is performed that requires controlt to be returned to the user, the function returns true.
+    // The Message parameter is then set to the type of action.
+    // modified to use ParseResultConstants
+    int n;
+    boolean found;
+    int index;
+    int ruleIndex;
+    Rule currentRule;
+    String str;
+    Token head;
+    Reduction newReduction;
+    int returnInt = -1;
+    LRActionTable lrAct = (LRActionTable) pActionTable.elementAt(currentLALR);
+    index = lrAct.actionIndexForSymbol(nextToken.getPSymbol().getTableIndex());
+    if (// Work - shift or reduce
+    index != -1) {
+        // Will be set true if a reduction is made
+        pHaveReduction = false;
+        pTokens.clear();
+        switch(lrAct.item(index).actionConstant) {
+            case actionAccept:
+                pHaveReduction = true;
+                returnInt = parseResultAccept;
+                break;
+            case actionShift:
+                currentLALR = lrAct.item(index).value;
+                nextToken.setState(currentLALR);
+                stack.push(nextToken);
+                returnInt = parseResultShift;
+                break;
+            case actionReduce:
+                // Produce a reduction - remove as many tokens as members in the rule & push a nonterminal token
+                ruleIndex = lrAct.item(index).value;
+                currentRule = (Rule) pRuleTable.elementAt(ruleIndex);
+                // ======== Create Reduction
+                if (pTrimReductions & currentRule.containsOneNonTerminal()) {
+                    // NEW 12/2001
+                    // The current rule only consists of a single nonterminal and can be trimmed from the
+                    // parse tree. Usually we create a new Reduction, assign it to the Data property
+                    // of Head and push it on the stack. However, in this case, the Data property of the
+                    // Head will be assigned the Data property of the reduced token (i.e. the only one
+                    // on the stack).
+                    // In this case, to save code, the value popped of the stack is changed into the head.
+                    head = (Token) stack.pop();
+                    head.setParentSymbol(currentRule.getRuleNonTerminal());
+                    returnInt = parseResultReduceEliminated;
+                } else // Build a Reduction
+                {
+                    pHaveReduction = true;
+                    newReduction = new Reduction();
+                    newReduction.setParentRule(currentRule);
+                    newReduction.setTokenCount(currentRule.getSymbolCount());
+                    for (n = newReduction.getTokenCount() - 1; n >= 0; n--) {
+                        newReduction.setToken(n, (Token) stack.pop());
+                    }
+                    head = new Token();
+                    head.setData(newReduction);
+                    head.setParentSymbol(currentRule.getRuleNonTerminal());
+                    returnInt = parseResultReduceNormal;
+                }
+                // ========== Goto
+                Token topStack = (Token) stack.peek();
+                index = topStack.getState();
+                // ========= If n is -1 here, then we have an Internal Table Error!!!!
+                lrAct = (LRActionTable) pActionTable.elementAt(index);
+                n = lrAct.actionIndexForSymbol(currentRule.getRuleNonTerminal().getTableIndex());
+                if (n != -1) {
+                    currentLALR = lrAct.item(n).value;
+                    // ========== Push Head
+                    // ======== Get new head - Take action for invalid data
+                    head.setState(currentLALR);
+                    stack.push(head);
+                } else {
+                    returnInt = parseResultInternalError;
+                }
+                break;
+        }
+    } else {
+        // === Syntax Error!
+        pTokens.clear();
+        lrAct = (LRActionTable) pActionTable.elementAt(currentLALR);
+        for (n = 0; n < (lrAct.count() - 1); n++) {
+            if (lrAct.item(n).getSymbol().getKind() == symbolTypeTerminal) {
+                head = new Token();
+                head.setData(new String(""));
+                head.setParentSymbol(lrAct.item(n).getSymbol());
+                pTokens.push(head);
+            }
+        }
+        returnInt = parseResultSyntaxError;
+    }
+    return returnInt;
+}

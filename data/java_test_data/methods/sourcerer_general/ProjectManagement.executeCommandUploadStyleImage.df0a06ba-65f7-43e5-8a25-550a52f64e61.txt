@@ -1,0 +1,74 @@
+public String executeCommandUploadStyleImage(ActionContext context) {
+    Connection db = null;
+    boolean recordInserted = false;
+    try {
+        String filePath = this.getPath(context, "projects");
+        // Process the form data
+        HttpMultiPartParser multiPart = new HttpMultiPartParser();
+        multiPart.setUsePathParam(false);
+        multiPart.setUseUniqueName(true);
+        multiPart.setUseDateForFolder(true);
+        multiPart.setExtensionId(getUserId(context));
+        HashMap parts = multiPart.parseData(context.getRequest(), filePath);
+        String projectId = (String) parts.get("pid");
+        String subject = "Style Image";
+        db = getConnection(context);
+        // Project
+        Project thisProject = retrieveAuthorizedProject(Integer.parseInt(projectId), context);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-setup-style")) {
+            return "PermissionError";
+        }
+        context.getRequest().setAttribute("project", thisProject);
+        // Update the database with the resulting file
+        if (parts.get("id" + projectId) instanceof FileInfo) {
+            FileInfo newFileInfo = (FileInfo) parts.get("id" + projectId);
+            FileItem thisItem = new FileItem();
+            thisItem.setLinkModuleId(Constants.PROJECT_STYLE_FILES);
+            thisItem.setLinkItemId(thisProject.getId());
+            thisItem.setEnteredBy(getUserId(context));
+            thisItem.setModifiedBy(getUserId(context));
+            thisItem.setSubject(subject);
+            thisItem.setClientFilename(newFileInfo.getClientFileName());
+            thisItem.setFilename(newFileInfo.getRealFilename());
+            thisItem.setSize(newFileInfo.getSize());
+            thisItem.setImageSize(ImageUtils.getImageSize(newFileInfo.getLocalFile()));
+            // check to see if this filename already exists for automatic versioning
+            FileItemList fileItemList = new FileItemList();
+            fileItemList.setLinkModuleId(Constants.PROJECT_STYLE_FILES);
+            fileItemList.setLinkItemId(thisProject.getId());
+            fileItemList.setFilename(newFileInfo.getClientFileName());
+            fileItemList.buildList(db);
+            if (fileItemList.size() == 0) {
+                // this is a new document
+                thisItem.setVersion(1.0);
+                recordInserted = thisItem.insert(db);
+            } else {
+                // this is a new version of an existing document
+                FileItem previousItem = fileItemList.get(0);
+                thisItem.setId(previousItem.getId());
+                thisItem.setVersion(previousItem.getVersionNextMajor());
+                recordInserted = thisItem.insertVersion(db);
+            }
+            thisItem.setDirectory(filePath);
+            if (!recordInserted) {
+                processErrors(context, thisItem.getErrors());
+            }
+            // Image List
+            FileItemList imageList = new FileItemList();
+            imageList.setLinkModuleId(Constants.PROJECT_STYLE_FILES);
+            imageList.setLinkItemId(thisProject.getId());
+            imageList.buildList(db);
+            context.getRequest().setAttribute("imageList", imageList);
+            // Send the image name so it can be auto-selected
+            context.getRequest().setAttribute("uploadedImage", newFileInfo.getClientFileName());
+            context.getRequest().setAttribute("project", thisProject);
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+        context.getRequest().setAttribute("Error", e);
+        return ("SystemError");
+    } finally {
+        freeConnection(context, db);
+    }
+    return "UploadStyleImageOK";
+}

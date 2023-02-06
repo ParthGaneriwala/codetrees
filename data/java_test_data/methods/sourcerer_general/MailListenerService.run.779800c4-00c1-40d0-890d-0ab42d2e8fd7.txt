@@ -1,0 +1,96 @@
+public void run() {
+    try {
+        // Get a Session object
+        final Properties props = System.getProperties();
+        final boolean sll = preferences.getBoolean("SSL", true);
+        if (sll) {
+            Security.addProvider(new com.sun.net.ssl.internal.ssl.Provider());
+            final String SSL_FACTORY = "javax.net.ssl.SSLSocketFactory";
+            // IMAP provider
+            props.setProperty("mail.imap.socketFactory.class", SSL_FACTORY);
+            // POP3 provider
+            props.setProperty("mail.pop3.socketFactory.class", SSL_FACTORY);
+            // NNTP provider (if any)
+            // props.setProperty( "mail.nntp.socketFactory.class", SSL_FACTORY);
+            // IMAP provider
+            props.setProperty("mail.imap.socketFactory.fallback", "false");
+            // POP3 provider
+            props.setProperty("mail.pop3.socketFactory.fallback", "false");
+            // NNTP provider (if any)
+            // props.setProperty( "mail.nntp.socketFactory.fallback", "false");
+            // IMAP provider
+            props.setProperty("mail.imap.port", "993");
+            props.setProperty("mail.imap.socketFactory.port", "993");
+            // POP3 provider
+            props.setProperty("mail.pop3.port", "995");
+            props.setProperty("mail.pop3.socketFactory.port", "995");
+        // NNTP provider (if any)
+        // props.setProperty( "mail.pop3.port", "563");
+        // props.setProperty( "mail.pop3.socketFactory.port", "563");
+        }
+        Session session = Session.getInstance(props, null);
+        // session.setDebug(true);
+        // Get a Store object
+        Store store = session.getStore(preferences.get("protocol", "imap"));
+        // Connect
+        store.connect(preferences.get("host", "imap.google.com"), preferences.get("user", "achaval"), preferences.get("password", "3lg0rd0"));
+        // Open a Folder
+        final String folderName = preferences.get("folder", "INBOX");
+        Folder folder = store.getFolder(folderName);
+        if (folder == null || !folder.exists()) {
+            System.out.println("\t (MailListenerService) ERROR : Invalid folder " + folderName);
+            return;
+        }
+        folder.open(Folder.READ_WRITE);
+        // Add messageCountListener to listen for new messages
+        folder.addMessageCountListener(new MessageCountAdapter() {
+
+            public void messagesAdded(MessageCountEvent ev) {
+                Message[] msgs = ev.getMessages();
+                System.out.println("(MailListenerService) Got " + msgs.length + " new messages");
+                // Just dump out the new messages
+                for (Message msg : msgs) {
+                    System.out.println("(MailListenerService) Message " + msg.getMessageNumber() + ":");
+                    final String description;
+                    try {
+                        description = msg.getSubject();
+                        System.out.println("(MailListenerService) Description : " + description);
+                    } catch (MessagingException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+        });
+        // Check mail once in "freq" MILLIseconds
+        long freq = preferences.getLong("frequency", 1000L * 60);
+        boolean supportsIdle = false;
+        try {
+            if (folder instanceof IMAPFolder) {
+                IMAPFolder f = (IMAPFolder) folder;
+                f.idle();
+                supportsIdle = true;
+            } else {
+                System.out.println("(MailListenerService) Not ImapFolder");
+            }
+        } catch (FolderClosedException fex) {
+            throw fex;
+        } catch (MessagingException mex) {
+            supportsIdle = false;
+        }
+        while (keepRunning) {
+            if (supportsIdle && folder instanceof IMAPFolder) {
+                IMAPFolder f = (IMAPFolder) folder;
+                f.idle();
+                System.out.println("(MailListenerService) IDLE done");
+            } else {
+                // sleep for freq milliseconds
+                Thread.sleep(freq);
+                // This is to force the IMAP server to send us
+                // EXISTS notifications.
+                folder.getMessageCount();
+            }
+        }
+    } catch (Exception ex) {
+        ex.printStackTrace();
+    }
+}

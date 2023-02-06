@@ -1,0 +1,82 @@
+public boolean solvePositionConstraints(float baumgarte) {
+    // TODO ERIN block solve with limit.
+    BBBody b1 = m_bodyA;
+    BBBody b2 = m_bodyB;
+    float angularError = 0.0f;
+    float positionError = 0.0f;
+    // solve angular limit constraint.
+    if (m_enableLimit & m_limitState != e_inactiveLimit) {
+        float angle = b2.m_sweep.a - b1.m_sweep.a - m_referenceAngle;
+        float limitImpulse = 0.0f;
+        if (m_limitState == e_equalLimits) {
+            // Prevent large angular corrections
+            float C = clamp(angle - m_lowerAngle, -maxAngularCorrection, maxAngularCorrection);
+            limitImpulse = -m_motorMass * C;
+            angularError = abs(C);
+        } else if (m_limitState == e_atLowerLimit) {
+            float C = angle - m_lowerAngle;
+            angularError = -C;
+            // Prevent large angular corrections and allow some slop.
+            C = clamp(C + angularSlop, -maxAngularCorrection, 0.0f);
+            limitImpulse = -m_motorMass * C;
+        } else if (m_limitState == e_atUpperLimit) {
+            float C = angle - m_upperAngle;
+            angularError = C;
+            // Prevent large angular corrections and allow some slop.
+            C = clamp(C - angularSlop, 0.0f, maxAngularCorrection);
+            limitImpulse = -m_motorMass * C;
+        }
+        b1.m_sweep.a -= b1.m_invI * limitImpulse;
+        b2.m_sweep.a += b2.m_invI * limitImpulse;
+        b1.synchronizeTransform();
+        b2.synchronizeTransform();
+    }
+    // solve point-to-point constraint.
+    {
+        BBVec2 r1 = mul(b1.getTransform().R, sub(m_localAnchor1, b1.getLocalCenter()));
+        BBVec2 r2 = mul(b2.getTransform().R, sub(m_localAnchor2, b2.getLocalCenter()));
+        BBVec2 C = sub(sub(add(b2.m_sweep.c, r2), b1.m_sweep.c), r1);
+        positionError = C.length();
+        float invMass1 = b1.m_invMass, invMass2 = b2.m_invMass;
+        float invI1 = b1.m_invI, invI2 = b2.m_invI;
+        // Handle large detachment.
+        final float k_allowedStretch = 10.0f * linearSlop;
+        if (C.lengthSquared() > k_allowedStretch * k_allowedStretch) {
+            // Use a particle solution (no rotation).
+            BBVec2 u = C;
+            u.normalize();
+            float k = invMass1 + invMass2;
+            assert (k > FLT_EPSILON);
+            float m = 1.0f / k;
+            BBVec2 impulse = mul(m, C.neg());
+            final float k_beta = 0.5f;
+            b1.m_sweep.c.sub(mul(k_beta * invMass1, impulse));
+            b2.m_sweep.c.add(mul(k_beta * invMass2, impulse));
+            C = sub(sub(add(b2.m_sweep.c, r2), b1.m_sweep.c), r1);
+        }
+        BBMat22 K1 = new BBMat22();
+        K1.col1.x = invMass1 + invMass2;
+        K1.col2.x = 0.0f;
+        K1.col1.y = 0.0f;
+        K1.col2.y = invMass1 + invMass2;
+        BBMat22 K2 = new BBMat22();
+        K2.col1.x = invI1 * r1.y * r1.y;
+        K2.col2.x = -invI1 * r1.x * r1.y;
+        K2.col1.y = -invI1 * r1.x * r1.y;
+        K2.col2.y = invI1 * r1.x * r1.x;
+        BBMat22 K3 = new BBMat22();
+        K3.col1.x = invI2 * r2.y * r2.y;
+        K3.col2.x = -invI2 * r2.x * r2.y;
+        K3.col1.y = -invI2 * r2.x * r2.y;
+        K3.col2.y = invI2 * r2.x * r2.x;
+        BBMat22 K = add(add(K1, K2), K3);
+        BBVec2 impulse = K.solve(C.neg());
+        b1.m_sweep.c.sub(mul(b1.m_invMass, impulse));
+        b1.m_sweep.a -= b1.m_invI * cross(r1, impulse);
+        b2.m_sweep.c.add(mul(b2.m_invMass, impulse));
+        b2.m_sweep.a += b2.m_invI * cross(r2, impulse);
+        b1.synchronizeTransform();
+        b2.synchronizeTransform();
+    }
+    return positionError <= linearSlop & angularError <= angularSlop;
+}

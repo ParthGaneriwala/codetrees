@@ -1,0 +1,55 @@
+public void writeTopic(Topic topic, TopicVersion topicVersion, LinkedHashMap categories, Vector links, boolean userVisible, Object transactionObject) throws Exception {
+    TransactionStatus status = DatabaseConnection.startTransaction();
+    try {
+        String key = WikiCache.key(topic.getVirtualWiki(), topic.getName());
+        WikiCache.removeFromCache(WikiBase.CACHE_PARSED_TOPIC_CONTENT, key);
+        WikiCache.removeFromCache(CACHE_TOPICS, key);
+        Connection conn = DatabaseConnection.getConnection();
+        WikiUtil.validateTopicName(topic.getName());
+        if (topic.getTopicId() <= 0) {
+            addTopic(topic, conn);
+        } else {
+            updateTopic(topic, conn);
+        }
+        if (userVisible) {
+            if (topicVersion.getPreviousTopicVersionId() == null && topic.getCurrentVersionId() != null) {
+                topicVersion.setPreviousTopicVersionId(topic.getCurrentVersionId());
+            }
+            topicVersion.setTopicId(topic.getTopicId());
+            // write version
+            addTopicVersion(topicVersion, conn);
+            String authorName = topicVersion.getAuthorIpAddress();
+            Integer authorId = topicVersion.getAuthorId();
+            if (authorId != null) {
+                WikiUser user = this.lookupWikiUser(topicVersion.getAuthorId().intValue(), conn);
+                authorName = user.getUsername();
+            }
+            RecentChange change = new RecentChange(topic, topicVersion, authorName);
+            this.addRecentChange(change, conn);
+        }
+        if (categories != null) {
+            // add / remove categories associated with the topic
+            this.deleteTopicCategories(topic, conn);
+            for (Iterator iterator = categories.keySet().iterator(); iterator.hasNext(); ) {
+                String categoryName = (String) iterator.next();
+                Category category = new Category();
+                category.setName(categoryName);
+                category.setSortKey((String) categories.get(categoryName));
+                category.setVirtualWiki(topic.getVirtualWiki());
+                category.setChildTopicName(topic.getName());
+                this.addCategory(category, conn);
+            }
+        }
+        if (links != null) {
+            WikiBase.getSearchEngine().deleteFromIndex(topic);
+            WikiBase.getSearchEngine().addToIndex(topic, links);
+        }
+    } catch (Exception e) {
+        DatabaseConnection.rollbackOnException(status, e);
+        throw e;
+    } catch (Error err) {
+        DatabaseConnection.rollbackOnException(status, err);
+        throw err;
+    }
+    DatabaseConnection.commit(status);
+}

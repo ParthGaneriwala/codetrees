@@ -1,0 +1,90 @@
+public int Compil(String sFilePath) {
+    boolean bAffiche = true;
+    if (sFilePath == null || sFilePath.length() == 0) {
+        System.err.println("\nErreur : fichier invalide ");
+        return INTERNAL_COMPIL_ERR;
+    }
+    File oFile = new File(sFilePath);
+    if (!oFile.isFile()) {
+        System.err.println("\nErreur : fichier invalide : " + sFilePath);
+        return INTERNAL_COMPIL_ERR;
+    }
+    if (!oFile.getName().endsWith(Compilator.EXTENTION_FICHIER)) {
+        System.err.println("\nErreur : extention invalide : " + sFilePath);
+        return INTERNAL_COMPIL_ERR;
+    }
+    String sMsg = "\nFichier : " + oFile.getName();
+    int iStatus = NORMAL_TERMINAISON;
+    try {
+        Scanner oLexer = new Lexer(new FileReader(oFile));
+        parser oParser = new parser(oLexer);
+        FileType fileType = (FileType) oParser.parse().value;
+        if (!this.IsParseOnly()) {
+            SymbolTable.GetInstance().Init();
+            (new VisitorListClass()).visit(fileType);
+            (new VisitorDeclarationClass()).visit(fileType);
+            (new VisitorTypeExpr()).visit(fileType);
+        }
+        if (!this.isTypeOnly()) {
+            String vm_file = sFilePath.substring(0, sFilePath.length() - 4) + ".vm";
+            (new VisitorCode(vm_file, this.isGeneratedCodeShown())).visit(fileType);
+            if (this.runVM()) {
+                String myOutputfile = sFilePath.substring(0, sFilePath.length() - 4) + ".myout";
+                FileOutputStream fos = new FileOutputStream(myOutputfile);
+                Runtime rt = Runtime.getRuntime();
+                Process proc = rt.exec(msCMD + vm_file);
+                // any error message?
+                StreamGobbler errorGobbler = new StreamGobbler(proc.getErrorStream(), "ERROR");
+                // any output?
+                StreamGobbler outputGobbler = new StreamGobbler(proc.getInputStream(), "OUTPUT", fos);
+                sMsg += " > OK ";
+                System.out.println(sMsg);
+                bAffiche = false;
+                // kick them off
+                errorGobbler.start();
+                outputGobbler.start();
+                String outputfile = sFilePath.substring(0, sFilePath.length() - 4) + ".out";
+                File output = new File(outputfile);
+                if (output.exists()) {
+                    System.out.println("===== output d�sir� =====");
+                    BufferedReader lecteurAvecBuffer = null;
+                    String ligne;
+                    try {
+                        lecteurAvecBuffer = new BufferedReader(new FileReader(outputfile));
+                    } catch (FileNotFoundException exc) {
+                    }
+                    while ((ligne = lecteurAvecBuffer.readLine()) != null) {
+                        System.out.println(ligne);
+                    }
+                    lecteurAvecBuffer.close();
+                    System.out.println("===== fin output =====");
+                    // any error???
+                    int exitVal = proc.waitFor();
+                    assert (exitVal != 0);
+                }
+            }
+        }
+        if (bAffiche) {
+            sMsg += " > OK ";
+            System.out.println(sMsg);
+        }
+    } catch (CompilError e) {
+        iStatus = COMPIL_ERR;
+        sMsg += " > Erreur\n" + this.PrintError(e, oFile.getName());
+        System.out.println(sMsg);
+    // e.printStackTrace(System.out);
+    } catch (InternalError e) {
+        // Erreur interne du lexer
+        iStatus = INTERNAL_COMPIL_ERR;
+        sMsg += " > Erreur";
+        System.out.println(sMsg);
+        e.printStackTrace(System.out);
+    } catch (Exception e) {
+        // Autres erreurs : FileNotFound, etc...
+        iStatus = INTERNAL_COMPIL_ERR;
+        sMsg += " > Erreur";
+        System.out.println(sMsg);
+        e.printStackTrace(System.out);
+    }
+    return iStatus;
+}

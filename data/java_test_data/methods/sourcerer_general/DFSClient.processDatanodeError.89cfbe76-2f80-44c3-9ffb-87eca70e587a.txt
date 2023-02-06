@@ -1,0 +1,122 @@
+// If this stream has encountered any errors so far, shutdown
+// threads and mark stream as closed. Returns true if we should
+// sleep for a while after returning from this call.
+private boolean processDatanodeError(boolean hasError, boolean isAppend) {
+    if (!hasError) {
+        return false;
+    }
+    if (response != null) {
+        LOG.info("Error Recovery for block " + block + " waiting for responder to exit. ");
+        return true;
+    }
+    if (errorIndex >= 0) {
+        LOG.warn("Error Recovery for block " + block + " bad datanode[" + errorIndex + "] " + (nodes == null ? "nodes == null" : nodes[errorIndex].getName()));
+    }
+    if (blockStream != null) {
+        try {
+            blockStream.close();
+            blockReplyStream.close();
+        } catch (IOException e) {
+        }
+    }
+    blockStream = null;
+    blockReplyStream = null;
+    // move packets from ack queue to front of the data queue
+    synchronized (ackQueue) {
+        dataQueue.addAll(0, ackQueue);
+        ackQueue.clear();
+    }
+    boolean success = false;
+    while (!success && clientRunning) {
+        DatanodeInfo[] newnodes = null;
+        if (nodes == null) {
+            String msg = "Could not get block locations. Aborting...";
+            LOG.warn(msg);
+            setLastException(new IOException(msg));
+            closed = true;
+            if (streamer != null)
+                streamer.close();
+            return false;
+        }
+        StringBuilder pipelineMsg = new StringBuilder();
+        for (int j = 0; j < nodes.length; j++) {
+            pipelineMsg.append(nodes[j].getName());
+            if (j < nodes.length - 1) {
+                pipelineMsg.append(", ");
+            }
+        }
+        // 
+        if (errorIndex < 0) {
+            newnodes = nodes;
+        } else {
+            if (nodes.length <= 1) {
+                lastException = new IOException("All datanodes " + pipelineMsg + " are bad. Aborting...");
+                closed = true;
+                if (streamer != null)
+                    streamer.close();
+                return false;
+            }
+            LOG.warn("Error Recovery for block " + block + " in pipeline " + pipelineMsg + ": bad datanode " + nodes[errorIndex].getName());
+            newnodes = new DatanodeInfo[nodes.length - 1];
+            System.arraycopy(nodes, 0, newnodes, 0, errorIndex);
+            System.arraycopy(nodes, errorIndex + 1, newnodes, errorIndex, newnodes.length - errorIndex);
+        }
+        // Tell the primary datanode to do error recovery
+        // by stamping appropriate generation stamps.
+        // 
+        LocatedBlock newBlock = null;
+        ClientDatanodeProtocol primary = null;
+        DatanodeInfo primaryNode = null;
+        try {
+            // Pick the "least" datanode as the primary datanode to avoid deadlock.
+            primaryNode = Collections.min(Arrays.asList(newnodes));
+            primary = createClientDatanodeProtocolProxy(primaryNode, conf);
+            newBlock = primary.recoverBlock(block, isAppend, newnodes);
+        } catch (IOException e) {
+            recoveryErrorCount++;
+            if (recoveryErrorCount > maxRecoveryErrorCount) {
+                if (nodes.length > 1) {
+                    // conservative to remove only one datanode in one iteration.
+                    for (int j = 0; j < nodes.length; j++) {
+                        if (nodes[j] == primaryNode) {
+                            // forget original bad node.
+                            errorIndex = j;
+                        }
+                    }
+                    LOG.warn("Error Recovery for block " + block + " failed " + " because recovery from primary datanode " + primaryNode + " failed " + recoveryErrorCount + " times. Marking primary datanode as bad.");
+                    recoveryErrorCount = 0;
+                    // sleep when we return from here
+                    return true;
+                }
+                String emsg = "Error Recovery for block " + block + " failed " + " because recovery from primary datanode " + primaryNode + " failed " + recoveryErrorCount + " times. Aborting...";
+                LOG.warn(emsg);
+                lastException = new IOException(emsg);
+                closed = true;
+                if (streamer != null)
+                    streamer.close();
+                // abort with IOexception
+                return false;
+            }
+            LOG.warn("Error Recovery for block " + block + " failed " + " because recovery from primary datanode " + primaryNode + " failed " + recoveryErrorCount + " times. Will retry...");
+            // sleep when we return from here
+            return true;
+        } finally {
+            RPC.stopProxy(primary);
+        }
+        // block recovery successful
+        recoveryErrorCount = 0;
+        // 
+        if (newBlock != null) {
+            block = newBlock.getBlock();
+            nodes = newBlock.getLocations();
+        }
+        this.hasError = false;
+        lastException = null;
+        errorIndex = 0;
+        success = createBlockOutputStream(nodes, clientName, true);
+    }
+    response = new ResponseProcessor(nodes);
+    response.start();
+    // do not sleep, continue processing
+    return false;
+}

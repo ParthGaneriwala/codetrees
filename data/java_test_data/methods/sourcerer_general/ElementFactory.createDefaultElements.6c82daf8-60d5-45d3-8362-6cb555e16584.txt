@@ -1,0 +1,154 @@
+private void createDefaultElements(File[] files) {
+    try {
+        DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+        DocumentBuilder db = dbf.newDocumentBuilder();
+        Document doc;
+        @SuppressWarnings("unused") Element element, name, plural, shape, newAttribute, // "plural" is never read
+        attributesElement;
+        @SuppressWarnings("unused") NodeList elements, spheres, cylinders, boxes, cones, kmz, kmzUrls, facingNodes, boundsNodes, // "facingNodes" is never read
+        attributesNodes;
+        Node tmpNode;
+        VirtualShape[] shapes;
+        int i, j, k;
+        int kmlCount;
+        float[] position;
+        float[] facing;
+        float[] bounds;
+        float[] scale;
+        AttributesHashMap attributes;
+        for (File file : files) {
+            if (!file.exists()) {
+                myLogger.message("ElementFactory cannot find file: " + file + "\n", true);
+                continue;
+            }
+            doc = db.parse(file);
+            elements = doc.getElementsByTagName("element");
+            for (i = elements.getLength() - 1; i >= 0; i--) {
+                element = (Element) elements.item(i);
+                position = Constants.DEFAULT_POSITION;
+                facing = Constants.DEFAULT_FACING;
+                scale = Constants.DEFAULT_SCALE;
+                attributes = new AttributesHashMap();
+                attributesElement = (Element) element.getElementsByTagName("attributes").item(0);
+                if (attributesElement != null) {
+                    // grab all of the children of attributesElement
+                    attributesNodes = attributesElement.getChildNodes();
+                    for (int a = attributesNodes.getLength() - 1; a >= 0; a--) {
+                        tmpNode = attributesNodes.item(a);
+                        if (tmpNode.getNodeType() != Node.ELEMENT_NODE)
+                            continue;
+                        newAttribute = (Element) tmpNode;
+                        attributes.put(newAttribute.getTagName(), Constants.parseXMLwithType(newAttribute));
+                    }
+                }
+                name = (Element) element.getElementsByTagName("name").item(0);
+                plural = (Element) element.getElementsByTagName("plural").item(0);
+                shape = (Element) element.getElementsByTagName("shapes").item(0);
+                spheres = shape.getElementsByTagName("sphere");
+                cylinders = shape.getElementsByTagName("cylinder");
+                boxes = shape.getElementsByTagName("box");
+                cones = shape.getElementsByTagName("cone");
+                kmz = shape.getElementsByTagName("kmz");
+                kmlCount = 0;
+                for (int c = kmz.getLength() - 1; c >= 0; c--) {
+                    // better damn well be a 1:1 ratio.
+                    kmzUrls = ((Element) kmz.item(c)).getElementsByTagName("url");
+                    kmlCount += SketchUpUtils.countKMLFiles(kmzUrls.item(0).getTextContent());
+                }
+                shapes = new VirtualShape[spheres.getLength() + cylinders.getLength() + boxes.getLength() + cones.getLength() + kmlCount];
+                j = shapes.length - 1;
+                k = cones.getLength() - 1;
+                for (; j >= 0 && k >= 0; j--, k--) {
+                    shapes[j] = new VirtualCone(cones.item(k));
+                }
+                k = boxes.getLength() - 1;
+                for (; j >= 0 && k >= 0; j--, k--) {
+                    shapes[j] = new VirtualBox(boxes.item(k));
+                }
+                k = cylinders.getLength() - 1;
+                for (; j >= 0 && k >= 0; j--, k--) {
+                    shapes[j] = new VirtualCylinder(cylinders.item(k));
+                }
+                k = spheres.getLength() - 1;
+                for (; j >= 0 && k >= 0; j--, k--) {
+                    shapes[j] = new VirtualSphere(spheres.item(k));
+                }
+                k = kmz.getLength() - 1;
+                for (; j >= 0 && k >= 0; k--) {
+                    // get KML stuff out of kmz.item(k);
+                    // create a VirtualKML() for each KML file
+                    Document[] kmldocs = SketchUpUtils.decompressKMZ(((Element) kmz.item(k)).getElementsByTagName("url").item(0).getTextContent());
+                    for (int q = kmldocs.length - 1; q >= 0 && j >= 0; j--, q--) shapes[j] = new VirtualKML(kmz.item(k), kmldocs[q]);
+                }
+                // determine bounds
+                boundsNodes = element.getElementsByTagName("bounds");
+                if (// if bounds aren't specified, create our own out of the shapes
+                boundsNodes.getLength() == 0) {
+                    // the lengths of our maximal AABB
+                    float[] max = new float[] { 0, 0, 0 };
+                    // an array for the corners of a shape
+                    float[][] corners = new float[8][3];
+                    // for iteration
+                    float[] sbb;
+                    for (// run through all the shapes, double check that is defined
+                    int s = 0; // run through all the shapes, double check that is defined
+                    s < shapes.length && shapes[s] != null; // run through all the shapes, double check that is defined
+                    s++) {
+                        // fetch the boundingBox once
+                        sbb = shapes[s].getBoundingBox();
+                        // construct the corners of the AABB for the shape
+                        // construct the corners of the AABB for the shape
+                        corners[0] = new float[] { sbb[0], sbb[1], sbb[2] };
+                        corners[1] = new float[] { sbb[0], sbb[1], -sbb[2] };
+                        corners[2] = new float[] { -sbb[0], sbb[1], -sbb[2] };
+                        corners[3] = new float[] { -sbb[0], sbb[1], sbb[2] };
+                        corners[4] = new float[] { sbb[0], -sbb[1], sbb[2] };
+                        corners[5] = new float[] { sbb[0], -sbb[1], -sbb[2] };
+                        corners[6] = new float[] { -sbb[0], -sbb[1], -sbb[2] };
+                        corners[7] = new float[] { -sbb[0], -sbb[1], sbb[2] };
+                        // rotate the corners into an OBB
+                        Quaternions.rotatePoints(corners, shapes[s].getFacing());
+                        // move the OBB to the shape's position
+                        VectorUtils.add(corners, shapes[s].getPosition());
+                        for (// run through the corners
+                        int c = 0; // run through the corners
+                        c < corners.length; // run through the corners
+                        c++) {
+                            // if abs of any coordinate is outside current bounds, increase the bounds
+                            if (Math.abs(corners[c][0]) > max[0])
+                                max[0] = Math.abs(corners[c][0]);
+                            if (Math.abs(corners[c][1]) > max[1])
+                                max[1] = Math.abs(corners[c][1]);
+                            if (Math.abs(corners[c][2]) > max[2])
+                                max[2] = Math.abs(corners[c][2]);
+                        }
+                    }
+                    // set bounds equal to whatever the max was
+                    bounds = max;
+                } else // if bounds were specified, use those
+                {
+                    bounds = new float[boundsNodes.getLength()];
+                    for (int p = bounds.length - 1; p >= 0; p--) {
+                        bounds[p] = Float.parseFloat(boundsNodes.item(p).getTextContent());
+                    }
+                }
+                defaultElements.put(name.getTextContent(), new GameElement(name.getTextContent(), position, facing, bounds, scale, shapes, attributes));
+            }
+        }
+        if (defaultElements.isEmpty()) {
+            myLogger.message("ElementFactory found no elements... You can't play a game without elements!\n", true);
+            System.exit(1);
+        }
+        // iterate through hashmap to create our array...
+        defaultElementKeys = new String[] { "" };
+        defaultElementKeys = defaultElements.keySet().toArray(defaultElementKeys);
+        Arrays.sort(defaultElementKeys);
+        for (i = 0; i < defaultElementKeys.length; i++) {
+            defaultElements.get(defaultElementKeys[i]).setTypeId(i);
+        }
+    } catch (// better error reporting!
+    Exception e) {
+        myLogger.message("Failed to read input files! : " + e.getMessage() + " :\n", true);
+        e.printStackTrace();
+    }
+}

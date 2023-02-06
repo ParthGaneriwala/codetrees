@@ -1,0 +1,125 @@
+private void cacheKeys(String key, int maximumChildren) throws RegistryErrorException {
+    // stringbuffer for appending, if an entry has multiplie lines
+    StringBuffer strRet = new StringBuffer();
+    try {
+        // creates tmp File for storing the registry key
+        File f = File.createTempFile("regorexp", ".jta");
+        // long stamp1 = System.currentTimeMillis();
+        // ATTENTION!! THESE COULD BE A DEADLOCK BECAUSE I WAITFOR THE END OF PROCESS HERE
+        // <-- WAITING FOR END OF PROCESS
+        Runtime.getRuntime().exec("regedit /e " + f.getAbsolutePath() + " \"" + key + "\"").waitFor();
+        // wait until the file size is not increasing anymore
+        _waitForFile(f);
+        // System.out.println(">>> NEEDED: " + (System.currentTimeMillis() - stamp1) + " " + f.getAbsolutePath());
+        BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(f)));
+        String line = "";
+        CachedEntry entry = new CachedEntry(), currentEntry = null;
+        CachedValue currentValue = null;
+        entry.setKey(key);
+        while ((line = br.readLine()) != null) {
+            // remove illegale signs
+            line = line.replaceAll(NULL_STRING, "");
+            if (line != null && line.length() > 0) {
+                if (// 
+                line.startsWith("[") && line.endsWith("]")) {
+                    if (// if there was a key
+                    currentEntry != null) {
+                        Object[] tmp = entry.getSub(currentEntry.getKey());
+                        if (tmp != null) {
+                            // just append the data if the maximumchildren is not higher as given
+                            if (((Integer) tmp[1]).intValue() < maximumChildren)
+                                ((CachedEntry) tmp[0]).appendChildren(currentEntry);
+                        }
+                        currentEntry = null;
+                    }
+                    // gets the current key
+                    String currentKey = line.substring(1, line.length() - 1);
+                    // if not null and bigger than 0 and if is not the main key
+                    if (currentKey != null && currentKey.length() > 0) {
+                        // when it is the main key, then you should store it settings at the main key
+                        if (currentKey.equals(entry.getKey()))
+                            currentEntry = entry;
+                        else {
+                            currentEntry = new CachedEntry();
+                            currentEntry.setKey(currentKey);
+                        }
+                    }
+                } else // if currentEntry is opened and either equals is in the line or it is more than one line
+                if (currentEntry != null && (line.indexOf("=") != -1 || currentValue != null)) {
+                    if (// when line found, just append
+                    currentValue != null) {
+                        if (line.length() > 0) {
+                            if (// if = is found, this is a new item so abort
+                            line.indexOf("=") != -1) {
+                                currentValue.setData(strRet.toString());
+                                // currentValue.setData(parseData(strRet.toString()));
+                                strRet.delete(0, strRet.length());
+                                currentEntry.appendEntry(currentValue);
+                                currentValue = null;
+                            } else // and append the line, if its for the same item
+                            {
+                                line = line.trim();
+                                if (line.endsWith("\\"))
+                                    strRet.append(line.substring(0, line.length() - 1));
+                                else {
+                                    strRet.append(line.trim());
+                                    // }
+                                    // if (!line.endsWith("\\")) //if line doesnt ends with \ the registry entry has no more lines
+                                    // {
+                                    currentValue.setData(strRet.toString());
+                                    // currentValue.setData(parseData(strRet.toString()));
+                                    strRet.delete(0, strRet.length());
+                                    currentEntry.appendEntry(currentValue);
+                                    currentValue = null;
+                                }
+                            }
+                        }
+                    } else {
+                        String currentName = line.substring(0, line.indexOf("="));
+                        // default name
+                        if (currentName.equals("@"))
+                            currentName = "";
+                        currentValue = new CachedValue();
+                        currentValue.setName(currentName.replaceAll("\"", ""));
+                        line = line.substring(line.indexOf("=") + 1);
+                        if (line.endsWith("\\"))
+                            strRet.append(line.substring(0, line.length() - 1));
+                        else {
+                            strRet.append(line);
+                            // }
+                            // if (line.indexOf("\\") == -1) //if no \\ is found, there is no new line in the string, so abort
+                            // {
+                            currentValue.setData(strRet.toString());
+                            // currentValue.setData(parseData(strRet.toString()));
+                            strRet.delete(0, strRet.length());
+                            currentEntry.appendEntry(currentValue);
+                            currentValue = null;
+                        }
+                    }
+                }
+            }
+        }
+        if (// if there was a key
+        currentEntry != null) {
+            Object[] tmp = entry.getSub(currentEntry.getKey());
+            if (tmp != null) {
+                // just append the data if the maximumchildren is not higher as given
+                if (((Integer) tmp[1]).intValue() < maximumChildren)
+                    ((CachedEntry) tmp[0]).appendChildren(currentEntry);
+            }
+        }
+        // close reader, so that you can delete the file
+        br.close();
+        if (// if delete has no success
+        !f.delete())
+            // mark it, for delete on exit
+            f.deleteOnExit();
+        if (caches == null)
+            caches = new ArrayList();
+        caches.add(entry);
+    } catch (Exception ex) {
+        // ex.printStackTrace(System.out);
+        System.err.println(ex.getLocalizedMessage());
+        throw new RegistryErrorException(ex.getLocalizedMessage());
+    }
+}

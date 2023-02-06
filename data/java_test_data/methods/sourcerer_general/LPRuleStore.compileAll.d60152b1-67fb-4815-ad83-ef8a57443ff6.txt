@@ -1,0 +1,81 @@
+protected void compileAll() {
+    isCompiled = true;
+    predicateToCodeMap = new HashMap();
+    allRuleClauseCodes = new ArrayList();
+    indexPredicateToCodeMap = new HashMap();
+    for (Iterator ri = getAllRules().iterator(); ri.hasNext(); ) {
+        Rule r = (Rule) ri.next();
+        ClauseEntry term = r.getHeadElement(0);
+        if (term instanceof TriplePattern) {
+            RuleClauseCode code = new RuleClauseCode(r);
+            allRuleClauseCodes.add(code);
+            Node predicate = ((TriplePattern) term).getPredicate();
+            if (predicate.isVariable()) {
+                predicate = Node_RuleVariable.WILD;
+            }
+            List predicateCode = (List) predicateToCodeMap.get(predicate);
+            if (predicateCode == null) {
+                predicateCode = new ArrayList();
+                predicateToCodeMap.put(predicate, predicateCode);
+            }
+            predicateCode.add(code);
+            if (predicateCode.size() > INDEX_THRESHOLD) {
+                indexPredicateToCodeMap.put(predicate, new HashMap());
+            }
+        }
+    }
+    // Now add the wild card rules into the list for each non-wild predicate)
+    List wildRules = (List) predicateToCodeMap.get(Node_RuleVariable.WILD);
+    if (wildRules != null) {
+        for (Iterator i = predicateToCodeMap.entrySet().iterator(); i.hasNext(); ) {
+            Map.Entry entry = (Map.Entry) i.next();
+            Node predicate = (Node) entry.getKey();
+            List predicateCode = (List) entry.getValue();
+            if (predicate != Node_RuleVariable.WILD) {
+                predicateCode.addAll(wildRules);
+            }
+        }
+    }
+    indexPredicateToCodeMap.put(Node_RuleVariable.WILD, new HashMap());
+    // Now built any required two level indices
+    for (Iterator i = indexPredicateToCodeMap.entrySet().iterator(); i.hasNext(); ) {
+        Map.Entry entry = (Map.Entry) i.next();
+        Node predicate = (Node) entry.getKey();
+        HashMap predicateMap = (HashMap) entry.getValue();
+        List wildRulesForPredicate = new ArrayList();
+        List allRulesForPredicate = predicate.isVariable() ? allRuleClauseCodes : (List) predicateToCodeMap.get(predicate);
+        for (Iterator j = allRulesForPredicate.iterator(); j.hasNext(); ) {
+            RuleClauseCode code = (RuleClauseCode) j.next();
+            ClauseEntry head = code.getRule().getHeadElement(0);
+            boolean indexed = false;
+            if (head instanceof TriplePattern) {
+                Node objectPattern = ((TriplePattern) head).getObject();
+                if (!objectPattern.isVariable() && !Functor.isFunctor(objectPattern)) {
+                    // Index against object
+                    List indexedCode = (List) predicateMap.get(objectPattern);
+                    if (indexedCode == null) {
+                        indexedCode = new ArrayList();
+                        predicateMap.put(objectPattern, indexedCode);
+                    }
+                    indexedCode.add(code);
+                    indexed = true;
+                }
+            }
+            if (!indexed) {
+                wildRulesForPredicate.add(code);
+            }
+        }
+        // Now fold the rules that apply to any index entry into all the indexed entries
+        for (Iterator k = predicateMap.entrySet().iterator(); k.hasNext(); ) {
+            Map.Entry ent = (Map.Entry) k.next();
+            Node pred = (Node) ent.getKey();
+            List predicateCode = (List) ent.getValue();
+            predicateCode.addAll(wildRulesForPredicate);
+        }
+    }
+    // Now compile all the clauses
+    for (Iterator i = allRuleClauseCodes.iterator(); i.hasNext(); ) {
+        RuleClauseCode code = (RuleClauseCode) i.next();
+        code.compile(this);
+    }
+}

@@ -1,0 +1,52 @@
+public boolean execute(ComponentContext context) {
+    boolean result = false;
+    Connection db = null;
+    try {
+        db = getConnection(context);
+        BlogPost thisArticle = (BlogPost) context.getThisObject();
+        BlogPost previousArticle = (BlogPost) context.getPreviousObject();
+        // Load the user that submitted the blog entry (or who created it originally)
+        if (previousArticle != null && thisArticle.getEnteredBy() == -1) {
+            thisArticle.setEnteredBy(previousArticle.getEnteredBy());
+        }
+        User user = UserUtils.loadUser(thisArticle.getEnteredBy());
+        Project userProfile = ProjectUtils.loadProject(user.getProfileProjectId());
+        // Load the project profile
+        Project projectProfile = ProjectUtils.loadProject(thisArticle.getProjectId());
+        Timestamp today = new java.sql.Timestamp(System.currentTimeMillis());
+        // not published and is now published
+        if ((previousArticle == null && thisArticle.getStatus() == BlogPost.PUBLISHED) || (previousArticle != null && previousArticle.getStatus() != BlogPost.PUBLISHED && thisArticle.getStatus() == BlogPost.PUBLISHED)) {
+            // Prepare the wiki links
+            context.setParameter("user", WikiLink.generateLink(userProfile));
+            context.setParameter("blog", WikiLink.generateLink(thisArticle));
+            context.setParameter("profile", WikiLink.generateLink(projectProfile));
+            // Insert the history
+            ProjectHistory history = new ProjectHistory();
+            history.setEnteredBy(user.getId());
+            history.setProjectId(thisArticle.getProjectId());
+            history.setLinkObject(ProjectHistoryList.BLOG_OBJECT);
+            history.setEventType(ProjectHistoryList.PUBLISH_BLOG_EVENT);
+            history.setLinkItemId(thisArticle.getId());
+            if (userProfile.getId() == projectProfile.getId()) {
+                // User updated own blog
+                history.setDescription(context.getParameter(HISTORY_USER_TEXT));
+            } else {
+                // User updated another's blog
+                history.setDescription(context.getParameter(HISTORY_TEXT));
+            }
+            // Adjust the activity stream start date
+            if (thisArticle.getStartDate().after(today)) {
+                history.setLinkStartDate(thisArticle.getStartDate());
+            }
+            history.insert(db);
+        }
+        // @todo Update a previous history item...
+        // @todo Delete a previous history item...
+        result = true;
+    } catch (Exception e) {
+        e.printStackTrace(System.out);
+    } finally {
+        freeConnection(context, db);
+    }
+    return result;
+}

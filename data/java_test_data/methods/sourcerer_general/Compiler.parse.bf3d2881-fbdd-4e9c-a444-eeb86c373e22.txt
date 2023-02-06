@@ -1,0 +1,56 @@
+public Expr parse(C context, Object frm) throws Exception {
+    ISeq form = (ISeq) frm;
+    // if(context == C.EVAL || context == C.EXPRESSION)
+    if (context != C.RETURN)
+        return analyze(context, RT.list(RT.list(FN, PersistentVector.EMPTY, form)));
+    // (try try-expr* catch-expr* finally-expr?)
+    // catch-expr: (catch class sym expr*)
+    // finally-expr: (finally expr*)
+    PersistentVector body = PersistentVector.EMPTY;
+    PersistentVector catches = PersistentVector.EMPTY;
+    Expr finallyExpr = null;
+    boolean caught = false;
+    int retLocal = getAndIncLocalNum();
+    int finallyLocal = getAndIncLocalNum();
+    for (ISeq fs = form.next(); fs != null; fs = fs.next()) {
+        Object f = fs.first();
+        Object op = (f instanceof ISeq) ? ((ISeq) f).first() : null;
+        if (!Util.equals(op, CATCH) && !Util.equals(op, FINALLY)) {
+            if (caught)
+                throw new Exception("Only catch or finally clause can follow catch in try expression");
+            body = body.cons(f);
+        } else {
+            if (Util.equals(op, CATCH)) {
+                Class c = HostExpr.maybeClass(RT.second(f), false);
+                if (c == null)
+                    throw new IllegalArgumentException("Unable to resolve classname: " + RT.second(f));
+                if (!(RT.third(f) instanceof Symbol))
+                    throw new IllegalArgumentException("Bad binding form, expected symbol, got: " + RT.third(f));
+                Symbol sym = (Symbol) RT.third(f);
+                if (sym.getNamespace() != null)
+                    throw new Exception("Can't bind qualified name:" + sym);
+                IPersistentMap dynamicBindings = RT.map(LOCAL_ENV, LOCAL_ENV.deref(), NEXT_LOCAL_NUM, NEXT_LOCAL_NUM.deref(), IN_CATCH_FINALLY, RT.T);
+                try {
+                    Var.pushThreadBindings(dynamicBindings);
+                    LocalBinding lb = registerLocal(sym, (Symbol) (RT.second(f) instanceof Symbol ? RT.second(f) : null), null);
+                    Expr handler = (new BodyExpr.Parser()).parse(context, RT.next(RT.next(RT.next(f))));
+                    catches = catches.cons(new CatchClause(c, lb, handler));
+                } finally {
+                    Var.popThreadBindings();
+                }
+                caught = true;
+            } else // finally
+            {
+                if (fs.next() != null)
+                    throw new Exception("finally clause must be last in try expression");
+                try {
+                    Var.pushThreadBindings(RT.map(IN_CATCH_FINALLY, RT.T));
+                    finallyExpr = (new BodyExpr.Parser()).parse(C.STATEMENT, RT.next(f));
+                } finally {
+                    Var.popThreadBindings();
+                }
+            }
+        }
+    }
+    return new TryExpr((new BodyExpr.Parser()).parse(context, RT.seq(body)), catches, finallyExpr, retLocal, finallyLocal);
+}

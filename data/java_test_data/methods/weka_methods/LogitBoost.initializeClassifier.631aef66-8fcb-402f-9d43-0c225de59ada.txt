@@ -1,0 +1,92 @@
+@Override
+public void initializeClassifier(Instances data) throws Exception {
+    m_NumItsPerformed = 0;
+    if (m_data == null) {
+        m_RandomInstance = new Random(m_Seed);
+        int classIndex = data.classIndex();
+        if (m_Classifier == null) {
+            throw new Exception("A base classifier has not been specified!");
+        }
+        if (!(m_Classifier instanceof WeightedInstancesHandler) && !m_UseResampling) {
+            m_UseResampling = true;
+        }
+        // can classifier handle the data?
+        getCapabilities().testWithFail(data);
+        if (m_Debug) {
+            System.err.println("Creating copy of the training data");
+        }
+        // remove instances with missing class
+        m_data = new Instances(data);
+        m_data.deleteWithMissingClass();
+        if (m_ZeroR == null) {
+            // only class? -> build ZeroR model
+            if ((m_data.numAttributes() == 1) || (m_data.numInstances() == 0)) {
+                System.err.println("Cannot build model (only class attribute present in data!), " + "using ZeroR model instead!");
+                m_ZeroR = new ZeroR();
+                m_ZeroR.buildClassifier(m_data);
+                return;
+            }
+        }
+        // Set up initial probabilities and Fs
+        int numInstances = m_data.numInstances();
+        m_NumClasses = m_data.numClasses();
+        m_ClassAttribute = m_data.classAttribute();
+        m_probs = new double[numInstances][m_NumClasses];
+        m_InitialFs = new double[m_NumClasses];
+        m_trainFs = new double[numInstances][m_NumClasses];
+        if (!m_UseEstimatedPriors) {
+            // Default behaviour: equal probabilities for all classes initially
+            for (int i = 0; i < numInstances; i++) {
+                for (int j = 0; j < m_NumClasses; j++) {
+                    m_probs[i][j] = 1.0 / m_NumClasses;
+                }
+            }
+        } else {
+            // If requested, used priors estimated from the training set initially
+            m_ZeroR = new ZeroR();
+            m_ZeroR.buildClassifier(m_data);
+            for (int i = 0; i < numInstances; i++) {
+                m_probs[i] = m_ZeroR.distributionForInstance(m_data.instance(i));
+            }
+            double avg = 0;
+            for (int j = 0; j < m_NumClasses; j++) {
+                avg += Math.log(m_probs[0][j]);
+            }
+            avg /= m_NumClasses;
+            for (int j = 0; j < m_NumClasses; j++) {
+                m_InitialFs[j] = Math.log(m_probs[0][j]) - avg;
+            }
+            for (int i = 0; i < numInstances; i++) {
+                for (int j = 0; j < m_NumClasses; j++) {
+                    m_trainFs[i][j] = m_InitialFs[j];
+                }
+            }
+            m_ZeroR = null;
+        }
+        // Create the base classifiers
+        if (m_Debug) {
+            System.err.println("Creating base classifiers");
+        }
+        m_Classifiers = new ArrayList<Classifier[]>();
+        // Build classifier on all the data
+        m_trainYs = new double[numInstances][m_NumClasses];
+        for (int j = 0; j < m_NumClasses; j++) {
+            for (int i = 0, k = 0; i < numInstances; i++, k++) {
+                m_trainYs[i][j] = (m_data.instance(k).classValue() == j) ? 1.0 - m_Offset : 0.0 + (m_Offset / (double) m_NumClasses);
+            }
+        }
+        // Make class numeric
+        m_data.setClassIndex(-1);
+        m_data.deleteAttributeAt(classIndex);
+        m_data.insertAttributeAt(new Attribute("'pseudo class'"), classIndex);
+        m_data.setClassIndex(classIndex);
+        m_NumericClassData = new Instances(m_data, 0);
+        // Perform iterations
+        m_sumOfWeights = m_data.sumOfWeights();
+        m_logLikelihood = negativeLogLikelihood(m_trainYs, m_probs, m_data, m_sumOfWeights);
+        if (m_Debug) {
+            System.err.println("Avg. negative log-likelihood: " + m_logLikelihood);
+        }
+        m_NumGenerated = 0;
+    }
+}

@@ -1,0 +1,93 @@
+@Override
+@SuppressWarnings("unchecked")
+public void run(JobConf job, final TaskUmbilicalProtocol umbilical) throws IOException {
+    job.setBoolean("mapred.skip.on", isSkipping());
+    Reducer reducer = ReflectionUtils.newInstance(job.getReducerClass(), job);
+    if (!cleanupJob && !setupJob) {
+        copyPhase = getProgress().addPhase("copy");
+        sortPhase = getProgress().addPhase("sort");
+        reducePhase = getProgress().addPhase("reduce");
+    }
+    // start thread that will handle communication with parent
+    startCommunicationThread(umbilical);
+    final Reporter reporter = getReporter(umbilical);
+    initialize(job, reporter);
+    // check if it is a cleanupJobTask
+    if (cleanupJob) {
+        runCleanup(umbilical);
+        return;
+    }
+    if (setupJob) {
+        runSetupJob(umbilical);
+        return;
+    }
+    // Initialize the codec
+    codec = initCodec();
+    boolean isLocal = "local".equals(job.get("mapred.job.tracker", "local"));
+    if (!isLocal) {
+        reduceCopier = new ReduceCopier(umbilical, job);
+        if (!reduceCopier.fetchOutputs()) {
+            if (reduceCopier.mergeThrowable instanceof FSError) {
+                LOG.error("Task: " + getTaskID() + " - FSError: " + StringUtils.stringifyException(reduceCopier.mergeThrowable));
+                umbilical.fsError(getTaskID(), reduceCopier.mergeThrowable.getMessage());
+            }
+            throw new IOException("Task: " + getTaskID() + " - The reduce copier failed", reduceCopier.mergeThrowable);
+        }
+    }
+    // copy is already complete
+    copyPhase.complete();
+    setPhase(TaskStatus.Phase.SORT);
+    final FileSystem rfs = FileSystem.getLocal(job).getRaw();
+    RawKeyValueIterator rIter = isLocal ? Merger.merge(job, rfs, job.getMapOutputKeyClass(), job.getMapOutputValueClass(), codec, getMapFiles(rfs, true), !conf.getKeepFailedTaskFiles(), job.getInt("io.sort.factor", 100), new Path(getTaskID().toString()), job.getOutputKeyComparator(), reporter) : reduceCopier.createKVIterator(job, rfs, reporter);
+    // free up the data structures
+    mapOutputFilesOnDisk.clear();
+    // sort is complete
+    sortPhase.complete();
+    setPhase(TaskStatus.Phase.REDUCE);
+    // make output collector
+    String finalName = getOutputName(getPartition());
+    FileSystem fs = FileSystem.get(job);
+    final RecordWriter out = job.getOutputFormat().getRecordWriter(fs, job, finalName, reporter);
+    OutputCollector collector = new OutputCollector() {
+
+        public void collect(Object key, Object value) throws IOException {
+            out.write(key, value);
+            reduceOutputCounter.increment(1);
+            // indicate that progress update needs to be sent
+            reporter.progress();
+        }
+    };
+    // apply reduce function
+    try {
+        Class keyClass = job.getMapOutputKeyClass();
+        Class valClass = job.getMapOutputValueClass();
+        // increment processed counter only if skipping feature is enabled
+        boolean incrProcCount = SkipBadRecords.getReducerMaxSkipGroups(job) > 0 && SkipBadRecords.getAutoIncrReducerProcCount(job);
+        ReduceValuesIterator values = isSkipping() ? new SkippingReduceValuesIterator(rIter, job.getOutputValueGroupingComparator(), keyClass, valClass, job, reporter, umbilical) : new ReduceValuesIterator(rIter, job.getOutputValueGroupingComparator(), keyClass, valClass, job, reporter);
+        values.informReduceProgress();
+        while (values.more()) {
+            reduceInputKeyCounter.increment(1);
+            reducer.reduce(values.getKey(), values, collector, reporter);
+            if (incrProcCount) {
+                reporter.incrCounter(SkipBadRecords.COUNTER_GROUP, SkipBadRecords.COUNTER_REDUCE_PROCESSED_GROUPS, 1);
+            }
+            values.nextKey();
+            values.informReduceProgress();
+        }
+        // Clean up: repeated in catch block below
+        reducer.close();
+        out.close(reporter);
+    // End of clean up.
+    } catch (IOException ioe) {
+        try {
+            reducer.close();
+        } catch (IOException ignored) {
+        }
+        try {
+            out.close(reporter);
+        } catch (IOException ignored) {
+        }
+        throw ioe;
+    }
+    done(umbilical);
+}

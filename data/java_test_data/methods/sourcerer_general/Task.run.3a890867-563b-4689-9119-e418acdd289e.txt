@@ -1,0 +1,48 @@
+public void run() {
+    final int MAX_RETRIES = 3;
+    int remainingRetries = MAX_RETRIES;
+    // get current flag value and reset it as well
+    boolean sendProgress = resetProgressFlag();
+    while (!taskDone.get()) {
+        try {
+            // whether TT knows about this task
+            boolean taskFound = true;
+            // sleep for a bit
+            try {
+                Thread.sleep(PROGRESS_INTERVAL);
+            } catch (InterruptedException e) {
+                LOG.debug(getTaskID() + " Progress/ping thread exiting " + "since it got interrupted");
+                break;
+            }
+            if (sendProgress) {
+                // we need to send progress update
+                updateCounters();
+                if (commitPending) {
+                    taskStatus.statusUpdate(TaskStatus.State.COMMIT_PENDING, taskProgress.get(), taskProgress.toString(), counters);
+                } else {
+                    taskStatus.statusUpdate(TaskStatus.State.RUNNING, taskProgress.get(), taskProgress.toString(), counters);
+                }
+                taskFound = umbilical.statusUpdate(taskId, taskStatus);
+                taskStatus.clearStatus();
+            } else {
+                // send ping
+                taskFound = umbilical.ping(taskId);
+            }
+            // came back up), kill ourselves
+            if (!taskFound) {
+                LOG.warn("Parent died.  Exiting " + taskId);
+                System.exit(66);
+            }
+            sendProgress = resetProgressFlag();
+            remainingRetries = MAX_RETRIES;
+        } catch (Throwable t) {
+            LOG.info("Communication exception: " + StringUtils.stringifyException(t));
+            remainingRetries -= 1;
+            if (remainingRetries == 0) {
+                ReflectionUtils.logThreadInfo(LOG, "Communication exception", 0);
+                LOG.warn("Last retry, killing " + taskId);
+                System.exit(65);
+            }
+        }
+    }
+}

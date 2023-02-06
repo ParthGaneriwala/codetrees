@@ -1,0 +1,92 @@
+private RDFNode createNode(int line, AST thing) {
+    // String tokenType = N3AntlrParser._tokenNames[thing.getType()] ;
+    // System.out.println("Token type: "+tokenType) ;
+    String text = thing.getText();
+    switch(thing.getType()) {
+        case N3Parser.NUMBER:
+            Resource xsdType = XSD.integer;
+            if (text.indexOf('.') >= 0)
+                // The choice of XSD:decimal is for compatibility with N3/cwm.
+                xsdType = XSD.decimal;
+            if (text.indexOf('e') >= 0 || text.indexOf('E') >= 0)
+                xsdType = XSD.xdouble;
+            return model.createTypedLiteral(text, xsdType.getURI());
+        case N3Parser.LITERAL:
+            // Literals have three part: value (string), lang tag, datatype
+            // Can't have a lang tag and a data type - if both, just use the datatype
+            AST a1 = thing.getNextSibling();
+            AST a2 = (a1 == null ? null : a1.getNextSibling());
+            AST datatype = null;
+            AST lang = null;
+            if (a2 != null) {
+                if (a2.getType() == N3Parser.DATATYPE)
+                    datatype = a2.getFirstChild();
+                else
+                    lang = a2;
+            }
+            // First takes precedence over second.
+            if (a1 != null) {
+                if (a1.getType() == N3Parser.DATATYPE)
+                    datatype = a1.getFirstChild();
+                else
+                    lang = a1;
+            }
+            // Chop leading '@'
+            String langTag = (lang != null) ? lang.getText().substring(1) : null;
+            if (datatype == null)
+                return model.createLiteral(text, langTag);
+            // If there is a datatype, it takes predence over lang tag.
+            String typeURI = datatype.getText();
+            if (datatype.getType() != N3Parser.QNAME && datatype.getType() != N3Parser.URIREF) {
+                error("Line " + line + ": N3toRDF: Must use URIref or QName datatype URI: " + text + "^^" + typeURI + "(" + N3Parser.getTokenNames()[datatype.getType()] + ")");
+                return model.createLiteral("Illegal literal: " + text + "^^" + typeURI);
+            }
+            if (datatype.getType() == N3Parser.QNAME) {
+                if (typeURI.startsWith("_:") || typeURI.startsWith("=:")) {
+                    error("Line " + line + ": N3toRDF: Can't use bNode for datatype URI: " + text + "^^" + typeURI);
+                    return model.createLiteral("Illegal literal: " + text + "^^" + typeURI);
+                }
+                String typeURI2 = expandPrefix(model, typeURI);
+                if (typeURI2 == typeURI) {
+                    error("Line " + line + ": N3toRDF: Undefined qname namespace in datatype: " + typeURI);
+                }
+                typeURI = typeURI2;
+            }
+            typeURI = expandURIRef(typeURI, line);
+            // 2003-08 - Ignore lang tag when there is an type.
+            return model.createTypedLiteral(text, typeURI);
+        case N3Parser.QNAME:
+            // Check if _ has been defined.
+            if (text.startsWith("_:") && (model.getNsPrefixURI("_") == null)) {
+                if (!bNodeMap.containsKey(text))
+                    bNodeMap.put(text, model.createResource());
+                return (Resource) bNodeMap.get(text);
+            }
+            String uriref = expandPrefix(model, text);
+            if (uriref == text) {
+                error("Line " + line + ": N3toRDF: Undefined qname namespace: " + text);
+                return null;
+            }
+            return model.createResource(expandURIRef(uriref, line));
+        // Normal URIref - may be <> or <#>
+        case N3Parser.URIREF:
+            return model.createResource(expandURIRef(text, line));
+        // Lists
+        case N3Parser.TK_LIST_NIL:
+            return RDF.nil;
+        case N3Parser.TK_LIST:
+            return RDF.List;
+        case // bNodes via [] or [:- ] QNAME starts "=:"
+        N3Parser.ANON:
+            if (!bNodeMap.containsKey(text))
+                bNodeMap.put(text, model.createResource());
+            return (Resource) bNodeMap.get(text);
+        case N3Parser.UVAR:
+            error("Line " + line + ": N3toRDF: Can't map variables to RDF: " + text);
+            break;
+        default:
+            error("Line " + line + ": N3toRDF: Can't map to a resource or literal: " + AntlrUtils.ast(thing));
+            break;
+    }
+    return null;
+}

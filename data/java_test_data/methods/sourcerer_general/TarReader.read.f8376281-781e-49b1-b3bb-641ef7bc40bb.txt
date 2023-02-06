@@ -1,0 +1,84 @@
+public void read() throws IOException, TarMalformatException {
+    TarEntryHeader header;
+    boolean anyUnsupporteds = false;
+    boolean matched;
+    Long paxSize = null;
+    String paxString = null;
+    try {
+        EACH_HEADER: while (archive.readNextHeaderBlock()) {
+            header = new TarEntryHeader(archive.readBuffer);
+            char entryType = header.getEntryType();
+            if (entryType == 'x') {
+                /* Since we don't know the name of the target file yet,
+                     * we must load the size from all pax headers.
+                     * If the target file is not thereafter excluded via
+                     * patterns, we will need this size for the listing or to
+                     * extract the data.
+                     */
+                paxSize = getPifData(header).getSize();
+                paxString = header.toString();
+                continue;
+            }
+            if (paxSize != null) {
+                // Ignore "size" field in the entry header because PIF
+                // setting overrides.
+                header.setDataSize(paxSize.longValue());
+                paxSize = null;
+            }
+            if (patterns != null) {
+                matched = false;
+                for (int i = 0; i < patterns.length; i++) {
+                    if (patterns[i].matcher(header.getPath()).matches()) {
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched) {
+                    paxString = null;
+                    skipFileData(header);
+                    continue EACH_HEADER;
+                }
+            }
+            if (entryType != '\0' && entryType != '0' && entryType != 'x') {
+                anyUnsupporteds = true;
+            }
+            switch(mode) {
+                case LIST_MODE:
+                    if (paxString != null) {
+                        System.out.println(paxString);
+                    }
+                    System.out.println(header.toString());
+                    skipFileData(header);
+                    break;
+                case EXTRACT_MODE:
+                case OVERWRITE_MODE:
+                    if (paxString != null) {
+                        System.out.println(paxString);
+                    }
+                    /* Display entry summary before successful extraction.
+                         * Both "tar" and "rsync" display the name of the
+                         * currently extracting file, and we do the same.
+                         * Thefore the currently "shown" name is still being
+                         * extracted.
+                         */
+                    System.out.println(header.toString());
+                    // behavior inside of extractFile().
+                    if (entryType == '\0' || entryType == '0' || entryType == 'x') {
+                        extractFile(header);
+                    } else {
+                        skipFileData(header);
+                    }
+                    break;
+                default:
+                    throw new IllegalArgumentException(RB.unsupported_mode.getString(mode));
+            }
+            paxString = null;
+        }
+        if (anyUnsupporteds) {
+            System.out.println(RB.unsupported_entry_present.getString());
+        }
+    } catch (IOException ioe) {
+        archive.close();
+        throw ioe;
+    }
+}

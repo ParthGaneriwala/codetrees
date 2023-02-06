@@ -1,0 +1,47 @@
+private static void processTimeToken(MySQLConnection conn, StringBuffer newSql, String token) throws SQLException {
+    int startPos = token.indexOf('\'') + 1;
+    // no }
+    int endPos = token.lastIndexOf('\'');
+    if ((startPos == -1) || (endPos == -1)) {
+        // it's just part of the
+        newSql.append(token);
+    // query, push possible
+    // syntax errors onto
+    // server's shoulders
+    } else {
+        String argument = token.substring(startPos, endPos);
+        try {
+            StringTokenizer st = new StringTokenizer(argument, " :");
+            String hour = st.nextToken();
+            String minute = st.nextToken();
+            String second = st.nextToken();
+            if (!conn.getUseTimezone() || !conn.getUseLegacyDatetimeCode()) {
+                String timeString = "'" + hour + ":" + minute + ":" + second + "'";
+                newSql.append(timeString);
+            } else {
+                Calendar sessionCalendar = null;
+                if (conn != null) {
+                    sessionCalendar = conn.getCalendarInstanceForSessionOrNew();
+                } else {
+                    sessionCalendar = new GregorianCalendar();
+                }
+                try {
+                    int hourInt = Integer.parseInt(hour);
+                    int minuteInt = Integer.parseInt(minute);
+                    int secondInt = Integer.parseInt(second);
+                    synchronized (sessionCalendar) {
+                        Time toBeAdjusted = TimeUtil.fastTimeCreate(sessionCalendar, hourInt, minuteInt, secondInt, conn.getExceptionInterceptor());
+                        Time inServerTimezone = TimeUtil.changeTimezone(conn, sessionCalendar, null, toBeAdjusted, sessionCalendar.getTimeZone(), conn.getServerTimezoneTZ(), false);
+                        newSql.append("'");
+                        newSql.append(inServerTimezone.toString());
+                        newSql.append("'");
+                    }
+                } catch (NumberFormatException nfe) {
+                    throw SQLError.createSQLException("Syntax error in TIMESTAMP escape sequence '" + token + "'.", SQLError.SQL_STATE_ILLEGAL_ARGUMENT, conn.getExceptionInterceptor());
+                }
+            }
+        } catch (java.util.NoSuchElementException e) {
+            throw SQLError.createSQLException("Syntax error for escape sequence '" + argument + "'", "42000", conn.getExceptionInterceptor());
+        }
+    }
+}

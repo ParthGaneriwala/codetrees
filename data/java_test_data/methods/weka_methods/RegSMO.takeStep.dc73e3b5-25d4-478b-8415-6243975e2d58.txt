@@ -1,0 +1,90 @@
+protected int takeStep(int i1, int i2, double alpha2, double alpha2Star, double phi2) throws Exception {
+    // if (i1 == i2) return 0
+    if (i1 == i2) {
+        return 0;
+    }
+    double C1 = m_C * m_data.instance(i1).weight();
+    double C2 = m_C * m_data.instance(i2).weight();
+    // alpha1, alpha1* = Lagrange multipliers for i1
+    // y1 = target[i1]
+    // phi1 = SVM output on point[i1] ? y1 (in error cache)
+    double alpha1 = m_alpha[i1];
+    double alpha1Star = m_alphaStar[i1];
+    double phi1 = m_error[i1];
+    // k11 = kernel(point[i1],point[i1])
+    // k12 = kernel(point[i1],point[i2])
+    // k22 = kernel(point[i2],point[i2])
+    // eta = 2*k12? - k11? - k22
+    // gamma = alpha1 ?- alpha1* + alpha2 ?- alpha2*
+    double k11 = m_kernel.eval(i1, i1, m_data.instance(i1));
+    double k12 = m_kernel.eval(i1, i2, m_data.instance(i1));
+    double k22 = m_kernel.eval(i2, i2, m_data.instance(i2));
+    // note, Smola's psuedocode has signs
+    double eta = -2 * k12 + k11 + k22;
+    // swapped, Keerthi's doesn't
+    if (eta < 0) {
+        // due to Mercer's condition, this should not happen, hence we give up
+        return 0;
+    }
+    double gamma = alpha1 - alpha1Star + alpha2 - alpha2Star;
+    // % we assume eta < 0. otherwise one has to repeat the complete
+    // % reasoning similarly (compute objective function for L and H
+    // % and decide which one is largest
+    // case1 = case2 = case3 = case4 = finished = 0
+    // alpha1old = alpha1, alpha1old* = alpha1*
+    // alpha2old = alpha2, alpha2old* = alpha2*
+    // deltaPhi = phi1 ?- phi2
+    double alpha1old = alpha1;
+    double alpha1Starold = alpha1Star;
+    double alpha2old = alpha2;
+    double alpha2Starold = alpha2Star;
+    double deltaPhi = phi2 - phi1;
+    if (findOptimalPointOnLine(i1, alpha1, alpha1Star, C1, i2, alpha2, alpha2Star, C2, gamma, eta, deltaPhi)) {
+        alpha1 = m_alpha[i1];
+        alpha1Star = m_alphaStar[i1];
+        alpha2 = m_alpha[i2];
+        alpha2Star = m_alphaStar[i2];
+        // Update error cache using new Lagrange multipliers
+        double dAlpha1 = alpha1 - alpha1old - (alpha1Star - alpha1Starold);
+        double dAlpha2 = alpha2 - alpha2old - (alpha2Star - alpha2Starold);
+        for (int j = 0; j < m_nInstances; j++) {
+            if ((j != i1) && (j != i2)) /* && m_error[j] != MAXERR */
+            {
+                m_error[j] += dAlpha1 * m_kernel.eval(i1, j, m_data.instance(i1)) + dAlpha2 * m_kernel.eval(i2, j, m_data.instance(i2));
+            }
+        }
+        m_error[i1] += dAlpha1 * k11 + dAlpha2 * k12;
+        m_error[i2] += dAlpha1 * k12 + dAlpha2 * k22;
+        // Update threshold to reflect change in Lagrange multipliers
+        double b1 = Double.MAX_VALUE;
+        double b2 = Double.MAX_VALUE;
+        if ((0 < alpha1 && alpha1 < C1) || (0 < alpha1Star && alpha1Star < C1) || (0 < alpha2 && alpha2 < C2) || (0 < alpha2Star && alpha2Star < C2)) {
+            if (0 < alpha1 && alpha1 < C1) {
+                b1 = m_error[i1] - m_epsilon;
+            } else if (0 < alpha1Star && alpha1Star < C1) {
+                b1 = m_error[i1] + m_epsilon;
+            }
+            if (0 < alpha2 && alpha2 < C2) {
+                b2 = m_error[i2] - m_epsilon;
+            } else if (0 < alpha2Star && alpha2Star < C2) {
+                b2 = m_error[i2] + m_epsilon;
+            }
+            if (b1 < Double.MAX_VALUE) {
+                m_b = b1;
+                if (b2 < Double.MAX_VALUE) {
+                    m_b = (b1 + b2) / 2.0;
+                }
+            } else if (b2 < Double.MAX_VALUE) {
+                m_b = b2;
+            }
+        } else if (m_b == 0) {
+            // both alpha's are on the boundary, and m_b is not initialized
+            m_b = (m_error[i1] + m_error[i2]) / 2.0;
+        }
+        // endif
+        return 1;
+    } else {
+        return 0;
+    }
+// endprocedure
+}

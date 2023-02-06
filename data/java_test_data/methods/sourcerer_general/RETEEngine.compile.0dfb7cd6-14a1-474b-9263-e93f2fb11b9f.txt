@@ -1,0 +1,61 @@
+// =======================================================================
+// Compiler support
+public void compile(List rules, boolean ignoreBrules) {
+    clauseIndex = new OneToManyMap();
+    predicatesUsed = new HashSet();
+    wildcardRule = false;
+    for (Iterator it = rules.iterator(); it.hasNext(); ) {
+        Rule rule = (Rule) it.next();
+        if (ignoreBrules && rule.isBackward())
+            continue;
+        int numVars = rule.getNumVars();
+        boolean[] seenVar = new boolean[numVars];
+        RETESourceNode prior = null;
+        for (int i = 0; i < rule.bodyLength(); i++) {
+            Object clause = rule.getBodyElement(i);
+            if (clause instanceof TriplePattern) {
+                // Create the filter node for this pattern
+                ArrayList clauseVars = new ArrayList(numVars);
+                RETEClauseFilter clauseNode = RETEClauseFilter.compile((TriplePattern) clause, numVars, clauseVars);
+                Node predicate = ((TriplePattern) clause).getPredicate();
+                if (predicate.isVariable()) {
+                    clauseIndex.put(Node.ANY, clauseNode);
+                    wildcardRule = true;
+                } else {
+                    clauseIndex.put(predicate, clauseNode);
+                    if (!wildcardRule) {
+                        predicatesUsed.add(predicate);
+                    }
+                }
+                // Create list of variables which should be cross matched between the earlier clauses and this one
+                ArrayList matchIndices = new ArrayList(numVars);
+                for (Iterator iv = clauseVars.iterator(); iv.hasNext(); ) {
+                    int varIndex = ((Node_RuleVariable) iv.next()).getIndex();
+                    if (seenVar[varIndex])
+                        matchIndices.add(new Byte((byte) varIndex));
+                    seenVar[varIndex] = true;
+                }
+                // Build the join node
+                if (prior == null) {
+                    // First clause, no joins yet
+                    prior = clauseNode;
+                } else {
+                    RETEQueue leftQ = new RETEQueue(matchIndices);
+                    RETEQueue rightQ = new RETEQueue(matchIndices);
+                    leftQ.setSibling(rightQ);
+                    rightQ.setSibling(leftQ);
+                    clauseNode.setContinuation(rightQ);
+                    prior.setContinuation(leftQ);
+                    prior = leftQ;
+                }
+            }
+        }
+        // Finished compiling a rule - add terminal
+        if (prior != null) {
+            RETETerminal term = createTerminal(rule);
+            prior.setContinuation(term);
+        }
+    }
+    if (wildcardRule)
+        predicatesUsed = null;
+}

@@ -1,0 +1,92 @@
+private synchronized void startFileInternal(String src, PermissionStatus permissions, String holder, String clientMachine, boolean overwrite, boolean append, short replication, long blockSize) throws IOException {
+    if (NameNode.stateChangeLog.isDebugEnabled()) {
+        NameNode.stateChangeLog.debug("DIR* NameSystem.startFile: src=" + src + ", holder=" + holder + ", clientMachine=" + clientMachine + ", replication=" + replication + ", overwrite=" + overwrite + ", append=" + append);
+    }
+    if (isInSafeMode())
+        throw new SafeModeException("Cannot create file" + src, safeMode);
+    if (!DFSUtil.isValidName(src)) {
+        throw new IOException("Invalid file name: " + src);
+    }
+    if (isPermissionEnabled) {
+        if (append || (overwrite && dir.exists(src))) {
+            checkPathAccess(src, FsAction.WRITE);
+        } else {
+            checkAncestorAccess(src, FsAction.WRITE);
+        }
+    }
+    try {
+        INode myFile = dir.getFileINode(src);
+        if (myFile != null && myFile.isUnderConstruction()) {
+            INodeFileUnderConstruction pendingFile = (INodeFileUnderConstruction) myFile;
+            // 
+            // If the file is under construction , then it must be in our
+            // leases. Find the appropriate lease record.
+            // 
+            Lease lease = leaseManager.getLease(new StringBytesWritable(holder));
+            // 
+            if (lease != null) {
+                throw new AlreadyBeingCreatedException("failed to create file " + src + " for " + holder + " on client " + clientMachine + " because current leaseholder is trying to recreate file.");
+            }
+            // 
+            // Find the original holder.
+            // 
+            lease = leaseManager.getLease(pendingFile.clientName);
+            if (lease == null) {
+                throw new AlreadyBeingCreatedException("failed to create file " + src + " for " + holder + " on client " + clientMachine + " because pendingCreates is non-null but no leases found.");
+            }
+            // 
+            if (lease.expiredSoftLimit()) {
+                LOG.info("startFile: recover lease " + lease + ", src=" + src);
+                internalReleaseLease(lease, src);
+            }
+            throw new AlreadyBeingCreatedException("failed to create file " + src + " for " + holder + " on client " + clientMachine + ", because this file is already being created by " + pendingFile.getClientName() + " on " + pendingFile.getClientMachine());
+        }
+        try {
+            verifyReplication(src, replication, clientMachine);
+        } catch (IOException e) {
+            throw new IOException("failed to create " + e.getMessage());
+        }
+        if (append) {
+            if (myFile == null) {
+                throw new FileNotFoundException("failed to append to non-existent file " + src + " on client " + clientMachine);
+            } else if (myFile.isDirectory()) {
+                throw new IOException("failed to append to directory " + src + " on client " + clientMachine);
+            }
+        } else if (!dir.isValidToCreate(src)) {
+            if (overwrite) {
+                delete(src, true);
+            } else {
+                throw new IOException("failed to create file " + src + " on client " + clientMachine + " either because the filename is invalid or the file exists");
+            }
+        }
+        DatanodeDescriptor clientNode = host2DataNodeMap.getDatanodeByHost(clientMachine);
+        if (append) {
+            // 
+            // Replace current node with a INodeUnderConstruction.
+            // Recreate in-memory lease record.
+            // 
+            INodeFile node = (INodeFile) myFile;
+            INodeFileUnderConstruction cons = new INodeFileUnderConstruction(node.getLocalNameBytes(), node.getReplication(), node.getModificationTime(), node.getPreferredBlockSize(), node.getBlocks(), node.getPermissionStatus(), holder, clientMachine, clientNode);
+            dir.replaceNode(src, node, cons);
+            leaseManager.addLease(cons.clientName, src);
+        } else {
+            // Now we can add the name to the filesystem. This file has no
+            // blocks associated with it.
+            // 
+            checkFsObjectLimit();
+            // increment global generation stamp
+            long genstamp = nextGenerationStamp();
+            INodeFileUnderConstruction newNode = dir.addFile(src, permissions, replication, blockSize, holder, clientMachine, clientNode, genstamp);
+            if (newNode == null) {
+                throw new IOException("DIR* NameSystem.startFile: " + "Unable to add file to namespace.");
+            }
+            leaseManager.addLease(newNode.clientName, src);
+            if (NameNode.stateChangeLog.isDebugEnabled()) {
+                NameNode.stateChangeLog.debug("DIR* NameSystem.startFile: " + "add " + src + " to namespace for " + holder);
+            }
+        }
+    } catch (IOException ie) {
+        NameNode.stateChangeLog.warn("DIR* NameSystem.startFile: " + ie.getMessage());
+        throw ie;
+    }
+}

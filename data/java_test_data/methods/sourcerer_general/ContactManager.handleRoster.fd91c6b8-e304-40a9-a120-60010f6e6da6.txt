@@ -1,0 +1,86 @@
+public void handleRoster(SmManager smManager, OnlineUser onlineUser, UserResource userResource, Iq iq) {
+    Iq.Type type = iq.getType();
+    if (type == Iq.Type.get) {
+        String username = onlineUser.getNode();
+        IqRoster iqRoster = null;
+        try {
+            iqRoster = getIqRoster(username);
+            Iq iqResult = new Iq(Iq.Type.result);
+            iqResult.setStanzaId(iq.getStanzaId());
+            iqResult.addExtension(iqRoster);
+            userResource.sendToSelfClient(iqResult);
+        } catch (Exception e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+            Iq iqError = PacketUtils.createErrorIq(iq);
+            iqError.setError(new XmppError(XmppError.Condition.internal_server_error));
+            userResource.sendToSelfClient(iqError);
+        }
+    } else // add remove update roster
+    if (type == Iq.Type.set) {
+        IqRoster roster = (IqRoster) iq.getExtension(IqRoster.ELEMENTNAME, IqRoster.NAMESPACE);
+        int count = roster.getRosterItemCount();
+        if (count != 1) {
+            Iq iqError = PacketUtils.createErrorIq(iq);
+            iqError.setError(new XmppError(XmppError.Condition.bad_request));
+            userResource.sendToSelfClient(iqError);
+            return;
+        }
+        IqRoster.Item item = roster.getRosterItems().iterator().next();
+        RosterItemDbHelper rosterItemDbHelper = rosterItemDbHelperTracker.getRosterItemDbHelper();
+        if (item.getSubscription() == IqRoster.Subscription.remove) {
+            try {
+                removeRosterItem(onlineUser.getNode(), item.getJid());
+                IqRoster.Item newItem = new IqRoster.Item(item.getJid());
+                newItem.setSubscription(IqRoster.Subscription.remove);
+                notifyResourceRosterChanged(onlineUser, userResource, newItem);
+                Presence unsubscribePresence = new Presence(Presence.Type.unsubscribe);
+                unsubscribePresence.setFrom(new JID(onlineUser.getNode(), smManager.getDomain(), null));
+                unsubscribePresence.setTo(item.getJid());
+                userResource.sendToOtherUser(unsubscribePresence);
+                Presence unsubscribedPresence = new Presence(Presence.Type.unsubscribed);
+                unsubscribedPresence.setFrom(new JID(onlineUser.getNode(), smManager.getDomain(), null));
+                unsubscribedPresence.setTo(item.getJid());
+                userResource.sendToOtherUser(unsubscribedPresence);
+                notifyAllResourceUnavailableState(smManager, onlineUser, userResource, item.getJid());
+            } catch (Exception e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+                return;
+            }
+        } else {
+            String username = onlineUser.getNode();
+            RosterItem newrosterItem = new RosterItem();
+            newrosterItem.setUsername(username);
+            // TODO check case sentity
+            newrosterItem.setRosterJID(item.getJid().toPrepedBareJID());
+            newrosterItem.setNickname(item.getName());
+            newrosterItem.setGroups(item.getGroupNames());
+            if (item.getSubscription() != null) {
+                newrosterItem.setSubscription(RosterItem.Subscription.valueOf(item.getSubscription().name()));
+            }
+            if (item.getAsk() != null) {
+                newrosterItem.setAsk(RosterItem.Ask.valueOf(item.getAsk().toString()));
+            }
+            try {
+                updateRosterItem(newrosterItem);
+                // TODO check case sentity
+                RosterItem rosterItem = rosterItemDbHelper.getRosterItem(username, item.getJid().toPrepedBareJID());
+                IqRoster.Item newItem = new IqRoster.Item(item.getJid());
+                newItem.setName(rosterItem.getNickname());
+                newItem.setSubscription(IqRoster.Subscription.valueOf(rosterItem.getSubscription().name()));
+                if (rosterItem.getAsk() != null) {
+                    newItem.setAsk(IqRoster.Ask.fromString(rosterItem.getAsk().name()));
+                }
+                newItem.addGroups(rosterItem.getGroups());
+                notifyResourceRosterChanged(onlineUser, userResource, newItem);
+            } catch (Exception e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+                return;
+            }
+        }
+        Iq iqResult = PacketUtils.createResultIq(iq);
+        userResource.sendToSelfClient(iqResult);
+    }
+}

@@ -1,0 +1,97 @@
+@Override
+protected void visitInternal(TemplateNode node) {
+    // Don't generate anything for private templates.
+    if (node.isPrivate()) {
+        return;
+    }
+    // First build list of all transitive params (direct and indirect).
+    IndirectParamsInfo ipi = (new FindIndirectParamsVisitor(false, true, templateNameToNodeMap)).exec(node);
+    LinkedHashMap<String, SoyDocParam> transitiveParams = Maps.newLinkedHashMap();
+    // Direct params.
+    for (SoyDocParam param : node.getSoyDocParams()) {
+        transitiveParams.put(param.key, param);
+    }
+    // Indirect params.
+    for (SoyDocParam param : ipi.indirectParams.values()) {
+        SoyDocParam existingParam = transitiveParams.get(param.key);
+        if (existingParam == null) {
+            // Note: We don't list the SoyDoc description for indirect params.
+            transitiveParams.put(param.key, new SoyDocParam(param.key, param.isRequired, null));
+        }
+    }
+    String upperUnderscoreName = convertToUpperUnderscore(node.getPartialTemplateName().substring(1));
+    if (transitiveParams.size() == 0) {
+        // ------ Generate code for template with no params (direct or indirect). ------
+        ilb.appendLine();
+        ilb.appendLine();
+        appendJavadoc(ilb, node.getSoyDocDesc(), true, false);
+        ilb.appendLine("public static final SoyTemplateInfo ", upperUnderscoreName, " = new SoyTemplateInfo(");
+        ilb.increaseIndent();
+        ilb.increaseIndent();
+        ilb.appendLine("\"", node.getTemplateName(), "\",");
+        ilb.appendLine("ImmutableMap.<String, ParamRequisiteness>of());");
+        ilb.decreaseIndent();
+        ilb.decreaseIndent();
+    } else {
+        // ------ Generate code for template with params. ------
+        String templateInfoClassName = CaseFormat.UPPER_UNDERSCORE.to(CaseFormat.UPPER_CAMEL, upperUnderscoreName) + "SoyTemplateInfo";
+        ilb.appendLine();
+        ilb.appendLine();
+        appendJavadoc(ilb, node.getSoyDocDesc(), true, false);
+        ilb.appendLine("public static final ", templateInfoClassName, " ", upperUnderscoreName, " =");
+        ilb.appendLine("    new ", templateInfoClassName, "();");
+        ilb.appendLine();
+        ilb.appendLine("public static class ", templateInfoClassName, " extends SoyTemplateInfo {");
+        ilb.increaseIndent();
+        ilb.appendLine("private ", templateInfoClassName, "() {");
+        ilb.increaseIndent();
+        ilb.appendLine("super(\"", node.getTemplateName(), "\",");
+        ilb.appendLine("      ImmutableMap.<String, ParamRequisiteness>builder()");
+        for (SoyDocParam param : transitiveParams.values()) {
+            ilb.appendLine("      .put(\"", param.key, "\", ", (param.isRequired ? "REQUIRED" : "OPTIONAL"), ")");
+        }
+        ilb.appendLine("      .build());");
+        ilb.decreaseIndent();
+        ilb.appendLine("}");
+        boolean hasSwitchedToIndirectParams = false;
+        for (SoyDocParam param : transitiveParams.values()) {
+            if (param.desc != null) {
+                // Direct param.
+                ilb.appendLine();
+                appendJavadoc(ilb, param.desc, false, false);
+            } else {
+                // Indirect param.
+                if (!hasSwitchedToIndirectParams) {
+                    ilb.appendLine();
+                    ilb.appendLine("// Indirect params.");
+                    hasSwitchedToIndirectParams = true;
+                }
+                StringBuilder javadocSb = new StringBuilder();
+                javadocSb.append("Listed by ");
+                boolean isFirst = true;
+                for (TemplateNode transitiveCallee : ipi.paramKeyToCalleesMultimap.get(param.key)) {
+                    if (isFirst) {
+                        isFirst = false;
+                    } else {
+                        javadocSb.append(", ");
+                    }
+                    if (transitiveCallee.getParent() == node.getParent()) {
+                        // Transitive callee is in the same file.
+                        javadocSb.append(transitiveCallee.getPartialTemplateName());
+                    } else {
+                        // Transitive callee is in a different file.
+                        javadocSb.append(transitiveCallee.getTemplateName());
+                    }
+                    if (transitiveCallee.isPrivate()) {
+                        javadocSb.append(" (private)");
+                    }
+                }
+                javadocSb.append(".");
+                appendJavadoc(ilb, javadocSb.toString(), false, true);
+            }
+            ilb.appendLine("public final String ", convertToUpperUnderscore(param.key), " = \"", param.key, "\";");
+        }
+        ilb.decreaseIndent();
+        ilb.appendLine("}");
+    }
+}

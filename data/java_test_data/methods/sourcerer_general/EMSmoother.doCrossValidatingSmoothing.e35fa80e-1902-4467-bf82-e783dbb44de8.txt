@@ -1,0 +1,77 @@
+public void doCrossValidatingSmoothing(int maxIter, int bucketSize, int pruningThreshold, boolean useLambdas) {
+    SmoothingRun[] runs = new SmoothingRun[nrDataFiles];
+    for (byte devId = 0; devId < nrDataFiles; ++devId) {
+        byte[] trainIds = new byte[nrDataFiles - 1];
+        byte[] devIds = new byte[1];
+        {
+            byte i = 0;
+            for (byte id = 0; id < nrDataFiles; ++id) {
+                if (id != devId)
+                    trainIds[i++] = id;
+            }
+            devIds[0] = devId;
+        }
+        System.out.printf("=================== Run %d/%d =====================\n", (devId + 1), nrDataFiles);
+        long startTime = System.currentTimeMillis();
+        runs[devId] = new SmoothingRun(trainIds, devIds, pruningThreshold);
+        runs[devId].initialize(useLambdas);
+        long endTime = System.currentTimeMillis();
+        System.out.printf("initialization took %g seconds\n", 0.001 * (endTime - startTime));
+        long emStartTime = System.currentTimeMillis();
+        runs[devId].run(maxIter, bucketSize);
+        long emEndTime = System.currentTimeMillis();
+        System.out.printf("run %d took %g seconds\n", (devId + 1), 0.001 * (emEndTime - emStartTime));
+        runs[devId].clean();
+    }
+    double[] lambdas = new double[maxClusterId];
+    if (geomMean) {
+        Arrays.fill(lambdas, 1.0);
+    }
+    for (int fold = 0; fold < runs.length; ++fold) {
+        double[] l = runs[fold].lambdas;
+        if (geomMean) {
+            for (int clusterid = 0; clusterid < maxClusterId; ++clusterid) {
+                if (nodes[clusterid] == null)
+                    continue;
+                lambdas[clusterid] *= Math.pow(l[clusterid], 1.0 / runs.length);
+            }
+        } else {
+            for (int clusterid = 0; clusterid < maxClusterId; ++clusterid) {
+                if (nodes[clusterid] == null)
+                    continue;
+                lambdas[clusterid] += l[clusterid] / runs.length;
+            }
+        }
+    }
+    for (int i = 0; i < nodes.length; ++i) {
+        if (nodes[i] != null) {
+            nodes[i].getPayload().lambda = lambdas[i];
+            nodes[i].getPayload().top = false;
+        }
+    }
+    theTree.getPayload().top = true;
+    theTree.getPayload().lambda = 1.0;
+/*
+		if (pruneNodes) {
+			BinaryTreeIterator<HistoryTreePayload> iterator = theTree.getPostOrderIterator();
+			int nrPruned = 0;
+			for(; iterator.hasNext(); ) {
+				BinaryTree<HistoryTreePayload> node = iterator.nextNode();
+				BinaryTree<HistoryTreePayload> left = node.getLeft();
+				BinaryTree<HistoryTreePayload> right = node.getRight();
+				if (left != null && left.isLeaf() && right != null && right.isLeaf()) {
+					if ((left.getPayload().lambda < MIN_LAMBDA || left.getPayload().isBackoff) 
+							&& right.getPayload().lambda < MIN_LAMBDA) 
+					{
+						++nrPruned;
+						node.setLeft(null);
+						node.setRight(null);
+					}
+				}
+			}
+			
+			nrClusters -= nrPruned;
+			System.out.printf("Pruned %d nodes, left %d\n", nrPruned, nrClusters);
+		}
+		*/
+}

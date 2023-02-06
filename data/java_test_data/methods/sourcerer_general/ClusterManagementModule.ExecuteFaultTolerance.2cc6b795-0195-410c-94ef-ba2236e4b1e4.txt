@@ -1,0 +1,115 @@
+// ------------------------------------------------------------------------
+private synchronized void ExecuteFaultTolerance(Integer LeaverMachineID) {
+    SA.AddLogEntry("CMM", "Info - Executing Fault Tolerance algorythm because Server with MachineID=" + LeaverMachineID + " left the Cluster");
+    int taskWaterMark = TaskWaterMark();
+    SA.AddLogEntry("CMM", "Info - New Task Watermark is " + taskWaterMark);
+    // Find all the tasks of the leaving machine, and put them in their own database.
+    // Create a new Task Database only for the UnAllocated Tasks
+    TreeMap<Integer, TaskEntry> UnAllocatedTaskDB = new TreeMap<Integer, TaskEntry>();
+    // Convert TaskDB from TreeMap into a Set
+    Set<Map.Entry<Integer, TaskEntry>> TaskSet = TaskDB.entrySet();
+    Iterator<Map.Entry<Integer, TaskEntry>> Tit = TaskSet.iterator();
+    while (Tit.hasNext()) {
+        Map.Entry<Integer, TaskEntry> TMapEntry = Tit.next();
+        // If this task is running on the leaving server
+        if (TMapEntry.getValue().getAssignedServerID().equals(LeaverMachineID))
+            // Nullify the Assigned ServerID entry of the Task
+            TMapEntry.getValue().putAssignedServerID(null);
+        if (TMapEntry.getValue().getAssignedServerID() == null) {
+            // put the task entry in the UnAllocated Tasks Database
+            UnAllocatedTaskDB.put(TMapEntry.getKey(), TMapEntry.getValue());
+        }
+    }
+    // Calculate which tasks should be taken by this machine
+    int StartingTaskNum = 0;
+    int NumOfTasksToTake = 0;
+    // Convert MachineDB from TreeMap into a Set
+    Set<Map.Entry<Integer, MachineEntry>> MachineSet = MachineDB.entrySet();
+    Iterator<Map.Entry<Integer, MachineEntry>> it = MachineSet.iterator();
+    boolean FoundLocalMachine = false;
+    // for each element in the set
+    while (it.hasNext() && !FoundLocalMachine) {
+        // retrieve the set element
+        Map.Entry<Integer, MachineEntry> MapEntry = it.next();
+        // If this entry is not of this local machine
+        if (!MapEntry.getKey().equals(MachineDBLocalID)) {
+            // If this entry's machine's Task count is not above the WaterMark
+            if (taskWaterMark >= MapEntry.getValue().getTaskCount())
+                // The local machine will start taking the tasks that
+                // are after the tasks that this machine will take.
+                StartingTaskNum += taskWaterMark - MapEntry.getValue().getTaskCount();
+        } else // if this entry is this local machine
+        {
+            if (taskWaterMark >= LocalMachineEntry.getTaskCount())
+                NumOfTasksToTake = taskWaterMark - LocalMachineEntry.getTaskCount();
+            FoundLocalMachine = true;
+        }
+    }
+    SA.AddLogEntry("CMM", "Info - Going to take ownership of " + NumOfTasksToTake + " tasks.");
+    // Take ownership of the appropriate unallocated Tasks
+    int TaskCounter = -1;
+    TaskSet = UnAllocatedTaskDB.entrySet();
+    Iterator<Map.Entry<Integer, TaskEntry>> TaskIterator = TaskSet.iterator();
+    while (TaskIterator.hasNext()) {
+        TaskCounter++;
+        Map.Entry<Integer, TaskEntry> TaskMapEntry = TaskIterator.next();
+        // if didn't get to the first task to be taken over
+        if (TaskCounter < StartingTaskNum)
+            continue;
+        // if past over all the tasks to be taken over
+        if (TaskCounter >= StartingTaskNum + NumOfTasksToTake)
+            break;
+        SA.AddLogEntry("CMM", "Info - Taking ownership of task with TaskID=" + TaskMapEntry.getKey());
+        // if the taken over task is of APPLICATION type
+        if (TaskMapEntry.getValue().getContext().getType() == TaskType.APPLICATION) {
+            // Create an "Application Migration" message
+            ClusterMessage_AppMigrate msg = new ClusterMessage_AppMigrate();
+            // set the TaskID entry of the message to the current Task
+            msg.setTaskID(TaskMapEntry.getKey());
+            try {
+                // Send the message to the Cluster
+                SendClusterMessage(msg);
+            } catch (CMMExn_ClusterErr e) {
+                // TODO remove StackPrint
+                e.printStackTrace();
+                SA.AddLogEntry("CMM", "Error - Failed to send \"Application Migration Task\" message to the Cluster.");
+                SA.UnrecoverableClusterError();
+            }
+        } else if (TaskMapEntry.getValue().getContext().getType() == TaskType.PROXY) {
+            // Create an "Proxy Migration" message
+            ClusterMessage_ProxyMigrate msg = new ClusterMessage_ProxyMigrate();
+            // set the TaskID entry of the message to the current Task
+            msg.setTaskID(TaskMapEntry.getKey());
+            try {
+                // Send the message to the Cluster
+                SendClusterMessage(msg);
+            } catch (CMMExn_ClusterErr e) {
+                // TODO remove StackPrint
+                e.printStackTrace();
+                SA.AddLogEntry("CMM", "Error - Failed to send \"Proxy Migration Task\" message to the Cluster.");
+                SA.UnrecoverableClusterError();
+            }
+        } else if (TaskMapEntry.getValue().getContext().getType() == TaskType.TRAINING) {
+            // Create an "Training Migration" message
+            ClusterMessage_TrainingMigrate msg = new ClusterMessage_TrainingMigrate();
+            // set the TaskID entry of the message to the current Task
+            msg.setTaskID(TaskMapEntry.getKey());
+            // set the Trainee name entry of the message
+            String TraineeName = ((TrainingContext) (TaskMapEntry.getValue().getContext())).getTraineeName();
+            msg.setTraineeName(TraineeName);
+            if (InteractiveTrainingMode)
+                WaitForEnter("Press Enter to send \"Training Migrate Task\" message to " + TraineeName);
+            try {
+                // Send the message to the Cluster
+                SendClusterMessage(msg);
+            } catch (CMMExn_ClusterErr e) {
+                // TODO remove StackPrint
+                e.printStackTrace();
+                SA.AddLogEntry("CMM", "Error - Failed to send \"Training Migration Task\" message to the Cluster.");
+                SA.UnrecoverableClusterError();
+            }
+        } else {
+            SA.UnrecoverableClusterError();
+        }
+    }
+}

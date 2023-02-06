@@ -1,0 +1,52 @@
+private void run(boolean ioEx, boolean rtEx) throws Exception {
+    Path inDir = new Path("testing/mt/input");
+    Path outDir = new Path("testing/mt/output");
+    // Hack for local FS that does not have the concept of a 'mounting point'
+    if (isLocalFS()) {
+        String localPathRoot = System.getProperty("test.build.data", "/tmp").replace(' ', '+');
+        inDir = new Path(localPathRoot, inDir);
+        outDir = new Path(localPathRoot, outDir);
+    }
+    JobConf conf = createJobConf();
+    FileSystem fs = FileSystem.get(conf);
+    fs.delete(outDir, true);
+    if (!fs.mkdirs(inDir)) {
+        throw new IOException("Mkdirs failed to create " + inDir.toString());
+    }
+    {
+        DataOutputStream file = fs.create(new Path(inDir, "part-0"));
+        file.writeBytes("a\nb\n\nc\nd\ne");
+        file.close();
+    }
+    conf.setJobName("mt");
+    conf.setInputFormat(TextInputFormat.class);
+    conf.setOutputKeyClass(LongWritable.class);
+    conf.setOutputValueClass(Text.class);
+    conf.setMapOutputKeyClass(LongWritable.class);
+    conf.setMapOutputValueClass(Text.class);
+    conf.setOutputFormat(TextOutputFormat.class);
+    conf.setOutputKeyClass(LongWritable.class);
+    conf.setOutputValueClass(Text.class);
+    conf.setMapperClass(IDMap.class);
+    conf.setReducerClass(IDReduce.class);
+    FileInputFormat.setInputPaths(conf, inDir);
+    FileOutputFormat.setOutputPath(conf, outDir);
+    conf.setMapRunnerClass(MultithreadedMapRunner.class);
+    conf.setInt("mapred.map.multithreadedrunner.threads", 2);
+    if (ioEx) {
+        conf.setBoolean("multithreaded.ioException", true);
+    }
+    if (rtEx) {
+        conf.setBoolean("multithreaded.runtimeException", true);
+    }
+    JobClient jc = new JobClient(conf);
+    RunningJob job = jc.submitJob(conf);
+    while (!job.isComplete()) {
+        Thread.sleep(100);
+    }
+    if (job.isSuccessful()) {
+        assertFalse(ioEx || rtEx);
+    } else {
+        assertTrue(ioEx || rtEx);
+    }
+}

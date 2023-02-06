@@ -1,0 +1,205 @@
+private void identifierSynthesize(ParseNode node) {
+    int numberOfChildren = node.nChildren();
+    if (numberOfChildren != 0) {
+        int numberOfColon = 0;
+        for (int i = 0; i < numberOfChildren; i++) {
+            if (node.child(i).getSymbol().isPuctuation(PunctuationSymbol.COLON))
+                numberOfColon++;
+        }
+        if (numberOfColon == 2) {
+            // it is a routine declaration
+            Token token = tokenFor(node);
+            String rLabel = "routine-";
+            rLabel += token.getLexeme();
+            rLabel += "-";
+            // info needed by RoutineTable-----------------
+            int returnType;
+            int numberOfPara;
+            int[] para = new int[100];
+            int[] numOfD = new int[100];
+            // info needed by RoutineTable------------------
+            addRoutineBinding(node);
+            // (1)set the the type of the ID to be a Routine ID
+            node.getBinding().setToBeARoutineId();
+            if (node.child(0).getSymbol().isPuctuation(PunctuationSymbol.COLON)) {
+                node.getBinding().setReturnType(0);
+                returnType = 0;
+            } else {
+                node.getBinding().setReturnType(getTypeNumber(node.child(0)));
+                returnType = getTypeNumber(node.child(0));
+            }
+            if (node.child(0).getSymbol().isPuctuation(PunctuationSymbol.COLON)) {
+                int i = 1;
+                for (i = 1; i < numberOfChildren - 1; i++) {
+                    if (node.child(i).nChildren() > 2) {
+                        // array parameter
+                        // else do nothing since by default it't 0
+                        numOfD[i - 1] = node.child(i).nChildren() - 2;
+                    }
+                    para[i - 1] = getTypeNumber(node.child(i));
+                    rLabel += tokenFor(node.child(i)).getLexeme();
+                    rLabel += "-";
+                // r.addParaName(tokenFor(node.child(i).child(0)).getLexeme());
+                }
+                numberOfPara = i - 1;
+                node.getBinding().setParameterList(para, i - 1);
+            } else {
+                int i = 2;
+                for (i = 2; i < numberOfChildren - 1; i++) {
+                    if (node.child(i).nChildren() > 2) {
+                        // array parameter
+                        // else do nothing since by default it't 0
+                        numOfD[i - 2] = node.child(i).nChildren() - 2;
+                    }
+                    para[i - 2] = getTypeNumber(node.child(i));
+                    rLabel += tokenFor(node.child(i)).getLexeme();
+                    rLabel += "-";
+                // r.addParaName(tokenFor(node.child(i).child(0)).getLexeme());
+                }
+                numberOfPara = i - 2;
+                node.getBinding().setParameterList(para, i - 2);
+            }
+            RoutineInfo r = new RoutineInfo(rLabel);
+            r.setRoutineParaList(para);
+            r.setRoutineParaNumber(numberOfPara);
+            r.setRoutineReturnType(returnType);
+            for (int i = 0; i < 100; i++) {
+                // set dims
+                if (numOfD[i] != 0)
+                    r.setRoutinenumOfDims(numOfD[i], i);
+            }
+            if (node.child(0).getSymbol().isPuctuation(PunctuationSymbol.COLON)) {
+                int i = 1;
+                for (i = 1; i < numberOfChildren - 1; i++) {
+                    r.addParaName(tokenFor(node.child(i).child(0)).getLexeme());
+                }
+            } else {
+                int i = 2;
+                for (i = 2; i < numberOfChildren - 1; i++) {
+                    r.addParaName(tokenFor(node.child(i).child(0)).getLexeme());
+                }
+            }
+            // RoutineTable.installANewRoutine(r,tokenFor(node).getLexeme());
+            isInRoutineBlock[this.nowNumOfRoutne] = true;
+        } else {
+            // is is a routine invocation
+            int[] ShiCan = new int[100];
+            int numOfShiCan = 0;
+            int[] actualNumOfDims = new int[100];
+            String routtineID = tokenFor(node).getLexeme();
+            String name = "routine-" + routtineID + "-";
+            for (int i = 0; i < numberOfChildren - 1; i++) {
+                ShiCan[i] = getTypeNumber(node.child(i));
+                if (node.child(i).getSymbol().isNonterminal(NonterminalGrammarSymbol.ARRAY) || !node.child(i).getSymbol().isTerminal(IdentifierToken.class))
+                    actualNumOfDims[i] = 0;
+                else
+                    actualNumOfDims[i] = node.child(i).getBinding().getNumberOfDim();
+                if (getTypeNumber(node.child(i)) == 1) {
+                    name += "int-";
+                } else if (getTypeNumber(node.child(i)) == 2) {
+                    name += "float-";
+                } else if (getTypeNumber(node.child(i)) == 3) {
+                    name += "boolean-";
+                } else {
+                    name += "string-";
+                }
+                numOfShiCan++;
+            }
+            // ���������Ļ���routine�еĵ��þͲ��ᱻsemcantic���� ���������
+            if (this.nowNumOfRoutne == this.numOfRoutineDecl) {
+                if (RoutineTable.lookupID(routtineID) == -1) {
+                    error("the routine \"" + routtineID + "\" has not been declared yet!!");
+                } else {
+                    // still need to check para list
+                    if (RoutineTable.lookup(name) != null) {
+                        // direct match! check dims
+                        int[] declNumOfDims = RoutineTable.lookup(name).getRoutinenumOfDims();
+                        for (int i = 0; i < numOfShiCan; i++) {
+                            if (actualNumOfDims[i] != declNumOfDims[i])
+                                error("The array parameter has a different number of the dimensions from the declaration!!");
+                        }
+                    } else {
+                        // still might need promotion
+                        boolean isError = true;
+                        for (String eachR : RoutineTable.lookupAllRoutinesWithTheSameID(tokenFor(node).getLexeme())) {
+                            boolean foundAconversion = true;
+                            int[] XingCan = RoutineTable.lookup(eachR).getRoutineParaList();
+                            int numOfXinCan = RoutineTable.lookup(eachR).getRoutineParaNumber();
+                            // index of parameters which need to be
+                            int[] indexOfPara = new int[100];
+                            // converted to float from int
+                            int numOfParaNeedConvert = 0;
+                            for (int i = 0; i < numOfXinCan; i++) {
+                                if (XingCan[i] == ShiCan[i])
+                                    continue;
+                                else {
+                                    if (XingCan[i] == 2 && ShiCan[i] == 1) {
+                                        indexOfPara[numOfParaNeedConvert++] = i;
+                                    } else {
+                                        foundAconversion = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (foundAconversion) {
+                                // to deal with {{    {print;}    }} this case
+                                KeywordToken tofloatToken = KeywordToken.make(null, "tofloat", Keyword.TOFLOAT);
+                                KeywordNode tofloatNode = new KeywordNode(new TokenGrammarSymbol(tofloatToken));
+                                List<ParseNode> oldChildren = node.getChildren();
+                                node.newChildren();
+                                int i = 0;
+                                int j = 0;
+                                for (ParseNode child : oldChildren) {
+                                    if (i++ == indexOfPara[j]) {
+                                        j++;
+                                        KeywordNode k = new KeywordNode(tofloatNode);
+                                        k.setType(PrimitiveType.FLOAT);
+                                        k.appendChild(child);
+                                        node.appendChild(k);
+                                    } else {
+                                        node.appendChild(child);
+                                    }
+                                }
+                                isError = false;
+                                break;
+                            }
+                        }
+                        if (isError) {
+                            error("The parameter List type of routine \"" + routtineID + "\" are not consistent with the declaration! ");
+                        }
+                    }
+                }
+                // make a new name
+                name = "routine-" + routtineID + "-";
+                for (int i = 0; i < numberOfChildren - 1; i++) {
+                    if (getTypeNumber(node.child(i)) == 1) {
+                        name += "int-";
+                    } else if (getTypeNumber(node.child(i)) == 2) {
+                        name += "float-";
+                    } else if (getTypeNumber(node.child(i)) == 3) {
+                        name += "boolean-";
+                    } else {
+                        name += "string-";
+                    }
+                }
+                if (RoutineTable.lookup(name).getRoutineReturnType() == 0)
+                    node.setType(PrimitiveType.UNDEFINED);
+                else if (RoutineTable.lookup(name).getRoutineReturnType() == 1)
+                    node.setType(PrimitiveType.INTEGER);
+                else if (RoutineTable.lookup(name).getRoutineReturnType() == 2)
+                    node.setType(PrimitiveType.FLOAT);
+                else if (RoutineTable.lookup(name).getRoutineReturnType() == 3)
+                    node.setType(PrimitiveType.BOOLEAN);
+                else if (RoutineTable.lookup(name).getRoutineReturnType() == 4)
+                    node.setType(PrimitiveType.STRING);
+                else {
+                // do nothing
+                }
+            }
+        }
+    } else {
+        // it is a normal var id Node	//?????????????��֪������index�Ժ󣿣���������
+        SymbolInformation info = identifierInfo(node);
+        setIdentifierNodeType(node, info);
+    }
+}

@@ -1,0 +1,91 @@
+public String doView(RenderRequest request, RenderResponse response) throws Exception {
+    String defaultView = VIEW_PAGE;
+    // Preferences
+    request.setAttribute(TITLE, request.getPreferences().getValue(PREF_TITLE, null));
+    String limit = request.getPreferences().getValue(PREF_LIMIT, null);
+    // Filter Preferences
+    String minimumRatingCount = request.getPreferences().getValue(PREF_PREF_MINIMUM_RATING_COUNT, null);
+    String minimumRatingAvg = request.getPreferences().getValue(PREF_PREF_MINIMUM_RATING_AVG, null);
+    String filterInappropriate = request.getPreferences().getValue(PREF_FILTER_INAPPROPRIATE, null);
+    Connection db = PortalUtils.useConnection(request);
+    // Get the project if available
+    Project project = PortalUtils.findProject(request);
+    BlogPostList blogPostList = new BlogPostList();
+    PagedListInfo recentBlogPostListInfo = PortalUtils.getPagedListInfo(request, "recentNewsArticleListInfo");
+    recentBlogPostListInfo.setColumnToSortBy("entered DESC");
+    recentBlogPostListInfo.setItemsPerPage(limit);
+    blogPostList.setPagedListInfo(recentBlogPostListInfo);
+    // Filters based on ratings
+    if (StringUtils.hasText(minimumRatingCount) && StringUtils.isNumber(minimumRatingCount)) {
+        blogPostList.setMinimumRatingCount(minimumRatingCount);
+    }
+    if (StringUtils.hasText(minimumRatingAvg)) {
+        blogPostList.setMinimumRatingAvg(minimumRatingAvg);
+    }
+    if ("true".equals(filterInappropriate)) {
+        blogPostList.setFilterInappropriate(Constants.TRUE);
+    }
+    // if no project is available, look for category in preferences
+    if (project == null) {
+        blogPostList.setInstanceId(PortalUtils.getInstance(request).getId());
+        boolean privateCategory = false;
+        String categoryValue = request.getPreferences().getValue(PREF_CATEGORY, null);
+        if (categoryValue != null) {
+            ProjectCategoryList categories = new ProjectCategoryList();
+            categories.setEnabled(true);
+            categories.setTopLevelOnly(true);
+            categories.setCategoryDescriptionLowerCase(categoryValue.toLowerCase());
+            categories.buildList(db);
+            if (categories.size() > 0) {
+                LOG.debug("A category was found: " + categoryValue);
+                ProjectCategory category = categories.get(0);
+                if (category.getSensitive()) {
+                    privateCategory = true;
+                }
+                blogPostList.setProjectCategoryId(category.getId());
+            }
+        }
+        if (PortalUtils.getDashboardPortlet(request).isCached()) {
+            if (PortalUtils.canShowSensitiveData(request) || privateCategory) {
+                // Use the most generic settings since this portlet is cached
+                blogPostList.setForParticipant(Constants.TRUE);
+            } else {
+                // Use the most generic settings since this portlet is cached
+                blogPostList.setPublicProjectPosts(Constants.TRUE);
+            }
+        } else {
+            // Use the current user's setting
+            User thisUser = PortalUtils.getUser(request);
+            if (thisUser.isLoggedIn()) {
+                blogPostList.setForUser(thisUser.getId());
+            } else {
+                blogPostList.setPublicProjectPosts(Constants.TRUE);
+            }
+        }
+        request.setAttribute(SHOW_PROJECT_TITLE, "true");
+        request.setAttribute(SHOW_BLOG_LINK, "true");
+    } else {
+        LOG.debug("A project was found");
+        // determine if blogs are enable for the project
+        if (!project.getFeatures().getShowNews()) {
+            LOG.debug("Blog is disabled");
+            return null;
+        }
+        // determine if the user has access to view blogs of the project
+        User user = getUser(request);
+        if (!ProjectUtils.hasAccess(project.getId(), user, "project-news-view")) {
+            LOG.debug("User doesn't have access to the blog");
+            return null;
+        }
+        request.setAttribute(SHOW_BLOG_LINK, "true");
+        blogPostList.setProjectId(project.getId());
+    }
+    blogPostList.setCurrentNews(Constants.TRUE);
+    blogPostList.buildList(db);
+    if (blogPostList.size() == 0) {
+        LOG.debug("No posts found");
+        return null;
+    }
+    request.setAttribute(BLOG_POST_LIST, blogPostList);
+    return defaultView;
+}

@@ -1,0 +1,87 @@
+private void mergeParts() throws IOException {
+    // get the approximate size of the final output/index files
+    long finalOutFileSize = 0;
+    long finalIndexFileSize = 0;
+    Path[] filename = new Path[numSpills];
+    for (int i = 0; i < numSpills; i++) {
+        filename[i] = mapOutputFile.getSpillFile(getTaskID(), i);
+        finalOutFileSize += rfs.getFileStatus(filename[i]).getLen();
+    }
+    if (numSpills == 1) {
+        // the spill is the final output
+        rfs.rename(filename[0], new Path(filename[0].getParent(), "file.out"));
+        if (indexCacheList.size() == 0) {
+            rfs.rename(mapOutputFile.getSpillIndexFile(getTaskID(), 0), new Path(filename[0].getParent(), "file.out.index"));
+        } else {
+            writeSingleSpillIndexToFile(getTaskID(), new Path(filename[0].getParent(), "file.out.index"));
+        }
+        return;
+    }
+    // make correction in the length to include the sequence file header
+    // lengths for each partition
+    finalOutFileSize += partitions * APPROX_HEADER_LENGTH;
+    finalIndexFileSize = partitions * MAP_OUTPUT_INDEX_RECORD_LENGTH;
+    Path finalOutputFile = mapOutputFile.getOutputFileForWrite(getTaskID(), finalOutFileSize);
+    Path finalIndexFile = mapOutputFile.getOutputIndexFileForWrite(getTaskID(), finalIndexFileSize);
+    // The output stream for the final single output file
+    FSDataOutputStream finalOut = rfs.create(finalOutputFile, true, 4096);
+    // The final index file output stream
+    FSDataOutputStream finalIndexOut = rfs.create(finalIndexFile, true, 4096);
+    IFileOutputStream finalIndexChecksumOut = new IFileOutputStream(finalIndexOut);
+    if (numSpills == 0) {
+        // create dummy files
+        for (int i = 0; i < partitions; i++) {
+            long segmentStart = finalOut.getPos();
+            Writer<K, V> writer = new Writer<K, V>(job, finalOut, keyClass, valClass, codec);
+            writer.close();
+            writeIndexRecord(finalIndexChecksumOut, segmentStart, writer);
+        }
+        finalOut.close();
+        finalIndexChecksumOut.close();
+        finalIndexOut.close();
+        return;
+    }
+    {
+        for (int parts = 0; parts < partitions; parts++) {
+            // create the segments to be merged
+            List<Segment<K, V>> segmentList = new ArrayList<Segment<K, V>>(numSpills);
+            TaskAttemptID mapId = getTaskID();
+            for (int i = 0; i < numSpills; i++) {
+                IndexRecord indexRecord = getIndexInformation(mapId, i, parts);
+                long segmentOffset = indexRecord.startOffset;
+                long rawSegmentLength = indexRecord.rawLength;
+                long segmentLength = indexRecord.partLength;
+                FSDataInputStream in = rfs.open(filename[i]);
+                in.seek(segmentOffset);
+                Segment<K, V> s = new Segment<K, V>(new Reader<K, V>(job, in, segmentLength, codec), true);
+                segmentList.add(i, s);
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("MapId=" + mapId + " Reducer=" + parts + "Spill =" + i + "(" + segmentOffset + "," + rawSegmentLength + ", " + segmentLength + ")");
+                }
+                indexRecord = null;
+            }
+            // merge
+            @SuppressWarnings("unchecked") RawKeyValueIterator kvIter = Merger.merge(job, rfs, keyClass, valClass, segmentList, job.getInt("io.sort.factor", 100), new Path(getTaskID().toString()), job.getOutputKeyComparator(), reporter);
+            // write merged output to disk
+            long segmentStart = finalOut.getPos();
+            Writer<K, V> writer = new Writer<K, V>(job, finalOut, keyClass, valClass, codec);
+            if (null == combinerClass || numSpills < minSpillsForCombine) {
+                Merger.writeFile(kvIter, writer, reporter);
+            } else {
+                combineCollector.setWriter(writer);
+                combineAndSpill(kvIter, combineInputCounter);
+            }
+            // close
+            writer.close();
+            // write index record
+            writeIndexRecord(finalIndexChecksumOut, segmentStart, writer);
+        }
+        finalOut.close();
+        finalIndexChecksumOut.close();
+        finalIndexOut.close();
+        // cleanup
+        for (int i = 0; i < numSpills; i++) {
+            rfs.delete(filename[i], true);
+        }
+    }
+}

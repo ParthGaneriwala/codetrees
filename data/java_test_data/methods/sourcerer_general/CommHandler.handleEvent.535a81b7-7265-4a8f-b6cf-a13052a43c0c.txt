@@ -1,0 +1,87 @@
+@Override
+public boolean handleEvent(Object data) {
+    // extract the objects from the buffer
+    if (data instanceof SocketChannel) {
+        removeChannel((SocketChannel) data);
+        for (ServiceHandler svcHdl : mSvcHandlers) {
+            if (svcHdl.handleEvent(data))
+                break;
+        }
+        return true;
+    }
+    if (!(data instanceof SelectionKey))
+        return false;
+    SelectionKey key = (SelectionKey) data;
+    SocketChannel channel = (SocketChannel) key.channel();
+    ByteBuffer buff = mReactor.getData(channel);
+    ByteBuffer channelBuf = mChannelBufferMap.get(channel);
+    int bufLmt = 0;
+    if (channelBuf == null)
+        channelBuf = ByteBuffer.allocate(MediaFilePacket.FilePacketSize * 4);
+    int position = 0;
+    int buffSize = channelBuf.capacity();
+    // if our buffer previously had information, append this to ours
+    // note, we're assuming our buffer will always have enough space
+    // System.out.println("BUFF SIZE: " + buff.limit() + " mBuff position: " + mBuffer.position());
+    bufLmt = channelBuf.position();
+    channelBuf.limit(channelBuf.capacity());
+    channelBuf.put(buff.array());
+    channelBuf.limit(bufLmt + buff.limit());
+    channelBuf.flip();
+    ByteArrayInputStream bis = new ByteArrayInputStream(channelBuf.array());
+    StringBuffer strbuf = new StringBuffer();
+    try {
+        while ((position = buffSize - bis.available()) < channelBuf.limit()) {
+            channelBuf.position(position);
+            strbuf = new StringBuffer();
+            if ((position + StreamHeader.HEADER_SIZE) > channelBuf.limit()) {
+                throw new StreamCorruptedException("just to jump to the catch block");
+            }
+            // check for corruption by checking the preamble
+            for (int ndx = 0; ndx < StreamHeader.PREAMBLE.length; ndx++) strbuf.append(channelBuf.getChar());
+            // read a byte at a time until we reach the next preamble
+            if (!strbuf.toString().equals(new String(StreamHeader.PREAMBLE))) {
+                bis.read();
+                continue;
+            }
+            mDataSize = channelBuf.getInt();
+            if ((position + StreamHeader.HEADER_SIZE + mDataSize) > channelBuf.limit()) {
+                throw new StreamCorruptedException("just to jump to the catch block");
+            }
+            bis.skip(StreamHeader.HEADER_SIZE);
+            ObjectInputStream in = new ObjectInputStream(bis);
+            Object obj = in.readObject();
+            in.close();
+            // mQueue.add(obj);
+            // System.out.println(obj);
+            mAckChannel = channel;
+            // loop through registered handlers and call them
+            for (ServiceHandler svcHdl : mSvcHandlers) {
+                svcHdl.setChannel(channel);
+                if (svcHdl.handleEvent(obj))
+                    break;
+            }
+            // For TESTING PURPOSES ONLY
+            if (mIsTest)
+                processACK(obj);
+            // For TESTING PURPOSES ONLY on the SERVER SIDE
+            if (mIsTest && mIsServer)
+                logMessage(obj);
+        }
+        channelBuf.clear();
+    // bufLmt = 0;
+    } catch (StreamCorruptedException streamErr) {
+        channelBuf.position(position);
+        channelBuf.compact();
+    // bufLmt = channelBuf.position();
+    } catch (Exception e) {
+        e.printStackTrace();
+        // clear the buffer because everything's gone bad.
+        channelBuf.clear();
+    // bufLmt = 0;
+    } finally {
+        mChannelBufferMap.put(channel, channelBuf);
+        mBuffLimits.put(channel, bufLmt);
+    }
+    return false;
+}

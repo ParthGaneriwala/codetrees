@@ -1,0 +1,68 @@
+public List<EC2Server> newServers(int n, String instanceType, Map<String, String> extraParams) {
+    // get current time for unique VM names
+    long time = new Date().getTime();
+    SimpleDateFormat sdf = new SimpleDateFormat("mmssSSS");
+    List<EC2Server> ec2List = new ArrayList<EC2Server>();
+    String vmTemplate = (String) awsProps.getProperty("vSphere.vmTemplatePath");
+    for (int i = 0; i < n; i++) {
+        // vApp name can have only chars, numbers, -.
+        // must start with a letter, and no longer than longer than 15 in length
+        String vAppName = "J2EE-" + sdf.format(time) + i;
+        VApp va = null;
+        try {
+            VCloudInstance si = connect2vCloud();
+            String vAppTemplate = (String) awsProps.getProperty("vCloud.vmTemplateURL");
+            System.out.println("vAppTempURL=" + vAppTemplate);
+            Org[] orgs = si.getOrgs();
+            VDC[] vdcs = orgs[0].getVDCs();
+            va = vdcs[0].deployVAppFromTemplate(vAppTemplate, vAppName, vdcs[0].getNetworks()[0].getURL(), 1, 1024);
+            // 2 -- powered off
+            va.waitFor(VAppStatus.poweredoff, 10000);
+            System.out.println("deploy is done!");
+            // The following code tried to work around a bug
+            for (; ; ) {
+                try {
+                    Thread.sleep(3 * 1000);
+                    @SuppressWarnings("unused") Task task = va.powerOn();
+                } catch (IOException ioe) {
+                    ioe.printStackTrace();
+                    continue;
+                }
+                break;
+            }
+            // 4 -- running
+            va.waitFor(VAppStatus.running, 2000);
+            System.out.println("poweron is done!");
+            String privateIP = getIPAddr(va);
+            // SSH routing
+            InternetService is = vdcs[0].addInternetService("VMware SpringSource CF", "TCP", 22, "Enabling SSH to the vApp");
+            System.out.println("is:" + is.getXmlContent());
+            Node node = is.addNode(privateIP, "vApp Node for CF", 22, "Enabling SSH to the vApp");
+            System.out.println("node:" + node.getXmlContent());
+            // HTTP routing
+            PublicIpAddress pia = is.getPublicIpAddress();
+            System.out.println("pia:" + pia.getXmlContent());
+            InternetService webIs = pia.addInternetService("Web Service", "HTTP", 80, "Bridging the Web Server");
+            Node webNode = webIs.addNode(privateIP, "vAppNode for CF", 80, "Bridging");
+            System.out.println("webNode:" + webNode.getXmlContent());
+            String publicIP = pia.getIp();
+            // encode the network info into the instance ID
+            VAppNetworkInfo vni = new VAppNetworkInfo();
+            vni.vAppUrl = va.getURL();
+            vni.publicIP = publicIP;
+            vni.privateIP = privateIP;
+            vni.publicIpUrl = pia.getURL();
+            vni.internetServiceUrls = new String[] { is.getURL(), webIs.getURL() };
+            vni.nodeUrls = new String[] { node.getURL(), webNode.getURL() };
+            String vaid = vni.toString();
+            EC2Server ec2s = new EC2Server(this, vaid, vmTemplate, "running", "NA");
+            System.out.println("public IP: " + publicIP);
+            ec2s.getInstanceState().updateStatus("running", publicIP, privateIP);
+            ec2List.add(ec2s);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+    this.ec2Servers.addAll(ec2List);
+    return ec2List;
+}

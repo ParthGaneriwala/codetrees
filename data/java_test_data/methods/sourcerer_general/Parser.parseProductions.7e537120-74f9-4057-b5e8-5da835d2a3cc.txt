@@ -1,0 +1,84 @@
+private void parseProductions() {
+    int[] pos = new int[1];
+    char[] type = new char[1];
+    ParserDoc parserDoc = m_doc.getParser();
+    // have to use the index approach.
+    for (int grammarId = 0; grammarId < parserDoc.getGrammarCount(); ++grammarId) {
+        GrammarDoc grammar = parserDoc.getGrammar(grammarId);
+        int lhs = getNonterminal(grammar.getRule());
+        LinkedList<Production> prods = new LinkedList<Production>();
+        for (RhsDoc rhs : grammar.getRhs()) {
+            Production production = new Production(lhs, m_productionIdCounter++);
+            LinkedList<Integer> symbolList = new LinkedList<Integer>();
+            String terms = rhs.getTerms().trim();
+            int lineNumber = rhs.getLineNumber();
+            while (terms.length() > 0) {
+                pos[0] = 0;
+                int sym = parseTerm(lineNumber, terms, pos, type);
+                if (type[0] == '\0') {
+                    if (sym <= m_maxTerminal)
+                        production.setPrecedence(m_terminalMap.get(sym));
+                } else {
+                    // we need a new symbol to handle the new grammar.
+                    String tmpSymbol = grammar.getRule();
+                    GrammarDoc tmpGrammar;
+                    for (int i = 0; ; ++i) {
+                        if (parserDoc.hasGrammar(tmpSymbol + "_" + i))
+                            continue;
+                        tmpSymbol = tmpSymbol + "_" + i;
+                        tmpGrammar = parserDoc.getGrammar(tmpSymbol);
+                        tmpGrammar.setType(type[0]);
+                        break;
+                    }
+                    if (type[0] == '?') {
+                        RhsDoc emptyRhs = new RhsDoc();
+                        RhsDoc optRhs = new RhsDoc();
+                        optRhs.setTerms(m_symbolMap.get(sym));
+                        tmpGrammar.addRhs(emptyRhs);
+                        tmpGrammar.addRhs(optRhs);
+                    } else if (type[0] == '*') {
+                        RhsDoc initRhs = new RhsDoc();
+                        RhsDoc listRhs = new RhsDoc();
+                        listRhs.setTerms(tmpSymbol + " " + m_symbolMap.get(sym));
+                        tmpGrammar.addRhs(initRhs);
+                        tmpGrammar.addRhs(listRhs);
+                    } else if (type[0] == '+') {
+                        RhsDoc initRhs = new RhsDoc();
+                        initRhs.setTerms(m_symbolMap.get(sym));
+                        RhsDoc listRhs = new RhsDoc();
+                        listRhs.setTerms(tmpSymbol + " " + m_symbolMap.get(sym));
+                        tmpGrammar.addRhs(initRhs);
+                        tmpGrammar.addRhs(listRhs);
+                    }
+                    sym = getNonterminal(tmpSymbol);
+                }
+                terms = terms.substring(pos[0]).trim();
+                symbolList.add(sym);
+            }
+            int[] prod = new int[symbolList.size()];
+            int i = 0;
+            for (Integer s : symbolList) prod[i++] = s.intValue();
+            production.setProduction(prod);
+            if (rhs.getPrecedence() != null) {
+                String name = rhs.getPrecedence().trim();
+                if (name.length() > 0) {
+                    int[] value = new int[1];
+                    checkTerminalName(lineNumber, name, value);
+                    Token tok;
+                    if (value[0] == 0)
+                        tok = m_terminals.get(name);
+                    else
+                        tok = m_terminalMap.get(value[0]);
+                    if (tok == null)
+                        throw new ParserException(lineNumber, "Invalid terminal specified for %prec.");
+                    production.setPrecedence(tok);
+                }
+            }
+            prods.add(production);
+            rhs.setCaseValue(production.getId());
+            rhs.setProperty(PROP_PRODUCTION, production);
+            m_productions.add(production);
+        }
+        m_productionMap.put(lhs, prods.toArray(new Production[prods.size()]));
+    }
+}

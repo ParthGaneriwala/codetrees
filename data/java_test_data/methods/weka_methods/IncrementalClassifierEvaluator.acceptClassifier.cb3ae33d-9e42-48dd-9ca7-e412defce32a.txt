@@ -1,0 +1,193 @@
+@Override
+public void acceptClassifier(final IncrementalClassifierEvent ce) {
+    try {
+        if (ce.getStatus() == IncrementalClassifierEvent.NEW_BATCH) {
+            m_throughput = new StreamThroughput(statusMessagePrefix());
+            m_throughput.setSamplePeriod(m_statusFrequency);
+            // m_eval = new Evaluation(ce.getCurrentInstance().dataset());
+            m_eval = new Evaluation(ce.getStructure());
+            m_eval.useNoPriors();
+            m_dataLegend = new Vector<String>();
+            m_reset = true;
+            m_dataPoint = new double[0];
+            ce.getStructure();
+            System.err.println("NEW BATCH");
+            m_instanceCount = 0;
+            if (m_windowSize > 0) {
+                m_window = new LinkedList<Instance>();
+                m_windowEval = new Evaluation(ce.getStructure());
+                m_windowEval.useNoPriors();
+                m_windowedPreds = new LinkedList<double[]>();
+                if (m_logger != null) {
+                    m_logger.logMessage(statusMessagePrefix() + "[IncrementalClassifierEvaluator] Chart output using windowed " + "evaluation over " + m_windowSize + " instances");
+                }
+            }
+        /*
+         * if (m_logger != null) { m_logger.statusMessage(statusMessagePrefix()
+         * + "IncrementalClassifierEvaluator: started processing...");
+         * m_logger.logMessage(statusMessagePrefix() +
+         * " [IncrementalClassifierEvaluator]" + statusMessagePrefix() +
+         * " started processing..."); }
+         */
+        } else {
+            Instance inst = ce.getCurrentInstance();
+            if (inst != null) {
+                m_throughput.updateStart();
+                m_instanceCount++;
+                // if (inst.attribute(inst.classIndex()).isNominal()) {
+                double[] dist = ce.getClassifier().distributionForInstance(inst);
+                double pred = 0;
+                if (!inst.isMissing(inst.classIndex())) {
+                    if (m_outputInfoRetrievalStats) {
+                        // store predictions so AUC etc can be output.
+                        m_eval.evaluateModelOnceAndRecordPrediction(dist, inst);
+                    } else {
+                        m_eval.evaluateModelOnce(dist, inst);
+                    }
+                    if (m_windowSize > 0) {
+                        m_windowEval.evaluateModelOnce(dist, inst);
+                        m_window.addFirst(inst);
+                        m_windowedPreds.addFirst(dist);
+                        if (m_instanceCount > m_windowSize) {
+                            // "forget" the oldest prediction
+                            Instance oldest = m_window.removeLast();
+                            double[] oldDist = m_windowedPreds.removeLast();
+                            oldest.setWeight(-oldest.weight());
+                            m_windowEval.evaluateModelOnce(oldDist, oldest);
+                            oldest.setWeight(-oldest.weight());
+                        }
+                    }
+                } else {
+                    pred = ce.getClassifier().classifyInstance(inst);
+                }
+                if (inst.classIndex() >= 0) {
+                    // need to check that the class is not missing
+                    if (inst.attribute(inst.classIndex()).isNominal()) {
+                        if (!inst.isMissing(inst.classIndex())) {
+                            if (m_dataPoint.length < 2) {
+                                m_dataPoint = new double[3];
+                                m_dataLegend.addElement("Accuracy");
+                                m_dataLegend.addElement("RMSE (prob)");
+                                m_dataLegend.addElement("Kappa");
+                            }
+                            if (m_windowSize > 0) {
+                                m_dataPoint[1] = m_windowEval.rootMeanSquaredError();
+                                m_dataPoint[2] = m_windowEval.kappa();
+                            } else {
+                                m_dataPoint[1] = m_eval.rootMeanSquaredError();
+                                m_dataPoint[2] = m_eval.kappa();
+                            }
+                        // int maxO = Utils.maxIndex(dist);
+                        // if (maxO == classV) {
+                        // dist[classV] = -1;
+                        // maxO = Utils.maxIndex(dist);
+                        // }
+                        // m_dataPoint[1] -= dist[maxO];
+                        } else {
+                            if (m_dataPoint.length < 1) {
+                                m_dataPoint = new double[1];
+                                m_dataLegend.addElement("Confidence");
+                            }
+                        }
+                        double primaryMeasure = 0;
+                        if (!inst.isMissing(inst.classIndex())) {
+                            if (m_windowSize > 0) {
+                                primaryMeasure = 1.0 - m_windowEval.errorRate();
+                            } else {
+                                primaryMeasure = 1.0 - m_eval.errorRate();
+                            }
+                        } else {
+                            // record confidence as the primary measure
+                            // (another possibility would be entropy of
+                            // the distribution, or perhaps average
+                            // confidence)
+                            primaryMeasure = dist[Utils.maxIndex(dist)];
+                        }
+                        // double [] dataPoint = new double[1];
+                        m_dataPoint[0] = primaryMeasure;
+                        // double min = 0; double max = 100;
+                        /*
+               * ChartEvent e = new
+               * ChartEvent(IncrementalClassifierEvaluator.this, m_dataLegend,
+               * min, max, dataPoint);
+               */
+                        m_ce.setLegendText(m_dataLegend);
+                        m_ce.setMin(0);
+                        m_ce.setMax(1);
+                        m_ce.setDataPoint(m_dataPoint);
+                        m_ce.setReset(m_reset);
+                        m_reset = false;
+                    } else {
+                        // numeric class
+                        if (m_dataPoint.length < 1) {
+                            m_dataPoint = new double[1];
+                            if (inst.isMissing(inst.classIndex())) {
+                                m_dataLegend.addElement("Prediction");
+                            } else {
+                                m_dataLegend.addElement("RMSE");
+                            }
+                        }
+                        if (!inst.isMissing(inst.classIndex())) {
+                            double update;
+                            if (!inst.isMissing(inst.classIndex())) {
+                                if (m_windowSize > 0) {
+                                    update = m_windowEval.rootMeanSquaredError();
+                                } else {
+                                    update = m_eval.rootMeanSquaredError();
+                                }
+                            } else {
+                                update = pred;
+                            }
+                            m_dataPoint[0] = update;
+                            if (update > m_max) {
+                                m_max = update;
+                            }
+                            if (update < m_min) {
+                                m_min = update;
+                            }
+                        }
+                        m_ce.setLegendText(m_dataLegend);
+                        m_ce.setMin((inst.isMissing(inst.classIndex()) ? m_min : 0));
+                        m_ce.setMax(m_max);
+                        m_ce.setDataPoint(m_dataPoint);
+                        m_ce.setReset(m_reset);
+                        m_reset = false;
+                    }
+                    notifyChartListeners(m_ce);
+                }
+                m_throughput.updateEnd(m_logger);
+            }
+            if (ce.getStatus() == IncrementalClassifierEvent.BATCH_FINISHED || inst == null) {
+                if (m_logger != null) {
+                    m_logger.logMessage("[IncrementalClassifierEvaluator]" + statusMessagePrefix() + " Finished processing.");
+                }
+                m_throughput.finished(m_logger);
+                // save memory if using windowed evaluation for charting
+                m_windowEval = null;
+                m_window = null;
+                m_windowedPreds = null;
+                if (m_textListeners.size() > 0) {
+                    String textTitle = ce.getClassifier().getClass().getName();
+                    textTitle = textTitle.substring(textTitle.lastIndexOf('.') + 1, textTitle.length());
+                    String results = "=== Performance information ===\n\n" + "Scheme:   " + textTitle + "\n" + "Relation: " + m_eval.getHeader().relationName() + "\n\n" + m_eval.toSummaryString();
+                    if (m_eval.getHeader().classIndex() >= 0 && m_eval.getHeader().classAttribute().isNominal() && (m_outputInfoRetrievalStats)) {
+                        results += "\n" + m_eval.toClassDetailsString();
+                    }
+                    if (m_eval.getHeader().classIndex() >= 0 && m_eval.getHeader().classAttribute().isNominal()) {
+                        results += "\n" + m_eval.toMatrixString();
+                    }
+                    textTitle = "Results: " + textTitle;
+                    TextEvent te = new TextEvent(this, results, textTitle);
+                    notifyTextListeners(te);
+                }
+            }
+        }
+    } catch (Exception ex) {
+        if (m_logger != null) {
+            m_logger.logMessage("[IncrementalClassifierEvaluator]" + statusMessagePrefix() + " Error processing prediction " + ex.getMessage());
+            m_logger.statusMessage(statusMessagePrefix() + "ERROR: problem processing prediction (see log for details)");
+        }
+        ex.printStackTrace();
+        stop();
+    }
+}

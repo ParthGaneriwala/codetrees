@@ -1,0 +1,41 @@
+@Override
+public void process(JCas jCas) throws AnalysisEngineProcessException {
+    nPredicates = 0;
+    nSentences = 0;
+    Set<Token> predicateTokens = new HashSet<Token>();
+    for (Predicate predicate : JCasUtil.select(jCas, Predicate.class)) {
+        for (Token token : JCasUtil.selectCovered(jCas, Token.class, predicate)) {
+            predicateTokens.add(token);
+        }
+    }
+    for (Sentence sentence : JCasUtil.select(jCas, Sentence.class)) {
+        nSentences += 1;
+        List<Token> tokenList = JCasUtil.selectCovered(jCas, Token.class, sentence);
+        Token[] tokens = tokenList.toArray(new Token[tokenList.size()]);
+        for (Token token : tokens) {
+            Instance<Boolean> instance = new Instance<Boolean>();
+            List<Feature> tokenFeatures = this.tokenExtractor.extract(jCas, token);
+            List<Feature> leftWindowFeatures = this.leftWindowExtractor.extract(jCas, token, sentence);
+            List<Feature> rightWindowFeatures = this.rightWindowExtractor.extract(jCas, token, sentence);
+            instance.addAll(tokenFeatures);
+            instance.addAll(leftWindowFeatures);
+            instance.addAll(rightWindowFeatures);
+            instance.setOutcome(predicateTokens.contains(token));
+            if (this.isTraining()) {
+                this.dataWriter.write(instance);
+            } else {
+                Boolean outcome = this.classifier.classify(instance.getFeatures());
+                if (outcome) {
+                    nPredicates += 1;
+                    Predicate predicate = new Predicate(jCas);
+                    predicate.setAnnotation(token);
+                    predicate.setBegin(token.getBegin());
+                    predicate.setEnd(token.getEnd());
+                    predicate.setSentence(sentence);
+                    predicate.addToIndexes();
+                }
+            }
+        }
+    }
+    Logger.getLogger("org.cleartk.srl.PredicateAnnotator").info(String.format("processed %d sentences, found %d predicates", nSentences, nPredicates));
+}

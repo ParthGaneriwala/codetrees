@@ -1,0 +1,47 @@
+public void testComplexAppend() throws IOException {
+    initBuffer(fileSize);
+    Configuration conf = new Configuration();
+    conf.setInt("heartbeat.recheck.interval", 2000);
+    conf.setInt("dfs.heartbeat.interval", 2);
+    conf.setInt("dfs.replication.pending.timeout.sec", 2);
+    conf.setInt("dfs.socket.timeout", 30000);
+    conf.setInt("dfs.datanode.socket.write.timeout", 30000);
+    conf.setInt("dfs.datanode.handler.count", 50);
+    MiniDFSCluster cluster = new MiniDFSCluster(conf, numDatanodes, true, null);
+    cluster.waitActive();
+    FileSystem fs = cluster.getFileSystem();
+    try {
+        // 
+        for (int i = 0; i < numberOfFiles; i++) {
+            short replication = (short) (AppendTestUtil.nextInt(numDatanodes) + 1);
+            Path testFile = new Path("/" + i + ".dat");
+            FSDataOutputStream stm = createFile(fs, testFile, replication);
+            stm.close();
+            testFiles.add(testFile);
+        }
+        // Create threads and make them run workload concurrently.
+        workload = new Workload[numThreads];
+        for (int i = 0; i < numThreads; i++) {
+            workload[i] = new Workload(cluster, i);
+            workload[i].start();
+        }
+        // wait for all transactions to get over
+        for (int i = 0; i < numThreads; i++) {
+            try {
+                System.out.println("Waiting for thread " + i + " to complete...");
+                workload[i].join();
+                System.out.println("Waiting for thread " + i + " complete.");
+            } catch (InterruptedException e) {
+                // retry
+                i--;
+            }
+        }
+    } finally {
+        fs.close();
+        cluster.shutdown();
+    }
+    // If any of the worker thread failed in their job, indicate that
+    // this test failed.
+    // 
+    assertTrue("testComplexAppend Worker encountered exceptions.", globalStatus);
+}

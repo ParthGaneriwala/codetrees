@@ -1,0 +1,68 @@
+// / Ray-cast against the proxies in the tree. This relies on the callback
+// / to perform a exact ray-cast in the case were the proxy contains a shape.
+// / The callback also performs the any collision filtering. This has performance
+// / roughly equal to k * log(n), where k is the number of collisions and n is the
+// / number of proxies in the tree.
+// / @param input the ray-cast input data. The ray extends from p1 to p1 + maxFraction * (p2 - p1).
+<T extends BBWorldRayCastWrapper> void rayCast(T callback, final BBRayCastInput input) {
+    BBVec2 p1 = input.p1;
+    BBVec2 p2 = input.p2;
+    BBVec2 r = sub(p2, p1);
+    assert (r.lengthSquared() > 0.0f);
+    r.normalize();
+    // v is perpendicular to the segment.
+    BBVec2 v = cross(1.0f, r);
+    BBVec2 abs_v = abs(v);
+    // Separating axis for segment (Gino, p80).
+    // |dot(v, p1 - c)| > dot(|v|, h)
+    float maxFraction = input.maxFraction;
+    // Build a bounding box for the segment.
+    BBAABB segmentAABB = new BBAABB();
+    {
+        BBVec2 t = add(p1, mul(maxFraction, sub(p2, p1)));
+        segmentAABB.lowerBound = min(p1, t);
+        segmentAABB.upperBound = max(p1, t);
+    }
+    final int k_stackSize = 128;
+    int[] stack = new int[k_stackSize];
+    int count = 0;
+    stack[count++] = m_root;
+    while (count > 0) {
+        int nodeId = stack[--count];
+        if (nodeId == nullNode) {
+            continue;
+        }
+        final BBDynamicTreeNode node = m_nodes[nodeId];
+        if (!testOverlap(node.aabb, segmentAABB)) {
+            continue;
+        }
+        // Separating axis for segment (Gino, p80).
+        // |dot(v, p1 - c)| > dot(|v|, h)
+        BBVec2 c = node.aabb.getCenter();
+        BBVec2 h = node.aabb.getExtents();
+        float separation = abs(dot(v, sub(p1, c))) - dot(abs_v, h);
+        if (separation > 0.0f) {
+            continue;
+        }
+        if (node.IsLeaf()) {
+            BBRayCastInput subInput = new BBRayCastInput();
+            subInput.p1 = input.p1;
+            subInput.p2 = input.p2;
+            subInput.maxFraction = maxFraction;
+            maxFraction = callback.RayCastCallback(subInput, nodeId);
+            if (maxFraction == 0.0f) {
+                return;
+            }
+            // Update segment bounding box.
+            {
+                BBVec2 t = add(p1, mul(maxFraction, sub(p2, p1)));
+                segmentAABB.lowerBound = min(p1, t);
+                segmentAABB.upperBound = max(p1, t);
+            }
+        } else {
+            assert (count + 1 < k_stackSize);
+            stack[count++] = node.child1;
+            stack[count++] = node.child2;
+        }
+    }
+}

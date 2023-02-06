@@ -1,0 +1,50 @@
+@Override
+protected Result evaluate(final LogicContext context, final Integer patientId, final Map<String, Object> parameters) throws LogicException {
+    Result result = new Result();
+    // check if the caller already pass encounter list object in the parameter
+    Object encounters = parameters.get(EvaluableConstants.OBS_ENCOUNTER);
+    if (encounters == null) {
+        EncounterWithRestrictionRule encounterWithRestrictionRule = new EncounterWithStringRestrictionRule();
+        parameters.put(EvaluableConstants.ENCOUNTER_FETCH_SIZE, 1);
+        Result encounterResults = encounterWithRestrictionRule.eval(context, patientId, parameters);
+        if (CollectionUtils.isNotEmpty(encounterResults)) {
+            Result latestResult = encounterResults.latest();
+            encounters = Arrays.asList(latestResult.getResultObject());
+        }
+    }
+    // if the caller didn't pass any encounter list and we can't find any encounter in the database, then just ignore the rest of the process
+    if (encounters != null) {
+        parameters.put(EvaluableConstants.OBS_ENCOUNTER, encounters);
+        ObsWithRestrictionRule obsWithRestrictionRule = new ObsWithStringRestrictionRule();
+        // get the the plan
+        parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.TUBERCULOSIS_PROPHYLAXIS_PLAN));
+        parameters.put(EvaluableConstants.OBS_VALUE_CODED, Arrays.asList(EvaluableNameConstants.START_DRUGS, EvaluableNameConstants.CONTINUE_REGIMEN));
+        Result planResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+        Concept isoniazidConcept = Context.getConceptService().getConcept(EvaluableNameConstants.ISONIAZID);
+        if (CollectionUtils.isNotEmpty(planResults))
+            result.add(new Result(isoniazidConcept));
+        // process the medication added
+        parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.MEDICATION_ADDED));
+        parameters.put(EvaluableConstants.OBS_VALUE_CODED, Arrays.asList(EvaluableNameConstants.ISONIAZID, EvaluableNameConstants.RIFAMPICIN, EvaluableNameConstants.PYRAZINAMIDE));
+        Result addedResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+        Concept rifampinConcept = CacheUtils.getConcept(EvaluableNameConstants.RIFAMPICIN);
+        Concept pyrazinamideConcept = CacheUtils.getConcept(EvaluableNameConstants.PYRAZINAMIDE);
+        Result rifampinResult = null;
+        Result pyrazinamideResult = null;
+        for (Result addedResult : addedResults) {
+            Concept addedResultConcept = addedResult.toConcept();
+            if (OpenmrsUtil.nullSafeEquals(addedResultConcept, rifampinConcept))
+                rifampinResult = addedResult;
+            else if (OpenmrsUtil.nullSafeEquals(addedResultConcept, pyrazinamideConcept))
+                pyrazinamideResult = addedResult;
+            else
+                result.add(addedResult);
+        }
+        if (pyrazinamideResult != null) {
+            result.add(pyrazinamideResult);
+            if (rifampinResult != null)
+                result.add(rifampinResult);
+        }
+    }
+    return result;
+}

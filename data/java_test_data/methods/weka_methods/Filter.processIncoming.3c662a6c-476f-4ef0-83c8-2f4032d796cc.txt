@@ -1,0 +1,54 @@
+@Override
+public void processIncoming(Data data) throws WekaException {
+    Integer setNum = data.getPayloadElement(StepManager.CON_AUX_DATA_SET_NUM);
+    Integer maxSetNum = data.getPayloadElement(StepManager.CON_AUX_DATA_MAX_SET_NUM);
+    if (m_isReset) {
+        m_isReset = false;
+        m_setCount = new AtomicInteger(maxSetNum != null ? maxSetNum : 1);
+        getStepManager().processing();
+        if (data.getConnectionName().equals(StepManager.CON_INSTANCE)) {
+            Instances incomingStructure = ((Instance) data.getPayloadElement(StepManager.CON_INSTANCE)).dataset();
+            m_streaming = true;
+            getStepManager().logBasic("Initializing streaming filter");
+            try {
+                m_streamingFilter = weka.filters.Filter.makeCopy(m_filterTemplate);
+                m_streamingFilter.setInputFormat(incomingStructure);
+                m_stringAttsPresent = m_streamingFilter.getOutputFormat().checkForStringAttributes();
+            } catch (Exception ex) {
+                throw new WekaException(ex);
+            }
+        }
+    }
+    // to be in order though
+    if (m_streaming) {
+        if (getStepManager().isStreamFinished(data)) {
+            checkPendingStreaming();
+            m_incrementalData.clearPayload();
+            getStepManager().throughputFinished(m_incrementalData);
+        } else {
+            processStreaming(data);
+        }
+    } else if (data.getConnectionName().equals(StepManager.CON_TRAININGSET) || data.getConnectionName().equals(StepManager.CON_DATASET)) {
+        Instances d = data.getPrimaryPayload();
+        processFirstBatch(d, data.getConnectionName(), setNum, maxSetNum);
+    } else {
+        // if there are just test set connections, then process them as first
+        // batches. Otherwise, process them as subsequent batches
+        Instances d = data.getPrimaryPayload();
+        if (getStepManager().numIncomingConnectionsOfType(StepManager.CON_TRAININGSET) == 0 && getStepManager().numIncomingConnectionsOfType(StepManager.CON_DATASET) == 0) {
+            processFirstBatch(d, data.getConnectionName(), setNum, maxSetNum);
+        } else {
+            processSubsequentBatch(d, data.getConnectionName(), setNum, maxSetNum);
+        }
+    }
+    if (isStopRequested()) {
+        getStepManager().interrupted();
+    } else if (!m_streaming) {
+        if (m_setCount.get() == 0) {
+            getStepManager().finished();
+            // save memory
+            m_waitingTestData.clear();
+            m_filterMap.clear();
+        }
+    }
+}

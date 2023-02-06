@@ -1,0 +1,71 @@
+public static void main(String[] args) throws IOException, ClassNotFoundException {
+    OptionParser optParser = new OptionParser(Options.class);
+    final Options opts = (Options) optParser.parse(args, true);
+    Experiment.initialize(opts.config);
+    Experiment experiment = Experiment.getInstance();
+    experiment.getTupleDescription();
+    long overtMask = Experiment.getInstance().getTupleDescription().getOvertFactorsMask();
+    TrainingDataFilter filter = new MaskedFuturesTrainingDataFilter(overtMask);
+    FileChannel trainDataChannel = new FileInputStream(opts.trainData).getChannel();
+    TrainingDataReader trainDataReader = new OnDiskTrainingDataReader(trainDataChannel);
+    ReadableTrainingData trainData;
+    FileChannel devDataChannel = new FileInputStream(opts.devData).getChannel();
+    TrainingDataReader devDataReader = new OnDiskTrainingDataReader(devDataChannel);
+    ReadableTrainingData devData;
+    if (opts.cost.equals("joint")) {
+        trainData = new ReadableTrainingData(trainDataReader);
+        devData = new ReadableTrainingData(devDataReader);
+    } else {
+        trainData = new FilteredReadableTrainingData(trainDataReader, filter);
+        devData = new FilteredReadableTrainingData(devDataReader, filter);
+    }
+    // LanguageModel lm = experiment.getLM();
+    Long2DoubleMap unigramDist = new Long2DoubleMap(50000);
+    long totalTrainCount = 0;
+    while (trainData.hasNext()) {
+        TrainingDataBlock block = trainData.next();
+        for (ContextFuturesPair pair : block) {
+            for (TupleCountPair tc : pair.getFutures()) {
+                unigramDist.addAndGet(tc.tuple, tc.count);
+                totalTrainCount += tc.count;
+            }
+        }
+    }
+    for (Long2DoubleMap.Iterator it = unigramDist.iterator(); it.hasNext(); ) {
+        Long2DoubleMap.Entry entry = it.next();
+        entry.setValue(entry.getValue() / totalTrainCount);
+    }
+    System.out.println("Cost function: " + opts.cost);
+    for (int overtOrder = 2; overtOrder <= 2; /*lm.getOrder()*/
+    ++overtOrder) {
+        for (int hiddenOrder = 1; hiddenOrder <= overtOrder; ++hiddenOrder) {
+            trainDataChannel = new FileInputStream(opts.trainData).getChannel();
+            trainDataReader = new OnDiskTrainingDataReader(trainDataChannel);
+            // trainData = new ReadableTrainingData(trainDataReader);
+            trainData = new FilteredReadableTrainingData(trainDataReader, filter);
+            devDataChannel = new FileInputStream(opts.devData).getChannel();
+            devDataReader = new OnDiskTrainingDataReader(devDataChannel);
+            devData = new FilteredReadableTrainingData(devDataReader, filter);
+            // trainData.reset();
+            // devData.reset();
+            ReadableTrainingData d1;
+            ReadableTrainingData d2;
+            // if (overtOrder < lm.getOvertOrder() || hiddenOrder < lm.getHiddenOrder()) {
+            d1 = TrainingDataUtil.makeContextReducedTrainingData(trainData, overtOrder, hiddenOrder);
+            d2 = TrainingDataUtil.makeContextReducedTrainingData(devData, overtOrder, hiddenOrder);
+            // } else {
+            // d1 = trainData;
+            // d2 = devData;
+            // }
+            HashMap<Context, TupleCountPair[]> devCounts = new HashMap<Context, TupleCountPair[]>(10000);
+            while (d2.hasNext()) {
+                TrainingDataBlock block = d2.next();
+                for (ContextFuturesPair pair : block) {
+                    devCounts.put(pair.getContext(), pair.getFutures());
+                }
+            }
+            Entropies entropies = computeConditionalEntropy(d1, totalTrainCount, devCounts, unigramDist);
+            System.out.printf("ctx = w_{%d} t_{%d} : %s\n", overtOrder - 1, hiddenOrder - 1, entropies);
+        }
+    }
+}

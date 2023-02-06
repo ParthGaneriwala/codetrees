@@ -1,0 +1,161 @@
+private static void processCharSetImpl(REGlobalData gData, RECharSet charSet) {
+    int src = charSet.startIndex;
+    int end = src + charSet.strlength;
+    char rangeStart = 0, thisCh;
+    int byteLength;
+    char c;
+    int n;
+    int nDigits;
+    int i;
+    boolean inRange = false;
+    charSet.sense = true;
+    byteLength = (charSet.length / 8) + 1;
+    charSet.bits = new byte[byteLength];
+    if (src == end)
+        return;
+    if (gData.regexp.source[src] == '^') {
+        charSet.sense = false;
+        ++src;
+    }
+    while (src != end) {
+        nDigits = 2;
+        switch(gData.regexp.source[src]) {
+            case '\\':
+                ++src;
+                c = gData.regexp.source[src++];
+                switch(c) {
+                    case 'b':
+                        thisCh = 0x8;
+                        break;
+                    case 'f':
+                        thisCh = 0xC;
+                        break;
+                    case 'n':
+                        thisCh = 0xA;
+                        break;
+                    case 'r':
+                        thisCh = 0xD;
+                        break;
+                    case 't':
+                        thisCh = 0x9;
+                        break;
+                    case 'v':
+                        thisCh = 0xB;
+                        break;
+                    case 'c':
+                        if (((src + 1) < end) && isWord(gData.regexp.source[src + 1]))
+                            thisCh = (char) (gData.regexp.source[src++] & 0x1F);
+                        else {
+                            --src;
+                            thisCh = '\\';
+                        }
+                        break;
+                    case 'u':
+                        nDigits += 2;
+                    // fall thru
+                    case 'x':
+                        n = 0;
+                        for (i = 0; (i < nDigits) && (src < end); i++) {
+                            c = gData.regexp.source[src++];
+                            int digit = toASCIIHexDigit(c);
+                            if (digit < 0) {
+                                /* back off to accepting the original '\'
+                             * as a literal
+                             */
+                                src -= (i + 1);
+                                n = '\\';
+                                break;
+                            }
+                            n = (n << 4) | digit;
+                        }
+                        thisCh = (char) (n);
+                        break;
+                    case '0':
+                    case '1':
+                    case '2':
+                    case '3':
+                    case '4':
+                    case '5':
+                    case '6':
+                    case '7':
+                        /*
+                     *  This is a non-ECMA extension - decimal escapes (in this
+                     *  case, octal!) are supposed to be an error inside class
+                     *  ranges, but supported here for backwards compatibility.
+                     *
+                     */
+                        n = (c - '0');
+                        c = gData.regexp.source[src];
+                        if ('0' <= c && c <= '7') {
+                            src++;
+                            n = 8 * n + (c - '0');
+                            c = gData.regexp.source[src];
+                            if ('0' <= c && c <= '7') {
+                                src++;
+                                i = 8 * n + (c - '0');
+                                if (i <= 0377)
+                                    n = i;
+                                else
+                                    src--;
+                            }
+                        }
+                        thisCh = (char) (n);
+                        break;
+                    case 'd':
+                        addCharacterRangeToCharSet(charSet, '0', '9');
+                        continue;
+                    /* don't need range processing */
+                    case 'D':
+                        addCharacterRangeToCharSet(charSet, (char) 0, (char) ('0' - 1));
+                        addCharacterRangeToCharSet(charSet, (char) ('9' + 1), (char) (charSet.length));
+                        continue;
+                    case 's':
+                        for (i = charSet.length; i >= 0; i--) if (isREWhiteSpace(i))
+                            addCharacterToCharSet(charSet, (char) (i));
+                        continue;
+                    case 'S':
+                        for (i = charSet.length; i >= 0; i--) if (!isREWhiteSpace(i))
+                            addCharacterToCharSet(charSet, (char) (i));
+                        continue;
+                    case 'w':
+                        for (i = charSet.length; i >= 0; i--) if (isWord((char) i))
+                            addCharacterToCharSet(charSet, (char) (i));
+                        continue;
+                    case 'W':
+                        for (i = charSet.length; i >= 0; i--) if (!isWord((char) i))
+                            addCharacterToCharSet(charSet, (char) (i));
+                        continue;
+                    default:
+                        thisCh = c;
+                        break;
+                }
+                break;
+            default:
+                thisCh = gData.regexp.source[src++];
+                break;
+        }
+        if (inRange) {
+            if ((gData.regexp.flags & JSREG_FOLD) != 0) {
+                addCharacterRangeToCharSet(charSet, upcase(rangeStart), upcase(thisCh));
+                addCharacterRangeToCharSet(charSet, downcase(rangeStart), downcase(thisCh));
+            } else {
+                addCharacterRangeToCharSet(charSet, rangeStart, thisCh);
+            }
+            inRange = false;
+        } else {
+            if ((gData.regexp.flags & JSREG_FOLD) != 0) {
+                addCharacterToCharSet(charSet, upcase(thisCh));
+                addCharacterToCharSet(charSet, downcase(thisCh));
+            } else {
+                addCharacterToCharSet(charSet, thisCh);
+            }
+            if (src < (end - 1)) {
+                if (gData.regexp.source[src] == '-') {
+                    ++src;
+                    inRange = true;
+                    rangeStart = thisCh;
+                }
+            }
+        }
+    }
+}

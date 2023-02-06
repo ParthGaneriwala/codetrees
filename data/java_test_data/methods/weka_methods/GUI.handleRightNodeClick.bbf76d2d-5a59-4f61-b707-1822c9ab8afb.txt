@@ -1,0 +1,217 @@
+// handleRightClick
+void handleRightNodeClick(MouseEvent me) {
+    m_Selection.clear();
+    repaint();
+    ActionListener renameValueAction = new ActionListener() {
+
+        @Override
+        public void actionPerformed(ActionEvent ae) {
+            renameValue(m_nCurrentNode, ae.getActionCommand());
+        }
+    };
+    ActionListener delValueAction = new ActionListener() {
+
+        @Override
+        public void actionPerformed(ActionEvent ae) {
+            delValue(m_nCurrentNode, ae.getActionCommand());
+        }
+    };
+    ActionListener addParentAction = new ActionListener() {
+
+        @Override
+        public void actionPerformed(ActionEvent ae) {
+            try {
+                m_BayesNet.addArc(ae.getActionCommand(), m_BayesNet.getNodeName(m_nCurrentNode));
+                m_jStatusBar.setText(m_BayesNet.lastActionMsg());
+                updateStatus();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    };
+    ActionListener delParentAction = new ActionListener() {
+
+        @Override
+        public void actionPerformed(ActionEvent ae) {
+            deleteArc(m_nCurrentNode, ae.getActionCommand());
+        }
+    };
+    ActionListener delChildAction = new ActionListener() {
+
+        @Override
+        public void actionPerformed(ActionEvent ae) {
+            deleteArc(ae.getActionCommand(), m_nCurrentNode);
+        }
+    };
+    ActionListener setAvidenceAction = new ActionListener() {
+
+        @Override
+        public void actionPerformed(ActionEvent ae) {
+            try {
+                String[] outcomes = m_BayesNet.getValues(m_nCurrentNode);
+                int iValue = 0;
+                while (iValue < outcomes.length && !outcomes[iValue].equals(ae.getActionCommand())) {
+                    iValue++;
+                }
+                if (iValue == outcomes.length) {
+                    iValue = -1;
+                }
+                if (iValue < outcomes.length) {
+                    m_jStatusBar.setText("Set evidence for " + m_BayesNet.getNodeName(m_nCurrentNode));
+                    if (m_BayesNet.getEvidence(m_nCurrentNode) < 0 && iValue >= 0) {
+                        m_BayesNet.setEvidence(m_nCurrentNode, iValue);
+                        m_marginCalculatorWithEvidence.setEvidence(m_nCurrentNode, iValue);
+                    } else {
+                        m_BayesNet.setEvidence(m_nCurrentNode, iValue);
+                        SerializedObject so = new SerializedObject(m_marginCalculator);
+                        m_marginCalculatorWithEvidence = (MarginCalculator) so.getObject();
+                        for (int iNode = 0; iNode < m_BayesNet.getNrOfNodes(); iNode++) {
+                            if (m_BayesNet.getEvidence(iNode) >= 0) {
+                                m_marginCalculatorWithEvidence.setEvidence(iNode, m_BayesNet.getEvidence(iNode));
+                            }
+                        }
+                    }
+                    for (int iNode = 0; iNode < m_BayesNet.getNrOfNodes(); iNode++) {
+                        m_BayesNet.setMargin(iNode, m_marginCalculatorWithEvidence.getMargin(iNode));
+                    }
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            repaint();
+        }
+    };
+    ActionListener act = new ActionListener() {
+
+        @Override
+        public void actionPerformed(ActionEvent ae) {
+            if (ae.getActionCommand().equals("Rename")) {
+                renameNode(m_nCurrentNode);
+                return;
+            }
+            if (ae.getActionCommand().equals("Add parent")) {
+                addArcInto(m_nCurrentNode);
+                return;
+            }
+            if (ae.getActionCommand().equals("Add value")) {
+                addValue();
+                return;
+            }
+            if (ae.getActionCommand().equals("Delete node")) {
+                deleteNode(m_nCurrentNode);
+                return;
+            }
+            if (ae.getActionCommand().equals("Edit CPT")) {
+                editCPT(m_nCurrentNode);
+                return;
+            }
+            repaint();
+        }
+    };
+    try {
+        JPopupMenu popupMenu = new JPopupMenu("Choose a value");
+        JMenu setEvidenceMenu = new JMenu("Set evidence");
+        String[] outcomes = m_BayesNet.getValues(m_nCurrentNode);
+        for (String outcome : outcomes) {
+            JMenuItem item = new JMenuItem(outcome);
+            item.addActionListener(setAvidenceAction);
+            setEvidenceMenu.add(item);
+        }
+        setEvidenceMenu.addSeparator();
+        JMenuItem item = new JMenuItem("Clear");
+        item.addActionListener(setAvidenceAction);
+        setEvidenceMenu.add(item);
+        popupMenu.add(setEvidenceMenu);
+        setEvidenceMenu.setEnabled(m_bViewMargins);
+        popupMenu.addSeparator();
+        JMenuItem renameItem = new JMenuItem("Rename");
+        renameItem.addActionListener(act);
+        popupMenu.add(renameItem);
+        JMenuItem delNodeItem = new JMenuItem("Delete node");
+        delNodeItem.addActionListener(act);
+        popupMenu.add(delNodeItem);
+        JMenuItem editCPTItem = new JMenuItem("Edit CPT");
+        editCPTItem.addActionListener(act);
+        popupMenu.add(editCPTItem);
+        popupMenu.addSeparator();
+        JMenu addArcMenu = new JMenu("Add parent");
+        popupMenu.add(addArcMenu);
+        int nNodes = m_BayesNet.getNrOfNodes();
+        boolean[] isNotAllowedAsParent = new boolean[nNodes];
+        // prevent it being a parent of itself
+        isNotAllowedAsParent[m_nCurrentNode] = true;
+        // prevent a descendant being a parent, since it introduces cycles
+        for (int i = 0; i < nNodes; i++) {
+            for (int iNode = 0; iNode < nNodes; iNode++) {
+                for (int iParent = 0; iParent < m_BayesNet.getNrOfParents(iNode); iParent++) {
+                    if (isNotAllowedAsParent[m_BayesNet.getParent(iNode, iParent)]) {
+                        isNotAllowedAsParent[iNode] = true;
+                    }
+                }
+            }
+        }
+        // prevent nodes that are already a parent
+        for (int iParent = 0; iParent < m_BayesNet.getNrOfParents(m_nCurrentNode); iParent++) {
+            isNotAllowedAsParent[m_BayesNet.getParent(m_nCurrentNode, iParent)] = true;
+        }
+        // count nr of remaining candidates
+        int nCandidates = 0;
+        for (int i = 0; i < nNodes; i++) {
+            if (!isNotAllowedAsParent[i]) {
+                item = new JMenuItem(m_BayesNet.getNodeName(i));
+                item.addActionListener(addParentAction);
+                addArcMenu.add(item);
+                nCandidates++;
+            }
+        }
+        if (nCandidates == 0) {
+            addArcMenu.setEnabled(false);
+        }
+        JMenu delArcMenu = new JMenu("Delete parent");
+        popupMenu.add(delArcMenu);
+        if (m_BayesNet.getNrOfParents(m_nCurrentNode) == 0) {
+            delArcMenu.setEnabled(false);
+        }
+        for (int iParent = 0; iParent < m_BayesNet.getNrOfParents(m_nCurrentNode); iParent++) {
+            item = new JMenuItem(m_BayesNet.getNodeName(m_BayesNet.getParent(m_nCurrentNode, iParent)));
+            item.addActionListener(delParentAction);
+            delArcMenu.add(item);
+        }
+        JMenu delChildMenu = new JMenu("Delete child");
+        popupMenu.add(delChildMenu);
+        ArrayList<Integer> nChildren = m_BayesNet.getChildren(m_nCurrentNode);
+        if (nChildren.size() == 0) {
+            delChildMenu.setEnabled(false);
+        }
+        for (int iChild = 0; iChild < nChildren.size(); iChild++) {
+            item = new JMenuItem(m_BayesNet.getNodeName(nChildren.get(iChild)));
+            item.addActionListener(delChildAction);
+            delChildMenu.add(item);
+        }
+        popupMenu.addSeparator();
+        JMenuItem addValueItem = new JMenuItem("Add value");
+        addValueItem.addActionListener(act);
+        popupMenu.add(addValueItem);
+        JMenu renameValue = new JMenu("Rename value");
+        popupMenu.add(renameValue);
+        for (String outcome : outcomes) {
+            item = new JMenuItem(outcome);
+            item.addActionListener(renameValueAction);
+            renameValue.add(item);
+        }
+        JMenu delValue = new JMenu("Delete value");
+        popupMenu.add(delValue);
+        if (m_BayesNet.getCardinality(m_nCurrentNode) <= 2) {
+            delValue.setEnabled(false);
+        }
+        for (String outcome : outcomes) {
+            JMenuItem delValueItem = new JMenuItem(outcome);
+            delValueItem.addActionListener(delValueAction);
+            delValue.add(delValueItem);
+        }
+        popupMenu.setLocation(me.getX(), me.getY());
+        popupMenu.show(m_GraphPanel, me.getX(), me.getY());
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+}

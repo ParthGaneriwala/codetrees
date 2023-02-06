@@ -1,0 +1,68 @@
+// connects to the first datanode in the pipeline
+// Returns true if success, otherwise return failure.
+private boolean createBlockOutputStream(DatanodeInfo[] nodes, String client, boolean recoveryFlag) {
+    String firstBadLink = "";
+    if (LOG.isDebugEnabled()) {
+        for (int i = 0; i < nodes.length; i++) {
+            LOG.debug("pipeline = " + nodes[i].getName());
+        }
+    }
+    // persist blocks on namenode on next flush
+    persistBlocks = true;
+    try {
+        LOG.debug("Connecting to " + nodes[0].getName());
+        InetSocketAddress target = NetUtils.createSocketAddr(nodes[0].getName());
+        s = socketFactory.createSocket();
+        int timeoutValue = 3000 * nodes.length + socketTimeout;
+        s.connect(target, timeoutValue);
+        s.setSoTimeout(timeoutValue);
+        s.setSendBufferSize(DEFAULT_DATA_SOCKET_SIZE);
+        LOG.debug("Send buf size " + s.getSendBufferSize());
+        long writeTimeout = HdfsConstants.WRITE_TIMEOUT_EXTENSION * nodes.length + datanodeWriteTimeout;
+        // 
+        // Xmit header info to datanode
+        // 
+        DataOutputStream out = new DataOutputStream(new BufferedOutputStream(NetUtils.getOutputStream(s, writeTimeout), DataNode.SMALL_BUFFER_SIZE));
+        blockReplyStream = new DataInputStream(NetUtils.getInputStream(s));
+        out.writeShort(DataTransferProtocol.DATA_TRANSFER_VERSION);
+        out.write(DataTransferProtocol.OP_WRITE_BLOCK);
+        out.writeLong(block.getBlockId());
+        out.writeLong(block.getGenerationStamp());
+        out.writeInt(nodes.length);
+        // recovery flag
+        out.writeBoolean(recoveryFlag);
+        Text.writeString(out, client);
+        // Not sending src node information
+        out.writeBoolean(false);
+        out.writeInt(nodes.length - 1);
+        for (int i = 1; i < nodes.length; i++) {
+            nodes[i].write(out);
+        }
+        checksum.writeHeader(out);
+        out.flush();
+        // receive ack for connect
+        firstBadLink = Text.readString(blockReplyStream);
+        if (firstBadLink.length() != 0) {
+            throw new IOException("Bad connect ack with firstBadLink " + firstBadLink);
+        }
+        blockStream = out;
+        // success
+        return true;
+    } catch (IOException ie) {
+        LOG.info("Exception in createBlockOutputStream " + ie);
+        // find the datanode that matches
+        if (firstBadLink.length() != 0) {
+            for (int i = 0; i < nodes.length; i++) {
+                if (nodes[i].getName().equals(firstBadLink)) {
+                    errorIndex = i;
+                    break;
+                }
+            }
+        }
+        hasError = true;
+        setLastException(ie);
+        blockReplyStream = null;
+        // error
+        return false;
+    }
+}

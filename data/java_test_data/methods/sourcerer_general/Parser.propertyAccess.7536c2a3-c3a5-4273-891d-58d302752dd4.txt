@@ -1,0 +1,63 @@
+private AstNode propertyAccess(int tt, AstNode pn) throws IOException {
+    if (pn == null)
+        codeBug();
+    int memberTypeFlags = 0, lineno = ts.lineno, dotPos = ts.tokenBeg;
+    consumeToken();
+    if (tt == Token.DOTDOT) {
+        mustHaveXML();
+        memberTypeFlags = Node.DESCENDANTS_FLAG;
+    }
+    if (!compilerEnv.isXmlAvailable()) {
+        int maybeName = nextToken();
+        if (maybeName != Token.NAME && !(compilerEnv.isAllowKeywordAsObjectPropertyName() && TokenStream.isKeyword(ts.getString()))) {
+            reportError("msg.no.name.after.dot");
+        }
+        Name name = createNameNode(true, Token.GETPROP);
+        PropertyGet pg = new PropertyGet(pn, name, dotPos);
+        pg.setLineno(lineno);
+        return pg;
+    }
+    // right side of . or .. operator
+    AstNode ref = null;
+    switch(nextToken()) {
+        case Token.THROW:
+            // needed for generator.throw();
+            saveNameTokenData(ts.tokenBeg, "throw", ts.lineno);
+            ref = propertyName(-1, "throw", memberTypeFlags);
+            break;
+        case Token.NAME:
+            // handles: name, ns::name, ns::*, ns::[expr]
+            ref = propertyName(-1, ts.getString(), memberTypeFlags);
+            break;
+        case Token.MUL:
+            // handles: *, *::name, *::*, *::[expr]
+            saveNameTokenData(ts.tokenBeg, "*", ts.lineno);
+            ref = propertyName(-1, "*", memberTypeFlags);
+            break;
+        case Token.XMLATTR:
+            // handles: '@attr', '@ns::attr', '@ns::*', '@ns::*',
+            // '@::attr', '@::*', '@*', '@*::attr', '@*::*'
+            ref = attributeAccess();
+            break;
+        default:
+            if (compilerEnv.isAllowKeywordAsObjectPropertyName() && TokenStream.isKeyword(ts.getString())) {
+                ref = propertyName(-1, ts.getString(), memberTypeFlags);
+            } else {
+                reportError("msg.no.name.after.dot");
+                return makeErrorNode();
+            }
+    }
+    boolean xml = ref instanceof XmlRef;
+    InfixExpression result = xml ? new XmlMemberGet() : new PropertyGet();
+    if (xml && tt == Token.DOT)
+        result.setType(Token.DOT);
+    int pos = pn.getPosition();
+    result.setPosition(pos);
+    result.setLength(getNodeEnd(ref) - pos);
+    result.setOperatorPosition(dotPos - pos);
+    result.setLineno(lineno);
+    // do this after setting position
+    result.setLeft(pn);
+    result.setRight(ref);
+    return result;
+}

@@ -1,0 +1,150 @@
+// -------------------------------------------------------------------------
+// -------------------------------------------------------------------------
+// -------------------------------------------------------------------------
+/**
+ * Implements ExtendSpecForCall, section 7.3 of ESCJ 16.
+ */
+private static Spec extendSpecForCall(/* @ non_null */
+Spec spec, /* @ non_null */
+FindContributors scope, Set predictedSynTargs) {
+    // FIXME - I'm not sure that \old variables not in the modifies list get
+    // translated here
+    // I think those translations are in scope but not in spec.
+    // spec.preVarMap contains the modified variables for the current routine
+    // but it is the preVarMap in the initialState generated from scope that has
+    // the
+    // relevant mappings of variables mentioned in \old expressions
+    // The set of variables modified by *this* GC call:
+    Set modifiedVars = new Set(spec.preVarMap.keys());
+    ParamAndGlobalVarInfo vars = null;
+    spec.dmd.isConstructor();
+    InvariantInfo ii = mergeInvariants(collectInvariants(scope, spec.preVarMap));
+    for (; ii != null; ii = ii.next) {
+        int tag = ii.prag.getTag();
+        boolean includeInPre = true;
+        boolean includeInPost = tag != TagConstants.AXIOM;
+        /*
+       * Does ii mention a variable that this GC call will modify?
+       */
+        Set invFV = Substitute.freeVars(ii.J);
+        boolean mentionsModifiedVars = Main.options().useAllInvPostCall || invFV.containsAny(modifiedVars) || spec.modifiesEverything;
+        /*
+       * Does ii mention a variable that the body that is making the GC call
+       * ever modifies?
+       */
+        boolean falsifiable = true;
+        if (predictedSynTargs != null || spec.modifiesEverything) {
+            Assert.notFalse(!Main.options().useAllInvPreBody);
+            falsifiable = invFV.containsAny(predictedSynTargs);
+        }
+        if (ii.isStatic) {
+            // static invariant
+            // PRECONDITION for static invariant
+            Condition cond = GC.condition(TagConstants.CHKOBJECTINVARIANT, ii.J, ii.prag.getStartLoc());
+            if (falsifiable && includeInPre)
+                spec.pre.addElement(cond);
+            if (mentionsModifiedVars) {
+                // The free variables of "J" overlap with "synTargs", so add "J"
+                cond = GC.freeCondition(ii.J, ii.prag.getStartLoc());
+                if (includeInPost)
+                    spec.post.addElement(cond);
+            }
+        } else {
+            // instance invariant
+            Assert.notNull(ii.sdecl);
+            Assert.notNull(ii.s);
+            if (falsifiable) {
+                // Gather parameters and static fields, unless already cached
+                if (vars == null) {
+                    vars = collectParamsAndGlobals(spec, scope);
+                }
+                /*
+           * Without any optimizations, we would generate one precondition here,
+           * 
+           * p == null || !is(p, trType[[ U ]]) || TrSpecExpr[[ J, {this-->p}, {} ]]
+           * 
+           * for each parameter or static field "p", where U is the type of this
+           * in invariant J.
+           * 
+           * 
+           * Optimizations:
+           *  - First, generate no preconditions for any p such that we can
+           * prove statically that p cannot have type U at runtime.
+           *  - Second, combine all the remaining preconditions into 1
+           * universally quantified precondition:
+           * 
+           * (FORALL s :: (s == p0 || s == p1 || ...) ==> s == null || !is(s,
+           * trType[[ U ]] || TrSpecExpr[[ J, {this-->p}, {} ]] )
+           * 
+           * where "p0", "p1", ... are the parameters and static fields. If the
+           * list "p0", "p1", ... is empty, don't generate a precondition.
+           *  - Third, if all of the p_i's are "non_null", drop the disjunct "s ==
+           * null".
+           *  - Fourth, if all of the p_i's can be proved to be statically of
+           * type U, drop the disjunct "!is(s, trType[[ U ]]".
+           */
+                // Build equalities & collect info on which disjuncts to include:
+                boolean allAreNonnull = true;
+                boolean allAreOfTypeU = true;
+                ExprVec alternatives = ExprVec.make();
+                for (ParamAndGlobalVarInfo info = vars; info != null; info = info.next) {
+                    if (!Types.isSubclassOf(info.U, ii.U)) {
+                        // p may not always/never hold an object of type U (ii.U)
+                        if (!Types.isSubclassOf(ii.U, info.U))
+                            // p can never hold an object of type U (ii.U)
+                            continue;
+                        allAreOfTypeU = false;
+                    }
+                    Expr eq = GC.nary(TagConstants.REFEQ, ii.s, TrAnExpr.makeVarAccess(info.vdecl, Location.NULL));
+                    alternatives.addElement(eq);
+                    // if (! info.isNonnull) // FIXME
+                    allAreNonnull = false;
+                }
+                /*
+           * -noOutCalls changes this to check *in addition* all non-null
+           * allocated objects of dynamic type U *except* objectToBeConstructed:
+           */
+                if (Main.options().noOutCalls) {
+                    // isAllocated(ii.s, alloc [in pre-state])
+                    Expr isAllocated = GC.nary(TagConstants.ISALLOCATED, ii.s, GC.allocvar);
+                    Expr notEq = GC.nary(TagConstants.REFNE, ii.s, GC.objectTBCvar);
+                    alternatives.addElement(GC.and(isAllocated, notEq));
+                    allAreNonnull = false;
+                    allAreOfTypeU = false;
+                }
+                // build precondition if any alternatives:
+                if (alternatives.size() != 0) {
+                    Expr ante = GC.or(alternatives);
+                    Expr cons = ii.J;
+                    ExprVec disjuncts = ExprVec.make();
+                    if (!allAreNonnull)
+                        disjuncts.addElement(GC.nary(TagConstants.REFEQ, ii.s, GC.nulllit));
+                    if (!allAreOfTypeU)
+                        disjuncts.addElement(GC.not(GC.nary(TagConstants.IS, ii.s, TrAnExpr.trType(ii.U))));
+                    if (disjuncts.size() != 0) {
+                        disjuncts.addElement(cons);
+                        cons = GC.or(disjuncts);
+                    }
+                    Expr quant = GC.forall(ii.sdecl, GC.implies(ante, cons));
+                    Condition cond = GC.condition(TagConstants.CHKOBJECTINVARIANT, quant, ii.prag.getStartLoc());
+                    if (includeInPre)
+                        spec.pre.addElement(cond);
+                }
+            }
+            if (mentionsModifiedVars && includeInPost) {
+                // TypeCorrectNoallocAs[[ s, U ]] && s != null
+                ExprVec ev = TrAnExpr.typeAndNonNullAllocCorrectAs(ii.sdecl, ii.U, null, true, null, false);
+                ExprVec nopats = ev.copy();
+                Expr p = TrAnExpr.trSpecExpr(ii.prag.expr, TrAnExpr.union(spec.preVarMap, ii.map), null);
+                if (spec.modifiesEverything)
+                    collectFields(p, spec.postconditionLocations);
+                if (includeInPre)
+                    ev.addElement(p);
+                Expr ante = GC.and(ev);
+                Expr impl = GC.implies(ante, ii.J);
+                spec.post.addElement(GC.freeCondition(GC.forall(ii.sdecl, impl, nopats), ii.prag.getStartLoc()));
+            }
+        }
+    }
+    return spec;
+}

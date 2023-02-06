@@ -1,0 +1,68 @@
+private static long generateWord(Context ctx) {
+    Experiment exp = Experiment.getInstance();
+    FactorTupleDescription desc = exp.getTupleDescription();
+    ArrayList<LanguageModel> lms = forest.getModels();
+    final int nrModels = lms.size();
+    final int nrTotalModels = Experiment.getInstance().getNumLMs();
+    int[] clustersByLMId = new int[exp.getNumLMs()];
+    int[] clusters = new int[nrModels];
+    for (int i = 0; i < nrModels; ++i) {
+        LanguageModel lm = lms.get(i);
+        int clusterid = lm.context2cluster(ctx);
+        clusters[i] = clusterid;
+        clustersByLMId[lm.getIdNum()] = clusterid;
+    }
+    ArrayList<LanguageModel> bigramLMs = bigramForest.getModels();
+    int[] boClusters = new int[bigramLMs.size()];
+    for (byte i = 0; i < boClusters.length; ++i) {
+        LanguageModel lm = bigramLMs.get(i);
+        int lmId = lm.getIdNum();
+        if (clustersByLMId[lmId] == 0) {
+            clustersByLMId[lmId] = lm.context2cluster(ctx);
+        }
+        boClusters[i] = clustersByLMId[lmId];
+    }
+    // the words in decreasing probability order according to a lower order model
+    long[] wordOrder = boContextMap.getItem(new ContextClusters(boClusters));
+    Random rnd = new Random();
+    double total = 0;
+    double point = rnd.nextDouble();
+    Decoder decoder = forest.getDecoder();
+    for (int pos = 0; pos < wordOrder.length; ++pos) {
+        long word = wordOrder[pos];
+        RequestBundle<Key, OnDiskCompactProbTree> bundle = new RequestBundle<Key, OnDiskCompactProbTree>(decoder.getStorage());
+        @SuppressWarnings("unchecked") BinaryTree<HistoryTreePayload>[] requestNodes = new BinaryTree[nrTotalModels];
+        for (byte i = 0; i < nrModels; ++i) {
+            LanguageModel lm = lms.get(i);
+            int clusterid = clusters[i];
+            requestNodes[lm.getIdNum()] = lm.getNodes()[clusterid];
+            Key key = new Key(lm.getIdNum(), clusterid, word);
+            bundle.request(key);
+        }
+        try {
+            bundle.sync();
+        } catch (InterruptedException e) {
+        }
+        OnDiskCompactProbTree probTree = decoder.computeProbTree(requestNodes, word, bundle.getResults(), null);
+        if (probTree == null)
+            continue;
+        double prob = probTree.getProb();
+        if (prob + total >= point) {
+            nrWords.incrementAndGet();
+            nrWordsTried.addAndGet(pos + 1);
+            double factorPoint = Math.random();
+            double factorTotal = 0;
+            for (int i = 0; i < probTree.getSize(); ++i) {
+                factorTotal += probTree.getProbabilities()[i];
+                if (factorTotal >= factorPoint) {
+                    long hiddenFactors = desc.unpackHiddenFactorsFromInt(probTree.getCompactHiddenFactors()[i]);
+                    return word | hiddenFactors;
+                }
+            }
+        } else {
+            total += prob;
+        }
+    }
+    System.err.printf("nothing found? total = %g, nrWords = %d\n", total, wordOrder.length);
+    return desc.createEndTuple();
+}

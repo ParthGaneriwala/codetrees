@@ -1,0 +1,197 @@
+Statement compileSQLProcedureStatementOrNull(Routine routine, StatementCompound context) {
+    Statement cs = null;
+    HsqlName label = null;
+    RangeVariable[] rangeVariables = context == null ? routine.getParameterRangeVariables() : context.getRangeVariables();
+    if (!routine.isTrigger() && isSimpleName() && !isReservedKey()) {
+        label = readNewSchemaObjectName(SchemaObject.LABEL, false);
+        readThis(Tokens.COLON);
+    }
+    compileContext.reset();
+    switch(token.tokenType) {
+        // data
+        case Tokens.SELECT:
+            {
+                if (routine.dataImpact == Routine.CONTAINS_SQL) {
+                    throw Error.error(ErrorCode.X_42608, routine.getDataImpactString());
+                }
+                if (label != null) {
+                    throw unexpectedToken();
+                }
+                cs = compileSelectSingleRowStatement(rangeVariables);
+                break;
+            }
+        // data change
+        case Tokens.INSERT:
+            if (routine.dataImpact != Routine.MODIFIES_SQL) {
+                throw Error.error(ErrorCode.X_42608, routine.getDataImpactString());
+            }
+            if (label != null) {
+                throw unexpectedToken();
+            }
+            cs = compileInsertStatement(rangeVariables);
+            break;
+        case Tokens.UPDATE:
+            if (routine.dataImpact != Routine.MODIFIES_SQL) {
+                throw Error.error(ErrorCode.X_42608, routine.getDataImpactString());
+            }
+            if (label != null) {
+                throw unexpectedToken();
+            }
+            cs = compileUpdateStatement(rangeVariables);
+            break;
+        case Tokens.DELETE:
+        case Tokens.TRUNCATE:
+            if (routine.dataImpact != Routine.MODIFIES_SQL) {
+                throw Error.error(ErrorCode.X_42608, routine.getDataImpactString());
+            }
+            if (label != null) {
+                throw unexpectedToken();
+            }
+            cs = compileDeleteStatement(rangeVariables);
+            break;
+        case Tokens.MERGE:
+            if (routine.dataImpact != Routine.MODIFIES_SQL) {
+                throw Error.error(ErrorCode.X_42608, routine.getDataImpactString());
+            }
+            if (label != null) {
+                throw unexpectedToken();
+            }
+            cs = compileMergeStatement(rangeVariables);
+            break;
+        case Tokens.SET:
+            if (label != null) {
+                throw unexpectedToken();
+            }
+            if (routine.isTrigger()) {
+                if (routine.triggerOperation == StatementTypes.DELETE_WHERE) {
+                    throw unexpectedToken();
+                }
+                if (routine.triggerType != TriggerDef.BEFORE) {
+                    throw unexpectedToken();
+                }
+                cs = compileTriggerSetStatement(routine.triggerTable, rangeVariables);
+            } else {
+                cs = compileSetStatement(rangeVariables);
+            }
+            break;
+        // control
+        case Tokens.CALL:
+            {
+                if (label != null) {
+                    throw unexpectedToken();
+                }
+                cs = compileCallStatement(rangeVariables, true);
+                Routine proc = ((StatementProcedure) cs).procedure;
+                if (proc != null) {
+                    switch(routine.dataImpact) {
+                        case Routine.CONTAINS_SQL:
+                            {
+                                if (proc.dataImpact == Routine.READS_SQL || proc.dataImpact == Routine.MODIFIES_SQL) {
+                                    throw Error.error(ErrorCode.X_42608, routine.getDataImpactString());
+                                }
+                            }
+                        case Routine.READS_SQL:
+                            {
+                                if (routine.dataImpact == Routine.MODIFIES_SQL) {
+                                    throw Error.error(ErrorCode.X_42608, routine.getDataImpactString());
+                                }
+                            }
+                    }
+                }
+                break;
+            }
+        case Tokens.RETURN:
+            {
+                if (routine.isTrigger() || label != null) {
+                    throw unexpectedToken();
+                }
+                read();
+                cs = compileReturnValue(routine, context);
+                break;
+            }
+        case Tokens.BEGIN:
+            {
+                cs = compileCompoundStatement(routine, context, label);
+                break;
+            }
+        case Tokens.WHILE:
+            {
+                if (routine.isTrigger()) {
+                    throw unexpectedToken();
+                }
+                cs = compileWhile(routine, context, label);
+                break;
+            }
+        case Tokens.REPEAT:
+            {
+                if (routine.isTrigger()) {
+                    throw unexpectedToken();
+                }
+                cs = compileRepeat(routine, context, label);
+                break;
+            }
+        case Tokens.LOOP:
+            {
+                if (routine.isTrigger()) {
+                    throw unexpectedToken();
+                }
+                cs = compileLoop(routine, context, label);
+                break;
+            }
+        case Tokens.FOR:
+            {
+                if (routine.isTrigger()) {
+                    throw unexpectedToken();
+                }
+                cs = compileFor(routine, context, label);
+                break;
+            }
+        case Tokens.ITERATE:
+            {
+                if (routine.isTrigger() || label != null) {
+                    throw unexpectedToken();
+                }
+                cs = compileIterate();
+                break;
+            }
+        case Tokens.LEAVE:
+            {
+                if (routine.isTrigger() || label != null) {
+                    throw unexpectedToken();
+                }
+                cs = compileLeave(routine, context);
+                break;
+            }
+        case Tokens.IF:
+            {
+                cs = compileIf(routine, context);
+                break;
+            }
+        case Tokens.CASE:
+            {
+                cs = compileCase(routine, context);
+                break;
+            }
+        case Tokens.SIGNAL:
+            {
+                if (routine.isTrigger() || label != null) {
+                    throw unexpectedToken();
+                }
+                cs = compileSignal(routine, context, label);
+                break;
+            }
+        case Tokens.RESIGNAL:
+            {
+                if (routine.isTrigger() || label != null) {
+                    throw unexpectedToken();
+                }
+                cs = compileResignal(routine, context, label);
+                break;
+            }
+        default:
+            return null;
+    }
+    cs.setRoot(routine);
+    cs.setParent(context);
+    return cs;
+}

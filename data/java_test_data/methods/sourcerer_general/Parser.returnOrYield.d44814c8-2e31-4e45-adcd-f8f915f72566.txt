@@ -1,0 +1,52 @@
+private AstNode returnOrYield(int tt, boolean exprContext) throws IOException {
+    if (!insideFunction()) {
+        reportError(tt == Token.RETURN ? "msg.bad.return" : "msg.bad.yield");
+    }
+    consumeToken();
+    int lineno = ts.lineno, pos = ts.tokenBeg, end = ts.tokenEnd;
+    AstNode e = null;
+    // This is ugly, but we don't want to require a semicolon.
+    switch(peekTokenOrEOL()) {
+        case Token.SEMI:
+        case Token.RC:
+        case Token.RB:
+        case Token.RP:
+        case Token.EOF:
+        case Token.EOL:
+        case Token.ERROR:
+        case Token.YIELD:
+            break;
+        default:
+            e = expr();
+            end = getNodeEnd(e);
+    }
+    int before = endFlags;
+    AstNode ret;
+    if (tt == Token.RETURN) {
+        endFlags |= e == null ? Node.END_RETURNS : Node.END_RETURNS_VALUE;
+        ret = new ReturnStatement(pos, end - pos, e);
+        // see if we need a strict mode warning
+        if (nowAllSet(before, endFlags, Node.END_RETURNS | Node.END_RETURNS_VALUE))
+            addStrictWarning("msg.return.inconsistent", "", pos, end - pos);
+    } else {
+        if (!insideFunction())
+            reportError("msg.bad.yield");
+        endFlags |= Node.END_YIELDS;
+        ret = new Yield(pos, end - pos, e);
+        setRequiresActivation();
+        setIsGenerator();
+        if (!exprContext) {
+            ret = new ExpressionStatement(ret);
+        }
+    }
+    // see if we are mixing yields and value returns.
+    if (insideFunction() && nowAllSet(before, endFlags, Node.END_YIELDS | Node.END_RETURNS_VALUE)) {
+        Name name = ((FunctionNode) currentScriptOrFn).getFunctionName();
+        if (name == null || name.length() == 0)
+            addError("msg.anon.generator.returns", "");
+        else
+            addError("msg.generator.returns", name.getIdentifier());
+    }
+    ret.setLineno(lineno);
+    return ret;
+}

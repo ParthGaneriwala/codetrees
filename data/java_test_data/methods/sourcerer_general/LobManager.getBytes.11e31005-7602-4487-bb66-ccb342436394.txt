@@ -1,0 +1,54 @@
+public synchronized Result getBytes(long lobID, long offset, int length) {
+    int blockOffset = (int) (offset / lobBlockSize);
+    int byteBlockOffset = (int) (offset % lobBlockSize);
+    int blockLimit = (int) ((offset + length) / lobBlockSize);
+    int byteLimitOffset = (int) ((offset + length) % lobBlockSize);
+    if (byteLimitOffset == 0) {
+        byteLimitOffset = lobBlockSize;
+    } else {
+        blockLimit++;
+    }
+    int dataBytesPosition = 0;
+    byte[] dataBytes = new byte[length];
+    int[][] blockAddresses = getBlockAddresses(lobID, blockOffset, blockLimit);
+    if (blockAddresses.length == 0) {
+        return Result.newErrorResult(Error.error(ErrorCode.X_0F502));
+    }
+    // 
+    int i = 0;
+    int blockCount = blockAddresses[i][LOBS.BLOCK_COUNT] + blockAddresses[i][LOBS.BLOCK_OFFSET] - blockOffset;
+    if (blockAddresses[i][LOBS.BLOCK_COUNT] + blockAddresses[i][LOBS.BLOCK_OFFSET] > blockLimit) {
+        blockCount -= (blockAddresses[i][LOBS.BLOCK_COUNT] + blockAddresses[i][LOBS.BLOCK_OFFSET] - blockLimit);
+    }
+    byte[] bytes;
+    try {
+        bytes = getLobStore().getBlockBytes(blockAddresses[i][LOBS.BLOCK_ADDR] + blockOffset, blockCount);
+    } catch (HsqlException e) {
+        return Result.newErrorResult(e);
+    }
+    int subLength = lobBlockSize * blockCount - byteBlockOffset;
+    if (subLength > length) {
+        subLength = length;
+    }
+    System.arraycopy(bytes, byteBlockOffset, dataBytes, dataBytesPosition, subLength);
+    dataBytesPosition += subLength;
+    i++;
+    for (; i < blockAddresses.length && dataBytesPosition < length; i++) {
+        blockCount = blockAddresses[i][LOBS.BLOCK_COUNT];
+        if (blockAddresses[i][LOBS.BLOCK_COUNT] + blockAddresses[i][LOBS.BLOCK_OFFSET] > blockLimit) {
+            blockCount -= (blockAddresses[i][LOBS.BLOCK_COUNT] + blockAddresses[i][LOBS.BLOCK_OFFSET] - blockLimit);
+        }
+        try {
+            bytes = getLobStore().getBlockBytes(blockAddresses[i][LOBS.BLOCK_ADDR], blockCount);
+        } catch (HsqlException e) {
+            return Result.newErrorResult(e);
+        }
+        subLength = lobBlockSize * blockCount;
+        if (subLength > length - dataBytesPosition) {
+            subLength = length - dataBytesPosition;
+        }
+        System.arraycopy(bytes, 0, dataBytes, dataBytesPosition, subLength);
+        dataBytesPosition += subLength;
+    }
+    return ResultLob.newLobGetBytesResponse(lobID, offset, dataBytes);
+}

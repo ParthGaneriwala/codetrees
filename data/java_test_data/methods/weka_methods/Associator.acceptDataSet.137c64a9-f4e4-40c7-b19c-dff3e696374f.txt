@@ -1,0 +1,92 @@
+@Override
+public void acceptDataSet(final DataSetEvent e) {
+    if (e.isStructureOnly()) {
+        // no need to build an associator, just absorb and return
+        return;
+    }
+    if (m_buildThread == null) {
+        try {
+            if (m_state == IDLE) {
+                synchronized (this) {
+                    m_state = BUILDING_MODEL;
+                }
+                final Instances trainingData = e.getDataSet();
+                // final String oldText = m_visual.getText();
+                m_buildThread = new Thread() {
+
+                    @SuppressWarnings("deprecation")
+                    @Override
+                    public void run() {
+                        try {
+                            if (trainingData != null) {
+                                m_visual.setAnimated();
+                                // m_visual.setText("Building model...");
+                                if (m_log != null) {
+                                    m_log.statusMessage(statusMessagePrefix() + "Building model...");
+                                }
+                                buildAssociations(trainingData);
+                                if (m_textListeners.size() > 0) {
+                                    String modelString = m_Associator.toString();
+                                    String titleString = m_Associator.getClass().getName();
+                                    titleString = titleString.substring(titleString.lastIndexOf('.') + 1, titleString.length());
+                                    modelString = "=== Associator model ===\n\n" + "Scheme:   " + titleString + "\n" + "Relation: " + trainingData.relationName() + "\n\n" + modelString;
+                                    titleString = "Model: " + titleString;
+                                    TextEvent nt = new TextEvent(Associator.this, modelString, titleString);
+                                    notifyTextListeners(nt);
+                                }
+                                if (m_Associator instanceof weka.core.Drawable && m_graphListeners.size() > 0) {
+                                    String grphString = ((weka.core.Drawable) m_Associator).graph();
+                                    int grphType = ((weka.core.Drawable) m_Associator).graphType();
+                                    String grphTitle = m_Associator.getClass().getName();
+                                    grphTitle = grphTitle.substring(grphTitle.lastIndexOf('.') + 1, grphTitle.length());
+                                    grphTitle = " (" + e.getDataSet().relationName() + ") " + grphTitle;
+                                    GraphEvent ge = new GraphEvent(Associator.this, grphString, grphTitle, grphType);
+                                    notifyGraphListeners(ge);
+                                }
+                                if ((m_Associator instanceof AssociationRulesProducer) && m_rulesListeners.size() > 0) {
+                                    AssociationRules rules = ((AssociationRulesProducer) m_Associator).getAssociationRules();
+                                    BatchAssociationRulesEvent bre = new BatchAssociationRulesEvent(Associator.this, rules);
+                                    notifyRulesListeners(bre);
+                                }
+                            }
+                        } catch (Exception ex) {
+                            Associator.this.stop();
+                            if (m_log != null) {
+                                m_log.statusMessage(statusMessagePrefix() + "ERROR (See log for details)");
+                                m_log.logMessage("[Associator] " + statusMessagePrefix() + " problem training associator. " + ex.getMessage());
+                            }
+                            ex.printStackTrace();
+                        } finally {
+                            // m_visual.setText(oldText);
+                            m_visual.setStatic();
+                            m_state = IDLE;
+                            if (isInterrupted()) {
+                                if (m_log != null) {
+                                    String titleString = m_Associator.getClass().getName();
+                                    titleString = titleString.substring(titleString.lastIndexOf('.') + 1, titleString.length());
+                                    m_log.logMessage("[Associator] " + statusMessagePrefix() + " Build associator interrupted!");
+                                    m_log.statusMessage(statusMessagePrefix() + "INTERRUPTED");
+                                }
+                            } else {
+                                if (m_log != null) {
+                                    m_log.statusMessage(statusMessagePrefix() + "Finished.");
+                                }
+                            }
+                            block(false);
+                        }
+                    }
+                };
+                m_buildThread.setPriority(Thread.MIN_PRIORITY);
+                m_buildThread.start();
+                // make sure the thread is still running before we block
+                // if (m_buildThread.isAlive()) {
+                block(true);
+                // }
+                m_buildThread = null;
+                m_state = IDLE;
+            }
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+    }
+}

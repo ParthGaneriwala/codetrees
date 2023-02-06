@@ -1,0 +1,105 @@
+private void loadResource(Properties properties, Object name, boolean quiet) {
+    try {
+        DocumentBuilderFactory docBuilderFactory = DocumentBuilderFactory.newInstance();
+        // ignore all comments inside the xml file
+        docBuilderFactory.setIgnoringComments(true);
+        DocumentBuilder builder = docBuilderFactory.newDocumentBuilder();
+        Document doc = null;
+        if (name instanceof URL) {
+            // an URL resource
+            URL url = (URL) name;
+            if (url != null) {
+                if (!quiet) {
+                    LOG.info("parsing " + url);
+                }
+                doc = builder.parse(url.toString());
+            }
+        } else if (name instanceof String) {
+            // a CLASSPATH resource
+            URL url = getResource((String) name);
+            if (url != null) {
+                if (!quiet) {
+                    LOG.info("parsing " + url);
+                }
+                doc = builder.parse(url.toString());
+            }
+        } else if (name instanceof Path) {
+            // a file resource
+            // Can't use FileSystem API or we get an infinite loop
+            // since FileSystem uses Configuration API.  Use java.io.File instead.
+            File file = new File(((Path) name).toUri().getPath()).getAbsoluteFile();
+            if (file.exists()) {
+                if (!quiet) {
+                    LOG.info("parsing " + file);
+                }
+                InputStream in = new BufferedInputStream(new FileInputStream(file));
+                try {
+                    doc = builder.parse(in);
+                } finally {
+                    in.close();
+                }
+            }
+        } else if (name instanceof InputStream) {
+            try {
+                doc = builder.parse((InputStream) name);
+            } finally {
+                ((InputStream) name).close();
+            }
+        }
+        if (doc == null) {
+            if (quiet)
+                return;
+            throw new RuntimeException(name + " not found");
+        }
+        Element root = doc.getDocumentElement();
+        if (!"configuration".equals(root.getTagName()))
+            LOG.fatal("bad conf file: top-level element not <configuration>");
+        NodeList props = root.getChildNodes();
+        for (int i = 0; i < props.getLength(); i++) {
+            Node propNode = props.item(i);
+            if (!(propNode instanceof Element))
+                continue;
+            Element prop = (Element) propNode;
+            if (!"property".equals(prop.getTagName()))
+                LOG.warn("bad conf file: element not <property>");
+            NodeList fields = prop.getChildNodes();
+            String attr = null;
+            String value = null;
+            boolean finalParameter = false;
+            for (int j = 0; j < fields.getLength(); j++) {
+                Node fieldNode = fields.item(j);
+                if (!(fieldNode instanceof Element))
+                    continue;
+                Element field = (Element) fieldNode;
+                if ("name".equals(field.getTagName()) && field.hasChildNodes())
+                    attr = ((Text) field.getFirstChild()).getData().trim();
+                if ("value".equals(field.getTagName()) && field.hasChildNodes())
+                    value = ((Text) field.getFirstChild()).getData();
+                if ("final".equals(field.getTagName()) && field.hasChildNodes())
+                    finalParameter = "true".equals(((Text) field.getFirstChild()).getData());
+            }
+            // Ignore this parameter if it has already been marked as 'final'
+            if (attr != null && value != null) {
+                if (!finalParameters.contains(attr)) {
+                    properties.setProperty(attr, value);
+                    if (finalParameter)
+                        finalParameters.add(attr);
+                } else {
+                    LOG.warn(name + ":a attempt to override final parameter: " + attr + ";  Ignoring.");
+                }
+            }
+        }
+    } catch (IOException e) {
+        LOG.fatal("error parsing conf file: " + e);
+        throw new RuntimeException(e);
+    } catch (DOMException e) {
+        LOG.fatal("error parsing conf file: " + e);
+        throw new RuntimeException(e);
+    } catch (SAXException e) {
+        LOG.fatal("error parsing conf file: " + e);
+        throw new RuntimeException(e);
+    } catch (ParserConfigurationException e) {
+        LOG.fatal("error parsing conf file: " + e);
+        throw new RuntimeException(e);
+    }
+}

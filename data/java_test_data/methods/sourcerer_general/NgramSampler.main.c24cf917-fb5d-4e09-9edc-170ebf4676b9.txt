@@ -1,0 +1,65 @@
+public static void main(String[] args) throws IOException, ClassNotFoundException {
+    OptionParser optParser = new OptionParser(Options.class);
+    final Options opts = (Options) optParser.parse(args, true);
+    Experiment.initialize(opts.config);
+    Experiment experiment = Experiment.getInstance();
+    experiment.buildPrefixes();
+    experiment.buildWordPrefixes();
+    JobManager.initialize(opts.jobs);
+    JobManager manager = JobManager.getInstance();
+    Thread thread = new Thread(manager, "Job Manager");
+    thread.setDaemon(true);
+    thread.start();
+    final String[] lmStr = opts.lmFiles.split(",");
+    final NgramModel[] models = new NgramModel[lmStr.length];
+    System.err.println("Loading models...");
+    JobGroup group = manager.createJobGroup("forest loading");
+    for (int i = 0; i < lmStr.length; ++i) {
+        final int lmNum = i;
+        Runnable run = new Runnable() {
+
+            @Override
+            public void run() {
+                ObjectInputStream ois;
+                try {
+                    ois = new ObjectInputStream(IO.getInputStream(lmStr[lmNum]));
+                    models[lmNum] = (NgramModel) ois.readObject();
+                    System.err.printf("...loaded %s\n", models[lmNum].getName());
+                    ois.close();
+                } catch (IOException e) {
+                    // TODO Auto-generated catch block
+                    e.printStackTrace();
+                } catch (ClassNotFoundException e) {
+                    // TODO Auto-generated catch block
+                    e.printStackTrace();
+                }
+            }
+        };
+        Job job = new Job(run, "load forest");
+        manager.addJob(group, job);
+    }
+    group.join();
+    FileChannel output;
+    if (opts.output == null) {
+        output = new FileOutputStream(FileDescriptor.out).getChannel();
+    } else {
+        output = new FileOutputStream(opts.output).getChannel();
+    }
+    TrainingDataWriter writer = new OnDiskTrainingDataWriter(output);
+    WritableTrainingData data = writer.createData();
+    System.err.println("Starting sampling");
+    data.setContextSize((byte) (experiment.getLM().getOrder() - 1));
+    data.start();
+    if ("default".equals(opts.sampler)) {
+        TrainingDataSampler sampler = new TrainingDataSampler(models);
+        sampler.doSampling(opts.samples, data);
+    } else if ("sequence".equals(opts.sampler)) {
+        assert (models.length == 2);
+        TrainingDataSequenceSampler sampler = new TrainingDataSequenceSampler(models[0], models[1]);
+        sampler.doSampling(opts.samples, data);
+    } else {
+        System.err.printf("bad sampler type: %s\n", opts.sampler);
+    }
+    data.finish();
+    output.close();
+}

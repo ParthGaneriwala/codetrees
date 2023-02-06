@@ -1,0 +1,82 @@
+public String doView(RenderRequest request, RenderResponse response) throws Exception {
+    String defaultView = VIEW_PAGE;
+    ApplicationPrefs prefs = PortalUtils.getApplicationPrefs(request);
+    // The wiki to display
+    String wikiName = request.getPreferences().getValue(PREF_WIKI, null);
+    // Determine if the wiki's title should be displayed
+    request.setAttribute(SHOW_TITLE, request.getPreferences().getValue(PREF_SHOW_TITLE, "true"));
+    // Determine the project container to use for accessing the wiki
+    Project project = findProject(request);
+    if (project == null) {
+        LOG.debug("Skipping... project is null");
+        return null;
+    }
+    // Determine if the wiki content is based on the current user or a default guest user
+    boolean basedOnUser = Boolean.parseBoolean(request.getPreferences().getValue(PREF_CONTENT_BASED_ON_USER, "false"));
+    // User
+    User user = null;
+    if (basedOnUser) {
+        // Use the actual user
+        user = PortalUtils.getUser(request);
+        // Determine if the user has access to the content
+        if (user == null || !ProjectUtils.hasAccess(project.getId(), user, "project-wiki-view")) {
+            LOG.debug("Skipping... user is null or doesn't have access to view the wiki");
+            return null;
+        }
+    }
+    if (user == null) {
+        // Simulate a guest user
+        user = UserUtils.createGuestUser();
+    }
+    // Determine if the user has access to the content
+    if (PortalUtils.canShowSensitiveData(request)) {
+        LOG.debug("Allowing... ");
+    } else if (!ProjectUtils.hasAccess(project.getId(), user, "project-profile-view")) {
+        LOG.debug("Skipping... no access to view the profile");
+        return null;
+    }
+    // See if there are any special rules
+    String rule = request.getPreferences().getValue(PREF_RULE, null);
+    if (rule != null) {
+        if ("onUsersProfilePage".equals(rule)) {
+            // See if the page's project is the user's profile page;
+            // Retrieve the page's project, not the portlet's preference
+            Project testProject = PortalUtils.getProject(request);
+            if (user.getProfileProjectId() != testProject.getId()) {
+                return null;
+            }
+        }
+    }
+    // Load the wiki record
+    Connection db = useConnection(request);
+    Wiki wiki = WikiList.queryBySubject(db, wikiName, project.getId());
+    request.setAttribute(WIKI, wiki);
+    // Load wiki image library dimensions (@todo cache)
+    HashMap<String, ImageInfo> imageList = WikiUtils.buildImageInfo(db, project.getId());
+    request.setAttribute(WIKI_IMAGE_LIST, imageList);
+    if (wiki.getId() > -1 && StringUtils.hasText(wiki.getContent())) {
+        LOG.debug("Wiki found.");
+        // Convert the wiki to html for this user
+        // @note the context is used instead of the full URL
+        WikiToHTMLContext wikiContext = new WikiToHTMLContext(wiki, imageList, user.getId(), false, request.getContextPath());
+        wikiContext.setShowEditSection(false);
+        String wikiHtml = WikiToHTMLUtils.getHTML(wikiContext, db);
+        request.setAttribute(WIKI_HTML, wikiHtml);
+        request.setAttribute(WIKI_NAME, wikiName);
+        if (project.getFeatures().getShowWiki() && ProjectUtils.hasAccess(project.getId(), user, "project-wiki-add")) {
+            request.setAttribute(SHOW_EDIT_LINK, "true");
+        }
+    } else {
+        LOG.debug("Wiki not found or has no content.");
+        // Check if the current user can modify the target wiki content
+        request.setAttribute(WIKI_NAME, wikiName);
+        if (project.getFeatures().getShowWiki() && ProjectUtils.hasAccess(project.getId(), user, "project-wiki-add")) {
+            LOG.debug("Showing edit page information");
+            return VIEW_PAGE_MESSAGE;
+        }
+        LOG.debug("Skipping.");
+        return null;
+    }
+    // JSP view
+    return defaultView;
+}

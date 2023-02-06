@@ -1,0 +1,54 @@
+@Override
+protected Result evaluate(final LogicContext context, final Integer patientId, final Map<String, Object> parameters) throws LogicException {
+    Result result = new Result();
+    Patient patient = Context.getPatientService().getPatient(patientId);
+    if (patient.getBirthdate() != null) {
+        Calendar calendar = Calendar.getInstance();
+        calendar.setTime(patient.getBirthdate());
+        calendar.add(Calendar.YEAR, 5);
+        if (calendar.getTime().before(new Date())) {
+            parameters.put(EvaluableConstants.OBS_FETCH_SIZE, 1);
+            parameters.put(EvaluableConstants.OBS_VALUE_CODED, Arrays.asList(EvaluableNameConstants.POSITIVE));
+            ValidPolymeraseRule validPolymeraseRule = new ValidPolymeraseRule();
+            parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.HIV_DNA_POLYMERASE_CHAIN_REACTION_QUALITATIVE));
+            Result validPolymeraseResults = validPolymeraseRule.eval(context, patientId, parameters);
+            ValidElisaRule validElisaRule = new ValidElisaRule();
+            parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.HIV_ENZYME_IMMUNOASSAY_QUALITATIVE));
+            Result validElisaResults = validElisaRule.eval(context, patientId, parameters);
+            ValidRapidElisaRule validRapidElisaRule = new ValidRapidElisaRule();
+            parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.HIV_RAPID_TEST_QUALITATIVE));
+            Result validRapidElisaResults = validRapidElisaRule.eval(context, patientId, parameters);
+            if (CollectionUtils.isNotEmpty(validPolymeraseResults) || CollectionUtils.isNotEmpty(validElisaResults) || CollectionUtils.isNotEmpty(validRapidElisaResults)) {
+                AntiRetroViralRule antiRetroViralRule = new AntiRetroViralRule();
+                parameters.put(EvaluableConstants.ENCOUNTER_TYPE, Arrays.asList(EvaluableNameConstants.ENCOUNTER_TYPE_PEDIATRIC_INITIAL, EvaluableNameConstants.ENCOUNTER_TYPE_PEDIATRIC_RETURN, EvaluableNameConstants.ENCOUNTER_TYPE_PEDIATRIC_NONCLINICALMEDICATION));
+                Result antiRetroViralResults = antiRetroViralRule.eval(context, patientId, parameters);
+                log.info("Registered ARV: " + antiRetroViralResults);
+                if (CollectionUtils.isEmpty(antiRetroViralResults)) {
+                    ObsWithRestrictionRule obsWithRestrictionRule = new ObsWithStringRestrictionRule();
+                    parameters.remove(EvaluableConstants.OBS_VALUE_CODED);
+                    parameters.put(EvaluableConstants.OBS_FETCH_SIZE, 1);
+                    parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.CD4_PERCENT));
+                    Result percentageResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+                    parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.PEDS_WHO_CATEGORY_QUERY));
+                    Result pedsStageResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+                    if (CollectionUtils.isNotEmpty(percentageResults) || CollectionUtils.isNotEmpty(pedsStageResults)) {
+                        List<String> reminderFragments = new ArrayList<String>();
+                        if (CollectionUtils.isNotEmpty(validPolymeraseResults))
+                            reminderFragments.add("positive PCR");
+                        if (CollectionUtils.isNotEmpty(validElisaResults))
+                            reminderFragments.add("positive Elisa");
+                        if (CollectionUtils.isNotEmpty(validRapidElisaResults))
+                            reminderFragments.add("positive Rapid Elisa");
+                        if (CollectionUtils.isNotEmpty(percentageResults) && percentageResults.toNumber() < 25)
+                            reminderFragments.add("CD4 Percent &lt 25");
+                        if (CollectionUtils.isNotEmpty(pedsStageResults) && NumberUtils.toInt(ResultUtils.stripToDigit(pedsStageResults.toString())) > 2)
+                            reminderFragments.add(pedsStageResults.toString());
+                        String reminder = "Consider starting ARV Meds. Pt above 5 yrs with " + StringUtils.join(reminderFragments, ", ");
+                        result.add(new Result(reminder));
+                    }
+                }
+            }
+        }
+    }
+    return result;
+}

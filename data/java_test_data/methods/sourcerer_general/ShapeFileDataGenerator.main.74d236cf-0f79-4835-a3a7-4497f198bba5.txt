@@ -1,0 +1,165 @@
+public static void main(String[] args) {
+    FeatureCollection fc = FeatureCollections.newCollection();
+    String fileName = "dummyFileName";
+    boolean is90 = false;
+    boolean is00 = false;
+    boolean is06 = false;
+    try {
+        JFileChooser jfc = new JFileChooser();
+        jfc.setFileFilter(new SimpleFileFilter("shp", "Shapefile"));
+        int result = jfc.showOpenDialog(null);
+        if (result == JFileChooser.APPROVE_OPTION) {
+            // File file.toURL() is deprecated, so put in a URI transition to avoid deprecation warnings
+            URL url = jfc.getSelectedFile().toURI().toURL();
+            fileName = jfc.getSelectedFile().getName();
+            is90 = fileName.endsWith("d90.shp");
+            is00 = fileName.endsWith("d00.shp");
+            is06 = fileName.endsWith("ap06.shp");
+            fc = DissUtils.shapeFileToFeatures(url);
+            System.out.println(fileName);
+        }
+    } catch (MalformedURLException mue) {
+        System.out.println("Malformed URL Exception! " + mue.getMessage());
+    }
+    // this will get reset later on.
+    double cellSize = 0.01;
+    GeometryFactory gf = new GeometryFactory();
+    int maxXCells = 500;
+    int maxYCells = 500;
+    int index = 0;
+    HashMap map = new HashMap();
+    FeatureIterator features = fc.features();
+    while (features.hasNext()) {
+        Feature f = features.next();
+        String name = "dummy";
+        if (is06) {
+            name = f.getAttribute("NAME").toString() + " " + f.getAttribute("STATE");
+        } else if (is00 || is90) {
+            name = f.getAttribute("NAME").toString();
+        } else {
+            // name = f.getAttribute("NAME").toString();  //OBJECTID for soils, NAME for original urban areas
+            // for roads and rivers (any ArcGIS buffers, really)
+            name = f.getID();
+        }
+        if (is90 || is00) {
+            // remove the commas.
+            name = removeCommas(name);
+            HashMap keyMap;
+            if (is90) {
+                keyMap = create90Keys();
+            } else {
+                // is00
+                keyMap = create00Keys();
+            }
+            String key = (String) keyMap.get(name);
+            if (name != "") {
+                if (map.containsKey(key)) {
+                    ((Vector) map.get(key)).add(f);
+                } else {
+                    Vector v = new Vector();
+                    v.add(f);
+                    map.put(key, v);
+                }
+            }
+        } else {
+            if (name != "") {
+                if (map.containsKey(name)) {
+                    ((Vector) map.get(name)).add(f);
+                } else {
+                    Vector v = new Vector();
+                    v.add(f);
+                    map.put(name, v);
+                }
+            }
+        }
+    }
+    // Iterator mapKeys = map.keySet().iterator();
+    Object[] toArray = map.keySet().toArray();
+    double[][] moments = new double[map.keySet().size()][7];
+    String[] names = new String[map.keySet().size()];
+    double[] pixels = new double[map.keySet().size()];
+    System.out.println(map.keySet().size() + " features");
+    System.out.println("ID, pixels, cityName, Inv 1, Inv 2, Inv 3, Inv 4, Inv 5, Inv 6, Inv 7");
+    // String name = (String) mapKeys.next();
+    for (int z = 213; z < toArray.length; z++) {
+        String name = (String) toArray[z];
+        Vector featureVec = (Vector) map.get(name);
+        Iterator featureIt = featureVec.iterator();
+        double localMinX = Double.POSITIVE_INFINITY;
+        double localMaxX = Double.NEGATIVE_INFINITY;
+        double localMinY = Double.POSITIVE_INFINITY;
+        double localMaxY = Double.NEGATIVE_INFINITY;
+        int count = 0;
+        while (featureIt.hasNext()) {
+            Feature nextFeature = (Feature) featureIt.next();
+            double myMinX = nextFeature.getDefaultGeometry().getEnvelopeInternal().getMinX();
+            double myMinY = nextFeature.getDefaultGeometry().getEnvelopeInternal().getMinY();
+            double myMaxX = nextFeature.getDefaultGeometry().getEnvelopeInternal().getMaxX();
+            double myMaxY = nextFeature.getDefaultGeometry().getEnvelopeInternal().getMaxY();
+            if (myMinX < localMinX) {
+                localMinX = myMinX;
+            }
+            if (myMinY < localMinY) {
+                localMinY = myMinY;
+            }
+            if (myMaxX > localMaxX) {
+                localMaxX = myMaxX;
+            }
+            if (myMaxY > localMaxY) {
+                localMaxY = myMaxY;
+            }
+        }
+        cellSize = Math.max((localMaxX - localMinX) / maxXCells, (localMaxY - localMinY) / maxYCells);
+        int xCells = (int) Math.round((localMaxX - localMinX) / cellSize);
+        int yCells = (int) Math.round((localMaxY - localMinY) / cellSize);
+        float[][] rasterArray = new float[xCells][yCells];
+        // need to restart the feature iterator
+        Iterator featureIt2 = featureVec.iterator();
+        while (featureIt2.hasNext()) {
+            Feature nextFeature = (Feature) featureIt2.next();
+            Geometry geom = nextFeature.getDefaultGeometry();
+            for (int x = 0; x < xCells; x++) {
+                for (int y = 0; y < yCells; y++) {
+                    Point p = gf.createPoint(new Coordinate(localMinX + cellSize * x, localMinY + cellSize * y));
+                    if (geom.contains(p)) {
+                        if (rasterArray[x][y] == 0) {
+                            // this pixel could already be 1 from a previous feature
+                            rasterArray[x][y] = 1;
+                            count++;
+                        }
+                    } else {
+                    // don't change it!
+                    // rasterArray[x][y] = 0;
+                    }
+                }
+            }
+        }
+        MomentGenerator gen = new MomentGenerator();
+        gen.setRaster(rasterArray);
+        double[] these = gen.calculateMomentInvariants();
+        moments[index] = these;
+        names[index] = name;
+        pixels[index] = count;
+        System.out.print(index + ", " + count + ", " + name);
+        for (int q = 0; q < 7; q++) {
+            System.out.print(", " + these[q]);
+        }
+        System.out.println();
+        index++;
+    }
+    try {
+        FileWriter outFile = new FileWriter("C:/z4xNoSpaces/timeData/varyPixelSizeMoments/" + fileName + "Moments.csv");
+        outFile.write("id, cityName, pixels, inv1, inv2, inv3, inv4, inv5, inv6, inv7" + '\n');
+        for (int i = 0; i < moments.length; i++) {
+            outFile.write(i + ", " + names[i] + ", " + pixels[i]);
+            for (int j = 0; j < moments[i].length; j++) {
+                outFile.write(", " + moments[i][j]);
+            }
+            outFile.write('\n');
+        }
+        outFile.close();
+        System.out.println("wrote moments for " + fileName);
+    } catch (IOException ioe) {
+        System.out.println("IOException when saving summary file: " + ioe.getMessage());
+    }
+}

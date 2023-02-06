@@ -1,0 +1,63 @@
+public void testChain() throws Exception {
+    Path inDir = new Path("testing/chain/input");
+    Path outDir = new Path("testing/chain/output");
+    // Hack for local FS that does not have the concept of a 'mounting point'
+    if (isLocalFS()) {
+        String localPathRoot = System.getProperty("test.build.data", "/tmp").replace(' ', '+');
+        inDir = new Path(localPathRoot, inDir);
+        outDir = new Path(localPathRoot, outDir);
+    }
+    JobConf conf = createJobConf();
+    conf.setBoolean("localFS", isLocalFS());
+    cleanFlags(conf);
+    FileSystem fs = FileSystem.get(conf);
+    fs.delete(outDir, true);
+    if (!fs.mkdirs(inDir)) {
+        throw new IOException("Mkdirs failed to create " + inDir.toString());
+    }
+    DataOutputStream file = fs.create(new Path(inDir, "part-0"));
+    file.writeBytes("1\n2\n");
+    file.close();
+    conf.setJobName("chain");
+    conf.setInputFormat(TextInputFormat.class);
+    conf.setOutputFormat(TextOutputFormat.class);
+    conf.set("a", "X");
+    JobConf mapAConf = new JobConf(false);
+    mapAConf.set("a", "A");
+    ChainMapper.addMapper(conf, AMap.class, LongWritable.class, Text.class, LongWritable.class, Text.class, true, mapAConf);
+    ChainMapper.addMapper(conf, BMap.class, LongWritable.class, Text.class, LongWritable.class, Text.class, false, null);
+    JobConf reduceConf = new JobConf(false);
+    reduceConf.set("a", "C");
+    ChainReducer.setReducer(conf, CReduce.class, LongWritable.class, Text.class, LongWritable.class, Text.class, true, reduceConf);
+    ChainReducer.addMapper(conf, DMap.class, LongWritable.class, Text.class, LongWritable.class, Text.class, false, null);
+    JobConf mapEConf = new JobConf(false);
+    mapEConf.set("a", "E");
+    ChainReducer.addMapper(conf, EMap.class, LongWritable.class, Text.class, LongWritable.class, Text.class, true, mapEConf);
+    FileInputFormat.setInputPaths(conf, inDir);
+    FileOutputFormat.setOutputPath(conf, outDir);
+    JobClient jc = new JobClient(conf);
+    RunningJob job = jc.submitJob(conf);
+    while (!job.isComplete()) {
+        Thread.sleep(100);
+    }
+    assertTrue(getFlag(conf, "configure.A"));
+    assertTrue(getFlag(conf, "configure.B"));
+    assertTrue(getFlag(conf, "configure.C"));
+    assertTrue(getFlag(conf, "configure.D"));
+    assertTrue(getFlag(conf, "configure.E"));
+    assertTrue(getFlag(conf, "map.A.value.1"));
+    assertTrue(getFlag(conf, "map.A.value.2"));
+    assertTrue(getFlag(conf, "map.B.value.1"));
+    assertTrue(getFlag(conf, "map.B.value.2"));
+    assertTrue(getFlag(conf, "reduce.C.value.2"));
+    assertTrue(getFlag(conf, "reduce.C.value.1"));
+    assertTrue(getFlag(conf, "map.D.value.1"));
+    assertTrue(getFlag(conf, "map.D.value.2"));
+    assertTrue(getFlag(conf, "map.E.value.1"));
+    assertTrue(getFlag(conf, "map.E.value.2"));
+    assertTrue(getFlag(conf, "close.A"));
+    assertTrue(getFlag(conf, "close.B"));
+    assertTrue(getFlag(conf, "close.C"));
+    assertTrue(getFlag(conf, "close.D"));
+    assertTrue(getFlag(conf, "close.E"));
+}

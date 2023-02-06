@@ -1,0 +1,53 @@
+public ItemConteudo restaurarVersao(Usuario usuario, Long nuItemConteudo) throws Exception {
+    ItemConteudo itemConteudo = itemConteudoDao.select(nuItemConteudo);
+    if (!SecurityManager.podeAlterarItemConteudo(usuario, itemConteudo)) {
+        usuario.addActionError(getString("erro.autorizar.item"));
+        return itemConteudo;
+    }
+    if (itemConteudo.getNuItemConteudoFilho() != null && !itemConteudo.getNuItemConteudoFilho().equals(0L)) {
+        ItemConteudo itemConteudoFilho = itemConteudoDao.select(itemConteudo.getNuItemConteudoFilho());
+        while (itemConteudoFilho != null && itemConteudoFilho.getNuItemConteudoFilho() != null && !itemConteudoFilho.getNuItemConteudoFilho().equals(0L)) {
+            // marcar como b de backup se o item a ser restaurado for publicado
+            if (itemConteudo.getStSituacaoAnterior() == 'p') {
+                itemConteudoFilho.setStSituacaoAnterior(itemConteudoFilho.getStSituacao());
+                itemConteudoFilho.setStSituacao('b');
+            }
+            itemConteudoDao.update(itemConteudoFilho);
+            itemConteudoFilho = itemConteudoDao.select(itemConteudoFilho.getNuItemConteudoFilho());
+        }
+        if (itemConteudoFilho != null) {
+            ItemConteudo restaurado = criarVersao(itemConteudo, usuario);
+            restaurado.setNuItemConteudoPai(itemConteudoFilho.getNuItemConteudo());
+            restaurado.setNuVersao(itemConteudoFilho.getNuVersao() + 1L);
+            itemConteudoDao.create(restaurado);
+            // atualizar o filho
+            if (restaurado.getStSituacao() == 'p') {
+                // marca backup se o restaurado estava publicado
+                itemConteudoFilho.setStSituacaoAnterior(itemConteudoFilho.getStSituacao());
+                itemConteudoFilho.setStSituacao('b');
+            }
+            itemConteudoFilho.setNuItemConteudoFilho(restaurado.getNuItemConteudo());
+            itemConteudoDao.update(itemConteudoFilho);
+            itemConteudo = restaurado;
+        } else {
+            // addActionError("O backup n�o possui vers�o atual.");
+            // Criar outra versao
+            ItemConteudo restaurado = criarVersao(itemConteudo, usuario);
+            // Informar o pai
+            restaurado.setNuItemConteudoPai(itemConteudo.getNuItemConteudo());
+            restaurado.setNuVersao(itemConteudo.getNuVersao() + 1L);
+            itemConteudoDao.create(restaurado);
+            itemConteudo.setNuItemConteudoFilho(restaurado.getNuItemConteudo());
+            itemConteudoDao.update(itemConteudo);
+            itemConteudo = restaurado;
+            logger.debug("Item antes sem filho restaurado. Agora possui um filho.");
+        }
+    } else {
+        // sem filhos
+        itemConteudo.setStSituacao(itemConteudo.getStSituacaoAnterior());
+        itemConteudoDao.update(itemConteudo);
+    }
+    logDao.addLog(usuario, "Restaurou o item de conteudo [" + itemConteudo.getNoTitulo() + " id = " + itemConteudo.getNuItemConteudo() + "]");
+    usuario.addActionMessage("Foi criada uma nova vers&atilde;o restaurada.");
+    return itemConteudo;
+}

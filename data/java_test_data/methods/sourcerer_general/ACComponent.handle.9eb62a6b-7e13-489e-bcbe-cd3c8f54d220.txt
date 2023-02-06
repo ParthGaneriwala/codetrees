@@ -1,0 +1,57 @@
+public void handle(PerfectMessage event) {
+    String eventType = event.getType();
+    int eventId = event.getId();
+    int eventTimeStamp = event.getTimeStamp();
+    int eventValue = event.getValue();
+    int sentTS = event.getSentTimeStamp();
+    if (eventType.equals("NACK")) {
+        ArrayList<TimeStampedValue> temp = readSet.get(eventId);
+        temp.clear();
+        readSet.put(eventId, temp);
+        wAcks.put(eventId, 0);
+        print("recieved a NACK and sending negative responce to application in handlePerfectMessage");
+        trigger(new ACReturn(eventId, -1), acPort);
+    // value -1 is ignored in this type of message
+    } else if (eventType.equals("READACK")) {
+        print("recieved a READACK in handlePerfectMessage");
+        if (sentTS == timeStamp.get(eventId)) {
+            ArrayList<TimeStampedValue> temp = readSet.get(eventId);
+            temp.add(new TimeStampedValue(eventTimeStamp, eventValue));
+            readSet.put(eventId, temp);
+            if (readSet.get(eventId).size() == majority) {
+                print("achived an majority");
+                int highestTimeStampSoFar = -1;
+                TimeStampedValue highestTimeValuePair = null;
+                for (int i = 0; i < temp.size(); i++) {
+                    if (temp.get(i).getTimeStamp() >= highestTimeStampSoFar) {
+                        highestTimeStampSoFar = temp.get(i).getTimeStamp();
+                        highestTimeValuePair = temp.get(i);
+                    }
+                }
+                if (highestTimeValuePair.getValue() != -1) {
+                    print("stored a new tempValue in handlePerfectMessage");
+                    tempValue.put(eventId, highestTimeValuePair.getValue());
+                }
+                print("bebBroadcast a WRITE in handlePerfectMessage");
+                bebBroadcast("WRITE", eventId, timeStamp.get(eventId), tempValue.get(eventId));
+            }
+        }
+    } else if (eventType.equals("WRITEACK")) {
+        print("recieved a WRITEACK in handlePerfectMessage");
+        if (sentTS == timeStamp.get(eventId)) {
+            print("increasing acks");
+            int tempAcks = wAcks.get(eventId);
+            tempAcks++;
+            wAcks.put(eventId, tempAcks);
+            if (wAcks.get(eventId) == majority) {
+                print("found a wAcks majority");
+                ArrayList<TimeStampedValue> temp = readSet.get(eventId);
+                temp.clear();
+                readSet.put(eventId, temp);
+                wAcks.put(eventId, 0);
+                print("sending a decided value to application in handlePerfectMessage");
+                trigger(new ACReturn(eventId, tempValue.get(eventId)), acPort);
+            }
+        }
+    }
+}

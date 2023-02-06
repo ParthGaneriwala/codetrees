@@ -1,0 +1,73 @@
+private void createInterferenceGraph() {
+    int count = 0;
+    BitSet[] liveInTemp = new BitSet[numNodes];
+    BitSet[] liveOutTemp = new BitSet[numNodes];
+    do {
+        // Start by iterating backwards
+        for (int i = numNodes - 1; i >= 0; i--) {
+            liveInTemp[i] = (BitSet) liveIn[i].clone();
+            liveOutTemp[i] = (BitSet) liveOut[i].clone();
+            ControlFlowNode node = (ControlFlowNode) cfg.getNode(i);
+            if (node == null)
+                continue;
+            AssemblyInstruction instr = (AssemblyInstruction) node.getInstructions().elementAt(0);
+            liveOut[i] = getLiveOutForNode(node);
+            liveIn[i] = getLiveInForNode(node, i);
+        }
+        count++;
+    } while (!isEndOfIterations(liveInTemp, liveOutTemp));
+    // the live-out temporaries for each node
+    for (int i = 0; i < numNodes; i++) {
+        ControlFlowNode cfgNode = (ControlFlowNode) cfg.getNode(i);
+        if (cfgNode == null)
+            continue;
+        AssemblyInstruction instr = (AssemblyInstruction) // A node for this graph has only one instruction
+        (cfgNode.getInstructions().elementAt(0));
+        Vector<Object> defList = instr.getDestList();
+        Vector<Object> useList = instr.getSrcList();
+        populateLiveRangeInfo(i, defList, useList);
+        boolean isMove = instr.isMove();
+        Vector<Temp> liveOutTemps = getLiveOutTemps(i);
+        if (defList == null)
+            continue;
+        int numDefs = defList.size();
+        for (int j = 0; j < numDefs; j++) {
+            Temp from = (Temp) defList.elementAt(j);
+            // This is a machine register; ignore it
+            if (from.isPhysicalRegister())
+                continue;
+            Node fromNode = newInterferenceGraphNode(from);
+            // If it is a move, add to move-related nodes
+            if (isMove) {
+                for (int a = 0; a < useList.size(); a++) {
+                    Temp toTemp = (Temp) useList.elementAt(a);
+                    // This is a machine register; ignore it
+                    if (toTemp.isPhysicalRegister())
+                        continue;
+                    Node toNode = newInterferenceGraphNode(toTemp);
+                    addToMoveRelatedNodes(fromNode, toNode);
+                }
+            }
+            // Add interference edges for this destination node to each of the live-outs
+            int numLiveOuts = liveOutTemps.size();
+            for (int k = 0; k < numLiveOuts; k++) {
+                Temp to = liveOutTemps.elementAt(k);
+                // This is a machine register; ignore it
+                if (to.isPhysicalRegister())
+                    continue;
+                if (from == to)
+                    continue;
+                Node toNode = newInterferenceGraphNode(to);
+                // Add an interference edge if it is not a move
+                if (!isMove) {
+                    updateAdjacencyMatrix(fromNode, toNode);
+                } else {
+                    if (!useList.contains(to))
+                        updateAdjacencyMatrix(fromNode, toNode);
+                }
+            }
+        }
+    }
+    // Now that the interference graph has been created, populate the spill costs
+    populateSpillCosts();
+}

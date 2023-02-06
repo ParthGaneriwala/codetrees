@@ -1,0 +1,106 @@
+private void displayContact(Uri personUri, boolean contactChanged) {
+    if (DEBUG)
+        Log.v(TAG, "Displaying " + personUri.toString() + ", contactChanged " + contactChanged);
+    Cursor c = getContentResolver().query(personUri, null, null, null, null);
+    if (c == null || !c.moveToNext()) {
+        if (DEBUG)
+            Log.e(TAG, "No such contact: " + personUri);
+        c.close();
+        return;
+    }
+    mContact.setTitle(c.getString(c.getColumnIndexOrThrow(People.DISPLAY_NAME)));
+    int personId = c.getInt(c.getColumnIndexOrThrow(People._ID));
+    c.close();
+    mDisableMessageUpdates = true;
+    mDisplayGroup.removeAll();
+    // Phone numbers.
+    final Uri phonesUri = Uri.withAppendedPath(personUri, People.Phones.CONTENT_DIRECTORY);
+    c = getContentResolver().query(phonesUri, null, null, null, People.Phones.ISPRIMARY + " desc");
+    if (c == null) {
+        if (DEBUG)
+            Log.e(TAG, "Phones query returned null cursor.");
+        return;
+    }
+    final String contactMethodPhone = getResources().getString(R.string.contact_method_phone);
+    while (c.moveToNext()) {
+        int phoneId = c.getInt(c.getColumnIndexOrThrow(People.Phones._ID));
+        String number = c.getString(c.getColumnIndexOrThrow(People.Phones.NUMBER));
+        int type = c.getInt(c.getColumnIndexOrThrow(People.Phones.TYPE));
+        String label = c.getString(c.getColumnIndexOrThrow(People.Phones.LABEL));
+        label = Phones.getDisplayLabel(this, type, label).toString();
+        CheckBoxPreference pref = new CheckBoxPreference(this);
+        pref.setTitle(number);
+        pref.setSummary(String.format(contactMethodPhone, label));
+        pref.setKey(PHONE_KEY_PREFIX + personId + "_" + phoneId);
+        mDisplayGroup.addPreference(pref);
+        // Only set checked state after adding to screen, otherwise state doesn't get saved.
+        if (contactChanged) {
+            pref.setChecked(c.getInt(c.getColumnIndexOrThrow(People.Phones.ISPRIMARY)) != 0);
+        }
+    }
+    c.close();
+    // Other contact methods.
+    final Uri contactMethodsUri = Uri.withAppendedPath(personUri, People.ContactMethods.CONTENT_DIRECTORY);
+    c = getContentResolver().query(contactMethodsUri, null, null, null, People.ContactMethods.ISPRIMARY + " desc");
+    if (c == null) {
+        if (DEBUG)
+            Log.e(TAG, "ContactMethods query returned null cursor.");
+        return;
+    }
+    final String contactMethodIm = getResources().getString(R.string.contact_method_im);
+    final String contactMethodEmail = getResources().getString(R.string.contact_method_email);
+    final String contactMethodPostal = getResources().getString(R.string.contact_method_postal);
+    final String[] protocolStrings = getResources().getStringArray(android.R.array.imProtocols);
+    String label, format;
+    while (c.moveToNext()) {
+        final int contactMethodId = c.getInt(c.getColumnIndexOrThrow(People.ContactMethods._ID));
+        int kind = c.getInt(c.getColumnIndexOrThrow(People.ContactMethods.KIND));
+        String data = c.getString(c.getColumnIndexOrThrow(People.ContactMethods.DATA));
+        if (kind == Contacts.KIND_IM) {
+            Object protocolObj = ContactMethods.decodeImProtocol(c.getString(c.getColumnIndexOrThrow(People.ContactMethods.AUX_DATA)));
+            if (protocolObj instanceof Number) {
+                int protocol = ((Number) protocolObj).intValue();
+                label = protocolStrings[protocol];
+            } else {
+                label = (String) protocolObj;
+            }
+            format = contactMethodIm;
+        } else {
+            label = c.getString(c.getColumnIndexOrThrow(People.ContactMethods.LABEL));
+            int type = c.getInt(c.getColumnIndexOrThrow(People.ContactMethods.TYPE));
+            label = ContactMethods.getDisplayLabel(this, kind, type, label).toString();
+            switch(kind) {
+                case Contacts.KIND_PHONE:
+                    format = contactMethodPhone;
+                    break;
+                case Contacts.KIND_EMAIL:
+                    format = contactMethodEmail;
+                    break;
+                case Contacts.KIND_POSTAL:
+                    format = contactMethodPostal;
+                    break;
+                default:
+                    format = "%s";
+                    break;
+            }
+        }
+        CheckBoxPreference pref = new CheckBoxPreference(this);
+        pref.setTitle(data);
+        pref.setSummary(String.format(format, label));
+        pref.setKey(CONTACT_METHOD_KEY_PREFIX + personId + "_" + contactMethodId);
+        mDisplayGroup.addPreference(pref);
+        // Only set checked state after adding to screen, otherwise state doesn't get saved.
+        if (contactChanged) {
+            pref.setChecked(c.getInt(c.getColumnIndexOrThrow(People.ContactMethods.ISPRIMARY)) != 0);
+        }
+    }
+    c.close();
+    if (contactChanged) {
+        SharedPreferences.Editor edit = mPreferences.edit();
+        edit.putString(CONTACT_KEY, personUri.toString());
+        edit.putString(MESSAGE_PREFERENCE, getInfoMessage());
+        edit.commit();
+    }
+    // Done rebuilding the screen, enable message updates on preference changes.
+    mDisableMessageUpdates = false;
+}

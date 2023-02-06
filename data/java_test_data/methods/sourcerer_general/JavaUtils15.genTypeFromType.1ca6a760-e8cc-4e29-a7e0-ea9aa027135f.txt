@@ -1,0 +1,65 @@
+private static GenTypeParameter genTypeFromType(Type t, List backTrace) {
+    if (t instanceof Class)
+        return JavaUtils14.genTypeFromClass14((Class) t);
+    if (t instanceof TypeVariable) {
+        TypeVariable tv = (TypeVariable) t;
+        if (backTrace.contains(t))
+            return new GenTypeUnbounded();
+        // get the bounds, convert to GenType
+        Type[] bounds = tv.getBounds();
+        GenTypeSolid[] gtBounds = new GenTypeSolid[bounds.length];
+        backTrace.add(t);
+        for (int i = 0; i < bounds.length; i++) {
+            gtBounds[i] = (GenTypeSolid) genTypeFromType(bounds[i], backTrace);
+        }
+        return new GenTypeDeclTpar(tv.getName(), gtBounds);
+    }
+    if (t instanceof WildcardType) {
+        if (backTrace.contains(t))
+            return new GenTypeUnbounded();
+        WildcardType wtype = (WildcardType) t;
+        Type[] upperBounds = wtype.getUpperBounds();
+        Type[] lowerBounds = wtype.getLowerBounds();
+        backTrace.add(t);
+        // a bug in Java 1.5 beta2.
+        if (lowerBounds.length == 0 || lowerBounds[0] == null) {
+            if (upperBounds.length == 0 || upperBounds[0] == null) {
+                return new GenTypeUnbounded();
+            } else {
+                GenTypeSolid gtp = (GenTypeSolid) genTypeFromType(upperBounds[0], backTrace);
+                if (upperBounds.length != 1)
+                    Debug.message("GenTypeFromType: multiple upper bounds for wildcard type?");
+                return new GenTypeExtends(gtp);
+            }
+        } else {
+            if (lowerBounds[0] == null) {
+                Debug.message("lower bound[0] is null??");
+                return new GenTypeSuper(null);
+            } else {
+                if (upperBounds.length != 0 && upperBounds[0] != null && upperBounds[0] != Object.class)
+                    Debug.message("getTypeName: upper and lower bound?");
+                if (lowerBounds.length != 1)
+                    Debug.message("getTypeName: multiple lower bounds for wildcard type?");
+                GenTypeSolid lbound = (GenTypeSolid) genTypeFromType(lowerBounds[0], backTrace);
+                return new GenTypeSuper(lbound);
+            }
+        }
+    }
+    if (t instanceof ParameterizedType) {
+        ParameterizedType pt = (ParameterizedType) t;
+        Class rawtype = (Class) pt.getRawType();
+        Type[] argtypes = pt.getActualTypeArguments();
+        List arggentypes = new ArrayList();
+        // Convert the Type [] into a List of GenType
+        for (int i = 0; i < argtypes.length; i++) arggentypes.add(genTypeFromType(argtypes[i], backTrace));
+        // Check for outer type
+        GenTypeClass outer = null;
+        if (pt.getOwnerType() != null)
+            outer = (GenTypeClass) genTypeFromType(pt.getOwnerType());
+        return new GenTypeClass(new JavaReflective(rawtype), arggentypes, outer);
+    }
+    // Assume we have an array
+    GenericArrayType gat = (GenericArrayType) t;
+    JavaType componentType = (JavaType) genTypeFromType(gat.getGenericComponentType(), backTrace);
+    return new GenTypeArray(componentType);
+}

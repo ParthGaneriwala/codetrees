@@ -1,0 +1,96 @@
+Object run(Callable fn) throws Exception {
+    boolean done = false;
+    Object ret = null;
+    ArrayList<Ref> locked = new ArrayList<Ref>();
+    ArrayList<Notify> notify = new ArrayList<Notify>();
+    for (int i = 0; !done && i < RETRY_LIMIT; i++) {
+        try {
+            getReadPoint();
+            if (i == 0) {
+                startPoint = readPoint;
+                startTime = System.nanoTime();
+            }
+            info = new Info(RUNNING, startPoint);
+            ret = fn.call();
+            // make sure no one has killed us before this point, and can't from now on
+            if (info.status.compareAndSet(RUNNING, COMMITTING)) {
+                for (Map.Entry<Ref, ArrayList<CFn>> e : commutes.entrySet()) {
+                    Ref ref = e.getKey();
+                    ref.lock.writeLock().lock();
+                    locked.add(ref);
+                    Info refinfo = ref.tinfo;
+                    if (refinfo != null && refinfo != info && refinfo.running()) {
+                        if (!barge(refinfo))
+                            throw retryex;
+                    }
+                    Object val = ref.tvals == null ? null : ref.tvals.val;
+                    if (!sets.contains(ref))
+                        vals.put(ref, val);
+                    for (CFn f : e.getValue()) {
+                        vals.put(ref, f.fn.applyTo(RT.cons(vals.get(ref), f.args)));
+                    }
+                }
+                for (Ref ref : sets) {
+                    if (!commutes.containsKey(ref)) {
+                        ref.lock.writeLock().lock();
+                        locked.add(ref);
+                    }
+                }
+                // validate and enqueue notifications
+                for (Map.Entry<Ref, Object> e : vals.entrySet()) {
+                    Ref ref = e.getKey();
+                    ref.validate(ref.getValidator(), e.getValue());
+                }
+                // at this point, all values calced, all refs to be written locked
+                // no more client code to be called
+                long msecs = System.currentTimeMillis();
+                long commitPoint = getCommitPoint();
+                for (Map.Entry<Ref, Object> e : vals.entrySet()) {
+                    Ref ref = e.getKey();
+                    Object oldval = ref.tvals == null ? null : ref.tvals.val;
+                    Object newval = e.getValue();
+                    if (ref.tvals == null) {
+                        ref.tvals = new Ref.TVal(newval, commitPoint, msecs);
+                    } else if (ref.faults.get() > 0) {
+                        ref.tvals = new Ref.TVal(newval, commitPoint, msecs, ref.tvals);
+                        ref.faults.set(0);
+                    } else {
+                        ref.tvals = ref.tvals.next;
+                        ref.tvals.val = newval;
+                        ref.tvals.point = commitPoint;
+                        ref.tvals.msecs = msecs;
+                    }
+                    if (ref.getWatches().count() > 0)
+                        notify.add(new Notify(ref, oldval, newval));
+                }
+                done = true;
+                info.status.set(COMMITTED);
+            }
+        } catch (RetryEx retry) {
+        // eat this so we retry rather than fall out
+        } finally {
+            for (int k = locked.size() - 1; k >= 0; --k) {
+                locked.get(k).lock.writeLock().unlock();
+            }
+            locked.clear();
+            stop(done ? COMMITTED : RETRY);
+            try {
+                if (// re-dispatch out of transaction
+                done) {
+                    for (Notify n : notify) {
+                        n.ref.notifyWatches(n.oldval, n.newval);
+                    }
+                    for (Agent.Action action : actions) {
+                        Agent.dispatchAction(action);
+                    }
+                }
+            } finally {
+                notify.clear();
+                actions.clear();
+            }
+        }
+    }
+    if (!done)
+        throw new Exception("Transaction failed after reaching retry limit");
+    return ret;
+}

@@ -1,0 +1,92 @@
+void resolveTypeForLike(Session session) throws HsqlException {
+    if (eArg.isParam && eArg2.isParam) {
+        throw Trace.error(Trace.UNRESOLVED_PARAMETER_TYPE, Trace.Expression_resolveTypeForLike);
+    }
+    if (isFixedConditional()) {
+        Boolean arg = test(session);
+        if (arg == null) {
+            setNull();
+        } else {
+            exprType = arg.booleanValue() ? TRUE : FALSE;
+            eArg = null;
+            eArg2 = null;
+        }
+    } else if (eArg.isParam) {
+        eArg.dataType = Types.VARCHAR;
+    } else if (eArg2.isParam) {
+        eArg2.dataType = Types.VARCHAR;
+    }
+    // For the old behaviour, simply comment out the block below
+    if (likeObject.optimised) {
+        return;
+    }
+    boolean isRightArgFixedConstant = eArg2.isFixedConstant();
+    String likeStr = isRightArgFixedConstant ? (String) eArg2.getValue(session, Types.VARCHAR) : null;
+    boolean ignoreCase = eArg.dataType == Types.VARCHAR_IGNORECASE || eArg2.dataType == Types.VARCHAR_IGNORECASE;
+    likeObject.setParams(session, likeStr, ignoreCase);
+    if (!isRightArgFixedConstant) {
+        // any involved table filters
+        return;
+    }
+    if (likeObject.isEquivalentToFalsePredicate()) {
+        exprType = FALSE;
+        eArg = null;
+        eArg2 = null;
+        likeObject = null;
+    } else if (likeObject.isEquivalentToEqualsPredicate()) {
+        exprType = EQUAL;
+        eArg2 = new Expression(Types.VARCHAR, likeObject.getRangeLow());
+        likeObject = null;
+    } else if (likeObject.isEquivalentToNotNullPredicate()) {
+    } else {
+        if (eArg.exprType != Expression.COLUMN) {
+            // phase.
+            return;
+        }
+        if (!Types.isCharacterType(eArg.dataType)) {
+            // types other than XXXCHAR
+            return;
+        }
+        boolean between = false;
+        boolean like = false;
+        boolean larger = false;
+        if (likeObject.isEquivalentToBetweenPredicate()) {
+            // X LIKE 'abc%' <=> X >= 'abc' AND X <= 'abc' || max_collation_char
+            larger = likeObject.hasCollation;
+            between = !larger;
+            like = larger;
+        } else if (likeObject.isEquivalentToBetweenPredicateAugmentedWithLike()) {
+            // X LIKE 'abc%...' <=> X >= 'abc' AND X <= 'abc' || max_collation_char AND X LIKE 'abc%...'
+            larger = likeObject.hasCollation;
+            between = !larger;
+            like = true;
+        }
+        if (between == false && larger == false) {
+            return;
+        }
+        Expression eFirst = new Expression(Types.VARCHAR, likeObject.getRangeLow());
+        Expression eLast = new Expression(Types.VARCHAR, likeObject.getRangeHigh());
+        if (between && !like) {
+            Expression eArgOld = eArg;
+            eArg = new Expression(BIGGER_EQUAL, eArgOld, eFirst);
+            eArg2 = new Expression(SMALLER_EQUAL, eArgOld, eLast);
+            exprType = AND;
+            likeObject = null;
+        } else if (between && like) {
+            Expression gte = new Expression(BIGGER_EQUAL, eArg, eFirst);
+            Expression lte = new Expression(SMALLER_EQUAL, eArg, eLast);
+            eArg2 = new Expression(eArg, eArg2, likeObject.escapeChar, likeObject.hasCollation);
+            eArg2.likeObject = likeObject;
+            eArg = new Expression(AND, gte, lte);
+            exprType = AND;
+            likeObject = null;
+        } else if (larger) {
+            Expression gte = new Expression(BIGGER_EQUAL, eArg, eFirst);
+            eArg2 = new Expression(eArg, eArg2, likeObject.escapeChar, likeObject.hasCollation);
+            eArg2.likeObject = likeObject;
+            eArg = gte;
+            exprType = AND;
+            likeObject = null;
+        }
+    }
+}

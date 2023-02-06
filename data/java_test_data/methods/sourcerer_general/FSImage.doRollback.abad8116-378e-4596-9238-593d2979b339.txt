@@ -1,0 +1,47 @@
+private void doRollback() throws IOException {
+    // Rollback is allowed only if there is
+    // a previous fs states in at least one of the storage directories.
+    // Directories that don't have previous state do not rollback
+    boolean canRollback = false;
+    FSImage prevState = new FSImage();
+    prevState.layoutVersion = FSConstants.LAYOUT_VERSION;
+    for (Iterator<StorageDirectory> it = dirIterator(); it.hasNext(); ) {
+        StorageDirectory sd = it.next();
+        File prevDir = sd.getPreviousDir();
+        if (!prevDir.exists()) {
+            // use current directory then
+            LOG.info("Storage directory " + sd.getRoot() + " does not contain previous fs state.");
+            // read and verify consistency with other directories
+            sd.read();
+            continue;
+        }
+        StorageDirectory sdPrev = prevState.new StorageDirectory(sd.getRoot());
+        // read and verify consistency of the prev dir
+        sdPrev.read(sdPrev.getPreviousVersionFile());
+        canRollback = true;
+    }
+    if (!canRollback)
+        throw new IOException("Cannot rollback. " + "None of the storage directories contain previous fs state.");
+    // Do rollback for each directory containing previous state
+    for (Iterator<StorageDirectory> it = dirIterator(); it.hasNext(); ) {
+        StorageDirectory sd = it.next();
+        File prevDir = sd.getPreviousDir();
+        if (!prevDir.exists())
+            continue;
+        LOG.info("Rolling back storage directory " + sd.getRoot() + ".\n   new LV = " + prevState.getLayoutVersion() + "; new CTime = " + prevState.getCTime());
+        File tmpDir = sd.getRemovedTmp();
+        assert !tmpDir.exists() : "removed.tmp directory must not exist.";
+        // rename current to tmp
+        File curDir = sd.getCurrentDir();
+        assert curDir.exists() : "Current directory must exist.";
+        rename(curDir, tmpDir);
+        // rename previous to current
+        rename(prevDir, curDir);
+        // delete tmp dir
+        deleteDir(tmpDir);
+        LOG.info("Rollback of " + sd.getRoot() + " is complete.");
+    }
+    isUpgradeFinalized = true;
+    // check whether name-node can start in regular mode
+    verifyDistributedUpgradeProgress(StartupOption.REGULAR);
+}

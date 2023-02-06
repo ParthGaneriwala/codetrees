@@ -1,0 +1,79 @@
+@Override
+public void visit(NodeTraversal t, Node n, Node parent) {
+    switch(n.getType()) {
+        case Token.CALL:
+            boolean isExpr = parent.getType() == Token.EXPR_RESULT;
+            Node left = n.getFirstChild();
+            if (left.getType() == Token.GETPROP) {
+                Node name = left.getFirstChild();
+                if (name.getType() == Token.NAME && GOOG.equals(name.getString())) {
+                    // For the sake of simplicity, we report code changes
+                    // when we see a provides/requires, and don't worry about
+                    // reporting the change when we actually do the replacement.
+                    String methodName = name.getNext().getString();
+                    if ("base".equals(methodName)) {
+                        processBaseClassCall(t, n);
+                    } else if (!isExpr) {
+                        // All other methods must be called in an EXPR.
+                        break;
+                    } else if ("require".equals(methodName)) {
+                        processRequireCall(t, n, parent);
+                    } else if ("provide".equals(methodName)) {
+                        processProvideCall(t, n, parent);
+                    } else if ("exportSymbol".equals(methodName)) {
+                        Node arg = left.getNext();
+                        if (arg.getType() == Token.STRING) {
+                            int dot = arg.getString().indexOf('.');
+                            if (dot == -1) {
+                                exportedVariables.add(arg.getString());
+                            } else {
+                                exportedVariables.add(arg.getString().substring(0, dot));
+                            }
+                        }
+                    } else if ("addDependency".equals(methodName)) {
+                        CodingConvention convention = compiler.getCodingConvention();
+                        List<String> typeDecls = convention.identifyTypeDeclarationCall(n);
+                        if (typeDecls != null) {
+                            for (String typeDecl : typeDecls) {
+                                compiler.getTypeRegistry().forwardDeclareType(typeDecl);
+                            }
+                        }
+                        // We can't modify parent, so just create a node that will
+                        // get compiled out.
+                        parent.replaceChild(n, Node.newNumber(0));
+                        compiler.reportCodeChange();
+                    } else if ("setCssNameMapping".equals(methodName)) {
+                        processSetCssNameMapping(t, n, parent);
+                    }
+                }
+            }
+            break;
+        case Token.ASSIGN:
+        case Token.NAME:
+            // If this is an assignment to a provided name, remove the provided
+            // object.
+            handleCandidateProvideDefinition(t, n, parent);
+            break;
+        case Token.EXPR_RESULT:
+            handleTypedefDefinition(t, n, parent);
+            break;
+        case Token.FUNCTION:
+            // error. Hosited functions will explode if the're provided.
+            if (t.inGlobalScope() && !NodeUtil.isFunctionExpression(n)) {
+                String name = n.getFirstChild().getString();
+                ProvidedName pn = providedNames.get(name);
+                if (pn != null) {
+                    compiler.report(t.makeError(n, FUNCTION_NAMESPACE_ERROR, name));
+                }
+            }
+            break;
+        case Token.NEW:
+            trySimplifyNewDate(t, n, parent);
+            break;
+        case Token.GETPROP:
+            if (n.getFirstChild().getType() == Token.NAME && parent.getType() != Token.CALL && parent.getType() != Token.ASSIGN && "goog.base".equals(n.getQualifiedName())) {
+                reportBadBaseClassUse(t, n, "May only be called directly.");
+            }
+            break;
+    }
+}

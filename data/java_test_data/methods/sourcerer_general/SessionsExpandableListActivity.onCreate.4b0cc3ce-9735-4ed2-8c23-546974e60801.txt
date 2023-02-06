@@ -1,0 +1,89 @@
+@Override
+public void onCreate(Bundle savedInstanceState) {
+    super.onCreate(savedInstanceState);
+    setContentView(R.layout.expandable_list);
+    final Intent intent = getIntent();
+    int childMode = intent.getIntExtra(EXTRA_CHILD_MODE, CHILD_MODE_ALL);
+    Uri uri = Sessions.CONTENT_URI;
+    String selection = null;
+    String[] selectionArgs = null;
+    int mode = SessionsAdapter.MODE_SCHEDULE;
+    switch(childMode) {
+        case CHILD_MODE_STARRED:
+            {
+                selection = Sessions.STARRED + "=?";
+                selectionArgs = new String[] { "1" };
+                mode = SessionsAdapter.MODE_STARRED;
+                break;
+            }
+        case CHILD_MODE_VISIBLE_TRACKS:
+            {
+                selection = Tracks.VISIBLE + "=?";
+                selectionArgs = new String[] { "1" };
+                break;
+            }
+        case CHILD_MODE_PICK:
+            {
+                selection = intent.getStringExtra(EXTRA_SELECTION);
+                selectionArgs = intent.getStringArrayExtra(EXTRA_SELECTION_ARGS);
+                break;
+            }
+        default:
+            {
+                break;
+            }
+    }
+    m_prefsKey = "" + mode;
+    m_adapter = new ExpandableSessionsAdapter(this, uri, selection, selectionArgs, null, mode, new ExpandableSessionsAdapter.ExpandableAdapterListener() {
+
+        public void onNewData() {
+            ExpandableListView elv = getExpandableListView();
+            int size = m_adapter.getGroupCount();
+            for (int i = 0; i < size; i++) {
+                elv.expandGroup(i);
+            }
+        }
+    });
+    ExpandableListView elv = getExpandableListView();
+    elv.setAdapter(m_adapter);
+    elv.setChildDivider(getResources().getDrawable(android.R.drawable.divider_horizontal_bright));
+    // Restore the expanded groups
+    SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+    String expanded = prefs.getString(STATE_EXPANDED + m_prefsKey, null);
+    if (expanded != null) {
+        // Log.d( "onCreate", "Loaded: " + expanded);
+        StringTokenizer tok = new StringTokenizer(expanded, ",");
+        while (tok.hasMoreTokens()) {
+            String t = tok.nextToken();
+            int index = Integer.parseInt(t);
+            if (index < m_adapter.getGroupCount()) {
+                elv.expandGroup(index);
+            }
+        }
+    }
+    // iterate through the groups, and set the group with the current time as selected (if possible)
+    int objectToSelect = 0;
+    int childCount = 0;
+    long currentMillis = System.currentTimeMillis();
+    // add one hour for GMT+1
+    currentMillis += 1000 * 60 * 60;
+    long currentUnixTime = currentMillis;
+    long lastSessionEndTime = 0L;
+    for (int i = 0; i < m_adapter.getGroupCount(); i++) {
+        Object obj = m_adapter.getGroup(i);
+        if (obj instanceof ExpandableSessionsAdapter.Block) {
+            elv.expandGroup(i);
+            ExpandableSessionsAdapter.Block bl = (ExpandableSessionsAdapter.Block) obj;
+            if ((currentUnixTime > bl.getStartTime()) && (currentUnixTime < bl.getEndTime())) {
+                objectToSelect = childCount;
+            }
+            // also check if we're in a timeslot between sessions -> jump to this block
+            if ((lastSessionEndTime != 0L) && (currentUnixTime > lastSessionEndTime) && (currentUnixTime < bl.getStartTime())) {
+                objectToSelect = childCount;
+            }
+            lastSessionEndTime = bl.getEndTime();
+        }
+        childCount += m_adapter.getChildrenCount(i) + 1;
+    }
+    elv.setSelection(objectToSelect);
+}

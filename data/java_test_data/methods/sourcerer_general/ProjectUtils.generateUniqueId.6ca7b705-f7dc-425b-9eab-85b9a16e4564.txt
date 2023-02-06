@@ -1,0 +1,76 @@
+private static String generateUniqueId(String title, int projectId, Connection db) throws SQLException {
+    // Title can look like...
+    // Some Project Name
+    // some-project-name
+    // some-project-name-2
+    // Format to allowed characters to get extension (some will be treated later)
+    String allowed = "abcdefghijklmnopqrstuvwxyz1234567890-/& ";
+    String nameToSearch = StringUtils.toAllowedOnly(allowed, title.trim().toLowerCase());
+    if (!StringUtils.hasText(nameToSearch)) {
+        nameToSearch = "listing";
+    }
+    // Break out any numbered extension: ex. name-5
+    String originalExtension = null;
+    int dotIndex = nameToSearch.lastIndexOf("-");
+    if (dotIndex > -1 && dotIndex + 1 < nameToSearch.length()) {
+        if (StringUtils.isNumber(nameToSearch.substring(dotIndex + 1))) {
+            originalExtension = nameToSearch.substring(dotIndex);
+            nameToSearch = nameToSearch.substring(0, dotIndex);
+        }
+    }
+    // Convert spaces to - for url compliance and search engine readability
+    nameToSearch = StringUtils.replace(nameToSearch, " ", "-");
+    nameToSearch = StringUtils.replace(nameToSearch, "&", "and");
+    nameToSearch = StringUtils.replace(nameToSearch, "/", "-");
+    // See if there is a dupe in the database, and retrieve the latest value
+    boolean originalExtensionExists = false;
+    PreparedStatement pst = db.prepareStatement("SELECT project_id, projecttextid " + "FROM projects " + "WHERE projecttextid LIKE ? ");
+    pst.setString(1, nameToSearch + "%");
+    ResultSet rs = pst.executeQuery();
+    long value = 0;
+    while (rs.next()) {
+        long thisProjectId = rs.getLong("project_id");
+        String thisTextId = rs.getString("projecttextid");
+        // If it already owns this id, then keep it
+        if (projectId > -1 && projectId == thisProjectId && nameToSearch.equals(thisTextId)) {
+            return nameToSearch;
+        }
+        if (originalExtension != null) {
+            if (thisTextId.equals(nameToSearch + originalExtension)) {
+                originalExtensionExists = true;
+            }
+        }
+        // Only compare to this name exactly, or this named iteration
+        if (thisTextId.equals(nameToSearch)) {
+            if (1 > value) {
+                value = 1;
+            }
+        }
+        if (thisTextId.startsWith(nameToSearch + "-")) {
+            String foundExtensionValue = thisTextId.substring(thisTextId.lastIndexOf("-") + 1);
+            if (StringUtils.isNumber(foundExtensionValue)) {
+                try {
+                    long thisValue = Long.parseLong(foundExtensionValue);
+                    if (thisValue > value) {
+                        value = thisValue;
+                    }
+                } catch (Exception e) {
+                    // The extension is big... so add another extension
+                    rs.close();
+                    pst.close();
+                    return generateUniqueId(nameToSearch + "-2", projectId, db);
+                }
+            }
+        }
+    }
+    if (originalExtension != null && !originalExtensionExists) {
+        return (nameToSearch + originalExtension);
+    }
+    // Set this one accordingly
+    if (value == 0) {
+        return nameToSearch;
+    } else {
+        ++value;
+        return (nameToSearch + "-" + value);
+    }
+}

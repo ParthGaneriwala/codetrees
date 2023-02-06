@@ -1,0 +1,148 @@
+public static Table sortJoin(Table iTable, Table iTable2, File iOutputFile, int inField, int inField2, int inType, int inMemorySize) throws IOException, RecordException {
+    long t1 = System.nanoTime();
+    Utils.clear(iOutputFile);
+    int nLength = iTable.getLengthTotal();
+    int nLength2 = iTable2.getLengthTotal();
+    // Sort
+    int nOrder = iTable.getSortingOrder();
+    if (iTable.getSortingOrder() != iTable2.getSortingOrder()) {
+        if (iTable2.isSortedBy(inField2, iTable2.getSortingOrder())) {
+            nOrder = iTable2.getSortingOrder();
+        } else {
+            nOrder = iTable.getSortingOrder();
+        }
+    }
+    // Configure new table
+    Table oTable = null;
+    if (inType == JOIN_LEFT_WITHOUT_REMOVE) {
+        oTable = iTable.joinTableWithoutRemove(iOutputFile, iTable2, new int[] { inField2 });
+        oTable.setSortedBy(oTable.getField()[inField], nOrder);
+    } else if (inType == JOIN_LEFT_WITHOUT_REMOVE_ON2) {
+        oTable = iTable2.joinTableWithoutRemove(iOutputFile, iTable, new int[] { inField });
+        oTable.setSortedBy(oTable.getField()[inField2], nOrder);
+    } else if (inType == JOIN_LEFT_ON2) {
+        oTable = iTable2.joinTable(iOutputFile, iTable, new int[] { inField });
+        oTable.setSortedBy(oTable.getField()[inField2], nOrder);
+    } else if (inType == JOIN_NATURAL || inType == JOIN_LEFT) {
+        oTable = iTable.joinTable(iOutputFile, iTable2, new int[] { inField2 });
+        oTable.setSortedBy(oTable.getField()[inField], nOrder);
+    }
+    int nLength3 = oTable.getLengthTotal();
+    Utils.clear(iOutputFile);
+    int nSublist = 1;
+    int nSublist2 = 1;
+    if (!iTable.isSortedBy(inField, nOrder)) {
+        nSublist = TPPMS.quicksort(iTable, Utils.FILE_WORKDIR, new File(Utils.FILEPATH_WORKDIR + "sublist1_0.txt"), new int[] { inField }, nOrder, inMemorySize);
+    }
+    System.out.println("SortedA " + nSublist);
+    if (!iTable2.isSortedBy(inField2, nOrder)) {
+        nSublist2 = TPPMS.quicksort(iTable2, Utils.FILE_WORKDIR2, new File(Utils.FILEPATH_WORKDIR2 + "sublist1_0.txt"), new int[] { inField2 }, nOrder, inMemorySize);
+    }
+    System.out.println("SortedB " + nSublist2);
+    int nRecordAmount = (int) Math.floor(((double) inMemorySize - nLength3) / nLength);
+    int nRecordAmount2 = (int) Math.floor(((double) inMemorySize - nLength3) / nLength2);
+    // Reduce if necessary
+    int nPhase1 = 2;
+    int nPhase2 = 2;
+    if (nSublist + nSublist2 > nRecordAmount / 2 + nRecordAmount2 / 2) {
+        while (nSublist > (nRecordAmount) / 2) {
+            nSublist = TPPMS.reduce(iTable, Utils.FILE_WORKDIR, new File(Utils.FILEPATH_WORKDIR + "/tmp.txt"), nSublist, nPhase1, new int[] { inField }, nOrder, inMemorySize);
+            nPhase1++;
+        }
+        System.out.println("ReducedA " + nSublist);
+        while (nSublist2 > (nRecordAmount2) / 2) {
+            nSublist2 = TPPMS.reduce(iTable2, Utils.FILE_WORKDIR2, new File(Utils.FILEPATH_WORKDIR2 + "/tmp.txt"), nSublist2, nPhase2, new int[] { inField2 }, nOrder, inMemorySize);
+            nPhase2++;
+        }
+        System.out.println("ReducedB " + nSublist2);
+    }
+    // Find optimal buffersize
+    int nInputBufferCount = nSublist;
+    int nInputBufferSize = 1;
+    int nOutputBufferSize = 1;
+    int nOutputBufferCount = 1;
+    int nInputBufferSize2 = 1;
+    int nInputBufferCount2 = nSublist2;
+    int nMemoryLeft = inMemorySize - nInputBufferCount * nInputBufferSize * nLength - nOutputBufferSize * nOutputBufferCount * nLength3 - nInputBufferSize2 * nInputBufferCount2 * nLength2;
+    if (nInputBufferCount * nLength < nInputBufferCount2 * nLength2 && nMemoryLeft > nInputBufferCount * nLength) {
+        nInputBufferSize = nMemoryLeft / (nLength * nInputBufferCount);
+    } else if (nMemoryLeft > nInputBufferCount2 * nLength2) {
+        nInputBufferSize2 = nMemoryLeft / (nLength2 * nInputBufferCount2);
+    }
+    nOutputBufferCount = (inMemorySize - nInputBufferCount * nInputBufferSize * nLength - nInputBufferSize2 * nInputBufferCount2 * nLength2) / (nOutputBufferCount * nLength3);
+    // Load data into buffer
+    TableOutputBuffer oBuffer = null;
+    TableInputBuffer[] iBuffer = new TableInputBuffer[nInputBufferCount];
+    TableInputBuffer[] iBuffer2 = new TableInputBuffer[nInputBufferCount2];
+    // ProjectGUI.getInstance().update("Memory Execution: " + iTable.getName() + " Sort Join " + iTable2.getName(),nInputBufferCount+nInputBufferCount2+nOutputBufferCount);
+    ProjectGUI.getInstance().update("Memory Execution: " + iTable.getName() + " Sort Join " + iTable2.getName(), 3);
+    ProjectGUI.getInstance().update(0, nInputBufferSize * nInputBufferCount * nLength, ProjectGUI.getGI(0, 0, 1, nInputBufferSize * nInputBufferCount * nLength, iTable));
+    ProjectGUI.getInstance().update(1, nInputBufferSize2 * nInputBufferCount2 * nLength2, ProjectGUI.getGI(1, 0, 1, nInputBufferSize2 * nInputBufferCount2 * nLength2, iTable2));
+    ProjectGUI.getInstance().update(2, nOutputBufferSize * nOutputBufferCount * nLength3, ProjectGUI.getGO(0, 1, nOutputBufferSize * nOutputBufferCount * nLength3, oTable));
+    // Load data into input buffer
+    for (int i = 0; i < iBuffer.length; i++) {
+        if (!iTable.isSortedBy(inField, nOrder)) {
+            iBuffer[i] = new TableInputBuffer(iTable, TPPMS.getSublistFile(Utils.FILE_WORKDIR, nPhase1 - 1, i), nInputBufferSize, i);
+        } else {
+            iBuffer[i] = new TableInputBuffer(iTable, iTable.getFile(), nInputBufferSize, i);
+        }
+    }
+    for (int i = 0; i < iBuffer2.length; i++) {
+        if (!iTable2.isSortedBy(inField2, nOrder)) {
+            iBuffer2[i] = new TableInputBuffer(iTable2, TPPMS.getSublistFile(Utils.FILE_WORKDIR2, nPhase2 - 1, i), nInputBufferSize2, nInputBufferCount + i);
+        } else {
+            iBuffer2[i] = new TableInputBuffer(iTable2, iTable2.getFile(), nInputBufferSize2, nInputBufferCount + i);
+        }
+    }
+    oBuffer = new TableOutputBuffer(oTable, iOutputFile, nOutputBufferSize, nInputBufferCount + nInputBufferCount2);
+    // Join
+    int[] anMatch = new int[] { TPPMS.smallest(iBuffer, new int[] { inField }, nOrder), -1, -1 };
+    while ((anMatch = match(iBuffer, iBuffer2, inField, inField2, nOrder, anMatch))[0] != -1 || anMatch[1] != -1) {
+        if (anMatch[2] == 1) {
+            if (inType == JOIN_NATURAL || inType == JOIN_LEFT || inType == JOIN_LEFT_WITHOUT_REMOVE)
+                iBuffer2[anMatch[1]].read();
+            else if (inType == JOIN_LEFT_ON2) {
+                oBuffer.write(leftJoinTuple(iBuffer2[anMatch[1]].read(), inField2, iTable, inField));
+            } else if (inType == JOIN_LEFT_WITHOUT_REMOVE_ON2) {
+                oBuffer.write(leftJoinTupleWithoutRemove(iBuffer2[anMatch[1]].read(), inField2, iTable, inField));
+            }
+            anMatch[1] = -1;
+        } else if (anMatch[2] == -1) {
+            if (inType == JOIN_NATURAL || inType == JOIN_LEFT_ON2 || inType == JOIN_LEFT_WITHOUT_REMOVE_ON2) {
+                iBuffer[anMatch[0]].read();
+            } else if (inType == JOIN_LEFT) {
+                oBuffer.write(leftJoinTuple(iBuffer[anMatch[0]].read(), inField, iTable2, inField2));
+            } else if (inType == JOIN_LEFT_WITHOUT_REMOVE) {
+                oBuffer.write(leftJoinTupleWithoutRemove(iBuffer[anMatch[0]].read(), inField, iTable2, inField2));
+            }
+            anMatch[0] = -1;
+        } else {
+            if (inType == JOIN_LEFT) {
+                Comparable[] value = iBuffer2[anMatch[1]].peek();
+                oBuffer.write(joinTuple(iBuffer[anMatch[0]].read(), inField, value, inField2));
+                anMatch[0] = -1;
+            } else if (inType == JOIN_LEFT_ON2) {
+                Comparable[] value = iBuffer2[anMatch[1]].read();
+                oBuffer.write(joinTuple(value, inField2, iBuffer[anMatch[0]].peek(), inField));
+                anMatch[1] = -1;
+            } else if (inType == JOIN_LEFT_WITHOUT_REMOVE_ON2) {
+                Comparable[] value = iBuffer2[anMatch[1]].read();
+                oBuffer.write(joinTupleWithoutRemove(value, inField2, iBuffer[anMatch[0]].peek(), inField));
+                anMatch[1] = -1;
+            } else if (inType == JOIN_LEFT_WITHOUT_REMOVE) {
+                Comparable[] value = iBuffer2[anMatch[1]].peek();
+                oBuffer.write(joinTupleWithoutRemove(iBuffer[anMatch[0]].read(), inField, value, inField2));
+                anMatch[0] = -1;
+            } else if (inType == JOIN_NATURAL) {
+                Comparable[] value = iBuffer2[anMatch[1]].read();
+                oBuffer.write(joinTuple(iBuffer[anMatch[0]].peek(), inField, value, inField2));
+                anMatch[1] = -1;
+            }
+        }
+        ProjectGUI.getInstance().hasBreak();
+    }
+    oBuffer.flush();
+    long t2 = System.nanoTime();
+    oTable.setExecutionTime((t2 - t1) / Utils.NANO);
+    return oTable;
+}

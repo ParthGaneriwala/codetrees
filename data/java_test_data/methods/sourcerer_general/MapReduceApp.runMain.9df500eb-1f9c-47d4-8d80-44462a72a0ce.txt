@@ -1,0 +1,83 @@
+protected void runMain(String[] args) throws Exception {
+    CmdLineParser parser = new CmdLineParser(this);
+    try {
+        // parse the arguments.
+        parser.parseArgument(args);
+    } catch (CmdLineException e) {
+        // get exception if has command line problem
+        System.err.println(e.getMessage());
+        System.err.println("java MapReduceApp [options...]");
+        // print the list of available options
+        parser.printUsage(System.err);
+        System.err.println();
+        return;
+    }
+    // check for mandatory "options"
+    if (accessKeyId == null || secretAccessKey == null || s3Path == null || clientID == -1) {
+        System.err.println("-k -s -i -c are mandatory options");
+        System.err.println("java MapReduceApp [options...]");
+        // print the list of available options
+        parser.printUsage(System.err);
+        System.err.println();
+        return;
+    }
+    // set the global variables
+    Global.clientID = clientID;
+    Global.numLocalMapThreads = numLocalMapThreads;
+    Global.numLocalReduceThreads = numLocalReduceThreads;
+    Global.numReduceQReadBuffer = numReduceQReadBuffer;
+    Global.numUploadWorkersPerMap = numUploadWorkersPerMap;
+    Global.numDownloadWorkersPerReduce = numDownloadWorkersPerReduce;
+    Global.mapQTimeout = mapQTimeout;
+    Global.reduceQTimeout = reduceQTimeout;
+    Global.masterReduceQTimeout = masterReduceQTimeout;
+    Global.enableCombiner = enableCombiner;
+    Global.numSDBDomain = numSDBDomain;
+    Global.outputQueueName = outputQueueName;
+    dbManager = new DbManager(accessKeyId, secretAccessKey, numSplits, numReduceQs);
+    // workers used to clean queues
+    queueManager = new QueueManager(accessKeyId, secretAccessKey);
+    s3FileSystem = new S3FileSystem(accessKeyId, secretAccessKey);
+    // TODO, make it a constant for now
+    WorkerThreadQueue workers = new WorkerThreadQueue(20, "general");
+    SimpleQueue inputQueue = queueManager.getQueue(jobID + "_inputqueue", false, 1, QueueManager.QueueType.MAP, null, null, workers);
+    SimpleQueue outputQueue = queueManager.getQueue(jobID + "_" + outputQueueName, true, 10, QueueManager.QueueType.OUTPUT, null, null, workers);
+    // node 0 is responsible for initializing input queue (populate with splits) and output queue
+    if (clientID == 0) {
+        // clean up
+        // dbManager.clean(jobID);
+        // initialize initial queue
+        inputQueue.create();
+        outputQueue.create();
+        ArrayList<S3Item> fileList = new ArrayList<S3Item>();
+        for (int i = 0; i < 1; i++) {
+            addDirToList(s3FileSystem.getItem(s3Path), fileList);
+        }
+        addSplits(fileList, inputQueue, numSplits);
+        workers.waitForFinish();
+    // initQueueManager.close();
+    }
+    // Run MapReduce application, implemented in individual app
+    run(jobID, numReduceQs, numSetupNodes, inputQueue, outputQueue, numReduceQReadBuffer);
+    // node 0 prints out some outputs for debugging purpose, can be disabled in production with -d 0
+    if (clientID == 0 && numDisplay > 0) {
+        logger.debug("Output result samples: ");
+        int f = 0;
+        for (Message msg : outputQueue) {
+            String output = msg.getBody();
+            if (f >= numDisplay) {
+                break;
+            }
+            logger.debug(output);
+            f++;
+        }
+        logger.debug("Cleaning up");
+        dbManager.clean(jobID);
+    // queueManager.deleteQueue(outputQueue);
+    }
+    // delete all reduce queues, have to wait 60 seconds for next job to create new queues
+    if (clientID == 0)
+        queueManager.clean(jobID, workers);
+    // close all threads
+    queueManager.close();
+}

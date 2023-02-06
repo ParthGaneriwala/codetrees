@@ -1,0 +1,99 @@
+private void handleRead(TFTPReadRequestPacket trrp) throws IOException, TFTPPacketException {
+    InputStream is = null;
+    try {
+        if (mode_ == ServerMode.PUT_ONLY) {
+            transferTftp_.bufferedSend(new TFTPErrorPacket(trrp.getAddress(), trrp.getPort(), TFTPErrorPacket.ILLEGAL_OPERATION, "Read not allowed by server."));
+            return;
+        }
+        try {
+            is = new BufferedInputStream(new FileInputStream(buildSafeFile(serverReadDirectory_, trrp.getFilename(), false)));
+        } catch (FileNotFoundException e) {
+            transferTftp_.bufferedSend(new TFTPErrorPacket(trrp.getAddress(), trrp.getPort(), TFTPErrorPacket.FILE_NOT_FOUND, e.getMessage()));
+            return;
+        } catch (Exception e) {
+            transferTftp_.bufferedSend(new TFTPErrorPacket(trrp.getAddress(), trrp.getPort(), TFTPErrorPacket.UNDEFINED, e.getMessage()));
+            return;
+        }
+        if (trrp.getMode() == TFTP.NETASCII_MODE) {
+            is = new ToNetASCIIInputStream(is);
+        }
+        byte[] temp = new byte[TFTPDataPacket.MAX_DATA_LENGTH];
+        TFTPPacket answer;
+        int block = 1;
+        boolean sendNext = true;
+        int readLength = TFTPDataPacket.MAX_DATA_LENGTH;
+        TFTPDataPacket lastSentData = null;
+        // requested bytes, we know that we are at the end of the file.
+        while (readLength == TFTPDataPacket.MAX_DATA_LENGTH && !shutdownTransfer) {
+            if (sendNext) {
+                readLength = is.read(temp);
+                if (readLength == -1) {
+                    readLength = 0;
+                }
+                lastSentData = new TFTPDataPacket(trrp.getAddress(), trrp.getPort(), block, temp, 0, readLength);
+                transferTftp_.bufferedSend(lastSentData);
+            }
+            answer = null;
+            int timeoutCount = 0;
+            while (!shutdownTransfer && (answer == null || !answer.getAddress().equals(trrp.getAddress()) || answer.getPort() != trrp.getPort())) {
+                // listen for an answer.
+                if (answer != null) {
+                    // The answer that we got didn't come from the
+                    // expected source, fire back an error, and continue
+                    // listening.
+                    log_.println("TFTP Server ignoring message from unexpected source.");
+                    transferTftp_.bufferedSend(new TFTPErrorPacket(answer.getAddress(), answer.getPort(), TFTPErrorPacket.UNKNOWN_TID, "Unexpected Host or Port"));
+                }
+                try {
+                    answer = transferTftp_.bufferedReceive();
+                } catch (SocketTimeoutException e) {
+                    if (timeoutCount >= maxTimeoutRetries_) {
+                        throw e;
+                    }
+                    // didn't get an ack for this data. need to resend
+                    // it.
+                    timeoutCount++;
+                    transferTftp_.bufferedSend(lastSentData);
+                    continue;
+                }
+            }
+            if (answer == null || !(answer instanceof TFTPAckPacket)) {
+                if (!shutdownTransfer) {
+                    logError_.println("Unexpected response from tftp client during transfer (" + answer + ").  Transfer aborted.");
+                }
+                break;
+            } else {
+                // once we get here, we know we have an answer packet
+                // from the correct host.
+                TFTPAckPacket ack = (TFTPAckPacket) answer;
+                if (ack.getBlockNumber() != block) {
+                    /*
+                             * The origional tftp spec would have called on us to resend the
+                             * previous data here, however, that causes the SAS Syndrome.
+                             * http://www.faqs.org/rfcs/rfc1123.html section 4.2.3.1 The modified
+                             * spec says that we ignore a duplicate ack. If the packet was really
+                             * lost, we will time out on receive, and resend the previous data at
+                             * that point.
+                             */
+                    sendNext = false;
+                } else {
+                    // send the next block
+                    block++;
+                    if (block > 65535) {
+                        // wrap the block number
+                        block = 0;
+                    }
+                    sendNext = true;
+                }
+            }
+        }
+    } finally {
+        try {
+            if (is != null) {
+                is.close();
+            }
+        } catch (IOException e) {
+        // noop
+        }
+    }
+}

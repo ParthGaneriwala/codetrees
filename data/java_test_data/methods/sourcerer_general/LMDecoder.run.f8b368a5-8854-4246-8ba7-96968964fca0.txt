@@ -1,0 +1,80 @@
+public void run() {
+    String input = pair.getSecond();
+    if (opts.lower) {
+        input = input.toLowerCase();
+    } else if (opts.upper) {
+        input = input.toUpperCase();
+    }
+    int silenceCount = 0;
+    if (silence_re != null) {
+        Matcher match = silence_re.matcher(input);
+        while (match.find()) {
+            ++silenceCount;
+        }
+        match.reset();
+        input = match.replaceAll(" ");
+    }
+    int sentenceLength = 0;
+    if (tokenize) {
+        String[] words = PTBTokenizer.split_re.split(input.trim());
+        sentenceLength = words.length;
+        words = tokenizer.retokenize(words);
+        StringBuilder sb = new StringBuilder();
+        if (words.length > 0) {
+            sb.append(words[0]);
+            for (int i = 1; i < words.length; ++i) {
+                sb.append(' ');
+                sb.append(words[i]);
+            }
+            input = sb.toString();
+        }
+    }
+    long[][] sentences = parser.parseMultiSentence(input);
+    double totalLineLogProb = 0;
+    for (long[] sentence : sentences) {
+        if (!tokenize) {
+            sentenceLength = sentence.length - extraWords.intValue();
+        }
+        double logProb;
+        if (opts.ngram) {
+            logProb = 0;
+            int numStartTuples = parser.getStartTuples() == null ? 0 : parser.getStartTuples().length;
+            for (int i = numStartTuples; i < sentence.length; ++i) {
+                long[] ngram = Arrays.copyOfRange(sentence, Math.max(0, i - ngramOrder + 1), i + 1);
+                double prob = marginalizer.getNgramProbability(ngram);
+                if (opts.debug > 1) {
+                    System.err.printf("p(%s|...) = %g [%g]\n", FactorTuple.toStringNoNull(ngram[ngram.length - 1]), Math.pow(10, prob), prob);
+                }
+                logProb += prob;
+            }
+        } else {
+            // logProb = forest.getDecoder().newEvaluateSentence(headTrellisNode, sentence, opts.useConstraints);
+            logProb = forest.getDecoder().newEvaluateSentence(Decoder.createTreeTrellis(forest.getOrder() - 1), sentence, opts.useConstraints);
+        // logProb = forest.getDecoder().evaluateSentence(sentence, opts.useConstraints);
+        }
+        totalLineLogProb += logProb;
+    }
+    if (silence_re != null) {
+        totalLineLogProb += silenceCount * opts.silencePenalty;
+    }
+    StringBuilder sb = new StringBuilder();
+    sb.append(Float.toString((float) totalLineLogProb));
+    sb.append("\t");
+    if (!Double.isNaN(totalLineLogProb) && !Double.isInfinite(totalLineLogProb)) {
+        lock.lock();
+        totalWords.add(sentenceLength);
+        totalLogProb.add(totalLineLogProb);
+        lock.unlock();
+        sb.append('[' + Double.toString(Math.pow(10.0, -(totalLineLogProb / sentenceLength))) + "]\t");
+    }
+    sb.append(pair.getSecond());
+    pair.setSecond(sb.toString());
+    // System.err.printf("done line %d, %s\n", pair.getFirst(), pair.getSecond());
+    // System.err.flush();
+    sequencer.putItem(pair);
+    if (opts.meminfo) {
+        MemoryUsage memuse = memoryBean.getHeapMemoryUsage();
+        System.out.printf("MEMUSE: after evaluating sentence %s: %dM/%dM\n", pair.getFirst().toString(), memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+    // System.out.println("STATS: " + eval.getStatistics());
+    }
+}

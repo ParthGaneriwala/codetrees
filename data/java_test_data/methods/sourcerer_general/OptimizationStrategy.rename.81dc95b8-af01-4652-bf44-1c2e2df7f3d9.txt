@@ -1,0 +1,93 @@
+private void rename(ControlFlowNode controlFlowNode, HashMap variableVsCount, HashMap variableVsStack, DominatorTree dominatorTree, HashMap tempNameVsDefinitionInstruction) {
+    Vector quads = controlFlowNode.getInstructions();
+    // This list has all definitions defined in the
+    Vector definitionsInNode = new Vector();
+    for (int i = 0; i < quads.size(); i++) {
+        AssemblyInstruction quadruple = (AssemblyInstruction) quads.elementAt(i);
+        Vector srcList = quadruple.getSrcList();
+        Vector destList = quadruple.getDestList();
+        Vector renamedSrcList = null;
+        Vector renamedDestList = null;
+        if (quadruple.getType() != AssemblyInstruction.SSA_PHI_FUNCTION) {
+            // Not a phi function; rename the source variables.
+            if (srcList != null) {
+                renamedSrcList = new Vector();
+                for (int a = 0; a < srcList.size(); a++) {
+                    Temp srcTemp = (Temp) srcList.elementAt(a);
+                    if (srcTemp.isPhysicalRegister()) {
+                        renamedSrcList.add(srcTemp);
+                        continue;
+                    }
+                    Stack stack = (Stack) variableVsStack.get(srcTemp);
+                    Integer countInt = (Integer) stack.lastElement();
+                    int count = countInt.intValue();
+                    SSATemp newTemp = new SSATemp(srcTemp, count);
+                    renamedSrcList.addElement(newTemp);
+                    // Populate the new source temp against the site of it's definition - this is the
+                    // use-def chain; for an SSA form, there will be only one definition
+                    AssemblyInstruction defSiteInstruction = (AssemblyInstruction) tempNameVsDefinitionInstruction.get(newTemp.toString());
+                    if (defSiteInstruction != null)
+                        useDefChain.put(newTemp.toString(), defSiteInstruction);
+                    // Get the corresponding temporary defined in the quadruple and add to it's  use
+                    // Assume only variable is defined
+                    Temp definedTemp = (Temp) defSiteInstruction.getDestList().elementAt(0);
+                    HashSet<Temp> usages = (HashSet<Temp>) defUseChain.get(definedTemp);
+                    if (usages == null) {
+                        // No uses found so far; add this source as an usage
+                        usages = new HashSet<Temp>();
+                    }
+                }
+            }
+        } else {
+            // This is an SSA phi function; populate the use-def chain
+            for (int a = 0; a < srcList.size(); a++) {
+                Temp srcTemp = (Temp) srcList.elementAt(a);
+                AssemblyInstruction defSiteInstruction = (AssemblyInstruction) tempNameVsDefinitionInstruction.get(srcTemp.toString());
+                if (defSiteInstruction != null)
+                    useDefChain.put(srcTemp.toString(), defSiteInstruction);
+            }
+        }
+        // Rename the destination variables
+        if (destList != null) {
+            renamedDestList = new Vector();
+            for (int a = 0; a < destList.size(); a++) {
+                Temp newTemp = null;
+                Temp destTemp = (Temp) destList.elementAt(a);
+                if (destTemp.isPhysicalRegister())
+                    // This is a physical register; do not rename
+                    newTemp = destTemp;
+                else
+                    newTemp = newName(destTemp, variableVsCount, variableVsStack);
+                renamedDestList.addElement(newTemp);
+                definitionsInNode.addElement(destTemp);
+            }
+        }
+        // Now that we have created new temporaries for the source and destination, create a new quadruple
+        quadruple = createNewQuadruple(quadruple, renamedDestList, renamedSrcList);
+        // the new quadruple - useful in determing def-use chains
+        if (destList != null) {
+            for (int a = 0; a < renamedDestList.size(); a++) {
+                Temp destTemp = (Temp) renamedDestList.elementAt(a);
+                String destTempName = destTemp.toString();
+                tempNameVsDefinitionInstruction.put(destTempName, quadruple);
+            }
+        }
+        // Set the new quadruple in the control flow node
+        quads.set(i, quadruple);
+    }
+    // For each successor in the flow graph for this control flow node, if there are phi functions
+    // in some successor, replace the parameter values of phi function
+    updatePhiFunctionParams(variableVsStack, controlFlowNode);
+    // Recursively call rename on this node's children in the dominator tree
+    Vector childTreeNodes = dominatorTree.getChildNodesForGraphNode(controlFlowNode);
+    for (int a = 0; a < childTreeNodes.size(); a++) {
+        ControlFlowNode childCFGNode = (ControlFlowNode) childTreeNodes.elementAt(a);
+        rename(childCFGNode, variableVsCount, variableVsStack, dominatorTree, tempNameVsDefinitionInstruction);
+    }
+    // Pop the the new definitions in this node to expose count in the  stack
+    for (int i = 0; i < definitionsInNode.size(); i++) {
+        Temp tmp = (Temp) definitionsInNode.elementAt(i);
+        Stack stack = (Stack) variableVsStack.get(tmp);
+        stack.pop();
+    }
+}

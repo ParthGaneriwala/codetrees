@@ -1,0 +1,61 @@
+// make sure that this harPath is relative to the har filesystem
+// this only works for relative paths. This returns the line matching
+// the file in the index. Returns a null if there is not matching
+private String fileStatusInIndex(Path harPath) throws IOException {
+    // read the index file
+    int hashCode = getHarHash(harPath);
+    // get the master index to find the pos
+    // in the index file
+    FSDataInputStream in = fs.open(masterIndex);
+    FileStatus masterStat = fs.getFileStatus(masterIndex);
+    LineReader lin = new LineReader(in, getConf());
+    Text line = new Text();
+    long read = lin.readLine(line);
+    // ignore the first line. this is the header of the index files
+    String[] readStr = null;
+    List<Store> stores = new ArrayList<Store>();
+    while (read < masterStat.getLen()) {
+        int b = lin.readLine(line);
+        read += b;
+        readStr = line.toString().split(" ");
+        int startHash = Integer.parseInt(readStr[0]);
+        int endHash = Integer.parseInt(readStr[1]);
+        if (startHash <= hashCode && hashCode <= endHash) {
+            stores.add(new Store(Long.parseLong(readStr[2]), Long.parseLong(readStr[3]), startHash, endHash));
+        }
+        line.clear();
+    }
+    try {
+        lin.close();
+    } catch (IOException io) {
+    // do nothing just a read.
+    }
+    FSDataInputStream aIn = fs.open(archiveIndex);
+    LineReader aLin = new LineReader(aIn, getConf());
+    String retStr = null;
+    // now start reading the real index file
+    read = 0;
+    for (Store s : stores) {
+        aIn.seek(s.begin);
+        while (read + s.begin < s.end) {
+            int tmp = aLin.readLine(line);
+            read += tmp;
+            String lineFeed = line.toString();
+            String[] parsed = lineFeed.split(" ");
+            if (harPath.compareTo(new Path(parsed[0])) == 0) {
+                // bingo!
+                retStr = lineFeed;
+                break;
+            }
+            line.clear();
+        }
+        if (retStr != null)
+            break;
+    }
+    try {
+        aIn.close();
+    } catch (IOException io) {
+    // do nothing
+    }
+    return retStr;
+}

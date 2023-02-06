@@ -1,0 +1,84 @@
+public Pair<SortedSet<? extends TaggedPath>, Double> evaluateSentence(Collection<FactorTuple> sentence) {
+    SentenceContext ctx = decoder.createContext();
+    ViterbiTaggerContext taggerContext = new ViterbiTaggerContext(tags);
+    final int ctxSize = decoder.getForest().getOrder() - 1;
+    // HashMap<TaggerContext.Context,List<ViterbiPath>> currentPathsHash = taggerContext.currentPathsHash;
+    // TreeSet<ViterbiPath> currentPaths = taggerContext.currentPaths;
+    ViterbiPath initPath = null;
+    {
+        SimpleList<PathItem> seq = new SimpleList<PathItem>();
+        for (int i = 0; i < ctxSize; ++i) {
+            TrellisItem item = ctx.getSliceByOffset(i + 1 - ctxSize).getElements().iterator().next();
+            seq = seq.add(new PathItem(Dictionary.getStart(), item));
+        }
+        initPath = new ViterbiPath(0.0, seq);
+    }
+    taggerContext.currentPaths.add(initPath);
+    {
+        List<ViterbiPath> lst = new LinkedList<ViterbiPath>();
+        lst.add(initPath);
+    // taggerContext.currentPathsHash.put(new ViterbiTaggerContext.Context(initPath.getContext(ctxSize)), lst);
+    }
+    long overtMask = Experiment.getInstance().getTupleDescription().getOvertFactorsMask();
+    for (FactorTuple tuple : sentence) {
+        tuple = new FactorTuple(tuple.getBits() & overtMask);
+        ctx = ctx.addWord(tuple.getBits());
+        decoder.partition(ctx);
+        if (decoder.getDebug() > 0) {
+            decoder.debugContext(ctx);
+            if (decoder.getDebug() > 1) {
+                ctx.getTrellis().dumpTrellis(String.format("trellis-tagger-%d-%s.dot", ctx.getTrellis().getCurrentSlice().getTime(), tuple.toStringNoNull().replace('/', ' ')));
+            }
+        }
+        if (ctx.getCurrentSlice().getTime() <= ctxSize * 2) {
+            /*
+				SimpleList<PathItem> seq;
+				SliceItem item = ctx.getCurrentSlice().getPrevious().getElements().iterator().next();
+				if (initPath == null) {
+					seq = new SimpleList<PathItem>();
+					seq = seq.add(new PathItem(Dictionary.getStart(), item));
+					initPath = new ViterbiPath(0.0, seq);
+				} else {
+					initPath = initPath.append(item, Dictionary.getStart(), 0.0);
+				}
+				*/
+            continue;
+        }
+        TrellisSlice slice = ctx.getSliceByOffset(-ctxSize);
+        /*
+			if (ctx.getCurrentSlice().getTime() == ctxSize+2) {
+				taggerContext.currentPaths.add(initPath);
+			}
+			*/
+        long start = System.nanoTime();
+        splitElements(slice);
+        long end = System.nanoTime();
+        long updatePathsDelta = end - start;
+        updatePathsTime += updatePathsDelta;
+        start = end;
+        updatePaths(taggerContext, slice);
+        end = System.nanoTime();
+        long makingTaggerSliceDelta = end - start;
+        makingTaggerSliceTime += makingTaggerSliceDelta;
+        if (decoder.getDebug() > 0) {
+            System.out.printf("tagger [%d]: %d paths, update: %fs, slice: %fs\n", slice.getTime(), taggerContext.currentPaths.size(), (double) updatePathsDelta / 1000000000, (double) makingTaggerSliceDelta / 1000000000);
+        // printSlice(slice);
+        }
+    }
+    // do the sentence terminator
+    for (int offset = -ctxSize + 1; offset <= 0; ++offset) {
+        long start = System.nanoTime();
+        TrellisSlice slice = ctx.getSliceByOffset(offset);
+        splitElements(slice);
+        long end = System.nanoTime();
+        updatePathsTime += end - start;
+        start = end;
+        updatePaths(taggerContext, slice);
+        end = System.nanoTime();
+        makingTaggerSliceTime += end - start;
+        if (decoder.getDebug() > 0) {
+        // printSlice(slice);
+        }
+    }
+    return new Pair<SortedSet<? extends TaggedPath>, Double>(taggerContext.currentPaths, ctx.getLogProb());
+}

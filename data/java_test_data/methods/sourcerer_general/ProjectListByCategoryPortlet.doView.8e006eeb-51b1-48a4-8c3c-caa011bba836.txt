@@ -1,0 +1,89 @@
+public void doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    String defaultView = VIEW_PAGE;
+    // Determine the user
+    User user = PortalUtils.getUser(request);
+    // Determine if the portlet is on a project page
+    Project project = PortalUtils.findProject(request);
+    // Process the preferences
+    String title = request.getPreferences().getValue(PREF_TITLE, null);
+    boolean forUser = Boolean.parseBoolean(request.getPreferences().getValue(PREF_FOR_USER, "false"));
+    try {
+        // Determine the database connection
+        Connection db = PortalUtils.useConnection(request);
+        // Find the specified categories, if they are enabled
+        ProjectCategoryList allowedCategoryList = new ProjectCategoryList();
+        String allowedCategories = request.getPreferences().getValue(PREF_CATEGORIES, null);
+        if (allowedCategories != null) {
+            // A list of possible categories
+            ProjectCategoryList categories = new ProjectCategoryList();
+            categories.setEnabled(true);
+            categories.setTopLevelOnly(true);
+            categories.buildList(db);
+            // Find the specific categories
+            String[] categoryArray = allowedCategories.split(",");
+            for (String thisCategory : categoryArray) {
+                ProjectCategory allowedCategory = categories.getFromValue(thisCategory.trim());
+                if (allowedCategory != null) {
+                    allowedCategoryList.add(allowedCategory);
+                }
+            }
+        }
+        // Determine if projects are limited by badge
+        BadgeList allowedBadgeList = new BadgeList();
+        String allowedBadges = request.getPreferences().getValue(PREF_BADGES, null);
+        if (allowedBadges != null) {
+            // Load the badges for comparison
+            BadgeList badges = new BadgeList();
+            badges.setEnabled(Constants.TRUE);
+            badges.buildList(db);
+            // Find the badges
+            String[] badgeArray = allowedBadges.split(",");
+            for (String thisBadge : badgeArray) {
+                Badge allowedBadge = badges.getFromValue(thisBadge.trim());
+                if (allowedBadge != null) {
+                    allowedBadgeList.add(allowedBadge);
+                }
+            }
+        }
+        // Show the category name if there is just one
+        if (title == null && allowedCategoryList.size() == 1) {
+            title = allowedCategoryList.get(0).getLabel();
+        }
+        // Set the title
+        request.setAttribute(TITLE, title);
+        // Use paged data for sorting the projects
+        PagedListInfo pagedListInfo = new PagedListInfo();
+        pagedListInfo.setItemsPerPage(0);
+        // Projects to show
+        ProjectList projects = new ProjectList();
+        projects.setPagedListInfo(pagedListInfo);
+        projects.setCategoryList(allowedCategoryList);
+        projects.setBadgeList(allowedBadgeList);
+        projects.setPortalState(Constants.FALSE);
+        projects.setOpenProjectsOnly(true);
+        projects.setProfile(Constants.FALSE);
+        // If showing just this user's projects...
+        if (forUser) {
+            if (user.getId() < 1) {
+                throw new Exception("No access to view projects");
+            }
+            projects.setGroupId(user.getGroupId());
+            projects.setProjectsForUser(user.getId());
+            projects.setInvitationAcceptedOnly(true);
+        }
+        // Build the list
+        if (project == null || (forUser && project != null && project.getProfile() && project.getOwner() == user.getId())) {
+            // Perform the query
+            projects.buildList(db);
+            request.setAttribute(PROJECT_LIST, projects);
+            if (projects.size() > 0) {
+                // JSP view
+                PortletContext context = getPortletContext();
+                PortletRequestDispatcher requestDispatcher = context.getRequestDispatcher(defaultView);
+                requestDispatcher.include(request, response);
+            }
+        }
+    } catch (Exception e) {
+    // Don't show the portlet
+    }
+}

@@ -1,0 +1,93 @@
+public boolean delete(Connection db, String baseFilePath) throws SQLException {
+    if (id == -1) {
+        throw new SQLException("Id not specified");
+    }
+    this.buildVersionList(db);
+    // Need to delete the actual files
+    for (FileItemVersion thisVersion : versionList) {
+        // For each version, delete the main record
+        String filePath = baseFilePath + getDatePath(thisVersion.getEntered());
+        File fileToDelete = new File(filePath + thisVersion.getFilename());
+        if (!fileToDelete.delete()) {
+            LOG.error("File not found -- could not delete file: " + fileToDelete.getPath());
+        }
+        // Delete the thumbnails for this version
+        ThumbnailList thumbnailList = new ThumbnailList();
+        thumbnailList.setItemId(thisVersion.getId());
+        thumbnailList.setVersion(thisVersion.getVersion());
+        thumbnailList.buildList(db);
+        for (Thumbnail thisThumbnail : thumbnailList) {
+            File thumbnailToDelete = new File(filePath + thisThumbnail.getFilename());
+            if (!thumbnailToDelete.delete()) {
+                LOG.error("File thumbnail not found -- could not delete file: " + fileToDelete.getPath());
+            }
+        }
+    }
+    boolean result = false;
+    boolean commit = db.getAutoCommit();
+    try {
+        if (commit) {
+            db.setAutoCommit(false);
+        }
+        // Delete the ratings
+        Rating.delete(db, this.getId(), TABLE, PRIMARY_KEY);
+        // Delete the log of downloads
+        int i = 0;
+        PreparedStatement pst = db.prepareStatement("DELETE FROM project_files_download " + "WHERE item_id = ? ");
+        pst.setInt(++i, this.getId());
+        pst.execute();
+        pst.close();
+        // Delete the thumbnail
+        i = 0;
+        pst = db.prepareStatement("DELETE FROM project_files_thumbnail " + "WHERE item_id = ? ");
+        pst.setInt(++i, this.getId());
+        pst.execute();
+        pst.close();
+        // Delete all of the versions
+        i = 0;
+        pst = db.prepareStatement("DELETE FROM project_files_version " + "WHERE item_id = ? ");
+        pst.setInt(++i, this.getId());
+        pst.execute();
+        pst.close();
+        // Delete the master record
+        i = 0;
+        pst = db.prepareStatement("DELETE FROM project_files " + "WHERE item_id = ? ");
+        pst.setInt(++i, this.getId());
+        pst.execute();
+        pst.close();
+        if (linkModuleId == Constants.PROJECT_IMAGE_FILES) {
+            if (this.getDefaultFile()) {
+                Project project = ProjectUtils.loadProject(linkItemId);
+                // Enable the next image
+                FileItemList files = new FileItemList();
+                files.setLinkModuleId(Constants.PROJECT_IMAGE_FILES);
+                files.setLinkItemId(linkItemId);
+                files.setIgnoreId(this.getId());
+                files.buildList(db);
+                if (files.size() > 0) {
+                    project.setLogoId(files.get(0).getId());
+                } else {
+                    project.setLogoId(-1);
+                }
+                project.updateLogoId(db);
+            }
+        }
+        if (commit) {
+            db.commit();
+        }
+        if (linkModuleId == Constants.PROJECT_IMAGE_FILES) {
+            CacheUtils.invalidateValue(Constants.SYSTEM_PROJECT_CACHE, linkItemId);
+        }
+        result = true;
+    } catch (Exception e) {
+        if (commit) {
+            db.rollback();
+        }
+        throw new SQLException(e.getMessage());
+    } finally {
+        if (commit) {
+            db.setAutoCommit(true);
+        }
+    }
+    return result;
+}

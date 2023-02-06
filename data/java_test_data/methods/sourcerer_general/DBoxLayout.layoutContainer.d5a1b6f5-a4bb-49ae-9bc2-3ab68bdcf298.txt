@@ -1,0 +1,173 @@
+public void layoutContainer(Container parent) {
+    Component[] components = parent.getComponents();
+    if (components.length == 0) {
+        // 0 components when calculating spacing)
+        return;
+    }
+    calcSizeReqs(components);
+    insets = parent.getInsets();
+    Dimension parentSize = parent.getSize();
+    int availSize = getASize(parentSize);
+    int opposedSize = getBSize(parentSize);
+    SizeRequirements[] sizeReqs;
+    SizeRequirements[] opposedReqs;
+    SizeRequirements totalSizeReqs;
+    if (isXPrimaryAxis()) {
+        sizeReqs = sizeReqsX;
+        opposedReqs = sizeReqsY;
+        totalSizeReqs = copySizeReqs(totalReqsX);
+        availSize -= insets.left + insets.right;
+        opposedSize -= insets.top + insets.bottom;
+    } else {
+        sizeReqs = sizeReqsY;
+        opposedReqs = sizeReqsX;
+        totalSizeReqs = copySizeReqs(totalReqsY);
+        availSize -= insets.top + insets.bottom;
+        opposedSize -= insets.left + insets.right;
+    }
+    // First we need to allocate space to all components.
+    // We allocate one additional for the spacing between components.
+    int numComponents = components.length + (needSpaces ? 1 : 0);
+    int[] space = new int[numComponents];
+    int[] diffs = new int[numComponents];
+    boolean[] fixed = new boolean[numComponents];
+    if (needSpaces) {
+        // Reset the spacing minimum/preferred/maximum, as sometimes it
+        // gets butchered (and it is reset when sizes are recalculated anyway)
+        int minSpace = minComponentSpacing * (visibleCount - 1);
+        int prefSpace = componentSpacing * (visibleCount - 1);
+        SizeRequirements spaceReqs = sizeReqs[numComponents - 1];
+        totalSizeReqs.minimum += minSpace - spaceReqs.minimum;
+        totalSizeReqs.preferred += prefSpace - spaceReqs.preferred;
+        totalSizeReqs.maximum += prefSpace - spaceReqs.maximum;
+        spaceReqs.minimum = minSpace;
+        spaceReqs.preferred = prefSpace;
+        spaceReqs.maximum = prefSpace;
+    }
+    if (totalSizeReqs.maximum < availSize) {
+        // Center if available size exceeds maximum size
+        curPos = (availSize - totalSizeReqs.maximum) / 2;
+        availSize = totalSizeReqs.maximum;
+    } else {
+        curPos = 0;
+    }
+    boolean needAnotherPass;
+    adjust: do {
+        needAnotherPass = false;
+        if (totalSizeReqs.minimum >= availSize) {
+            // Just set every component to its minimum size.
+            for (int i = 0; i < numComponents; i++) {
+                space[i] = sizeReqs[i].minimum;
+            }
+        } else if (totalSizeReqs.preferred >= availSize) {
+            // than shrink the components themselves.
+            if (needSpaces) {
+                SizeRequirements spaceReqs = sizeReqs[numComponents - 1];
+                int diff = spaceReqs.preferred - spaceReqs.minimum;
+                if (diff + availSize >= totalSizeReqs.preferred) {
+                    spaceReqs.preferred -= totalSizeReqs.preferred - availSize;
+                    totalSizeReqs.preferred = availSize;
+                } else {
+                    spaceReqs.preferred = spaceReqs.minimum;
+                    totalSizeReqs.preferred -= diff;
+                }
+            }
+            int totalDiffs = 0;
+            int discrepancy = availSize - totalSizeReqs.minimum;
+            for (int i = 0; i < numComponents; i++) {
+                if (!fixed[i]) {
+                    diffs[i] = sizeReqs[i].preferred - sizeReqs[i].minimum;
+                    totalDiffs += diffs[i];
+                }
+            }
+            for (int i = 0; i < numComponents; i++) {
+                if (!fixed[i]) {
+                    if (diffs[i] != 0) {
+                        space[i] = (int) (sizeReqs[i].minimum + (long) diffs[i] * discrepancy / totalDiffs);
+                    } else {
+                        space[i] = sizeReqs[i].minimum;
+                        fixed[i] = true;
+                    }
+                    if (space[i] > sizeReqs[i].maximum) {
+                        space[i] = sizeReqs[i].maximum;
+                        totalSizeReqs.minimum -= sizeReqs[i].minimum;
+                        totalSizeReqs.preferred -= sizeReqs[i].preferred;
+                        totalSizeReqs.maximum -= sizeReqs[i].maximum;
+                        fixed[i] = true;
+                        availSize -= space[i];
+                        needAnotherPass = true;
+                        continue adjust;
+                    }
+                }
+            }
+        } else {
+            // available size is greater than preferred size
+            if (totalSizeReqs.preferred == 0) {
+                int numComponentsLeft = 0;
+                int unassignedSpace = availSize;
+                for (int i = 0; i < numComponents; i++) {
+                    if (!fixed[i]) {
+                        numComponentsLeft++;
+                        unassignedSpace -= sizeReqs[i].preferred;
+                    }
+                }
+                for (int i = 0; i < numComponents; i++) {
+                    if (!fixed[i]) {
+                        int toAssign = unassignedSpace / numComponentsLeft;
+                        space[i] = restrictedAdd(sizeReqs[i].preferred, toAssign);
+                        if (space[i] > sizeReqs[i].maximum) {
+                            space[i] = sizeReqs[i].maximum;
+                            totalSizeReqs.minimum -= sizeReqs[i].minimum;
+                            totalSizeReqs.preferred -= sizeReqs[i].preferred;
+                            totalSizeReqs.maximum -= sizeReqs[i].maximum;
+                            fixed[i] = true;
+                            availSize -= space[i];
+                            needAnotherPass = true;
+                            continue adjust;
+                        }
+                    }
+                }
+            } else {
+                // some components do have a preferred size
+                for (int i = 0; i < numComponents; i++) {
+                    if (!fixed[i]) {
+                        space[i] = (int) ((long) sizeReqs[i].preferred * availSize / totalSizeReqs.preferred);
+                        if (space[i] > sizeReqs[i].maximum) {
+                            // Some component maxed out. This means we'll need
+                            // another pass.
+                            space[i] = sizeReqs[i].maximum;
+                            totalSizeReqs.minimum -= sizeReqs[i].minimum;
+                            totalSizeReqs.preferred -= sizeReqs[i].preferred;
+                            totalSizeReqs.maximum -= sizeReqs[i].maximum;
+                            fixed[i] = true;
+                            availSize -= space[i];
+                            needAnotherPass = true;
+                            continue adjust;
+                        }
+                    }
+                }
+            }
+        }
+    } while (needAnotherPass);
+    if (needSpaces) {
+        spacingNumerator = space[numComponents - 1];
+        spacingDenom = visibleCount - 1;
+    } else {
+        spacingNumerator = 0;
+        spacingDenom = 1;
+    }
+    spacingRemainder = 0;
+    for (int i = 0; i < components.length; i++) {
+        if (components[i].isVisible()) {
+            if (opposedReqs[i].maximum < opposedSize) {
+                // We need to position the component according to
+                // its alignment
+                float alignment = getOpposedAlignment(components[i]);
+                int offset = (int) ((opposedSize - opposedReqs[i].maximum) * alignment);
+                placeComponent(components[i], space[i], offset, opposedReqs[i].maximum);
+            } else {
+                placeComponent(components[i], space[i], 0, opposedSize);
+            }
+        }
+    }
+}

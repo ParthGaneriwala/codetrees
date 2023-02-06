@@ -1,0 +1,82 @@
+private void processMsg(Notification not) {
+    /*
+		 * Obtenho o tipo da notifica��o pra determinar o destino do pacote:
+		 * As notifica��es podem ser: Components: - invU - terP Connectors: -
+		 * invS - terC
+		 */
+    Message msg = null;
+    try {
+        // Position[0] source; Position[1] port
+        String[] source_type = not.getType().split(":");
+        ObjectName objName = new ObjectName(this.getObjectName(source_type[0]));
+        String[] sig = new String[] { int.class.getName() };
+        Object[] param = new Object[] { not.getUserData() };
+        // Acessa a porta e obtem a mensagem
+        msg = (Message) this.mbserver.invoke(objName, source_type[1], param, sig);
+        if (msg != null) {
+            String interceptor = msg.readInterceptor();
+            /* TEMPOR�RIO */
+            if (msg.getType().equals(Constants.ACTION_CHECKER)) {
+                if (msg.getMethod().equals(Constants.METH_CHANGEINTERCEPTOR)) {
+                    String oldMbean = (String) msg.getParameter()[0];
+                    String newMbean = (String) msg.getParameter()[1];
+                    this.unregisterMBean(oldMbean);
+                    this.registerMBean(newMbean, oldMbean);
+                } else if (msg.getMethod().equals(Constants.METH_GET_INTERCEPTORS)) {
+                    List<String> list = this.getInterceptors();
+                    msg.setParameter(new Object[] { list });
+                    this.mbserver.invoke(new ObjectName(msg.getSender()), "invP", new Object[] { msg }, new String[] { Message.class.getName() });
+                }
+            } else if ("Proxy".equals(interceptor)) {
+                synchronized (proxyBuffer) {
+                    proxyBuffer.put(msg.getIndex(), msg);
+                }
+            } else {
+                // mensagem ao seu conector
+                if ("Empty".equals(interceptor)) {
+                // interceptor = msg.getConnector();
+                } else // Verifica a porta a ser acessada no pr�ximo
+                // interceptador
+                {
+                    String port = "";
+                    if (isConnector(interceptor)) {
+                        // ida do pacote
+                        if (msg.getType().equals(Constants.REQUEST))
+                            port = Constants.PORT_INVC;
+                        else if (msg.getType().equals(Constants.RESPONSE))
+                            // volta do pacote
+                            port = Constants.PORT_TERS;
+                    } else {
+                        /* Se um componente que chama o outro */
+                        if (msg.getMessage().equals(Constants.PORT_TERU))
+                            port = Constants.PORT_TERU;
+                        else
+                            port = Constants.PORT_INVP;
+                    }
+                    // Envia o pacote pra porta do interceptador
+                    // List ops = null;// msg.readOperations(interceptor);
+                    /*
+						 * String in = interceptor.substring(interceptor
+						 * .lastIndexOf("=") + 1); if (in.indexOf("Server") < 0)
+						 * System.out.println(in);
+						 */
+                    System.out.println(interceptor);
+                    ObjectName intObjName = new ObjectName(interceptor);
+                    // Verifica se o interceptador esta registrado
+                    if (!this.mbserver.isRegistered(intObjName)) {
+                        // Tenta pegar o componente
+                        Object obj = Loader.getComponent(interceptor);
+                        if (obj == null)
+                            // Caso nao consiga, obtem-se o conector
+                            obj = Loader.getConcreteConnector(interceptor);
+                        this.mbserver.registerMBean(obj, intObjName);
+                        this.mbserver.addNotificationListener(intObjName, new ObjectName(this.getObjectName("Configurator")), null, null);
+                    }
+                    this.mbserver.invoke(intObjName, port, new Object[] { msg }, new String[] { Message.class.getName() });
+                }
+            }
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+}

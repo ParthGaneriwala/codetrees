@@ -1,0 +1,211 @@
+@Override
+protected List<PassFactory> getOptimizations() {
+    List<PassFactory> passes = Lists.newArrayList();
+    passes.add(garbageCollectChecks);
+    if (options.runtimeTypeCheck) {
+        passes.add(runtimeTypeCheck);
+    }
+    passes.add(createEmptyPass("beforeStandardOptimizations"));
+    passes.add(replaceIdGenerators);
+    // Optimizes references to the arguments variable.
+    if (options.optimizeArgumentsArray) {
+        passes.add(optimizeArgumentsArray);
+    }
+    // only needs to run once.
+    if (options.closurePass && (options.removeAbstractMethods || options.removeClosureAsserts)) {
+        passes.add(closureCodeRemoval);
+    }
+    // the main optimization loop.
+    if (options.collapseProperties) {
+        passes.add(collapseProperties);
+    }
+    // pulling in values of constants defined in enums structures.
+    if (!options.replaceStringsFunctionDescriptions.isEmpty()) {
+        passes.add(replaceStrings);
+    }
+    // Tighten types based on actual usage.
+    if (options.tightenTypes) {
+        passes.add(tightenTypesBuilder);
+    }
+    // properties.
+    if (options.disambiguateProperties) {
+        passes.add(disambiguateProperties);
+    }
+    if (options.computeFunctionSideEffects) {
+        passes.add(markPureFunctions);
+    } else if (options.markNoSideEffectCalls) {
+        // TODO(user) The properties that this pass adds to CALL and NEW
+        // AST nodes increase the AST's in-memory size.  Given that we are
+        // already running close to our memory limits, we could run into
+        // trouble if we end up using the @nosideeffects annotation a lot
+        // or compute @nosideeffects annotations by looking at function
+        // bodies.  It should be easy to propagate @nosideeffects
+        // annotations as part of passes that depend on this property and
+        // store the result outside the AST (which would allow garbage
+        // collection once the pass is done).
+        passes.add(markNoSideEffectCalls);
+    }
+    if (options.chainCalls) {
+        passes.add(chainCalls);
+    }
+    // property collapsing can introduce new constants (e.g. enum values).
+    if (options.inlineConstantVars) {
+        passes.add(checkConsts);
+    }
+    // any property matching /___$/.
+    if (options.ignoreCajaProperties) {
+        passes.add(ignoreCajaProperties);
+    }
+    assertAllOneTimePasses(passes);
+    if (options.smartNameRemoval || options.reportPath != null) {
+        passes.addAll(getCodeRemovingPasses());
+        passes.add(smartNamePass);
+    }
+    // the code removing passes.
+    if (options.closurePass) {
+        passes.add(closureOptimizePrimitives);
+    }
+    // CrossModuleCodeMotion so we don't need to do this.
+    if (options.crossModuleCodeMotion) {
+        passes.add(crossModuleCodeMotion);
+    }
+    // this pass.
+    if (options.devirtualizePrototypeMethods) {
+        passes.add(devirtualizePrototypeMethods);
+    }
+    if (options.customPasses != null) {
+        passes.add(getCustomPasses(CustomPassExecutionTime.BEFORE_OPTIMIZATION_LOOP));
+    }
+    passes.add(createEmptyPass("beforeMainOptimizations"));
+    if (options.specializeInitialModule) {
+        // When specializing the initial module, we want our fixups to be
+        // as lean as possible, so we run the entire optimization loop to a
+        // fixed point before specializing, then specialize, and then run the
+        // main optimization loop again.
+        passes.addAll(getMainOptimizationLoop());
+        if (options.crossModuleCodeMotion) {
+            passes.add(crossModuleCodeMotion);
+        }
+        if (options.crossModuleMethodMotion) {
+            passes.add(crossModuleMethodMotion);
+        }
+        passes.add(specializeInitialModule.makeOneTimePass());
+    }
+    passes.addAll(getMainOptimizationLoop());
+    passes.add(createEmptyPass("beforeModuleMotion"));
+    if (options.crossModuleCodeMotion) {
+        passes.add(crossModuleCodeMotion);
+    }
+    if (options.crossModuleMethodMotion) {
+        passes.add(crossModuleMethodMotion);
+    }
+    passes.add(createEmptyPass("afterModuleMotion"));
+    // than once would either have no benefit or be incorrect.
+    if (options.customPasses != null) {
+        passes.add(getCustomPasses(CustomPassExecutionTime.AFTER_OPTIMIZATION_LOOP));
+    }
+    if (options.flowSensitiveInlineVariables) {
+        passes.add(flowSensitiveInlineVariables);
+        // Re-run remove unused vars to clean it up.
+        if (options.removeUnusedVars) {
+            passes.add(removeUnusedVars);
+        }
+    }
+    // nothing when compiled on its own.
+    if (options.smartNameRemoval) {
+        passes.add(smartNamePass2);
+    }
+    if (options.collapseAnonymousFunctions) {
+        passes.add(collapseAnonymousFunctions);
+    }
+    // Move functions before extracting prototype member declarations.
+    if (options.moveFunctionDeclarations) {
+        passes.add(moveFunctionDeclarations);
+    }
+    if (options.anonymousFunctionNaming == AnonymousFunctionNamingPolicy.MAPPED) {
+        passes.add(nameMappedAnonymousFunctions);
+    }
+    // policies, so never run it when those policies are requested.
+    if (options.extractPrototypeMemberDeclarations && (options.propertyRenaming != PropertyRenamingPolicy.HEURISTIC && options.propertyRenaming != PropertyRenamingPolicy.AGGRESSIVE_HEURISTIC)) {
+        passes.add(extractPrototypeMemberDeclarations);
+    }
+    if (options.ambiguateProperties && (options.propertyRenaming == PropertyRenamingPolicy.ALL_UNQUOTED)) {
+        passes.add(ambiguateProperties);
+    }
+    if (options.propertyRenaming != PropertyRenamingPolicy.OFF) {
+        passes.add(renameProperties);
+    }
+    // Reserve global names added to the "windows" object.
+    if (options.reserveRawExports) {
+        passes.add(gatherRawExports);
+    }
+    // not be renamed.
+    if (options.convertToDottedProperties) {
+        passes.add(convertToDottedProperties);
+    }
+    // variable renaming.
+    if (options.rewriteFunctionExpressions) {
+        passes.add(rewriteFunctionExpressions);
+    }
+    // accesses in order to avoid aliasing property names.
+    if (!options.aliasableStrings.isEmpty() || options.aliasAllStrings) {
+        passes.add(aliasStrings);
+    }
+    if (options.aliasExternals) {
+        passes.add(aliasExternals);
+    }
+    if (options.aliasKeywords) {
+        passes.add(aliasKeywords);
+    }
+    // Passes after this point can no longer depend on normalized AST
+    // assumptions.
+    passes.add(markUnnormalized);
+    if (options.coalesceVariableNames) {
+        passes.add(coalesceVariableNames);
+        // up.
+        if (options.foldConstants) {
+            passes.add(peepholeOptimizations);
+        }
+    }
+    if (options.collapseVariableDeclarations) {
+        passes.add(exploitAssign);
+        passes.add(collapseVariableDeclarations);
+    }
+    // This pass works best after collapseVariableDeclarations.
+    passes.add(denormalize);
+    if (options.instrumentationTemplate != null) {
+        passes.add(instrumentFunctions);
+    }
+    if (options.variableRenaming != VariableRenamingPolicy.ALL) {
+        // If we're leaving some (or all) variables with their old names,
+        // then we need to undo any of the markers we added for distinguishing
+        // local variables ("$$1").
+        passes.add(invertContextualRenaming);
+    }
+    if (options.variableRenaming != VariableRenamingPolicy.OFF) {
+        passes.add(renameVars);
+    }
+    if (options.groupVariableDeclarations) {
+        passes.add(groupVariableDeclarations);
+    }
+    // This pass should run after names stop changing.
+    if (options.processObjectPropertyString) {
+        passes.add(objectPropertyStringPostprocess);
+    }
+    if (options.labelRenaming) {
+        passes.add(renameLabels);
+    }
+    if (options.foldConstants) {
+        passes.add(latePeepholeOptimizations);
+    }
+    if (options.anonymousFunctionNaming == AnonymousFunctionNamingPolicy.UNMAPPED) {
+        passes.add(nameUnmappedAnonymousFunctions);
+    }
+    if (options.operaCompoundAssignFix) {
+        passes.add(operaCompoundAssignFix);
+    }
+    // Safety checks
+    passes.add(sanityCheckAst);
+    passes.add(sanityCheckVars);
+    return passes;
+}

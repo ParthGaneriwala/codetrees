@@ -1,0 +1,97 @@
+public void run() {
+    // Process docuRun;
+    PrintWriter logWriter = null;
+    int exitValue = -1;
+    try {
+        synchronized (mutex) {
+            // We synchronize because Javadoc can run into problems if several
+            // instances are running at the same time. Also, this prevents the
+            // logfile from being written by two threads at once.
+            OutputStream logStream = new FileOutputStream(logFile);
+            logWriter = new PrintWriter(logStream, true);
+            String[] docuCall2 = new String[docuCall.length - 1];
+            logWriter.println(logHeader);
+            logWriter.println("<---- javadoc command: ---->");
+            int i;
+            for (i = 0; i < docuCall.length; i++) {
+                logWriter.println(docuCall[i]);
+                if (i != 0)
+                    docuCall2[i - 1] = docuCall[i];
+            }
+            logWriter.println("<---- end of javadoc command ---->");
+            logWriter.flush();
+            // Call Javadoc
+            Method executeMethod = null;
+            try {
+                Class javadocClass = Class.forName("com.sun.tools.javadoc.Main");
+                executeMethod = javadocClass.getMethod("execute", new Class[] { String.class, PrintWriter.class, PrintWriter.class, PrintWriter.class, String.class, String[].class });
+            } catch (ClassNotFoundException cnfe) {
+                cnfe.printStackTrace();
+            } catch (NoSuchMethodException nsme) {
+                nsme.printStackTrace();
+            }
+            // First try and execute javadoc in the same VM via reflection:
+            if (executeMethod != null) {
+                try {
+                    Integer result = (Integer) executeMethod.invoke(null, new Object[] { "javadoc", logWriter, logWriter, logWriter, "com.sun.tools.doclets.standard.Standard", docuCall2 });
+                    exitValue = result.intValue();
+                } catch (IllegalAccessException iae) {
+                    // Try as an external process instead
+                    executeMethod = null;
+                } catch (InvocationTargetException ite) {
+                    exitValue = -1;
+                    ite.printStackTrace(logWriter);
+                }
+            }
+            // execute it as an external process
+            if (executeMethod == null) {
+                Process docuRun = Runtime.getRuntime().exec(docuCall);
+                // because we don't know what comes first we have to start
+                // two threads that consume both the standard and the error
+                // output of the external process. The output is appended to
+                // the log file.
+                EchoThread outEcho = new EchoThread(docuRun.getInputStream(), logStream);
+                EchoThread errEcho = new EchoThread(docuRun.getErrorStream(), logStream);
+                outEcho.start();
+                errEcho.start();
+                try {
+                    docuRun.waitFor();
+                    outEcho.join();
+                    errEcho.join();
+                    exitValue = docuRun.exitValue();
+                } catch (InterruptedException ie) {
+                    logWriter.println("Interrupted while waiting for javadoc process to complete.");
+                }
+            }
+        }
+        final int finalExitValue = exitValue;
+        EventQueue.invokeLater(new Runnable() {
+
+            public void run() {
+                if (finalExitValue == 0) {
+                    BlueJEvent.raiseEvent(BlueJEvent.DOCU_GENERATED, null);
+                    if (!showFile.exists()) {
+                        Debug.message("showfile does not exist - searching");
+                        showFile = FileUtility.findFile(showFile.getParentFile(), showFile.getName());
+                    }
+                    if (openBrowser) {
+                        // logWriter.println("try to open: " + showFile.getPath());
+                        Utility.openWebBrowser(showFile.getPath());
+                    }
+                } else {
+                    BlueJEvent.raiseEvent(BlueJEvent.DOCU_ABORTED, null);
+                    DialogManager.showMessageWithText(null, "doctool-error", logFile.getPath());
+                }
+            }
+        });
+    } catch (IOException exc) {
+        EventQueue.invokeLater(new Runnable() {
+
+            public void run() {
+                DialogManager.showMessage(null, "severe-doc-trouble");
+            }
+        });
+    } finally {
+        logWriter.close();
+    }
+}

@@ -1,0 +1,51 @@
+@SuppressWarnings("nls")
+private OperatorInfo genGroupByPlanReduceSinkOperator(QBParseInfo parseInfo, String dest, OperatorInfo inputOperatorInfo, int numPartitionFields) throws SemanticException {
+    RowResolver reduceSinkInputRowResolver = inputOperatorInfo.getRowResolver();
+    RowResolver reduceSinkOutputRowResolver = new RowResolver();
+    reduceSinkOutputRowResolver.setIsExprResolver(true);
+    ArrayList<exprNodeDesc> reduceKeys = new ArrayList<exprNodeDesc>();
+    // Pre-compute group-by keys and store in reduceKeys
+    List<CommonTree> grpByExprs = getGroupByForClause(parseInfo, dest);
+    for (int i = 0; i < grpByExprs.size(); ++i) {
+        CommonTree grpbyExpr = grpByExprs.get(i);
+        reduceKeys.add(genExprNodeDesc(grpbyExpr, parseInfo.getAlias(), reduceSinkInputRowResolver));
+        String text = grpbyExpr.toStringTree();
+        if (reduceSinkOutputRowResolver.get("", text) == null) {
+            reduceSinkOutputRowResolver.put("", text, new ColumnInfo(Utilities.ReduceField.KEY.toString() + "." + Integer.valueOf(reduceKeys.size() - 1).toString(), String.class, // Everything is a string right now
+            false));
+        } else {
+            throw new SemanticException(ErrorMsg.DUPLICATE_GROUPBY_KEY.getMsg(grpbyExpr));
+        }
+    }
+    // If there is a distinctFuncExp, add all parameters to the reduceKeys.
+    if (parseInfo.getDistinctFuncExprForClause(dest) != null) {
+        CommonTree value = parseInfo.getDistinctFuncExprForClause(dest);
+        // 0 is function name
+        for (int i = 1; i < value.getChildCount(); i++) {
+            CommonTree parameter = (CommonTree) value.getChild(i);
+            String text = parameter.toStringTree();
+            if (reduceSinkOutputRowResolver.get("", text) == null) {
+                reduceKeys.add(genExprNodeDesc(parameter, parseInfo.getAlias(), reduceSinkInputRowResolver));
+                reduceSinkOutputRowResolver.put("", text, new ColumnInfo(Utilities.ReduceField.KEY.toString() + "." + Integer.valueOf(reduceKeys.size() - 1).toString(), String.class, // Everything is a string right now
+                false));
+            }
+        }
+    }
+    // Put parameters to aggregations in reduceValues
+    ArrayList<exprNodeDesc> reduceValues = new ArrayList<exprNodeDesc>();
+    HashMap<String, CommonTree> aggregationTrees = parseInfo.getAggregationExprsForClause(dest);
+    for (Map.Entry<String, CommonTree> entry : aggregationTrees.entrySet()) {
+        CommonTree value = entry.getValue();
+        // 0 is function name
+        for (int i = 1; i < value.getChildCount(); i++) {
+            CommonTree parameter = (CommonTree) value.getChild(i);
+            String text = parameter.toStringTree();
+            if (reduceSinkOutputRowResolver.get("", text) == null) {
+                reduceValues.add(genExprNodeDesc(parameter, parseInfo.getAlias(), reduceSinkInputRowResolver));
+                reduceSinkOutputRowResolver.put("", text, new ColumnInfo(Utilities.ReduceField.VALUE.toString() + "." + Integer.valueOf(reduceValues.size() - 1).toString(), String.class, // Everything is a string right now
+                false));
+            }
+        }
+    }
+    return new OperatorInfo(OperatorFactory.getAndMakeChild(PlanUtils.getReduceSinkDesc(reduceKeys, reduceValues, numPartitionFields), new RowSchema(reduceSinkOutputRowResolver.getColumnInfos()), inputOperatorInfo.getOp()), reduceSinkOutputRowResolver);
+}

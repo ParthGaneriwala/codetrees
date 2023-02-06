@@ -1,0 +1,130 @@
+// synchronized(__client) critical sections are to protect against
+// TelnetOutputStream writing through the telnet client at same time
+// as a processDo/Will/etc. command invoked from TelnetInputStream
+private int __read(boolean mayBlock) throws IOException {
+    int ch;
+    _loop: while (true) {
+        // If there is no more data AND we were told not to block, just return -2. (More efficient than exception.)
+        if (!mayBlock && super.available() == 0)
+            return -2;
+        // Otherwise, exit only when we reach end of stream.
+        if ((ch = super.read()) < 0)
+            return -1;
+        ch = (ch & 0xff);
+        /* Code Section added for supporting AYT (start)*/
+        synchronized (__client) {
+            __client._processAYTResponse();
+        }
+        /* Code Section added for supporting AYT (end)*/
+        /* Code Section added for supporting spystreams (start)*/
+        __client._spyRead(ch);
+        _mainSwitch: switch(__receiveState) {
+            case _STATE_CR:
+                if (ch == '\0') {
+                    // Strip null
+                    continue;
+                }
+            case _STATE_DATA:
+                if (ch == TelnetCommand.IAC) {
+                    __receiveState = _STATE_IAC;
+                    continue;
+                }
+                if (ch == '\r') {
+                    synchronized (__client) {
+                        if (__client._requestedDont(TelnetOption.BINARY))
+                            __receiveState = _STATE_CR;
+                        else
+                            __receiveState = _STATE_DATA;
+                    }
+                } else
+                    __receiveState = _STATE_DATA;
+                break;
+            case _STATE_IAC:
+                switch(ch) {
+                    case TelnetCommand.WILL:
+                        __receiveState = _STATE_WILL;
+                        continue;
+                    case TelnetCommand.WONT:
+                        __receiveState = _STATE_WONT;
+                        continue;
+                    case TelnetCommand.DO:
+                        __receiveState = _STATE_DO;
+                        continue;
+                    case TelnetCommand.DONT:
+                        __receiveState = _STATE_DONT;
+                        continue;
+                    /* TERMINAL-TYPE option (start)*/
+                    case TelnetCommand.SB:
+                        __suboption_count = 0;
+                        __receiveState = _STATE_SB;
+                        continue;
+                    /* TERMINAL-TYPE option (end)*/
+                    case TelnetCommand.IAC:
+                        __receiveState = _STATE_DATA;
+                        break;
+                    default:
+                        break;
+                }
+                __receiveState = _STATE_DATA;
+                continue;
+            case _STATE_WILL:
+                synchronized (__client) {
+                    __client._processWill(ch);
+                    __client._flushOutputStream();
+                }
+                __receiveState = _STATE_DATA;
+                continue;
+            case _STATE_WONT:
+                synchronized (__client) {
+                    __client._processWont(ch);
+                    __client._flushOutputStream();
+                }
+                __receiveState = _STATE_DATA;
+                continue;
+            case _STATE_DO:
+                synchronized (__client) {
+                    __client._processDo(ch);
+                    __client._flushOutputStream();
+                }
+                __receiveState = _STATE_DATA;
+                continue;
+            case _STATE_DONT:
+                synchronized (__client) {
+                    __client._processDont(ch);
+                    __client._flushOutputStream();
+                }
+                __receiveState = _STATE_DATA;
+                continue;
+            /* TERMINAL-TYPE option (start)*/
+            case _STATE_SB:
+                switch(ch) {
+                    case TelnetCommand.IAC:
+                        __receiveState = _STATE_IAC_SB;
+                        continue;
+                    default:
+                        // store suboption char
+                        __suboption[__suboption_count++] = ch;
+                        break;
+                }
+                __receiveState = _STATE_SB;
+                continue;
+            case _STATE_IAC_SB:
+                switch(ch) {
+                    case TelnetCommand.SE:
+                        synchronized (__client) {
+                            __client._processSuboption(__suboption, __suboption_count);
+                            __client._flushOutputStream();
+                        }
+                        __receiveState = _STATE_DATA;
+                        continue;
+                    default:
+                        __receiveState = _STATE_SB;
+                        break;
+                }
+                __receiveState = _STATE_DATA;
+                continue;
+        }
+        break;
+    }
+    return ch;
+}

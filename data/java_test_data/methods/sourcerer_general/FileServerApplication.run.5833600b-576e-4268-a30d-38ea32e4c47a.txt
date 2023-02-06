@@ -1,0 +1,46 @@
+public void run() {
+    newTaskId = new Integer(0);
+    newTaskContextIsValid = false;
+    NewSessionPacket IncomingPacket;
+    ThreadsDB = new TreeMap<Integer, TaskServiceThread>();
+    System.out.println("Server is ready to receive new client connections");
+    filePackets.Receiver myReceiver = new Receiver();
+    while (!killed) {
+        try {
+            IncomingPacket = (NewSessionPacket) myReceiver.ReadObjectFrom(Socket);
+        } catch (IOException e1) {
+            System.out.println("Error receiving new conncection packet");
+            e1.printStackTrace();
+            return;
+        }
+        // prepare connection information for the task context
+        ConnectionInformation newConn = new ConnectionInformation();
+        newConn.putIP(IncomingPacket.getClientData().getIP());
+        newConn.putPort(IncomingPacket.getClientData().getPort());
+        // prepare new task context
+        FileTaskContext newTaskContext = new FileTaskContext();
+        newTaskContext.setConnInfo(newConn);
+        newTaskContext.setBlockNumber(0);
+        newTaskContext.setFileNumber(new Integer(IncomingPacket.getRequestedFile()));
+        TaskIDLock.getWritersLock();
+        newTaskContextIsValid = true;
+        TaskIDLock.releaseWritersLock();
+        try {
+            myCMM.AppNewTask(newTaskContext);
+        } catch (CMMExn_ClusterErr e) {
+            LogFile.AddEntry(MyString, "Error: CMM reports a cluster error");
+            e.printStackTrace();
+            return;
+        }
+        // wait for new task ID to arrive
+        TaskIDLock.getReadersLock();
+        while (newTaskContextIsValid) {
+            TaskIDLock.releaseReadersLock();
+            TaskIDCondition.condWait();
+            TaskIDLock.getReadersLock();
+        }
+        TaskIDLock.releaseReadersLock();
+        LogFile.AddEntry(MyString, "received new task ID " + newTaskId);
+        StartServicingTask(new Integer(newTaskId), newTaskContext);
+    }
+}

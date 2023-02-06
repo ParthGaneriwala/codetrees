@@ -1,0 +1,145 @@
+private File writeInvocationFile(String paramInit, String callString, boolean isVoid, String constype) {
+    // Create package specification line ("package xyz")
+    String packageLine;
+    if (pkg.isUnnamedPackage())
+        packageLine = "";
+    else
+        packageLine = "package " + pkg.getQualifiedName() + ";";
+    // add variable declaration for a (possible) result
+    StringBuffer buffer = new StringBuffer();
+    if (!isVoid) {
+        if (constructing) {
+            buffer.append("public static ");
+            buffer.append(constype);
+        } else
+            buffer.append("public static java.lang.Object");
+        buffer.append(" __bluej_runtime_result;");
+        buffer.append(Config.nl);
+    }
+    String resultDecl = buffer.toString();
+    buffer.setLength(0);
+    // Build scope, ie. add one line for every object on the object
+    // bench that gets the object and makes it available for use as
+    // a parameter. Then add one line for each parameter setting the
+    // parameter value.
+    // A sample of the code generated
+    // java.util.Map __bluej_runtime_scope = getScope("BJIDC:\\aproject");
+    // JavaType instnameA = (JavaType) __bluej_runtime_scope("instnameA");
+    // OtherJavaType instnameB = (OtherJavaType)
+    // __bluej_runtime_scope("instnameB");
+    String scopeId = Utility.quoteString(pkg.getId());
+    Iterator<ObjectWrapper> wrappers = pmf.getObjectBench().getValueIterator();
+    NameTransform cqtTransform = new CleverQualifyTypeNameTransform(pkg);
+    Map<String, String> objBenchVarsMap = new HashMap<String, String>();
+    if (wrappers.hasNext() || localVars != null) {
+        buffer.append("final bluej.runtime.BJMap __bluej_runtime_scope = getScope(\"" + scopeId + "\");" + Config.nl);
+        // writeVariables("", buffer, false, wrappers, cqtTransform);
+        while (wrappers.hasNext()) {
+            NamedValue objBenchVar = (NamedValue) wrappers.next();
+            objBenchVarsMap.put(objBenchVar.getName(), getVarDeclString("", false, objBenchVar, cqtTransform));
+        }
+    }
+    // later on.
+    if (localVars != null && constype == null) {
+        // writeVariables("lv:", buffer, false, localVars.getValueIterator(), cqtTransform);
+        Iterator<? extends NamedValue> i = localVars.getValueIterator();
+        while (i.hasNext()) {
+            NamedValue localVar = i.next();
+            objBenchVarsMap.put(localVar.getName(), getVarDeclString("lv:", false, localVar, cqtTransform));
+        }
+    }
+    Iterator<String> obVarsIterator = objBenchVarsMap.values().iterator();
+    while (obVarsIterator.hasNext()) {
+        buffer.append(obVarsIterator.next().toString());
+    }
+    String vardecl = buffer.toString();
+    buffer.setLength(0);
+    if (constructing) {
+        // A sample of the code generated (for a constructor)
+        // __bluej_runtime_result = new SomeType(2,"adb");
+        buffer.append(shellName);
+        buffer.append(".__bluej_runtime_result = ");
+        buffer.append(callString);
+    } else {
+        if (!isVoid) {
+            buffer.append(shellName);
+            if (constype == null) {
+                buffer.append(".__bluej_runtime_result = makeObj(");
+            } else {
+                buffer.append(".__bluej_runtime_result = new java.lang.Object() { ");
+                buffer.append(constype + " result;");
+                if (localVars != null) {
+                    buffer.append("{ ");
+                    writeVariables("lv:", buffer, false, localVars.getValueIterator(), cqtTransform);
+                    buffer.append("this.result = ");
+                }
+            }
+        }
+        buffer.append(callString);
+        // Append a new line, as the call string may end with a //-style comment
+        buffer.append(Config.nl);
+        if (!isVoid && constype == null) {
+            buffer.append(")");
+        }
+    }
+    if (!isVoid && !callString.endsWith(";")) {
+        buffer.append(";");
+    }
+    buffer.append(Config.nl);
+    String invocation = buffer.toString();
+    // save altered local variable values
+    buffer = new StringBuffer();
+    if (localVars != null) {
+        for (Iterator<?> i = localVars.getValueIterator(); i.hasNext(); ) {
+            NamedValue wrapper = (NamedValue) i.next();
+            if (!wrapper.isFinal() || !wrapper.isInitialized()) {
+                String instname = wrapper.getName();
+                buffer.append("__bluej_runtime_scope.put(\"lv:" + instname + "\", ");
+                wrapValue(buffer, instname, wrapper.getGenType());
+                buffer.append(");" + Config.nl);
+            }
+        }
+    }
+    String scopeSave = buffer.toString();
+    File shellFile = new File(pkg.getPath(), shellName + ".java");
+    BufferedWriter shell = null;
+    try {
+        shell = new BufferedWriter(new FileWriter(shellFile));
+        shell.write(packageLine);
+        shell.newLine();
+        if (imports != null) {
+            shell.write(imports);
+            shell.newLine();
+        }
+        shell.write("public class ");
+        shell.write(shellName);
+        shell.write(" extends bluej.runtime.Shell {");
+        shell.newLine();
+        shell.write(resultDecl);
+        shell.newLine();
+        shell.write("public static void run() throws Throwable {");
+        shell.newLine();
+        shell.write(vardecl);
+        shell.newLine();
+        shell.write(paramInit);
+        shell.write(invocation);
+        shell.write(scopeSave);
+        if (!isVoid && constype != null && !constructing) {
+            shell.write("} };");
+        }
+        shell.newLine();
+        shell.write("}}");
+        shell.close();
+    } catch (IOException e) {
+        DialogManager.showError(pmf, "could-not-write-shell-file");
+        if (shell != null) {
+            try {
+                shell.close();
+            } catch (IOException ioe) {
+            }
+        }
+        shellFile.delete();
+        return null;
+    }
+    return shellFile;
+}

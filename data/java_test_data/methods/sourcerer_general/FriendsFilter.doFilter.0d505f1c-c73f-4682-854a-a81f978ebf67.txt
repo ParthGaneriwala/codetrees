@@ -1,0 +1,69 @@
+public void doFilter(ServletRequest pRequest, ServletResponse pResponse, FilterChain pChain) throws IOException, ServletException {
+    HttpServletRequest request = (HttpServletRequest) pRequest;
+    if (((List<String>) request.getSession().getAttribute(FILTERED_FRIENDS_DETAILS)) != null) {
+        pChain.doFilter(pRequest, pResponse);
+        return;
+    }
+    String accessToken = (String) request.getSession().getAttribute(ACCESS_TOKEN_PARAM);
+    HttpServletResponse resp = (HttpServletResponse) pResponse;
+    if (accessToken == null) {
+        resp.sendRedirect("/checkflames/");
+        return;
+    }
+    FacebookClient facebookClient = new DefaultFacebookClient(accessToken);
+    LegacyFacebookClient legacyClient = new DefaultLegacyFacebookClient(accessToken);
+    Connection<User> myFriends = null;
+    String sessionKey = pRequest.getParameter("fb_sig_session_key");
+    TinyFBClient tinyClient = new TinyFBClient(APPLICATION_ID, APPLICATION_SECRET, sessionKey);
+    LOGGER.info("APP ID : " + APPLICATION_ID);
+    LOGGER.info("APP SECRET : " + APPLICATION_SECRET);
+    LOGGER.info("TINY CLIENT : " + tinyClient);
+    User myDetails = null;
+    try {
+        myFriends = facebookClient.fetchConnection("me/friends", User.class);
+        myDetails = facebookClient.fetchObject("me", User.class);
+    } catch (FacebookJsonMappingException pException) {
+        LOGGER.error("Error in parsing the content", pException);
+    } catch (FacebookException pException) {
+        LOGGER.error("Error in facebook retrieval", pException);
+    }
+    if (myDetails == null || myFriends == null) {
+        resp.sendRedirect("/checkflames/");
+        return;
+    }
+    StringBuilder friendList = new StringBuilder(myDetails.getId() + ",");
+    for (User friend : myFriends.getData()) {
+        friendList.append(friend.getId());
+        friendList.append(",");
+    }
+    List<UserGender> userDetails = null;
+    try {
+        userDetails = legacyClient.executeForList("users.getInfo", UserGender.class, Parameter.with("uids", friendList.substring(0, friendList.length() - 1)), Parameter.with("fields", "uid,sex"));
+    } catch (FacebookJsonMappingException e) {
+        LOGGER.error("Error in parsing the json", e);
+    } catch (FacebookException e) {
+        LOGGER.error("Facebook error");
+    }
+    List<String> filteredFriends = new ArrayList<String>();
+    if (userDetails == null) {
+        resp.sendRedirect("/checkflames/");
+        return;
+    }
+    UserGender myGender = userDetails.get(0);
+    if (!myGender.getSex().equals("")) {
+        for (int i = 1; i < userDetails.size(); i++) {
+            UserGender detail = userDetails.get(i);
+            if (detail.getSex().equals("")) {
+                continue;
+            }
+            if (!myGender.getSex().equals(userDetails.get(i).getSex())) {
+                filteredFriends.add(userDetails.get(i).getId());
+            }
+        }
+    }
+    request.getSession().setAttribute(FILTERED_FRIENDS_DETAILS, filteredFriends);
+    request.getSession().setAttribute(MY_GENDER, myGender.getSex());
+    request.getSession().setAttribute(MYDETAILS, myDetails.getName());
+    LOGGER.info(":::: FILTERED FRIENDS : " + filteredFriends + " ::::::");
+    pChain.doFilter(request, pResponse);
+}

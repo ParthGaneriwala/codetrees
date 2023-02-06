@@ -1,0 +1,200 @@
+@Override
+public void buildClassifier(Instances data) throws Exception {
+    if (m_IterativeClassifier == null) {
+        throw new Exception("A base classifier has not been specified!");
+    }
+    // Can classifier handle the data?
+    getCapabilities().testWithFail(data);
+    // Need to shuffle the data
+    Random randomInstance = new Random(m_Seed);
+    // Save reference to original data
+    Instances origData = data;
+    // Remove instances with missing class
+    data = new Instances(data);
+    data.deleteWithMissingClass();
+    if (data.numInstances() < m_NumFolds) {
+        System.err.println("WARNING: reducing number of folds to number of instances in " + "IterativeClassifierOptimizer");
+        m_NumFolds = data.numInstances();
+    }
+    // Local variables holding the actual number of folds and runs
+    int numFolds = m_NumFolds;
+    int numRuns = m_NumRuns;
+    if (getSplitPercentage() != 0) {
+        if ((getSplitPercentage() < 0) || (getSplitPercentage() > 100)) {
+            throw new IllegalArgumentException("Split percentage in IterativeClassifierOptimizer not in [0,100]");
+        }
+        numFolds = 1;
+        numRuns = 1;
+    }
+    // Initialize datasets and classifiers
+    Instances[][] trainingSets = new Instances[numRuns][numFolds];
+    Instances[][] testSets = new Instances[numRuns][numFolds];
+    final IterativeClassifier[][] classifiers = new IterativeClassifier[numRuns][numFolds];
+    if (getSplitPercentage() == 0) {
+        for (int j = 0; j < numRuns; j++) {
+            data.randomize(randomInstance);
+            if (data.classAttribute().isNominal()) {
+                data.stratify(numFolds);
+            }
+            for (int i = 0; i < numFolds; i++) {
+                trainingSets[j][i] = data.trainCV(numFolds, i, randomInstance);
+                testSets[j][i] = data.testCV(numFolds, i);
+                classifiers[j][i] = (IterativeClassifier) AbstractClassifier.makeCopy(m_IterativeClassifier);
+                classifiers[j][i].initializeClassifier(trainingSets[j][i]);
+            }
+        }
+    } else {
+        if (!getPreserveOrderInPercentageSplitEvaluation()) {
+            data.randomize(randomInstance);
+        }
+        int trainSize = (int) Math.round(data.numInstances() * getSplitPercentage() / 100);
+        int testSize = data.numInstances() - trainSize;
+        trainingSets[0][0] = new Instances(data, 0, trainSize);
+        testSets[0][0] = new Instances(data, trainSize, testSize);
+        classifiers[0][0] = (IterativeClassifier) AbstractClassifier.makeCopy(m_IterativeClassifier);
+        classifiers[0][0].initializeClassifier(trainingSets[0][0]);
+    }
+    // The thread pool to be used for parallel execution.
+    ExecutorService pool = Executors.newFixedThreadPool(m_poolSize);
+    ;
+    // Perform evaluation
+    Evaluation eval = new Evaluation(data);
+    EvaluationMetricHelper helper = new EvaluationMetricHelper(eval);
+    boolean maximise = helper.metricIsMaximisable(m_evalMetric);
+    if (maximise) {
+        m_bestResult = Double.MIN_VALUE;
+    } else {
+        m_bestResult = Double.MAX_VALUE;
+    }
+    m_thresholds = null;
+    int numIts = 0;
+    m_bestNumIts = 0;
+    int numberOfIterationsSinceMinimum = -1;
+    while (true) {
+        // Should we perform an evaluation?
+        if (numIts % m_StepSize == 0) {
+            double result = 0;
+            double[] tempThresholds = null;
+            // Shall we use the average score obtained from the folds or not?
+            if (!m_UseAverage) {
+                eval = new Evaluation(data);
+                helper.setEvaluation(eval);
+                for (int r = 0; r < numRuns; r++) {
+                    for (int i = 0; i < numFolds; i++) {
+                        eval.evaluateModel(classifiers[r][i], testSets[r][i]);
+                    }
+                }
+                result = getClassValueIndex() >= 0 ? helper.getNamedMetric(m_evalMetric, getClassValueIndex()) : helper.getNamedMetric(m_evalMetric);
+                tempThresholds = helper.getNamedMetricThresholds(m_evalMetric);
+            } else {
+                // Using average score
+                for (int r = 0; r < numRuns; r++) {
+                    for (int i = 0; i < numFolds; i++) {
+                        eval = new Evaluation(trainingSets[r][i]);
+                        helper.setEvaluation(eval);
+                        eval.evaluateModel(classifiers[r][i], testSets[r][i]);
+                        result += getClassValueIndex() >= 0 ? helper.getNamedMetric(m_evalMetric, getClassValueIndex()) : helper.getNamedMetric(m_evalMetric);
+                        double[] thresholds = helper.getNamedMetricThresholds(m_evalMetric);
+                        // Add thresholds (if applicable) so that we can compute average thresholds later
+                        if (thresholds != null) {
+                            if (tempThresholds == null) {
+                                tempThresholds = new double[data.numClasses()];
+                            }
+                            for (int j = 0; j < thresholds.length; j++) {
+                                tempThresholds[j] += thresholds[j];
+                            }
+                        }
+                    }
+                }
+                result /= (double) (numFolds * numRuns);
+                // Compute average thresholds if applicable
+                if (tempThresholds != null) {
+                    for (int j = 0; j < tempThresholds.length; j++) {
+                        tempThresholds[j] /= (double) (numRuns * numFolds);
+                    }
+                }
+            }
+            if (m_Debug) {
+                System.err.println("Iteration: " + numIts + " " + "Measure: " + result);
+                if (tempThresholds != null) {
+                    System.err.print("Thresholds:");
+                    for (int j = 0; j < tempThresholds.length; j++) {
+                        System.err.print(" " + tempThresholds[j]);
+                    }
+                    System.err.println();
+                }
+            }
+            double delta = maximise ? m_bestResult - result : result - m_bestResult;
+            // Is there an improvement?
+            if (delta < 0) {
+                m_bestResult = result;
+                m_bestNumIts = numIts;
+                m_thresholds = tempThresholds;
+                numberOfIterationsSinceMinimum = -1;
+            }
+        }
+        numberOfIterationsSinceMinimum++;
+        numIts++;
+        if (numberOfIterationsSinceMinimum >= m_lookAheadIterations) {
+            break;
+        }
+        // Set up result set, and chunk size
+        int numberOfInvocations = numRuns * numFolds;
+        final int N = numFolds;
+        final int chunksize = numberOfInvocations / m_numThreads;
+        Set<Future<Boolean>> results = new HashSet<Future<Boolean>>();
+        final int nIts = numIts;
+        // For each thread
+        for (int j = 0; j < m_numThreads; j++) {
+            // Determine batch to be processed
+            final int lo = j * chunksize;
+            final int hi = (j < m_numThreads - 1) ? (lo + chunksize) : numberOfInvocations;
+            // Create and submit new job
+            Future<Boolean> futureT = pool.submit(new Callable<Boolean>() {
+
+                @Override
+                public Boolean call() throws Exception {
+                    for (int k = lo; k < hi; k++) {
+                        if (!classifiers[k / N][k % N].next()) {
+                            if (m_Debug) {
+                                System.err.println("Classifier failed to iterate for run " + ((k / N) + 1) + " and fold " + ((k % N) + 1) + " when performing iteration " + nIts + ".");
+                            }
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+            });
+            results.add(futureT);
+        }
+        // Check that all classifiers succeeded
+        try {
+            boolean failure = false;
+            for (Future<Boolean> futureT : results) {
+                if (!futureT.get()) {
+                    failure = true;
+                    // Break out if one classifier fails to iterate
+                    break;
+                }
+            }
+            if (failure) {
+                break;
+            }
+        } catch (Exception e) {
+            System.out.println("Classifiers could not be generated.");
+            e.printStackTrace();
+        }
+    }
+    trainingSets = null;
+    testSets = null;
+    data = null;
+    // Build classifier based on identified number of iterations
+    m_IterativeClassifier.initializeClassifier(origData);
+    int i = 0;
+    while (i++ < m_bestNumIts && m_IterativeClassifier.next()) {
+    }
+    ;
+    m_IterativeClassifier.done();
+    // Shut down thread pool
+    pool.shutdown();
+}

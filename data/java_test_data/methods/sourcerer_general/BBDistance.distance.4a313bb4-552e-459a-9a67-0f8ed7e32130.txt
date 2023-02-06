@@ -1,0 +1,119 @@
+// / Compute the closest points between two shapes. Supports any combination of:
+// / BBCircleShape, BBPolygonShape, BBEdgeShape. The simplex cache is input/output.
+public static void distance(BBDistanceOutput output, BBSimplexCache cache, final BBDistanceInput input) {
+    ++gjkCalls;
+    final BBDistanceProxy proxyA = input.proxyA;
+    final BBDistanceProxy proxyB = input.proxyB;
+    BBTransform transformA = input.transformA;
+    BBTransform transformB = input.transformB;
+    // initialize the simplex.
+    BBSimplex simplex = new BBSimplex();
+    simplex.readCache(cache, proxyA, transformA, proxyB, transformB);
+    // Get simplex vertices as an array.
+    BBSimplexVertex[] vertices = simplex.m_vertices;
+    final int k_maxIters = 20;
+    // These store the vertices of the last simplex so that we
+    // can check for duplicates and prevent cycling.
+    int[] saveA = new int[3], saveB = new int[3];
+    int saveCount = 0;
+    BBVec2 closestPoint = simplex.getClosestPoint();
+    float distanceSqr1 = closestPoint.lengthSquared();
+    float distanceSqr2 = distanceSqr1;
+    // Main iteration loop.
+    int iter = 0;
+    while (iter < k_maxIters) {
+        // Copy simplex so we can identify duplicates.
+        saveCount = simplex.m_count;
+        for (int i = 0; i < saveCount; ++i) {
+            saveA[i] = vertices[i].indexA;
+            saveB[i] = vertices[i].indexB;
+        }
+        switch(simplex.m_count) {
+            case 1:
+                break;
+            case 2:
+                simplex.Solve2();
+                break;
+            case 3:
+                simplex.Solve3();
+                break;
+            default:
+                assert false;
+        }
+        // If we have 3 points, then the origin is in the corresponding triangle.
+        if (simplex.m_count == 3) {
+            break;
+        }
+        // Compute closest point.
+        BBVec2 p = simplex.getClosestPoint();
+        distanceSqr2 = p.lengthSquared();
+        // Ensure progress
+        if (distanceSqr2 >= distanceSqr1) {
+        // break;
+        }
+        distanceSqr1 = distanceSqr2;
+        // Get search direction.
+        BBVec2 d = simplex.getSearchDirection();
+        // Ensure the search direction is numerically fit.
+        if (d.lengthSquared() < FLT_EPSILON * FLT_EPSILON) {
+            // to determine if the origin is contained in the CSO or very close to it.
+            break;
+        }
+        // Compute a tentative new simplex vertex using support points.
+        BBSimplexVertex vertex = vertices[simplex.m_count];
+        vertex.indexA = proxyA.getSupport(mulT(transformA.R, d.neg()));
+        vertex.wA = mul(transformA, proxyA.GetVertex(vertex.indexA));
+        BBVec2 wBLocal;
+        vertex.indexB = proxyB.getSupport(mulT(transformB.R, d));
+        vertex.wB = mul(transformB, proxyB.GetVertex(vertex.indexB));
+        vertex.w = sub(vertex.wB, vertex.wA);
+        // Iteration count is equated to the number of support point calls.
+        ++iter;
+        ++gjkIters;
+        // Check for duplicate support points. This is the main termination criteria.
+        boolean duplicate = false;
+        for (int i = 0; i < saveCount; ++i) {
+            if (vertex.indexA == saveA[i] & vertex.indexB == saveB[i]) {
+                duplicate = true;
+                break;
+            }
+        }
+        // If we found a duplicate support point we must exit to avoid cycling.
+        if (duplicate) {
+            break;
+        }
+        // New vertex is ok and needed.
+        ++simplex.m_count;
+    }
+    gjkMaxIters = max(gjkMaxIters, iter);
+    // Prepare output.
+    BBVec2[] pA = new BBVec2[1], pB = new BBVec2[1];
+    simplex.GetWitnessPoints(pA, pB);
+    output.pointA = pA[0];
+    output.pointB = pB[0];
+    output.distance = BBMath.distance(output.pointA, output.pointB);
+    output.iterations = iter;
+    // Cache the simplex.
+    simplex.writeCache(cache);
+    // Apply radii if requested.
+    if (input.useRadii) {
+        float rA = proxyA.m_radius;
+        float rB = proxyB.m_radius;
+        if (output.distance > rA + rB & output.distance > FLT_EPSILON) {
+            // Shapes are still no overlapped.
+            // Move the witness points to the outer surface.
+            output.distance -= rA + rB;
+            BBVec2 normal = sub(output.pointB, output.pointA);
+            normal.normalize();
+            output.pointA.add(mul(rA, normal));
+            output.pointB.sub(mul(rB, normal));
+        } else {
+            // Shapes are overlapped when radii are considered.
+            // Move the witness points to the middle.
+            BBVec2 p = mul(0.5f, add(output.pointA, output.pointB));
+            output.pointA = p;
+            output.pointB = p;
+            output.distance = 0.0f;
+        }
+    }
+}

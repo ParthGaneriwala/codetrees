@@ -1,0 +1,77 @@
+protected void createSubsample() {
+    Instances data = getInputFormat();
+    // Figure out how much data there is per class
+    double[] numInstancesPerClass = new double[data.numClasses()];
+    for (Instance instance : data) {
+        numInstancesPerClass[(int) instance.classValue()]++;
+    }
+    // Collect data per class
+    Instance[][] instancesPerClass = new Instance[data.numClasses()][];
+    int numActualClasses = 0;
+    for (int i = 0; i < data.numClasses(); i++) {
+        instancesPerClass[i] = new Instance[(int) numInstancesPerClass[i]];
+        if (numInstancesPerClass[i] > 0) {
+            numActualClasses++;
+        }
+    }
+    int[] counterPerClass = new int[data.numClasses()];
+    for (Instance instance : data) {
+        int classValue = (int) instance.classValue();
+        instancesPerClass[classValue][counterPerClass[classValue]++] = instance;
+    }
+    // Determine how much data we want for each class
+    int[] numInstancesToSample = new int[data.numClasses()];
+    for (int i = 0; i < data.numClasses(); i++) {
+        // Can't sample any data if there is no data for the class
+        if (numInstancesPerClass[i] == 0) {
+            continue;
+        }
+        // Blend observed prior and uniform prior based on user-defined blending parameter
+        int sampleSize = (int) ((m_SampleSizePercent / 100.0) * ((1 - m_BiasToUniformClass) * numInstancesPerClass[i] + m_BiasToUniformClass * data.numInstances() / numActualClasses));
+        if (getNoReplacement() && sampleSize > numInstancesPerClass[i]) {
+            System.err.println("WARNING: Not enough instances of " + data.classAttribute().value(i) + " for selected value of bias parameter in supervised Resample filter when sampling without replacement.");
+            sampleSize = (int) numInstancesPerClass[i];
+        }
+        numInstancesToSample[i] = (int) sampleSize;
+    }
+    // Sample data
+    Random random = new Random(m_RandomSeed);
+    if (!getNoReplacement()) {
+        for (int i = 0; i < data.numClasses(); i++) {
+            int numEligible = (int) numInstancesPerClass[i];
+            for (int j = 0; j < numInstancesToSample[i]; j++) {
+                // Sampling with replacement
+                push(instancesPerClass[i][random.nextInt(numEligible)]);
+            }
+        }
+    } else {
+        for (int i = 0; i < data.numClasses(); i++) {
+            int numEligible = (int) numInstancesPerClass[i];
+            // Set up array of indices
+            int[] selected = new int[numEligible];
+            for (int j = 0; j < numEligible; j++) {
+                selected[j] = j;
+            }
+            for (int j = 0; j < numInstancesToSample[i]; j++) {
+                // Sampling without replacement
+                int chosenLocation = random.nextInt(numEligible);
+                int chosen = selected[chosenLocation];
+                numEligible--;
+                selected[chosenLocation] = selected[numEligible];
+                selected[numEligible] = chosen;
+            }
+            // Do we need to invert the selection?
+            if (getInvertSelection()) {
+                // because they have not been selected
+                for (int j = 0; j < numEligible; j++) {
+                    push(instancesPerClass[i][selected[j]]);
+                }
+            } else {
+                // Take the elements that have been selected
+                for (int j = numEligible; j < (int) numInstancesPerClass[i]; j++) {
+                    push(instancesPerClass[i][selected[j]]);
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,87 @@
+public void prepare() {
+    if (!isPrepared) {
+        isPrepared = true;
+        // Restore the original pre-hookProcess rules
+        rules = rawRules;
+        // Is there any data to bind in yet?
+        Graph data = null;
+        if (fdata != null)
+            data = fdata.getGraph();
+        // initilize the deductions graph
+        if (fdeductions != null && fdeductions instanceof FGraph) {
+            Graph oldDeductions = ((FGraph) fdeductions).getGraph();
+            oldDeductions.getBulkUpdateHandler().removeAll();
+        } else {
+            fdeductions = new FGraph(createDeductionsGraph());
+        }
+        dataFind = (data == null) ? fdeductions : FinderUtil.cascade(fdeductions, fdata);
+        Finder dataSource = fdata;
+        // Initialize the optional TGC caches
+        if (useTGCCaching) {
+            resetTGCCache();
+            if (schemaGraph != null) {
+                // Check if we can just reuse the copy of the raw
+                if ((transitiveEngine.checkOccurance(TransitiveReasoner.subPropertyOf, data) || transitiveEngine.checkOccurance(TransitiveReasoner.subClassOf, data) || transitiveEngine.checkOccurance(RDFS.domain.asNode(), data) || transitiveEngine.checkOccurance(RDFS.range.asNode(), data))) {
+                    // The data graph contains some ontology knowledge so split the caches
+                    // now and rebuild them using merged data
+                    transitiveEngine.insert(((FBRuleInfGraph) schemaGraph).fdata, fdata);
+                }
+            } else {
+                if (data != null) {
+                    transitiveEngine.insert(null, fdata);
+                }
+            }
+            // Insert any axiomatic statements into the caches
+            for (Iterator i = rules.iterator(); i.hasNext(); ) {
+                Rule r = (Rule) i.next();
+                if (r.bodyLength() == 0) {
+                    // An axiom
+                    for (int j = 0; j < r.headLength(); j++) {
+                        Object head = r.getHeadElement(j);
+                        if (head instanceof TriplePattern) {
+                            TriplePattern h = (TriplePattern) head;
+                            transitiveEngine.add(h.asTriple());
+                        }
+                    }
+                }
+            }
+            transitiveEngine.setCaching(true, true);
+            // dataFind = FinderUtil.cascade(subClassCache, subPropertyCache, dataFind);
+            dataFind = FinderUtil.cascade(dataFind, transitiveEngine.getSubClassCache(), transitiveEngine.getSubPropertyCache());
+            // Without the next statement then the transitive closures are not seen by the forward rules
+            dataSource = FinderUtil.cascade(dataSource, transitiveEngine.getSubClassCache(), transitiveEngine.getSubPropertyCache());
+        }
+        // Make sure there are no Brules left over from pior runs
+        bEngine.deleteAllRules();
+        // Call any optional preprocessing hook
+        if (preprocessorHooks != null && preprocessorHooks.size() > 0) {
+            Graph inserts = Factory.createGraphMem();
+            for (Iterator i = preprocessorHooks.iterator(); i.hasNext(); ) {
+                RulePreprocessHook hook = (RulePreprocessHook) i.next();
+                hook.run(this, dataFind, inserts);
+            }
+            if (inserts.size() > 0) {
+                FGraph finserts = new FGraph(inserts);
+                dataSource = FinderUtil.cascade(fdata, finserts);
+                dataFind = FinderUtil.cascade(dataFind, finserts);
+            }
+        }
+        boolean rulesLoaded = false;
+        if (schemaGraph != null) {
+            Graph rawPreload = ((InfGraph) schemaGraph).getRawGraph();
+            if (rawPreload != null) {
+                dataFind = FinderUtil.cascade(dataFind, new FGraph(rawPreload));
+            }
+            rulesLoaded = preloadDeductions(schemaGraph);
+        }
+        if (rulesLoaded) {
+            engine.fastInit(dataSource);
+        } else {
+            // No preload so do the rule separation
+            addBRules(extractPureBackwardRules(rules));
+            engine.init(true, dataSource);
+        }
+        // Prepare the context for builtins run in backwards engine
+        context = new BBRuleContext(this);
+    }
+}

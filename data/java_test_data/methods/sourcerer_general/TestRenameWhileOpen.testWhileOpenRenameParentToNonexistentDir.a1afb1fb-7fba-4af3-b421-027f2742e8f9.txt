@@ -1,0 +1,62 @@
+public void testWhileOpenRenameParentToNonexistentDir() throws IOException {
+    Configuration conf = new Configuration();
+    // 2s
+    final int MAX_IDLE_TIME = 2000;
+    conf.setInt("ipc.client.connection.maxidletime", MAX_IDLE_TIME);
+    conf.setInt("heartbeat.recheck.interval", 1000);
+    conf.setInt("dfs.heartbeat.interval", 1);
+    conf.setInt("dfs.safemode.threshold.pct", 1);
+    System.out.println("Test 2************************************");
+    // create cluster
+    MiniDFSCluster cluster = new MiniDFSCluster(conf, 1, true, null);
+    FileSystem fs = null;
+    try {
+        cluster.waitActive();
+        fs = cluster.getFileSystem();
+        final int nnport = cluster.getNameNodePort();
+        // create file1.
+        Path dir1 = new Path("/user/dir1");
+        Path file1 = new Path(dir1, "file1");
+        FSDataOutputStream stm1 = TestFileCreation.createFile(fs, file1, 1);
+        System.out.println("testFileCreationDeleteParent: " + "Created file " + file1);
+        TestFileCreation.writeFile(stm1);
+        stm1.sync();
+        // create file2.
+        Path dir2 = new Path("/user/dir2");
+        Path file2 = new Path(dir2, "file2");
+        FSDataOutputStream stm2 = TestFileCreation.createFile(fs, file2, 1);
+        System.out.println("testFileCreationDeleteParent: " + "Created file " + file2);
+        TestFileCreation.writeFile(stm2);
+        stm2.sync();
+        // move dir1 while file1 is open
+        Path dir3 = new Path("/user/dir3");
+        fs.rename(dir1, dir3);
+        // restart cluster with the same namenode port as before.
+        // This ensures that leases are persisted in fsimage.
+        cluster.shutdown();
+        try {
+            Thread.sleep(2 * MAX_IDLE_TIME);
+        } catch (InterruptedException e) {
+        }
+        cluster = new MiniDFSCluster(nnport, conf, 1, false, true, null, null, null);
+        cluster.waitActive();
+        // restart cluster yet again. This triggers the code to read in
+        // persistent leases from fsimage.
+        cluster.shutdown();
+        try {
+            Thread.sleep(5000);
+        } catch (InterruptedException e) {
+        }
+        cluster = new MiniDFSCluster(nnport, conf, 1, false, true, null, null, null);
+        cluster.waitActive();
+        fs = cluster.getFileSystem();
+        Path newfile = new Path("/user/dir3", "file1");
+        assertTrue(!fs.exists(file1));
+        assertTrue(fs.exists(file2));
+        assertTrue(fs.exists(newfile));
+        TestFileCreation.checkFullFile(fs, newfile);
+    } finally {
+        fs.close();
+        cluster.shutdown();
+    }
+}

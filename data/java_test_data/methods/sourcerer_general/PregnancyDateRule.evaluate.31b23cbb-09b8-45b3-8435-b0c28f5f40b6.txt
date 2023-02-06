@@ -1,0 +1,45 @@
+@Override
+protected Result evaluate(final LogicContext context, final Integer patientId, final Map<String, Object> parameters) throws LogicException {
+    Result result = new Result();
+    Date earliestDate = null;
+    EncounterWithRestrictionRule encounterWithRestrictionRule = new EncounterWithStringRestrictionRule();
+    Result encounterResults = encounterWithRestrictionRule.eval(context, patientId, parameters);
+    if (CollectionUtils.isNotEmpty(encounterResults)) {
+        EncounterType encounterType = CacheUtils.getEncounterType(EvaluableNameConstants.ENCOUNTER_TYPE_ANCINITIAL);
+        Integer counter = 0;
+        Object referenceEncounter = null;
+        while (counter < encounterResults.size() && referenceEncounter == null) {
+            Encounter encounter = (Encounter) encounterResults.get(counter++).getResultObject();
+            if (OpenmrsUtil.nullSafeEquals(encounter.getEncounterType(), encounterType))
+                referenceEncounter = encounter;
+        }
+        if (log.isDebugEnabled())
+            log.debug("Can't find any reference encounter. Using earliest for the calculation");
+        if (referenceEncounter == null)
+            referenceEncounter = encounterResults.earliest().getResultObject();
+        Concept confinementConcept = CacheUtils.getConcept(EvaluableNameConstants.ESTIMATED_DATE_OF_CONFINEMENT);
+        Concept menstrualConcept = CacheUtils.getConcept(EvaluableNameConstants.LAST_MENSTRUAL_PERIOD_DATE);
+        Date confinementDate = null;
+        Date menstrualDate = null;
+        ObsWithRestrictionRule obsWithRestrictionRule = new ObsWithStringRestrictionRule();
+        parameters.put(EvaluableConstants.OBS_ENCOUNTER, Arrays.asList(referenceEncounter));
+        parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.ESTIMATED_DATE_OF_CONFINEMENT, EvaluableNameConstants.LAST_MENSTRUAL_PERIOD_DATE));
+        Result pregnancyResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+        for (Result pregnancyResult : pregnancyResults) {
+            Obs obs = (Obs) pregnancyResult.getResultObject();
+            if (OpenmrsUtil.nullSafeEquals(confinementConcept, obs.getConcept())) {
+                Calendar calendar = Calendar.getInstance();
+                calendar.setTime(obs.getValueDatetime());
+                calendar.add(Calendar.DATE, -270);
+                confinementDate = calendar.getTime();
+            } else if (OpenmrsUtil.nullSafeEquals(menstrualConcept, obs.getConcept())) {
+                menstrualDate = obs.getValueDatetime();
+            }
+        }
+        if (OpenmrsUtil.compareWithNullAsGreatest(confinementDate, menstrualDate) < 0)
+            result.add(new Result(confinementDate));
+        else if (OpenmrsUtil.compareWithNullAsGreatest(confinementDate, menstrualDate) > 0)
+            result.add(new Result(menstrualDate));
+    }
+    return result;
+}

@@ -1,0 +1,75 @@
+/**
+ * Performs any actions appropriate in response to the user having pressed
+ * the Finish button, or refuse if finishing now is not permitted.
+ */
+@Override
+public boolean performFinish() {
+    /*
+     * Create a new location or get an existing one
+     */
+    HadoopServer location = null;
+    if (mainPage.createNew.getSelection()) {
+        location = createNewPage.performFinish();
+    } else if (mainPage.table.getSelection().length == 1) {
+        location = (HadoopServer) mainPage.table.getSelection()[0].getData();
+    }
+    if (location == null)
+        return false;
+    /*
+     * Get the base directory of the plug-in for storing configurations and
+     * JARs
+     */
+    File baseDir = Activator.getDefault().getStateLocation().toFile();
+    // Package the Job into a JAR
+    File jarFile = JarModule.createJarPackage(resource);
+    if (jarFile == null) {
+        ErrorMessageDialog.display("Run on Hadoop", "Unable to create or locate the JAR file for the Job");
+        return false;
+    }
+    /*
+     * Generate a temporary Hadoop configuration directory and add it to the
+     * classpath of the launch configuration
+     */
+    File confDir;
+    try {
+        confDir = File.createTempFile("org.fit.hiai.hadoop-conf-", "", baseDir);
+        confDir.delete();
+        confDir.mkdirs();
+        if (!confDir.isDirectory()) {
+            ErrorMessageDialog.display("Run on Hadoop", "Cannot create temporary directory: " + confDir);
+            return false;
+        }
+    } catch (IOException ioe) {
+        ioe.printStackTrace();
+        return false;
+    }
+    // Prepare the Hadoop configuration
+    JobConf conf = new JobConf(location.getConfiguration());
+    conf.setJar(jarFile.getAbsolutePath());
+    // Write it to the disk file
+    try {
+        // File confFile = File.createTempFile("org.fit.hiai.hadoop-site-", ".xml",
+        // confDir);
+        File confFile = new File(confDir, "org.fit.hiai.hadoop-site.xml");
+        FileOutputStream fos = new FileOutputStream(confFile);
+        conf.writeXml(fos);
+        fos.close();
+    } catch (IOException ioe) {
+        ioe.printStackTrace();
+        return false;
+    }
+    // Setup the Launch class path
+    List<String> classPath;
+    try {
+        classPath = iConf.getAttribute(IJavaLaunchConfigurationConstants.ATTR_CLASSPATH, new ArrayList());
+        IPath confIPath = new Path(confDir.getAbsolutePath());
+        IRuntimeClasspathEntry cpEntry = JavaRuntime.newArchiveRuntimeClasspathEntry(confIPath);
+        classPath.add(0, cpEntry.getMemento());
+        iConf.setAttribute(IJavaLaunchConfigurationConstants.ATTR_CLASSPATH, classPath);
+    } catch (CoreException e) {
+        e.printStackTrace();
+        return false;
+    }
+    // location.runResource(resource, progressMonitor);
+    return true;
+}

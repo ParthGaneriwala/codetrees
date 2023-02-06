@@ -1,0 +1,77 @@
+public static DashboardPage retrieveDashboardPage(ProjectPortalBean portalBean) throws Exception {
+    // Use the project-portal-config.xml to determine the dashboard page to use for the current url
+    URL resource = ProjectPortalUtils.class.getResource("/portal/project-portal-config.xml");
+    LOG.debug("portal config file: " + resource.toString());
+    XMLUtils library = new XMLUtils(resource);
+    // The nodes are listed under the <navigation> tag
+    Element portal = XMLUtils.getFirstChild(library.getDocumentElement(), "portal", "type", "navigation");
+    String moduleLayout = null;
+    String page = null;
+    String modulePermission = null;
+    // Look through the modules
+    NodeList moduleNodeList = portal.getElementsByTagName("module");
+    for (int i = 0; i < moduleNodeList.getLength(); i++) {
+        Node thisModule = moduleNodeList.item(i);
+        NodeList urlNodeList = ((Element) thisModule).getElementsByTagName("url");
+        for (int j = 0; j < urlNodeList.getLength(); j++) {
+            Element urlElement = (Element) urlNodeList.item(j);
+            // Construct a ProjectPortalURL and add to the list for retrieving
+            String name = urlElement.getAttribute("name");
+            // <url name="/show" object="/" page="project profile"/>
+            if (name.equals("/" + portalBean.getAction())) {
+                String object = urlElement.getAttribute("object");
+                if (object.equals("/" + portalBean.getDomainObject())) {
+                    // Set the module for tab highlighting
+                    portalBean.setModule(((Element) thisModule).getAttribute("name"));
+                    // Set the page for looking up
+                    page = urlElement.getAttribute("page");
+                    // Set the layout filename to find the referenced page
+                    moduleLayout = ((Element) thisModule).getAttribute("layout");
+                    // Set the permission required for viewing this page
+                    modulePermission = ((Element) thisModule).getAttribute("permission");
+                    break;
+                }
+            }
+        }
+    }
+    URL moduleResource = ProjectPortalUtils.class.getResource("/portal/" + moduleLayout);
+    LOG.debug("module config file: " + moduleResource.toString());
+    XMLUtils module = new XMLUtils(moduleResource);
+    Element moduleElement = XMLUtils.getFirstChild(module.getDocumentElement(), "navigation");
+    NodeList pageNodeList = moduleElement.getElementsByTagName("page");
+    if (pageNodeList.getLength() == 0) {
+        LOG.warn("No pages found in moduleLayout: " + moduleLayout);
+    }
+    for (int j = 0; j < pageNodeList.getLength(); j++) {
+        Node thisPage = pageNodeList.item(j);
+        String pageName = ((Element) thisPage).getAttribute("name");
+        if (pageName.equals(page)) {
+            LOG.debug("Found page " + pageName);
+            // Find a portal template to use
+            Project thisProject = ProjectUtils.loadProject(portalBean.getProjectId());
+            DashboardPage dashboardPage = null;
+            if (thisProject.getCategoryId() > -1) {
+                // Use a category specific portal
+                ProjectCategory category = ProjectUtils.loadProjectCategory(thisProject.getCategoryId());
+                LOG.debug("Trying a category specific portal: " + page + ": " + category.getDescription().toLowerCase());
+                dashboardPage = DashboardUtils.loadDashboardPage(DashboardTemplateList.TYPE_NAVIGATION, (portalBean.isPopup() ? page + "-popup" : page) + ": " + category.getDescription().toLowerCase(), moduleLayout);
+            }
+            if (dashboardPage == null) {
+                LOG.debug("Trying a specific portal: " + page);
+                dashboardPage = DashboardUtils.loadDashboardPage(DashboardTemplateList.TYPE_NAVIGATION, (portalBean.isPopup() ? page + "-popup" : page), moduleLayout);
+            }
+            if (dashboardPage == null) {
+                LOG.warn("Page not found: " + page);
+                System.out.println("ProjectManagement-> * PAGE NOT FOUND *");
+                return null;
+            }
+            dashboardPage.setProjectId(thisProject.getId());
+            // Set the dashboard page's module permission if it doesn't have a page permission
+            if (dashboardPage.getPermission() == null) {
+                dashboardPage.setPermission(modulePermission);
+            }
+            return dashboardPage;
+        }
+    }
+    return null;
+}

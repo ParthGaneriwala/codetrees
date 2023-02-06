@@ -1,0 +1,127 @@
+public String authenticateLogin(ActionContext context) {
+    if (System.getProperty("DEBUG") != null) {
+        System.out.println("Login-> Logging in...");
+    }
+    LoginBean loginBean = (LoginBean) context.getFormBean();
+    loginBean.checkURL(context.getRequest());
+    if (!loginBean.isValid()) {
+        loginBean.addError("actionError", "Form must be completely filled out");
+        return "LoginRetry";
+    }
+    // Retrieve prefs
+    ApplicationPrefs prefs = (ApplicationPrefs) context.getServletContext().getAttribute("applicationPrefs");
+    // Connection info
+    ConnectionElement ce = new ConnectionElement();
+    ce.setDriver(prefs.get("SITE.DRIVER"));
+    ce.setUrl(prefs.get("SITE.URL"));
+    ce.setUsername(prefs.get("SITE.USER"));
+    ce.setPassword(prefs.get("SITE.PASSWORD"));
+    ConnectionPool sqlDriver = (ConnectionPool) context.getServletContext().getAttribute("ConnectionPool");
+    if (sqlDriver == null) {
+        loginBean.addError("actionError", "Access not allowed due to system error!");
+        if (System.getProperty("DEBUG") != null) {
+            System.out.println("Login-> Database attribute not found...");
+        }
+        return "LoginRetry";
+    }
+    User thisUser = null;
+    Connection db = null;
+    boolean hasInvitations = false;
+    boolean upgradeMode = false;
+    try {
+        db = sqlDriver.getConnection(ce);
+        if (System.getProperty("DEBUG") != null) {
+            System.out.println("Login-> Got database connection...");
+        }
+        // Check to see if system is upgraded
+        if (ApplicationVersion.isOutOfDate(prefs)) {
+            upgradeMode = true;
+        }
+        // Check user credentials
+        int i = 0;
+        PreparedStatement pst = db.prepareStatement("SELECT u.*, d.description AS department, p.projecttextid " + "FROM users u " + "LEFT JOIN departments d ON (u.department_id = d.code) " + "LEFT JOIN projects p ON (u.profile_project_id = p.project_id) " + "WHERE lower(username) = ? " + "AND (password = ? OR temporary_password = ?) ");
+        pst.setString(++i, loginBean.getUsername().toLowerCase());
+        pst.setString(++i, PasswordHash.encrypt(loginBean.getPassword()));
+        pst.setString(++i, PasswordHash.encrypt(loginBean.getPassword()));
+        ResultSet rs = pst.executeQuery();
+        if (rs.next()) {
+            thisUser = new User(rs);
+        }
+        rs.close();
+        pst.close();
+        // Further validate user fields
+        if (thisUser == null) {
+            loginBean.addError("actionError", "* Access denied: Invalid user or password.");
+        } else if (!thisUser.getEnabled()) {
+            loginBean.addError("actionError", "* Access denied: Account not active");
+            thisUser = null;
+        } else if (thisUser.getExpiration() != null && (new Timestamp(System.currentTimeMillis())).after(thisUser.getExpiration())) {
+            loginBean.addError("actionError", "* Access denied: Account expired");
+            thisUser = null;
+        }
+        // Valid user -- Log the user in
+        if (thisUser != null) {
+            // Make sure the user info is valid for the application
+            thisUser.updateLogin(db, context.getRequest(), prefs, loginBean.getPassword());
+            thisUser.setBrowserType(context.getBrowser());
+            // Apply any defaults
+            UserUtils.createLoggedInUser(thisUser, db, prefs, context.getServletContext());
+            // Check if this user can perform an upgrade
+            if (upgradeMode && thisUser.getAccessAdmin()) {
+                context.getSession().setAttribute("UPGRADEOK", "UPGRADEOK");
+            }
+            if (!upgradeMode) {
+                // Check invitatons to redirect them on login
+                hasInvitations = (InvitationList.queryCount(db, thisUser.getId(), thisUser.getProfileProjectId()) > 0);
+                // Determine content editing capability
+                thisUser.getWebSiteLanguageList().setMemberId(thisUser.getId());
+                thisUser.getWebSiteLanguageList().buildList(db);
+            }
+            if (!thisUser.getRegistered()) {
+                // before allowing auto-login via cookie
+                return "LoginNeedsRegistrationOK";
+            } else {
+                if (loginBean.getAddCookie()) {
+                    // Set a cookie so user doesn't have to login again, at their request
+                    Cookie userCookie = new Cookie(Constants.COOKIE_USER_GUID, UserUtils.generateGuid(thisUser));
+                    userCookie.setPath("/");
+                    // 14 day cookie
+                    userCookie.setMaxAge(14 * 24 * 60 * 60);
+                    context.getResponse().addCookie(userCookie);
+                } else {
+                    // Set a cookie so user doesn't have to login during an open browser session
+                    Cookie userCookie = new Cookie(Constants.COOKIE_USER_GUID, UserUtils.generateGuid(thisUser));
+                    userCookie.setPath("/");
+                    // Make it temporary
+                    userCookie.setMaxAge(-1);
+                    context.getResponse().addCookie(userCookie);
+                }
+            }
+        }
+    } catch (Exception e) {
+        loginBean.addError("actionError", e.getMessage());
+        e.printStackTrace(System.out);
+    } finally {
+        sqlDriver.free(db);
+    }
+    if (thisUser == null) {
+        context.getSession().removeAttribute(Constants.SESSION_USER);
+        context.getSession().removeAttribute(Constants.SESSION_CONNECTION_ELEMENT);
+        return "LoginRetry";
+    }
+    context.getSession().setAttribute(Constants.SESSION_USER, thisUser);
+    context.getSession().setAttribute(Constants.SESSION_CONNECTION_ELEMENT, ce);
+    if (upgradeMode) {
+        return ("PerformUpgradeOK");
+    }
+    /*
+    if (hasInvitations) {
+      return "LoginHasInvitationsOK";
+    }
+    */
+    String redirectTo = context.getRequest().getParameter("redirectTo");
+    if (redirectTo != null && !redirectTo.startsWith("null") && !redirectTo.startsWith("/login") && !redirectTo.startsWith("/register") && !redirectTo.startsWith("/page/register")) {
+        return "RedirectURL";
+    }
+    return "LoginOK";
+}

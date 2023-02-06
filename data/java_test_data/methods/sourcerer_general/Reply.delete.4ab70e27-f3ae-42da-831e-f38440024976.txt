@@ -1,0 +1,96 @@
+public synchronized boolean delete(Connection db, String filePath) throws SQLException {
+    if (id == -1 || issueId == -1 || projectId == -1 || categoryId == -1) {
+        throw new SQLException("IssueReply ID was not specified");
+    }
+    boolean canDelete = false;
+    boolean autoCommit = db.getAutoCommit();
+    try {
+        PreparedStatement pst = null;
+        int i = 0;
+        // Make sure the reply exists, then delete all
+        pst = db.prepareStatement("SELECT count(reply_id) AS reply_count " + "FROM project_issue_replies " + "WHERE reply_id = ?");
+        pst.setInt(1, id);
+        ResultSet rs = pst.executeQuery();
+        if (rs.next()) {
+            canDelete = (rs.getInt("reply_count") == 1);
+        }
+        rs.close();
+        pst.close();
+        if (canDelete) {
+            buildFiles(db);
+            if (autoCommit) {
+                db.setAutoCommit(false);
+            }
+            files.delete(db, filePath);
+            // Update the category count
+            pst = db.prepareStatement("UPDATE project_issues_categories " + "SET posts_count = posts_count - 1 " + "WHERE project_id = ? " + "AND category_id = ? ");
+            pst.setInt(++i, projectId);
+            pst.setInt(++i, categoryId);
+            pst.executeUpdate();
+            pst.close();
+            // Update the issue count
+            i = 0;
+            pst = db.prepareStatement("UPDATE project_issues " + "SET reply_count = reply_count - 1 " + "WHERE project_id = ? " + "AND issue_id = ? ");
+            pst.setInt(++i, projectId);
+            pst.setInt(++i, issueId);
+            pst.executeUpdate();
+            pst.close();
+            // update solution reply id of the project if this reply was the solution
+            i = 0;
+            pst = db.prepareStatement("UPDATE project_issues " + "SET solution_reply_id = ? " + "WHERE project_id = ? " + "AND issue_id = ? " + "AND solution_reply_id = ? ");
+            DatabaseUtils.setInt(pst, ++i, -1);
+            pst.setInt(++i, projectId);
+            pst.setInt(++i, issueId);
+            DatabaseUtils.setInt(pst, ++i, id);
+            pst.executeUpdate();
+            pst.close();
+            // Deleting ratings for this reply
+            Rating.delete(db, id, TABLE, PRIMARY_KEY);
+            // Delete the reply
+            pst = db.prepareStatement("DELETE FROM project_issue_replies " + "WHERE reply_id = ? ");
+            pst.setInt(1, id);
+            pst.execute();
+            pst.close();
+            // Update the last reply date by finding the latest reply, or by using
+            // the original modified date
+            pst = db.prepareStatement("SELECT entered, enteredby " + "FROM project_issue_replies " + "WHERE issue_id = ? " + "ORDER BY entered desc ");
+            pst.setInt(1, issueId);
+            rs = pst.executeQuery();
+            Timestamp lastReplyTimestamp = null;
+            int lastReplyBy = -1;
+            if (rs.next()) {
+                lastReplyTimestamp = rs.getTimestamp("entered");
+                lastReplyBy = rs.getInt("enteredby");
+            }
+            rs.close();
+            pst.close();
+            if (lastReplyTimestamp != null) {
+                pst = db.prepareStatement("UPDATE project_issues " + "SET last_reply_date = ?, last_reply_by = ? " + "WHERE issue_id = ? " + "AND last_reply_date <> ? ");
+                pst.setTimestamp(1, lastReplyTimestamp);
+                pst.setInt(2, lastReplyBy);
+                pst.setInt(3, issueId);
+                pst.setTimestamp(4, lastReplyTimestamp);
+                pst.executeUpdate();
+                pst.close();
+            } else {
+                pst = db.prepareStatement("UPDATE project_issues " + "SET last_reply_date = entered, last_reply_by = enteredby " + "WHERE issue_id = ? " + "AND last_reply_date <> entered ");
+                pst.setInt(1, issueId);
+                pst.executeUpdate();
+                pst.close();
+            }
+            if (autoCommit) {
+                db.commit();
+            }
+        }
+    } catch (SQLException e) {
+        if (autoCommit) {
+            db.rollback();
+        }
+        throw new SQLException(e.getMessage());
+    } finally {
+        if (autoCommit) {
+            db.setAutoCommit(true);
+        }
+    }
+    return true;
+}

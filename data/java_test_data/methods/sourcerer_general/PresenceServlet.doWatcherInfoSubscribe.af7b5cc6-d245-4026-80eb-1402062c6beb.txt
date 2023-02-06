@@ -1,0 +1,74 @@
+protected void doWatcherInfoSubscribe(SipServletRequest subscribe) throws ServletException, IOException {
+    if (!checkAcceptHeader(subscribe, true))
+        return;
+    int expires = subscribe.getExpires();
+    if (expires != -1) {
+        if (expires != 0) {
+            if (expires < _watcherInfo.getMinExpires()) {
+                SipServletResponse response = subscribe.createResponse(SipServletResponse.SC_INTERVAL_TOO_BRIEF);
+                response.addHeader(Constants.MIN_EXPIRES, Integer.toString(_presence.getMinExpires()));
+                response.send();
+                response.getApplicationSession().invalidate();
+                return;
+            } else if (expires > _watcherInfo.getMaxExpires()) {
+                expires = _watcherInfo.getMaxExpires();
+            }
+        }
+    } else {
+        expires = _watcherInfo.getDefaultExpires();
+    }
+    SipSession session = subscribe.getSession();
+    String uri = null;
+    if (subscribe.isInitial()) {
+        uri = URIUtil.toCanonical(subscribe.getRequestURI());
+    } else {
+        uri = (String) session.getAttribute(Constants.SUBSCRIPTION_ATTRIBUTE);
+        if (uri == null) {
+            subscribe.createResponse(SipServletResponse.SC_CALL_LEG_DONE).send();
+            subscribe.getApplicationSession().invalidate();
+            return;
+        }
+    }
+    WatcherResource resource = _watcherInfo.get(uri);
+    String subscriberUri = null;
+    if (subscribe.getAddressHeader(Constants.P_ASSERTED_IDENTITY) != null)
+        subscriberUri = URIUtil.toCanonical(subscribe.getAddressHeader(Constants.P_ASSERTED_IDENTITY).getURI());
+    else
+        subscriberUri = URIUtil.toCanonical(subscribe.getFrom().getURI());
+    try {
+        Subscription subscription = null;
+        if (expires == 0) {
+            subscription = resource.removeSubscription(session.getId());
+            if (subscription == null)
+                subscription = new Subscription(resource, session, -1, subscriberUri);
+            else {
+                subscription.setExpirationTime(System.currentTimeMillis());
+                if (_log.isDebugEnabled())
+                    _log.debug("removed presence.winfo subscription {} to resource {}", subscription.getSession().getId(), resource.getUri());
+            }
+            subscription.setState(Subscription.State.TERMINATED, Reason.TIMEOUT);
+        } else {
+            long now = System.currentTimeMillis();
+            subscription = resource.getSubscription(session.getId());
+            if (subscription == null) {
+                subscription = new Subscription(resource, session, now + expires * 1000, subscriberUri);
+                subscription.setState(State.ACTIVE, Reason.SUBSCRIBE);
+                resource.addSubscription(subscription);
+                session.setAttribute(Constants.SUBSCRIPTION_ATTRIBUTE, uri);
+                if (_log.isDebugEnabled())
+                    _log.debug("added presence.winfo subscription {} to resource {}", subscription.getSession().getId(), resource.getUri());
+            } else {
+                subscription.setExpirationTime(now + expires * 1000);
+                if (_log.isDebugEnabled())
+                    _log.debug("refreshed presence.winfo subscription {} to resource {}", subscription.getSession().getId(), resource.getUri());
+            }
+        }
+        int code = (subscription.getState() != Subscription.State.PENDING) ? SipServletResponse.SC_OK : SipServletResponse.SC_ACCEPTED;
+        SipServletResponse response = subscribe.createResponse(code);
+        response.setExpires(expires);
+        response.send();
+        _watcherInfo.notify(subscription);
+    } finally {
+        _watcherInfo.put(resource);
+    }
+}

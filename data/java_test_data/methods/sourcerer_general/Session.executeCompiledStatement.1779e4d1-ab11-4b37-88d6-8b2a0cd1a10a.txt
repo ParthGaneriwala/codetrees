@@ -1,0 +1,87 @@
+public Result executeCompiledStatement(Statement cs, Object[] pvals) {
+    Result r;
+    if (abortTransaction) {
+        rollback(false);
+        return Result.newErrorResult(Error.error(ErrorCode.X_40001));
+    }
+    if (sessionContext.depth > 0) {
+        if (sessionContext.noSQL || cs.isAutoCommitStatement()) {
+            return Result.newErrorResult(Error.error(ErrorCode.X_46000));
+        }
+    }
+    if (cs.isAutoCommitStatement()) {
+        if (isReadOnly()) {
+            return Result.newErrorResult(Error.error(ErrorCode.X_25006));
+        }
+        try {
+            /**
+             * special autocommit for backward compatibility
+             */
+            commit(false);
+        } catch (HsqlException e) {
+            database.logger.logInfoEvent("Exception at commit");
+        }
+    }
+    sessionContext.currentStatement = cs;
+    if (!cs.isTransactionStatement()) {
+        r = cs.execute(this);
+        sessionContext.currentStatement = null;
+        return r;
+    }
+    while (true) {
+        actionIndex = rowActionList.size();
+        database.txManager.beginAction(this, cs);
+        if (abortTransaction) {
+            rollback(false);
+            sessionContext.currentStatement = null;
+            return Result.newErrorResult(Error.error(ErrorCode.X_40001));
+        }
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+        // System.out.println("interrupted");
+        }
+        if (abortTransaction) {
+            rollback(false);
+            sessionContext.currentStatement = null;
+            return Result.newErrorResult(Error.error(ErrorCode.X_40001));
+        }
+        database.txManager.beginActionResume(this);
+        // tempActionHistory.add("sql execute " + cs.sql + " " + actionTimestamp + " " + rowActionList.size());
+        sessionContext.setDynamicArguments(pvals);
+        r = cs.execute(this);
+        lockStatement = sessionContext.currentStatement;
+        // tempActionHistory.add("sql execute end " + actionTimestamp + " " + rowActionList.size());
+        endAction(r);
+        if (abortTransaction) {
+            rollback(false);
+            sessionContext.currentStatement = null;
+            return Result.newErrorResult(Error.error(ErrorCode.X_40001));
+        }
+        if (redoAction) {
+            redoAction = false;
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                // 
+                System.out.println("interrupted");
+            }
+        } else {
+            break;
+        }
+    }
+    if (sessionContext.depth == 0 && (sessionContext.isAutoCommit.booleanValue() || cs.isAutoCommitStatement())) {
+        try {
+            if (r.mode == ResultConstants.ERROR) {
+                rollback(false);
+            } else {
+                commit(false);
+            }
+        } catch (Exception e) {
+            sessionContext.currentStatement = null;
+            return Result.newErrorResult(Error.error(ErrorCode.X_40001, e));
+        }
+    }
+    sessionContext.currentStatement = null;
+    return r;
+}

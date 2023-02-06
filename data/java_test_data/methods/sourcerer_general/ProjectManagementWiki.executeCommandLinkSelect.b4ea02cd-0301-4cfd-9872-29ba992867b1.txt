@@ -1,0 +1,59 @@
+public String executeCommandLinkSelect(ActionContext context) {
+    Connection db = null;
+    // Parameters
+    int projectId = Integer.parseInt(context.getRequest().getParameter("pid"));
+    String content = StringUtils.fromHtmlValue(context.getRequest().getParameter("content"));
+    String link = context.getRequest().getParameter("link");
+    LOG.debug("Content: " + content);
+    LOG.debug("Link: " + link);
+    try {
+        db = getConnection(context);
+        // Load the project
+        Project thisProject = retrieveAuthorizedProject(projectId, context);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-wiki-add")) {
+            return "PermissionError";
+        }
+        context.getRequest().setAttribute("project", thisProject);
+        // Use WikiLink to determine type of link
+        // <a class="wikiLink newWiki" title="other pages" href="/ProjectManagementWiki.do?command=Edit&amp;pid=139&amp;subject=other+pages">other pages</a>
+        // <a class="wikiLink external" href="http://www.cnn.com" target="_blank">http://www.cnn.com</a>
+        // <p><a class="wikiLink newWiki" title="called something else" href="/ProjectManagementWiki.do?command=Edit&amp;pid=139&amp;subject=A+link">called something else</a></p>
+        // <p><a class="wikiLink external" href="http://www.concursive.com" target="_blank">called something else</a></p>
+        String contextPath = context.getRequest().getContextPath();
+        if (!StringUtils.hasText(contextPath)) {
+            contextPath = "";
+        }
+        if (!StringUtils.hasText(link)) {
+            // No link, so use the selected content
+            context.getRequest().setAttribute("link", content);
+        } else if (HTMLToWikiUtils.isExternalLink(link, contextPath)) {
+            // Send the link
+            context.getRequest().setAttribute("link", link);
+        } else {
+            // Decide if a local wiki or another internal link
+            URLControllerBean url = new URLControllerBean(link, contextPath);
+            if ("wiki".equals(url.getDomainObject()) && (url.getProjectId() == projectId || url.getProjectId() == -1)) {
+                String subject = url.getObjectValue();
+                // The incoming link will have a + for a space
+                subject = StringUtils.replace(subject, "+", " ");
+                // The incoming link will be url encoded
+                subject = StringUtils.jsUnEscape(subject);
+                context.getRequest().setAttribute("link", subject);
+                LOG.debug("Setting link to: " + subject);
+                // Let user know if wiki exists
+                Wiki targetWiki = WikiList.queryBySubject(db, subject, thisProject.getId());
+                context.getRequest().setAttribute("targetWiki", targetWiki);
+            } else {
+                // Generate an inter-profile object link
+                context.getRequest().setAttribute("link", link);
+                LOG.debug("Setting (inter-profile) link to: " + link);
+            }
+        }
+        return ("LinkSelectOK");
+    } catch (Exception errorMessage) {
+        context.getRequest().setAttribute("Error", errorMessage);
+        return ("SystemError");
+    } finally {
+        this.freeConnection(context, db);
+    }
+}

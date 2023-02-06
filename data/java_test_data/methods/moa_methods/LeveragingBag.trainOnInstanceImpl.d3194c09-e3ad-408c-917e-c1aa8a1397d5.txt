@@ -1,0 +1,96 @@
+@Override
+public void trainOnInstanceImpl(Instance inst) {
+    int numClasses = inst.numClasses();
+    // Output Codes
+    if (this.initMatrixCodes == true) {
+        this.matrixCodes = new int[this.ensemble.length][inst.numClasses()];
+        for (int i = 0; i < this.ensemble.length; i++) {
+            int numberOnes;
+            int numberZeros;
+            do {
+                // until we have the same number of zeros and ones
+                numberOnes = 0;
+                numberZeros = 0;
+                for (int j = 0; j < numClasses; j++) {
+                    int result = 0;
+                    if (j == 1 && numClasses == 2) {
+                        result = 1 - this.matrixCodes[i][0];
+                    } else {
+                        result = (this.classifierRandom.nextBoolean() ? 1 : 0);
+                    }
+                    this.matrixCodes[i][j] = result;
+                    if (result == 1) {
+                        numberOnes++;
+                    } else {
+                        numberZeros++;
+                    }
+                }
+            } while ((numberOnes - numberZeros) * (numberOnes - numberZeros) > (this.ensemble.length % 2));
+        }
+        this.initMatrixCodes = false;
+    }
+    boolean Change = false;
+    Instance weightedInst = (Instance) inst.copy();
+    double w = this.weightShrinkOption.getValue();
+    // Train ensemble of classifiers
+    for (int i = 0; i < this.ensemble.length; i++) {
+        double k = 0.0;
+        switch(this.leveraginBagAlgorithmOption.getChosenIndex()) {
+            case // LeveragingBag
+            0:
+                k = MiscUtils.poisson(w, this.classifierRandom);
+                break;
+            case // LeveragingBagME
+            1:
+                double error = this.ADError[i].getEstimation();
+                k = !this.ensemble[i].correctlyClassifies(weightedInst) ? 1.0 : (this.classifierRandom.nextDouble() < (error / (1.0 - error)) ? 1.0 : 0.0);
+                break;
+            case // LeveragingBagHalf
+            2:
+                w = 1.0;
+                k = this.classifierRandom.nextBoolean() ? 0.0 : w;
+                break;
+            case // LeveragingBagWT
+            3:
+                w = 1.0;
+                k = 1.0 + MiscUtils.poisson(w, this.classifierRandom);
+                break;
+            case // LeveragingSubag
+            4:
+                w = 1.0;
+                k = MiscUtils.poisson(1, this.classifierRandom);
+                k = (k > 0) ? w : 0;
+                break;
+        }
+        if (k > 0) {
+            if (this.outputCodesOption.isSet()) {
+                weightedInst.setClassValue((double) this.matrixCodes[i][(int) inst.classValue()]);
+            }
+            weightedInst.setWeight(inst.weight() * k);
+            this.ensemble[i].trainOnInstance(weightedInst);
+        }
+        boolean correctlyClassifies = this.ensemble[i].correctlyClassifies(weightedInst);
+        double ErrEstim = this.ADError[i].getEstimation();
+        if (this.ADError[i].setInput(correctlyClassifies ? 0 : 1)) {
+            if (this.ADError[i].getEstimation() > ErrEstim) {
+                Change = true;
+            }
+        }
+    }
+    if (Change) {
+        numberOfChangesDetected++;
+        double max = 0.0;
+        int imax = -1;
+        for (int i = 0; i < this.ensemble.length; i++) {
+            if (max < this.ADError[i].getEstimation()) {
+                max = this.ADError[i].getEstimation();
+                imax = i;
+            }
+        }
+        if (imax != -1) {
+            this.ensemble[imax].resetLearning();
+            // this.ensemble[imax].trainOnInstance(inst);
+            this.ADError[imax] = new ADWIN((double) this.deltaAdwinOption.getValue());
+        }
+    }
+}

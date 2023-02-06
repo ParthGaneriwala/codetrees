@@ -1,0 +1,49 @@
+@SuppressWarnings("nls")
+private OperatorInfoList genFileSinkPlan(String dest, QB qb, OperatorInfoList input) throws SemanticException {
+    // We can assert here that the input list is of size one
+    if (input.size() != 1) {
+        throw new SemanticException("Select has more than one inputs");
+    }
+    // Generate the destination file
+    String queryTmpdir = this.scratchDir + File.separator + this.randomid + '.' + this.pathid + '.' + dest;
+    this.pathid++;
+    // Next for the destination tables, fetch the information
+    // create a temporary directory name and chain it to the plan
+    String dest_path = null;
+    tableDesc table_desc = null;
+    Integer dest_type = qb.getMetaData().getDestTypeForAlias(dest);
+    switch(dest_type.intValue()) {
+        case QBMetaData.DEST_TABLE:
+            {
+                Table dest_tab = qb.getMetaData().getDestTableForAlias(dest);
+                table_desc = Utilities.getTableDesc(dest_tab);
+                dest_path = dest_tab.getPath().toString();
+                // Create the work for moving the table
+                this.loadTableWork.add(new loadTableDesc(queryTmpdir, table_desc, new HashMap<String, String>()));
+                break;
+            }
+        case QBMetaData.DEST_PARTITION:
+            {
+                Partition dest_part = qb.getMetaData().getDestPartitionForAlias(dest);
+                Table dest_tab = dest_part.getTable();
+                table_desc = Utilities.getTableDesc(dest_tab);
+                dest_path = dest_part.getPath()[0].toString();
+                this.loadTableWork.add(new loadTableDesc(queryTmpdir, table_desc, dest_part.getSpec()));
+                break;
+            }
+        case QBMetaData.DEST_LOCAL_FILE:
+        case QBMetaData.DEST_DFS_FILE:
+            {
+                table_desc = Utilities.defaultTd;
+                dest_path = qb.getMetaData().getDestFileForAlias(dest);
+                this.loadFileWork.add(new loadFileDesc(queryTmpdir, dest_path, (dest_type.intValue() == QBMetaData.DEST_DFS_FILE)));
+                break;
+            }
+        default:
+            throw new SemanticException("Unknown destination type: " + dest_type);
+    }
+    OperatorInfoList output = (OperatorInfoList) input.clone();
+    output.get(0).setOp(OperatorFactory.getAndMakeChild(new fileSinkDesc(queryTmpdir, table_desc), new RowSchema(output.get(0).getRowResolver().getColumnInfos()), input.get(0).getOp()));
+    LOG.debug("Created FileSink Plan for clause: " + dest + "dest_path: " + dest_path + " row schema: " + output.get(0).getRowResolver().toString());
+    return output;
+}

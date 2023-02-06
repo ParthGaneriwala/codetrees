@@ -1,0 +1,137 @@
+protected Node parseTag(int start) throws ParserException {
+    boolean done;
+    char ch;
+    int state;
+    int[] bookmarks;
+    Vector attributes;
+    done = false;
+    attributes = new Vector();
+    state = 0;
+    bookmarks = new int[8];
+    bookmarks[0] = mCursor.getPosition();
+    while (!done) {
+        bookmarks[state + 1] = mCursor.getPosition();
+        ch = mPage.getCharacter(mCursor);
+        switch(state) {
+            case // outside of any attribute
+            0:
+                if ((Page.EOF == ch) || ('>' == ch) || ('<' == ch)) {
+                    if ('<' == ch) {
+                        // don't consume the opening angle
+                        mPage.ungetCharacter(mCursor);
+                        bookmarks[state + 1] = mCursor.getPosition();
+                    }
+                    whitespace(attributes, bookmarks);
+                    done = true;
+                } else if (!Character.isWhitespace(ch)) {
+                    whitespace(attributes, bookmarks);
+                    state = 1;
+                }
+                break;
+            case // within attribute name
+            1:
+                if ((Page.EOF == ch) || ('>' == ch) || ('<' == ch)) {
+                    if ('<' == ch) {
+                        // don't consume the opening angle
+                        mPage.ungetCharacter(mCursor);
+                        bookmarks[state + 1] = mCursor.getPosition();
+                    }
+                    standalone(attributes, bookmarks);
+                    done = true;
+                } else if (Character.isWhitespace(ch)) {
+                    // whitespaces might be followed by next attribute or an equal sign
+                    // see Bug #891058 Bug in lexer.
+                    // setting the bookmark[0] is done in state 6 if applicable
+                    bookmarks[6] = bookmarks[2];
+                    state = 6;
+                } else if ('=' == ch)
+                    state = 2;
+                break;
+            case // equals hit
+            2:
+                if ((Page.EOF == ch) || ('>' == ch)) {
+                    empty(attributes, bookmarks);
+                    done = true;
+                } else if ('\'' == ch) {
+                    state = 4;
+                    bookmarks[4] = bookmarks[3];
+                } else if ('"' == ch) {
+                    state = 5;
+                    bookmarks[5] = bookmarks[3];
+                } else if (Character.isWhitespace(ch)) {
+                // collect white spaces after "=" into the assignment string;
+                // do nothing
+                // see Bug #891058 Bug in lexer.
+                } else
+                    state = 3;
+                break;
+            case // within naked attribute value
+            3:
+                if ((Page.EOF == ch) || ('>' == ch)) {
+                    naked(attributes, bookmarks);
+                    done = true;
+                } else if (Character.isWhitespace(ch)) {
+                    naked(attributes, bookmarks);
+                    bookmarks[0] = bookmarks[4];
+                    state = 0;
+                }
+                break;
+            case // within single quoted attribute value
+            4:
+                if (Page.EOF == ch) {
+                    single_quote(attributes, bookmarks);
+                    // complain?
+                    done = true;
+                } else if ('\'' == ch) {
+                    single_quote(attributes, bookmarks);
+                    bookmarks[0] = bookmarks[5] + 1;
+                    state = 0;
+                }
+                break;
+            case // within double quoted attribute value
+            5:
+                if (Page.EOF == ch) {
+                    double_quote(attributes, bookmarks);
+                    // complain?
+                    done = true;
+                } else if ('"' == ch) {
+                    double_quote(attributes, bookmarks);
+                    bookmarks[0] = bookmarks[6] + 1;
+                    state = 0;
+                }
+                break;
+            // See Bug # 891058 Bug in lexer.
+            case // undecided for state 0 or 2
+            6:
+                // we have read white spaces after an attributte name
+                if (Page.EOF == ch) {
+                    // same as last else clause
+                    standalone(attributes, bookmarks);
+                    bookmarks[0] = bookmarks[6];
+                    mPage.ungetCharacter(mCursor);
+                    state = 0;
+                } else if (Character.isWhitespace(ch)) {
+                // proceed
+                } else if (// yepp. the white spaces belonged to the equal.
+                '=' == ch) {
+                    bookmarks[2] = bookmarks[6];
+                    bookmarks[3] = bookmarks[7];
+                    state = 2;
+                } else {
+                    // white spaces were not ended by equal
+                    // meaning the attribute was a stand alone attribute
+                    // now: create the stand alone attribute and rewind
+                    // the cursor to the end of the white spaces
+                    // and restart scanning as whitespace attribute.
+                    standalone(attributes, bookmarks);
+                    bookmarks[0] = bookmarks[6];
+                    mPage.ungetCharacter(mCursor);
+                    state = 0;
+                }
+                break;
+            default:
+                throw new IllegalStateException("how the fuck did we get in state " + state);
+        }
+    }
+    return (makeTag(start, mCursor.getPosition(), attributes));
+}

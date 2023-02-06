@@ -1,0 +1,65 @@
+private void resolveSelectTableFilter(Select select, HsqlArrayList vcolumn, HsqlArrayList vfilter) throws HsqlException {
+    int colcount;
+    TableFilter[] filters = new TableFilter[vfilter.size()];
+    vfilter.toArray(filters);
+    select.tFilter = filters;
+    // expand [table.]* columns
+    colcount = vcolumn.size();
+    for (int pos = 0; pos < colcount; ) {
+        Expression e = (Expression) (vcolumn.get(pos));
+        if (e.getType() == Expression.ASTERISK) {
+            vcolumn.remove(pos);
+            colcount = vcolumn.size();
+            String tablename = e.getTableName();
+            int oldPos = pos;
+            if (tablename == null) {
+                for (int i = 0; i < filters.length; i++) {
+                    pos = addFilterColumns(filters[i], vcolumn, pos);
+                    colcount = vcolumn.size();
+                }
+            } else {
+                TableFilter f = e.findTableFilter(filters);
+                if (f == null) {
+                    throw Trace.error(Trace.TABLE_NOT_FOUND, tablename);
+                }
+                pos = addFilterColumns(f, vcolumn, pos);
+                colcount = vcolumn.size();
+            }
+            if (isCompilingView()) {
+                // find this expression's position in the Select's asterisk list
+                boolean foundAsteriskPos = false;
+                Iterator expSearch = select.asteriskPositions.keySet().iterator();
+                while (expSearch.hasNext()) {
+                    int expPos = expSearch.nextInt();
+                    if (e == select.asteriskPositions.get(expPos)) {
+                        // compile the complete column list which later is to replace the asterisk
+                        StringBuffer completeColList = new StringBuffer();
+                        for (int col = oldPos; col < pos; ++col) {
+                            Expression resolvedColExpr = (Expression) (vcolumn.get(col));
+                            completeColList.append(resolvedColExpr.getColumnDDL());
+                            if (col < pos - 1) {
+                                completeColList.append(", ");
+                            }
+                        }
+                        select.asteriskPositions.put(expPos, completeColList.toString());
+                        foundAsteriskPos = true;
+                        break;
+                    }
+                }
+                Trace.doAssert(foundAsteriskPos);
+            }
+        } else {
+            if (e.getFilter() == null) {
+                for (int i = 0; i < filters.length; i++) {
+                    e.resolveTables(filters[i]);
+                }
+            }
+            pos++;
+        }
+    }
+    for (int i = 0; i < colcount; i++) {
+        Expression e = (Expression) (vcolumn.get(i));
+        e.resolveTypes(session);
+    }
+    select.iResultLen = colcount;
+}

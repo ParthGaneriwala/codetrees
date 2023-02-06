@@ -1,0 +1,99 @@
+@Override
+public void acceptClassifier(IncrementalClassifierEvent e) {
+    weka.classifiers.Classifier classifier = e.getClassifier();
+    Instance currentI = e.getCurrentInstance();
+    int status = e.getStatus();
+    int oldNumAtts = 0;
+    if (status == IncrementalClassifierEvent.NEW_BATCH) {
+        oldNumAtts = e.getStructure().numAttributes();
+        m_throughput = new StreamThroughput(statusMessagePrefix());
+    } else {
+        if (currentI != null) {
+            oldNumAtts = currentI.dataset().numAttributes();
+        }
+    }
+    if (status == IncrementalClassifierEvent.NEW_BATCH) {
+        m_instanceEvent = new InstanceEvent(this, null, 0);
+        // create new header structure
+        Instances oldStructure = new Instances(e.getStructure(), 0);
+        // String relationNameModifier = oldStructure.relationName()
+        // +"_with predictions";
+        // check for string attributes
+        m_stringAttIndexes = new ArrayList<Integer>();
+        for (int i = 0; i < e.getStructure().numAttributes(); i++) {
+            if (e.getStructure().attribute(i).isString()) {
+                m_stringAttIndexes.add(new Integer(i));
+            }
+        }
+        String relationNameModifier = "_with predictions";
+        // +"_with predictions";
+        if (!m_appendProbabilities || oldStructure.classAttribute().isNumeric()) {
+            try {
+                m_format = makeDataSetClass(oldStructure, oldStructure, classifier, relationNameModifier);
+            } catch (Exception ex) {
+                ex.printStackTrace();
+                return;
+            }
+        } else if (m_appendProbabilities) {
+            try {
+                m_format = makeDataSetProbabilities(oldStructure, oldStructure, classifier, relationNameModifier);
+            } catch (Exception ex) {
+                ex.printStackTrace();
+                return;
+            }
+        }
+        // Pass on the structure
+        m_instanceEvent.setStructure(m_format);
+        notifyInstanceAvailable(m_instanceEvent);
+        return;
+    }
+    if (currentI != null) {
+        m_throughput.updateStart();
+        double[] instanceVals = new double[m_format.numAttributes()];
+        Instance newInst = null;
+        try {
+            // process the actual instance
+            for (int i = 0; i < oldNumAtts; i++) {
+                instanceVals[i] = currentI.value(i);
+            }
+            if (!m_appendProbabilities || currentI.dataset().classAttribute().isNumeric()) {
+                double predClass = classifier.classifyInstance(currentI);
+                instanceVals[instanceVals.length - 1] = predClass;
+            } else if (m_appendProbabilities) {
+                double[] preds = classifier.distributionForInstance(currentI);
+                for (int i = oldNumAtts; i < instanceVals.length; i++) {
+                    instanceVals[i] = preds[i - oldNumAtts];
+                }
+            }
+        } catch (Exception ex) {
+            ex.printStackTrace();
+            return;
+        } finally {
+            newInst = new DenseInstance(currentI.weight(), instanceVals);
+            newInst.setDataset(m_format);
+            // check for string attributes
+            if (m_stringAttIndexes != null) {
+                for (int i = 0; i < m_stringAttIndexes.size(); i++) {
+                    int index = m_stringAttIndexes.get(i);
+                    m_format.attribute(m_stringAttIndexes.get(i)).setStringValue(currentI.stringValue(index));
+                }
+            }
+            m_instanceEvent.setInstance(newInst);
+            m_instanceEvent.setStatus(status);
+            m_throughput.updateEnd(m_logger);
+            // notify listeners
+            notifyInstanceAvailable(m_instanceEvent);
+        }
+    } else {
+        // end of stream
+        m_instanceEvent.setInstance(null);
+        // notify listeners
+        notifyInstanceAvailable(m_instanceEvent);
+    }
+    if (status == IncrementalClassifierEvent.BATCH_FINISHED || currentI == null) {
+        // clean up
+        // m_incrementalStructure = null;
+        m_instanceEvent = null;
+        m_throughput.finished(m_logger);
+    }
+}

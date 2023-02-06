@@ -1,0 +1,110 @@
+protected double[] doRegression(boolean[] selectedAttributes) throws Exception {
+    if (m_Debug) {
+        System.out.print("doRegression(");
+        for (boolean selectedAttribute : selectedAttributes) {
+            System.out.print(" " + selectedAttribute);
+        }
+        System.out.println(" )");
+    }
+    int numAttributes = 0;
+    for (boolean selectedAttribute : selectedAttributes) {
+        if (selectedAttribute) {
+            numAttributes++;
+        }
+    }
+    // Check whether there are still attributes left
+    Matrix independentTransposed = null;
+    Matrix independent = null;
+    Vector dependent = null;
+    if (numAttributes > 0) {
+        if (!m_useQRDecomposition) {
+            independentTransposed = new DenseMatrix(numAttributes, m_TransformedData.numInstances());
+            dependent = new DenseVector(m_TransformedData.numInstances());
+        } else {
+            if (m_Ridge <= 0) {
+                independent = new DenseMatrix(m_TransformedData.numInstances(), numAttributes);
+                dependent = new DenseVector(m_TransformedData.numInstances());
+            } else {
+                independent = new DenseMatrix(m_TransformedData.numInstances() + numAttributes, numAttributes);
+                dependent = new DenseVector(m_TransformedData.numInstances() + numAttributes);
+            }
+        }
+        for (int i = 0; i < m_TransformedData.numInstances(); i++) {
+            Instance inst = m_TransformedData.instance(i);
+            double sqrt_weight = Math.sqrt(inst.weight());
+            int index = 0;
+            for (int j = 0; j < m_TransformedData.numAttributes(); j++) {
+                if (j == m_ClassIndex) {
+                    dependent.set(i, inst.classValue() * sqrt_weight);
+                } else {
+                    if (selectedAttributes[j]) {
+                        double value = inst.value(j) - m_Means[j];
+                        // scale the input
+                        if (!m_checksTurnedOff) {
+                            value /= m_StdDevs[j];
+                        }
+                        if (!m_useQRDecomposition) {
+                            independentTransposed.set(index, i, value * sqrt_weight);
+                        } else {
+                            independent.set(i, index, value * sqrt_weight);
+                        }
+                        index++;
+                    }
+                }
+            }
+        }
+    }
+    if (m_useQRDecomposition && m_Ridge > 0) {
+        double sqrtRidge = Math.sqrt(m_Ridge);
+        for (int i = 0; i < numAttributes; i++) {
+            independent.set(m_TransformedData.numInstances() + i, i, sqrtRidge);
+        }
+    }
+    // Compute coefficients (note that we have to treat the
+    // intercept separately so that it doesn't get affected
+    // by the ridge constant.)
+    double[] coefficients = new double[numAttributes + 1];
+    if (numAttributes > 0) {
+        if (!m_useQRDecomposition) {
+            // Use Cholesky based on covariance matrix
+            Vector aTy = independentTransposed.mult(dependent, new DenseVector(numAttributes));
+            Matrix aTa = new UpperSPDDenseMatrix(numAttributes).rank1(independentTransposed);
+            independentTransposed = null;
+            dependent = null;
+            double ridge = getRidge();
+            for (int i = 0; i < numAttributes; i++) {
+                aTa.add(i, i, ridge);
+            }
+            Vector coeffsWithoutIntercept = aTa.solve(aTy, new DenseVector(numAttributes));
+            System.arraycopy(((DenseVector) coeffsWithoutIntercept).getData(), 0, coefficients, 0, numAttributes);
+        } else {
+            // Use QR decomposition
+            QRP qrp = QRP.factorize(independent);
+            independent = null;
+            Matrix Q = qrp.getQ();
+            Matrix R = new UpperTriangDenseMatrix(qrp.getR(), false);
+            Matrix P = qrp.getP();
+            DenseVector cPlusd = (DenseVector) Q.transMult(dependent, new DenseVector(dependent.size()));
+            dependent = null;
+            Vector c = new DenseVector(Arrays.copyOf(cPlusd.getData(), numAttributes));
+            Vector y = R.solve(c, new DenseVector(numAttributes));
+            Vector coeffsWithoutIntercept = P.mult(y, new DenseVector(numAttributes));
+            System.arraycopy(((DenseVector) coeffsWithoutIntercept).getData(), 0, coefficients, 0, numAttributes);
+        }
+    }
+    coefficients[numAttributes] = m_ClassMean;
+    // Convert coefficients into original scale
+    int column = 0;
+    for (int i = 0; i < m_TransformedData.numAttributes(); i++) {
+        if ((i != m_TransformedData.classIndex()) && (selectedAttributes[i])) {
+            // input.
+            if (!m_checksTurnedOff) {
+                coefficients[column] /= m_StdDevs[i];
+            }
+            // We have centred the input
+            coefficients[coefficients.length - 1] -= coefficients[column] * m_Means[i];
+            column++;
+        }
+    }
+    return coefficients;
+}

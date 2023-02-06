@@ -1,0 +1,93 @@
+public String executeCommandUploadImage(ActionContext context) {
+    Connection db = null;
+    boolean recordInserted = false;
+    try {
+        String filePath = this.getPath(context, "projects");
+        // Process the form data
+        HttpMultiPartParser multiPart = new HttpMultiPartParser();
+        multiPart.setUsePathParam(false);
+        multiPart.setUseUniqueName(true);
+        multiPart.setUseDateForFolder(true);
+        multiPart.setExtensionId(getUserId(context));
+        HashMap parts = multiPart.parseData(context.getRequest(), filePath);
+        String projectId = (String) parts.get("pid");
+        String subject = (String) parts.get("subject");
+        db = getConnection(context);
+        // Project
+        Project thisProject = retrieveAuthorizedProject(Integer.parseInt(projectId), context);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-wiki-add")) {
+            // TODO: Should delete the uploads, then exit
+            return "PermissionError";
+        }
+        context.getRequest().setAttribute("project", thisProject);
+        // Update the database with the resulting file
+        if (parts.get("id" + projectId) instanceof FileInfo) {
+            FileInfo newFileInfo = (FileInfo) parts.get("id" + projectId);
+            FileItem thisItem = new FileItem();
+            thisItem.setLinkModuleId(Constants.PROJECT_WIKI_FILES);
+            thisItem.setLinkItemId(thisProject.getId());
+            thisItem.setEnteredBy(getUserId(context));
+            thisItem.setModifiedBy(getUserId(context));
+            thisItem.setSubject("Wiki Image");
+            thisItem.setClientFilename(newFileInfo.getClientFileName());
+            thisItem.setFilename(newFileInfo.getRealFilename());
+            thisItem.setSize(newFileInfo.getSize());
+            // Verify the integrity of the image
+            thisItem.setImageSize(ImageUtils.getImageSize(newFileInfo.getLocalFile()));
+            if (thisItem.getImageWidth() == 0 || thisItem.getImageHeight() == 0) {
+                // A bad image was sent
+                return ("ImageUploadERROR");
+            }
+            // check to see if this filename already exists for automatic versioning
+            FileItemList fileItemList = new FileItemList();
+            fileItemList.setLinkModuleId(Constants.PROJECT_WIKI_FILES);
+            fileItemList.setLinkItemId(thisProject.getId());
+            fileItemList.setFilename(newFileInfo.getClientFileName());
+            fileItemList.buildList(db);
+            if (fileItemList.size() == 0) {
+                // this is a new document
+                thisItem.setVersion(1.0);
+                recordInserted = thisItem.insert(db);
+            } else {
+                // this is a new version of an existing document
+                FileItem previousItem = fileItemList.get(0);
+                thisItem.setId(previousItem.getId());
+                thisItem.setVersion(previousItem.getVersionNextMajor());
+                recordInserted = thisItem.insertVersion(db);
+            }
+            thisItem.setDirectory(filePath);
+            if (!recordInserted) {
+                processErrors(context, thisItem.getErrors());
+            } else {
+                if (thisItem.isImageFormat() && thisItem.hasValidImageSize()) {
+                    // Prepare this image for thumbnail conversion
+                    ImageResizerBean bean = new ImageResizerBean();
+                    bean.setFileItemId(thisItem.getId());
+                    bean.setImagePath(newFileInfo.getLocalFile().getParent());
+                    bean.setImageFilename(thisItem.getFilename());
+                    bean.setEnteredBy(thisItem.getEnteredBy());
+                    // Add this to the ImageResizerJob to multi-thread the thumbnails
+                    Scheduler scheduler = (Scheduler) context.getServletContext().getAttribute("Scheduler");
+                    ((Vector) scheduler.getContext().get(ImageResizerJob.IMAGE_RESIZER_ARRAY)).add(bean);
+                    scheduler.triggerJob("imageResizer", (String) scheduler.getContext().get(ScheduledJobs.CONTEXT_SCHEDULER_GROUP));
+                }
+            }
+            context.getRequest().setAttribute("popup", "true");
+            context.getRequest().setAttribute("PageLayout", "/layout1.jsp");
+            // Image List
+            FileItemList imageList = new FileItemList();
+            imageList.setLinkModuleId(Constants.PROJECT_WIKI_FILES);
+            imageList.setLinkItemId(thisProject.getId());
+            imageList.buildList(db);
+            context.getRequest().setAttribute("imageList", imageList);
+            // Send the image name so it can be auto-selected
+            context.getRequest().setAttribute("uploadedImage", newFileInfo.getClientFileName());
+        }
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return ("SystemError");
+    } finally {
+        freeConnection(context, db);
+    }
+    return "UploadImageOK";
+}

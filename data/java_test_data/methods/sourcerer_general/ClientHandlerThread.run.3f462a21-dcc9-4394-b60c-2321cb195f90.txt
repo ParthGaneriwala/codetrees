@@ -1,0 +1,116 @@
+public void run() {
+    RemotePeer tmpRPeer;
+    ObjectOutputStream out;
+    ByteArrayOutputStream bos;
+    FileRepository repo;
+    Command myCmd;
+    OutputStream os;
+    BufferedReader in;
+    String rcvStr = "";
+    String remoteAdr = this.clientSocket.getInetAddress().getHostAddress();
+    int remotePort = this.clientSocket.getPort();
+    // RemotePeer myRemotePeer = new RemotePeer(remoteAdr, remotePort);
+    System.out.println("[ClientHandlerThread] a new client handler thread was born...");
+    try {
+        ObjectInputStream is = new ObjectInputStream(this.clientSocket.getInputStream());
+        myCmd = (Command) is.readObject();
+        System.out.println("[ClientHandlerThread] Received command: " + myCmd.getCmdEnum().toString());
+        switch(myCmd.getCmdEnum()) {
+            case ALIVE:
+                System.out.println("[ClientHandlerThread] ALIVE Command rcvd from " + remoteAdr + ":" + remotePort);
+                PrintWriter pw = new PrintWriter(this.clientSocket.getOutputStream());
+                pw.println("OK");
+                pw.flush();
+                System.out.println("[ClientHandlerThread] sent OK");
+                break;
+            case LISTNEIGHBOURS:
+                System.out.println("[ClientHandlerThread] LISTNEIGHBOURS Command rcvd from " + remoteAdr + ":" + remotePort);
+                bos = new ByteArrayOutputStream();
+                out = new ObjectOutputStream(bos);
+                out.writeObject(this.myOverlay.getOwnNeighbours());
+                os = this.clientSocket.getOutputStream();
+                System.out.println("[ClientHandlerThread] sending neighbours to " + remoteAdr + ":" + remotePort);
+                os.write(bos.toByteArray());
+                break;
+            case GET:
+                System.out.println("[ClientHandlerThread] GET Command rcvd from " + remoteAdr + ":" + remotePort);
+                try {
+                    if (!this.myOverlay.isDownloadInProgress()) {
+                        System.out.println("[ClientHandlerThread] no other upload in progress...processing request");
+                        this.myOverlay.setDownloadInProgress(true);
+                        String filename = myCmd.getPara1();
+                        int offset = Integer.parseInt(myCmd.getPara2());
+                        System.out.println("[ClientHandlerThread] loading file " + filename + "...");
+                        repo = new FileRepository(this.myOverlay.getRepoPath());
+                        byte[] b = repo.getFileByteArray(filename);
+                        os = this.clientSocket.getOutputStream();
+                        System.out.println("[ClientHandlerThread] sending file " + filename + " with offset " + offset + "...");
+                        os.write(b, offset, b.length - offset);
+                        this.myOverlay.setDownloadInProgress(false);
+                        System.out.println("[ClientHandlerThread] finished sending file " + filename + "...");
+                    } else {
+                        System.out.println("[ClientHandlerThread] already an upload in progress...ignoring request");
+                    }
+                } catch (Exception e) {
+                    System.out.println("[ClientHandlerThread] exception while processing get cmd: " + e.toString());
+                    this.myOverlay.setDownloadInProgress(false);
+                }
+                this.clientSocket.close();
+                break;
+            case SEARCH:
+                File myFile;
+                ArrayList myResultList = new ArrayList();
+                clientSocket.setSoTimeout(50000);
+                System.out.println("[ClientHandlerThread] SEARCH Command rcvd from " + remoteAdr + ":" + remotePort);
+                String pattern = myCmd.getPara2();
+                int randomID = Integer.parseInt(myCmd.getPara3());
+                RemotePeer requestorPeer = new RemotePeer(clientSocket.getInetAddress().getHostAddress(), Integer.parseInt(myCmd.getPara1()));
+                if (this.myOverlay.isNewSearch(requestorPeer, randomID)) {
+                    System.out.println("[ClientHandlerThread] accepted search for " + requestorPeer.toString() + " --> pattern: " + pattern + "; ID: " + randomID);
+                    repo = new FileRepository(this.myOverlay.getRepoPath());
+                    ArrayList myFileList = repo.findFile(pattern);
+                    System.out.println("[ClientHandlerThread] found " + myFileList.size() + " files");
+                    Iterator it = myFileList.iterator();
+                    while (it.hasNext()) {
+                        String tmpStr = (String) it.next();
+                        myFile = new File(repo.getRepoDir() + tmpStr);
+                        SearchResult tmpResult = new SearchResult();
+                        tmpResult.setFilename(tmpStr);
+                        tmpResult.setFilesize(myFile.length());
+                        java.security.MessageDigest digest = java.security.MessageDigest.getInstance("MD5");
+                        digest.update(repo.getFileByteArray(tmpStr));
+                        tmpResult.setHash(new java.math.BigInteger(1, digest.digest()).toString(16));
+                        tmpRPeer = new RemotePeer(clientSocket.getLocalAddress().getHostAddress(), clientSocket.getLocalPort());
+                        tmpResult.setRemotePeer(tmpRPeer);
+                        myResultList.add(tmpResult);
+                    }
+                    myResultList.addAll(this.myOverlay.searchFileNeighbours(pattern, requestorPeer, Integer.parseInt(myCmd.getPara1()), myCmd.getPara4(), randomID));
+                } else {
+                    System.out.println("[ClientHandlerThread] search not accepted (processed already)");
+                }
+                bos = new ByteArrayOutputStream();
+                out = new ObjectOutputStream(bos);
+                out.writeObject(myResultList);
+                os = this.clientSocket.getOutputStream();
+                System.out.println("[ClientHandlerThread] sending search result list to " + remoteAdr + ":" + remotePort);
+                os.write(bos.toByteArray());
+                break;
+            case REGISTERASNEIGHBOUR:
+                System.out.println("[ClientHandlerThread] REGISTERASNEIGHBOUR Command rcvd from " + remoteAdr + ":" + remotePort);
+                tmpRPeer = new RemotePeer(remoteAdr, Integer.parseInt(myCmd.getPara1()));
+                System.out.println("[ClientHandlerThread] Registering " + tmpRPeer.toString());
+                this.myOverlay.registerNeighbour(tmpRPeer);
+                break;
+            case UNREGISTERASNEIGHBOUR:
+                System.out.println("[ClientHandlerThread] UNREGISTERASTNEIGHBOUR Command rcvd from " + remoteAdr + ":" + remotePort);
+                tmpRPeer = new RemotePeer(remoteAdr, Integer.parseInt(myCmd.getPara1()));
+                System.out.println("[ClientHandlerThread] Unregistering " + tmpRPeer.toString());
+                this.myOverlay.unregisterNeighbour(tmpRPeer);
+                break;
+            default:
+                System.out.println("[ClientHandlerThread] rcvd unknown command: " + myCmd.getCmdEnum().toString());
+        }
+    } catch (Exception e) {
+        System.out.println("[ClientHandlerThread] Exception caught: " + e.toString());
+    }
+}

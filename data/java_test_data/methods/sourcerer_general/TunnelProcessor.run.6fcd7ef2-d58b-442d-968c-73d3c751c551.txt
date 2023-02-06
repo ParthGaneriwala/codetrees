@@ -1,0 +1,136 @@
+public void run() {
+    tps++;
+    TunnelInputStream tis = tun.getTunnelInputStream();
+    TunnelOutputStream tos = tun.getTunnelOutputStream();
+    byte[] commandByte;
+    try {
+        commandByte = tis.readCommand();
+        int commandType = peer.rdp.command.Command.checkCommandType(commandByte);
+        if (commandType == peer.tools.CommandType.command_QueryBlockInfo1) {
+            GetBlockInfoCOM1 gbi1 = new GetBlockInfoCOM1(commandByte);
+            Mdb mdb = gbi1.getMdb();
+            CacheFileInfo bi = null;
+            if (Config.shareFileMange.containsShareFile(mdb)) {
+                ShareFile fi = Config.shareFileMange.getFullFileInfo(mdb);
+                bi = fi.bi;
+            } else if (Config.cacheFileMange.containsCache(mdb)) {
+                bi = Config.cacheFileMange.getCancheFileInfo(mdb);
+            } else {
+                bi = null;
+            }
+            if (bi != null) {
+                GetBlockInfoCOM2 gbi2 = new GetBlockInfoCOM2(bi);
+                tos.writeCommand(gbi2);
+            } else {
+                GetBlockInfoCOM3 gbi3 = new GetBlockInfoCOM3();
+                tos.writeCommand(gbi3);
+            }
+        } else if (commandType == peer.tools.CommandType.command_TransCom1) {
+            TransCOM1 tc1 = new TransCOM1(commandByte);
+            Mdb mdb = tc1.getMdb();
+            int pieceNum = tc1.getPieceNum();
+            if (Config.shareFileMange.containsShareFile(mdb)) {
+                // System.out.println("��Ӧ��ƬshareFile11111111 "+pieceNum);
+                TransCOM2 tc2 = new TransCOM2();
+                tos.writeCommand(tc2);
+                ShareFile fi2 = Config.shareFileMange.getFullFileInfo(mdb);
+                File file = fi2.getFile();
+                int offset = pieceNum * 8 * 1024;
+                RandomAccessFile ra = null;
+                byte[] data = null;
+                if (offset < file.length()) {
+                    try {
+                        data = new byte[8 * 1024];
+                        ra = new RandomAccessFile(file, "r");
+                        ra.seek(pieceNum * 8 * 1024);
+                        int length = ra.read(data);
+                        if (length != -1) {
+                            tos.write(data, 0, length);
+                        } else {
+                            System.out.println("��λ����  ");
+                        }
+                    // System.out.println("��Ӧ��ƬshareFile22222222 "+pieceNum+" "+length);
+                    } catch (FileNotFoundException e) {
+                        e.printStackTrace();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    } finally {
+                        if (ra != null) {
+                            ra.close();
+                        }
+                        if (data != null) {
+                            data = null;
+                        }
+                    }
+                }
+            } else if (Config.cacheFileMange.containsCache(mdb)) {
+                // System.out.println("��Ӧ��ƬcacheFile11111111 "+pieceNum);
+                if (Config.cacheFileMange.containsPiece(mdb, pieceNum)) {
+                    TransCOM2 tc2 = new TransCOM2();
+                    tos.writeCommand(tc2);
+                    byte[] data = Config.cacheFileMange.getPiece(mdb, pieceNum);
+                    tos.write(data, 0, data.length);
+                } else {
+                    TransCOM4 tc4 = new TransCOM4();
+                    tos.writeCommand(tc4);
+                }
+            // System.out.println("��Ӧ��ƬcacheFile2222222222 "+pieceNum);
+            } else {
+                TransCOM3 tc3 = new TransCOM3();
+                tos.writeCommand(tc3);
+            }
+        } else if (commandType == peer.tools.CommandType.command_GetMdfCOM1) {
+            GetMdfCOM1 gmc1 = new GetMdfCOM1(commandByte);
+            Mdb mdb = gmc1.getMdb();
+            String mdStr = Pmd52f.byteArrayToHexString(mdb.md);
+            String path = Config.mdfDir + mdStr + ".pmd";
+            File mdf = new File(path);
+            if (mdf.exists()) {
+                GetMdfCOM2 gmc2 = new GetMdfCOM2();
+                tos.writeCommand(gmc2);
+                FileInputStream fis = new FileInputStream(mdf);
+                byte[] data = new byte[10 * 1024];
+                while (true) {
+                    int length = fis.read(data);
+                    if (length == -1) {
+                        break;
+                    }
+                    tos.write(data, 0, length);
+                }
+            } else {
+                GetMdfCOM3 gmc3 = new GetMdfCOM3();
+                tos.writeCommand(gmc3);
+            }
+        } else if (commandType == peer.tools.CommandType.command_GetDBCOM1) {
+            GetDBCOM1 gdc1 = new GetDBCOM1(commandByte);
+            Mdb mdb = gdc1.getMdb();
+            if (peer.Config.dbServer.containsDB(mdb)) {
+                byte[] groupData = peer.Config.dbServer.getDB(mdb).getByte();
+                GetDBCOM2 gdc2 = new GetDBCOM2(groupData.length);
+                tos.writeCommand(gdc2);
+                tos.write(groupData, 0, groupData.length);
+            } else {
+                GetDBCOM3 gdc3 = new GetDBCOM3();
+                tos.writeCommand(gdc3);
+            }
+        } else if (commandType == peer.tools.CommandType.command_TestSpeedCOM1) {
+            TestSpeedCOM2 gdc2 = new TestSpeedCOM2();
+            tos.writeCommand(gdc2);
+            byte[] data = new byte[1024 * 500];
+            while (true) {
+                tos.write(data, 0, data.length);
+            }
+        }
+    } catch (ConnectException e) {
+        e.printStackTrace();
+    } catch (IOException e) {
+        e.printStackTrace();
+    } finally {
+        tps--;
+        try {
+            tun.close();
+        } catch (ConnectException e) {
+            e.printStackTrace();
+        }
+    }
+}

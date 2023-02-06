@@ -1,0 +1,101 @@
+public void doSampling(final long sampleSize, final WritableTrainingData data) throws IOException {
+    JobManager manager = JobManager.getInstance();
+    JobGroup group = manager.createJobGroup("sampling");
+    final AtomicLong samplesLeft = new AtomicLong(sampleSize);
+    final ConcurrentLinkedQueue<long[]> sequences = new ConcurrentLinkedQueue<long[]>();
+    final TrainingDataBlock[] block = new TrainingDataBlock[1];
+    block[0] = new TrainingDataBlock();
+    @SuppressWarnings("serial") final LRU<Context, Long2IntMap> tmpData = new LRU<Context, Long2IntMap>(1000000) {
+
+        @Override
+        protected boolean removeEldestEntry(Entry<Context, Long2IntMap> eldest) {
+            if (super.removeEldestEntry(eldest)) {
+                // TODO: use an intermediate queue
+                Long2IntMap counts = eldest.getValue();
+                ContextFuturesPair pair = new ContextFuturesPair(eldest.getKey(), TupleCountPair.fromMap(counts));
+                if (!block[0].add(pair)) {
+                    try {
+                        data.add(block[0]);
+                        block[0] = new TrainingDataBlock();
+                        block[0].add(pair);
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+                return true;
+            }
+            return false;
+        }
+    };
+    Thread dataWriter;
+    {
+        Runnable run = new Runnable() {
+
+            @Override
+            public void run() {
+                long TODO = sampleSize;
+                // workers may generate more sequences than we need, don't throw them away if they are ready
+                while (TODO > 0 || !sequences.isEmpty()) {
+                    long[] sequence = sequences.poll();
+                    if (sequence == null) {
+                        try {
+                            Thread.sleep(10);
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                        continue;
+                    }
+                    for (int i = order - 1; i < sequence.length; ++i) {
+                        long[] ctx = Arrays.copyOfRange(sequence, i - order + 1, i);
+                        long future = sequence[i];
+                        Context context = new Context(ctx);
+                        Long2IntMap map = tmpData.get(context);
+                        if (map == null) {
+                            map = new Long2IntMap();
+                            tmpData.put(context, map);
+                        }
+                        map.addAndGet(future, 1);
+                    }
+                    TODO -= sequence.length - order + 1;
+                    samplesLeft.set(TODO);
+                }
+            }
+        };
+        dataWriter = new Thread(run, "data writer");
+        dataWriter.start();
+    }
+    while (samplesLeft.get() > 0) {
+        Runnable run = new Runnable() {
+
+            @Override
+            public void run() {
+                if (samplesLeft.get() > 0) {
+                    long[] sequence = generateSequence();
+                    sequences.add(sequence);
+                }
+            }
+        };
+        Job job = new Job(run, "sequence generator");
+        manager.addJob(group, job);
+        group.join(manager.getNumWorkers() + 1);
+    }
+    try {
+        dataWriter.join();
+    // some workers may still be working on new sequences
+    // no need to wait for them
+    } catch (InterruptedException e) {
+        e.printStackTrace();
+    }
+    // dump the remaining cache
+    for (Map.Entry<Context, Long2IntMap> entry : tmpData.entrySet()) {
+        ContextFuturesPair pair = new ContextFuturesPair(entry.getKey(), TupleCountPair.fromMap(entry.getValue()));
+        if (!block[0].add(pair)) {
+            data.add(block[0]);
+            block[0] = new TrainingDataBlock();
+            block[0].add(pair);
+        }
+    }
+    if (block[0].hasData()) {
+        data.add(block[0]);
+    }
+}

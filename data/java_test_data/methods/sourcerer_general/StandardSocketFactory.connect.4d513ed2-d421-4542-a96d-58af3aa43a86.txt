@@ -1,0 +1,102 @@
+public Socket connect(String hostname, int portNumber, Properties props) throws SocketException, IOException {
+    if (props != null) {
+        this.host = hostname;
+        this.port = portNumber;
+        Method connectWithTimeoutMethod = null;
+        Method socketBindMethod = null;
+        Class socketAddressClass = null;
+        String localSocketHostname = props.getProperty("localSocketAddress");
+        String connectTimeoutStr = props.getProperty("connectTimeout");
+        int connectTimeout = 0;
+        boolean wantsTimeout = (connectTimeoutStr != null && connectTimeoutStr.length() > 0 && !connectTimeoutStr.equals("0"));
+        boolean wantsLocalBind = (localSocketHostname != null && localSocketHostname.length() > 0);
+        boolean needsConfigurationBeforeConnect = socketNeedsConfigurationBeforeConnect(props);
+        if (wantsTimeout || wantsLocalBind || needsConfigurationBeforeConnect) {
+            if (connectTimeoutStr != null) {
+                try {
+                    connectTimeout = Integer.parseInt(connectTimeoutStr);
+                } catch (NumberFormatException nfe) {
+                    throw new SocketException("Illegal value '" + connectTimeoutStr + "' for connectTimeout");
+                }
+            }
+            try {
+                // Have to do this with reflection, otherwise older JVMs
+                // croak
+                socketAddressClass = Class.forName("java.net.SocketAddress");
+                connectWithTimeoutMethod = Socket.class.getMethod("connect", new Class[] { socketAddressClass, Integer.TYPE });
+                socketBindMethod = Socket.class.getMethod("bind", new Class[] { socketAddressClass });
+            } catch (NoClassDefFoundError noClassDefFound) {
+            // ignore, we give a better error below if needed
+            } catch (NoSuchMethodException noSuchMethodEx) {
+            // ignore, we give a better error below if needed
+            } catch (Throwable catchAll) {
+            // ignore, we give a better error below if needed
+            }
+            if (wantsLocalBind && socketBindMethod == null) {
+                throw new SocketException("Can't specify \"localSocketAddress\" on JVMs older than 1.4");
+            }
+            if (wantsTimeout && connectWithTimeoutMethod == null) {
+                throw new SocketException("Can't specify \"connectTimeout\" on JVMs older than 1.4");
+            }
+        }
+        if (this.host != null) {
+            if (!(wantsLocalBind || wantsTimeout || needsConfigurationBeforeConnect)) {
+                InetAddress[] possibleAddresses = InetAddress.getAllByName(this.host);
+                Throwable caughtWhileConnecting = null;
+                for (int i = 0; i < possibleAddresses.length; i++) {
+                    try {
+                        this.rawSocket = new Socket(possibleAddresses[i], port);
+                        configureSocket(this.rawSocket, props);
+                        break;
+                    } catch (Exception ex) {
+                        caughtWhileConnecting = ex;
+                    }
+                }
+                if (rawSocket == null) {
+                    unwrapExceptionToProperClassAndThrowIt(caughtWhileConnecting);
+                }
+            } else {
+                // when running on older JVMs :(
+                try {
+                    InetAddress[] possibleAddresses = InetAddress.getAllByName(this.host);
+                    Throwable caughtWhileConnecting = null;
+                    Object localSockAddr = null;
+                    Class inetSocketAddressClass = null;
+                    Constructor addrConstructor = null;
+                    try {
+                        inetSocketAddressClass = Class.forName("java.net.InetSocketAddress");
+                        addrConstructor = inetSocketAddressClass.getConstructor(new Class[] { InetAddress.class, Integer.TYPE });
+                        if (wantsLocalBind) {
+                            localSockAddr = addrConstructor.newInstance(new Object[] { InetAddress.getByName(localSocketHostname), new Integer(0) });
+                        }
+                    } catch (Throwable ex) {
+                        unwrapExceptionToProperClassAndThrowIt(ex);
+                    }
+                    for (int i = 0; i < possibleAddresses.length; i++) {
+                        try {
+                            this.rawSocket = new Socket();
+                            configureSocket(this.rawSocket, props);
+                            Object sockAddr = addrConstructor.newInstance(new Object[] { possibleAddresses[i], new Integer(port) });
+                            // bind to the local port, null is 'ok', it
+                            // means
+                            // use the ephemeral port
+                            socketBindMethod.invoke(rawSocket, new Object[] { localSockAddr });
+                            connectWithTimeoutMethod.invoke(rawSocket, new Object[] { sockAddr, new Integer(connectTimeout) });
+                            break;
+                        } catch (Exception ex) {
+                            this.rawSocket = null;
+                            caughtWhileConnecting = ex;
+                        }
+                    }
+                    if (this.rawSocket == null) {
+                        unwrapExceptionToProperClassAndThrowIt(caughtWhileConnecting);
+                    }
+                } catch (Throwable t) {
+                    unwrapExceptionToProperClassAndThrowIt(t);
+                }
+            }
+            return this.rawSocket;
+        }
+    }
+    throw new SocketException("Unable to create socket");
+}

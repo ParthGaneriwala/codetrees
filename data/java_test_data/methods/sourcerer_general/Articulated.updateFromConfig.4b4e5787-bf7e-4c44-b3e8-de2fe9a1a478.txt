@@ -1,0 +1,123 @@
+protected void updateFromConfig() {
+    // save the names of the nodes to which the user nodes are attached
+    String[] userAttachmentNodes = new String[_userAttachments.size()];
+    for (int ii = 0; ii < userAttachmentNodes.length; ii++) {
+        userAttachmentNodes[ii] = ((Node) _userAttachments.get(ii).getParentScope()).getConfig().name;
+    }
+    // save the old nodes (if any)
+    IdentityHashMap<ArticulatedConfig.Node, Node> onodes = Maps.newIdentityHashMap();
+    if (_nodes != null) {
+        for (Node node : _nodes) {
+            onodes.put(node.getConfig(), node);
+        }
+    }
+    // update the influence flags
+    _influenceFlags = _config.influences.getFlags();
+    // create the node list
+    ArrayList<Node> nnodes = new ArrayList<Node>(8);
+    _config.root.getArticulatedNodes(_ctx, this, onodes, nnodes, _worldTransform, _viewTransform);
+    _nodes = nnodes.toArray(new Node[nnodes.size()]);
+    for (Node node : onodes.values()) {
+        // dispose of the unrecycled old nodes
+        node.dispose();
+    }
+    // populate the name map
+    _nodesByName.clear();
+    for (Node node : _nodes) {
+        _nodesByName.put(node.getConfig().name, node);
+    }
+    // set the node transform updaters
+    for (NodeTransform transform : _config.nodeTransforms) {
+        Node node = _nodesByName.get(transform.node);
+        if (node != null) {
+            node.setUpdater(transform.createUpdater(_ctx, node));
+        }
+    }
+    // create the node surfaces
+    Map<String, MaterialConfig> materialConfigs = Maps.newHashMapWithExpectedSize(_config.materialMappings.length);
+    for (Node node : _nodes) {
+        node.createSurfaces(_ctx, _config.materialMappings, materialConfigs);
+    }
+    // create the skinned surfaces
+    if (_surfaces != null) {
+        for (Surface surface : _surfaces) {
+            surface.dispose();
+        }
+    }
+    _surfaces = createSurfaces(_ctx, this, _config.skin.visible, _config.materialMappings, materialConfigs);
+    // create the animations
+    Animation[] oanims = _animations;
+    _animations = new Animation[_config.animationMappings.length];
+    for (int ii = 0; ii < _animations.length; ii++) {
+        Animation anim = (oanims == null || oanims.length <= ii) ? new Animation(_ctx, this) : oanims[ii];
+        _animations[ii] = anim;
+        AnimationMapping mapping = _config.animationMappings[ii];
+        anim.setConfig(mapping.name, mapping.animation);
+    }
+    if (oanims != null) {
+        for (int ii = _animations.length; ii < oanims.length; ii++) {
+            oanims[ii].dispose();
+        }
+    }
+    // populate the animation map
+    _animationsByName.clear();
+    for (Animation animation : _animations) {
+        _animationsByName.put(animation.getName(), animation);
+    }
+    // create the configured attachments
+    Scene scene = ((Model) _parentScope).getScene(this);
+    Model[] omodels = _configAttachments;
+    _configAttachments = new Model[_config.attachments.length];
+    for (int ii = 0; ii < _configAttachments.length; ii++) {
+        boolean create = (omodels == null || omodels.length <= ii);
+        Model model = create ? new Model(_ctx) : omodels[ii];
+        _configAttachments[ii] = model;
+        Attachment attachment = _config.attachments[ii];
+        model.setParentScope(getAttachmentNode(attachment.node));
+        model.setConfig(attachment.model);
+        model.getLocalTransform().set(attachment.transform);
+        if (create && scene != null) {
+            model.wasAdded(scene);
+        }
+    }
+    if (omodels != null) {
+        for (int ii = _configAttachments.length; ii < omodels.length; ii++) {
+            Model model = omodels[ii];
+            if (scene != null) {
+                model.willBeRemoved();
+            }
+            model.dispose();
+        }
+    }
+    // update the user attachments
+    ArrayList<Model> oattachments = _userAttachments;
+    _userAttachments = new ArrayList<Model>(userAttachmentNodes.length);
+    for (int ii = 0; ii < userAttachmentNodes.length; ii++) {
+        Model model = oattachments.get(ii);
+        Node node = getAttachmentNode(userAttachmentNodes[ii]);
+        if (node != null) {
+            model.setParentScope(node);
+            _userAttachments.add(model);
+        } else if (scene != null) {
+            model.willBeRemoved();
+        }
+    }
+    // update the tick policy if necessary
+    TickPolicy npolicy = _config.tickPolicy;
+    if (npolicy == TickPolicy.DEFAULT) {
+        npolicy = TickPolicy.WHEN_VISIBLE;
+        for (Model model : _configAttachments) {
+            npolicy = mergePolicy(npolicy, model);
+        }
+        for (int ii = 0, nn = _userAttachments.size(); ii < nn; ii++) {
+            npolicy = mergePolicy(npolicy, _userAttachments.get(ii));
+        }
+    }
+    if (_tickPolicy != npolicy) {
+        ((Model) _parentScope).tickPolicyWillChange(this);
+        _tickPolicy = npolicy;
+        ((Model) _parentScope).tickPolicyDidChange(this);
+    }
+    // update the bounds
+    updateBounds();
+}

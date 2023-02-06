@@ -1,0 +1,63 @@
+@Override
+public void handle(Message request, Message response) {
+    // ACTION 필드를 확인한다.
+    String action = (String) request.get(MSG.ACTION);
+    if (action == null || action.equals("")) {
+        response.setFailed("ACTION is not exist");
+        // Master GUI에 Log를 출력하는 부분.
+        masterGUI.appendLog(request.get(MSG.REQUEST.USER_ID) + " : " + "ACTION is not exist");
+        return;
+    } else // 전체 테이블 로드 밸런싱인 경우.
+    if (action.equals(MSG.REQUEST.LOAD_BALANCE_ALL_TABLES)) {
+        ActionHandler handler = actionHandlers.get(action);
+        if (handler != null)
+            handler.action(request, response);
+        else
+            response.setFailed("UNDEFINED ACTION: " + action);
+        return;
+    } else // 클라이언트 아이디를 생성해서, 응답으로 돌려준다.
+    if (request.get(MSG.CONNECTION.CLIENT_ID) == null) {
+        if (action.equals(MSG.REQUEST.OPEN_CONNECTION)) {
+            long clientId = nextClientId();
+            connectedClients.add(clientId);
+            response.set(MSG.CONNECTION.CLIENT_ID, clientId);
+            response.setSuccessed();
+        } else {
+            response.setFailed("need OPEN_CONNECTION");
+            // Master GUI에 Log를 출력하는 부분.
+            masterGUI.appendLog("need OPEN_CONNECTION");
+            return;
+        }
+    } else // 그 이외의 요청. (클라이언트 아이디가 있는 경우)
+    {
+        long clientId = (Long) request.get(MSG.CONNECTION.CLIENT_ID);
+        // 해당 클라이언트 아이디가 아직 접속이 되어있는 상태로 기록되어 있는지 확인.
+        if (connectedClients.contains(clientId)) {
+            // 접속 종료 요청
+            if (action.equals(MSG.REQUEST.CLOSE_CONNECTION)) {
+                connectedClients.remove(clientId);
+                response.setSuccessed();
+            } else // 나머지 요청을 처리한다.
+            {
+                // 동기화 중이면, 끝날때까지 기다린다.
+                try {
+                    manager.waitForLoadBalancing();
+                } catch (InterruptedException e) {
+                    // e.printStackTrace();
+                    throw new RuntimeException(e);
+                }
+                // Master GUI에 Log를 출력하는 부분.
+                masterGUI.appendLog(request.get(MSG.REQUEST.USER_ID) + " : " + action);
+                // 실제 요청들을 처리한다.
+                ActionHandler handler = actionHandlers.get(action);
+                if (handler != null)
+                    handler.action(request, response);
+                else
+                    response.setFailed("UNDEFINED ACTION: " + action);
+            }
+        } else // 접속이 이미 끊긴 경우.
+        {
+            response.setFailed("connection closed");
+        }
+    }
+}

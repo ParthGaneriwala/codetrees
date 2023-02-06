@@ -1,0 +1,124 @@
+@Override
+public double evaluateSubset(BitSet subset) throws Exception {
+    double evalMetric = 0;
+    double[] repError = new double[5];
+    int numAttributes = 0;
+    int i, j;
+    Random Rnd = new Random(m_seed);
+    Remove delTransform = new Remove();
+    delTransform.setInvertSelection(true);
+    // copy the instances
+    Instances trainCopy = new Instances(m_trainInstances);
+    // count attributes set in the BitSet
+    for (i = 0; i < m_numAttribs; i++) {
+        if (subset.get(i)) {
+            numAttributes++;
+        }
+    }
+    // set up an array of attribute indexes for the filter (+1 for the class)
+    int[] featArray = new int[numAttributes + 1];
+    for (i = 0, j = 0; i < m_numAttribs; i++) {
+        if (subset.get(i)) {
+            featArray[j++] = i;
+        }
+    }
+    featArray[j] = m_classIndex;
+    delTransform.setAttributeIndicesArray(featArray);
+    delTransform.setInputFormat(trainCopy);
+    trainCopy = Filter.useFilter(trainCopy, delTransform);
+    AbstractEvaluationMetric pluginMetric = null;
+    String statName = null;
+    String metricName = null;
+    // max of 5 repetitions of cross validation
+    for (i = 0; i < 5; i++) {
+        m_Evaluation = new Evaluation(trainCopy);
+        m_Evaluation.crossValidateModel(m_BaseClassifier, trainCopy, m_folds, Rnd);
+        switch(m_evaluationMeasure.getID()) {
+            case EVAL_DEFAULT:
+                repError[i] = m_Evaluation.errorRate();
+                break;
+            case EVAL_ACCURACY:
+                repError[i] = m_Evaluation.errorRate();
+                break;
+            case EVAL_RMSE:
+                repError[i] = m_Evaluation.rootMeanSquaredError();
+                break;
+            case EVAL_MAE:
+                repError[i] = m_Evaluation.meanAbsoluteError();
+                break;
+            case EVAL_FMEASURE:
+                if (m_IRClassVal < 0) {
+                    repError[i] = m_Evaluation.weightedFMeasure();
+                } else {
+                    repError[i] = m_Evaluation.fMeasure(m_IRClassVal);
+                }
+                break;
+            case EVAL_AUC:
+                if (m_IRClassVal < 0) {
+                    repError[i] = m_Evaluation.weightedAreaUnderROC();
+                } else {
+                    repError[i] = m_Evaluation.areaUnderROC(m_IRClassVal);
+                }
+                break;
+            case EVAL_AUPRC:
+                if (m_IRClassVal < 0) {
+                    repError[i] = m_Evaluation.weightedAreaUnderPRC();
+                } else {
+                    repError[i] = m_Evaluation.areaUnderPRC(m_IRClassVal);
+                }
+                break;
+            case EVAL_CORRELATION:
+                repError[i] = m_Evaluation.correlationCoefficient();
+                break;
+            default:
+                if (m_evaluationMeasure.getID() >= EVAL_PLUGIN) {
+                    metricName = ((PluginTag) m_evaluationMeasure).getMetricName();
+                    statName = ((PluginTag) m_evaluationMeasure).getStatisticName();
+                    statName = ((PluginTag) m_evaluationMeasure).getStatisticName();
+                    pluginMetric = m_Evaluation.getPluginMetric(metricName);
+                    if (pluginMetric == null) {
+                        throw new Exception("Metric  " + metricName + " does not seem to be " + "available");
+                    }
+                }
+                if (pluginMetric instanceof InformationRetrievalEvaluationMetric) {
+                    if (m_IRClassVal < 0) {
+                        repError[i] = ((InformationRetrievalEvaluationMetric) pluginMetric).getClassWeightedAverageStatistic(statName);
+                    } else {
+                        repError[i] = ((InformationRetrievalEvaluationMetric) pluginMetric).getStatistic(statName, m_IRClassVal);
+                    }
+                } else {
+                    repError[i] = pluginMetric.getStatistic(statName);
+                }
+                break;
+        }
+        // check on the standard deviation
+        if (!repeat(repError, i + 1)) {
+            i++;
+            break;
+        }
+    }
+    for (j = 0; j < i; j++) {
+        evalMetric += repError[j];
+    }
+    evalMetric /= i;
+    m_Evaluation = null;
+    switch(m_evaluationMeasure.getID()) {
+        case EVAL_DEFAULT:
+        case EVAL_ACCURACY:
+        case EVAL_RMSE:
+        case EVAL_MAE:
+            if (m_trainInstances.classAttribute().isNominal() && (m_evaluationMeasure.getID() == EVAL_DEFAULT || m_evaluationMeasure.getID() == EVAL_ACCURACY)) {
+                evalMetric = 1 - evalMetric;
+            } else {
+                // maximize
+                evalMetric = -evalMetric;
+            }
+            break;
+        default:
+            if (pluginMetric != null && !pluginMetric.statisticIsMaximisable(statName)) {
+                // maximize
+                evalMetric = -evalMetric;
+            }
+    }
+    return evalMetric;
+}

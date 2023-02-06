@@ -1,0 +1,268 @@
+void handlePacket(Message msg) {
+    switch(nodeID) {
+        case 0:
+            {
+                if (msg.msgType == Message.MessageType.MSG_ACK) {
+                    if ((msg.src == 1) && (msg.flowID == 1)) {
+                        // ignore overheard ACK from 3, or overheard ACK 1->2
+                        if (msg.msgSeqNo == f1srcSeqNo) {
+                            // avoid duplicate ACKs from pushing source ahead
+                            reTxTimerTask.cancel();
+                            if (Constants.CompileTimeCondition.DEBUG)
+                                System.out.println("Node 0 got ACK from node " + msg.src + " for pkt seq no. " + f1srcSeqNo);
+                            if (f1srcSeqNo < Constants.dataCount) {
+                                f1srcSeqNo++;
+                                sendPacket(0, 1, f1srcSeqNo, 1, Message.MessageType.MSG_NATIVE);
+                                System.out.println("Node 0 injected NATIVE packet of seqNo " + f1srcSeqNo);
+                            } else {
+                                System.out.println("### Node 0 is done with its streaming ###");
+                            }
+                        }
+                    }
+                } else if (msg.msgType == Message.MessageType.MSG_NATIVE) {
+                    if (msg.src == 3) {
+                        // ignore overheard NATIVE from 1
+                        if (msg.msgSeqNo == f2destSeqNo + 1) {
+                            f2destSeqNo++;
+                            sendPacket(0, 3, f2destSeqNo, 2, Message.MessageType.MSG_ACK);
+                            if (Constants.CompileTimeCondition.DEBUG)
+                                System.out.println("Node 0 received NATIVE and sent ACK to node 3 for seq no. " + f2destSeqNo);
+                            if (f2destSeqNo == Constants.dataCount) {
+                                System.out.println("All packets received at node 0 with *** ETX2 = " + NwSim.ETX2 + " *** Stopping simulation...");
+                            // NwSim.stopSimulation();
+                            }
+                        }
+                    }
+                } else if (msg.msgType == Message.MessageType.MSG_CODED) {
+                    if (msg.f2SeqNo == f2destSeqNo + 1) {
+                        f2destSeqNo++;
+                        sendPacket(0, 1, f2destSeqNo, 2, Message.MessageType.MSG_ACK);
+                        if (Constants.CompileTimeCondition.DEBUG)
+                            System.out.println("Node 0 received CODED and sent ACK to node 1 for seq no. " + f2destSeqNo);
+                        if (f2destSeqNo == Constants.dataCount) {
+                            System.out.println("All packets received at node 0 with *** ETX2 = " + NwSim.ETX2 + " *** Stopping simulation...");
+                        // NwSim.stopSimulation();
+                        }
+                    }
+                }
+            }
+            break;
+        case 1:
+            {
+                if (msg.msgType == Message.MessageType.MSG_NATIVE) {
+                    if (msg.src == 0) {
+                        if (msg.msgSeqNo == f1srcSeqNo + 1) {
+                            // if new packet, store it
+                            f1srcSeqNo++;
+                            sendPacket(1, 0, f1srcSeqNo, 1, Message.MessageType.MSG_ACK);
+                            if (Constants.CompileTimeCondition.DEBUG)
+                                System.out.println("Node 1 received NATIVE from node 0 and sent ACK for seq no. " + f1srcSeqNo);
+                        }
+                    } else if ((msg.src == 2) || (msg.src == 4)) {
+                        if (msg.msgSeqNo == f2srcSeqNo + 1) {
+                            f2srcSeqNo++;
+                            sendPacket(1, 2, f2srcSeqNo, 2, Message.MessageType.MSG_ACK);
+                            if (Constants.CompileTimeCondition.DEBUG)
+                                System.out.println("Node 1 received NATIVE from node 2 and sent ACK for seq no. " + f2srcSeqNo);
+                        }
+                    }
+                    if ((f1srcSeqNo > f1destSeqNo && f2srcSeqNo > f2destSeqNo && bWaitingForMoreLoad)) {
+                        // waiting for load and both queues loaded
+                        bWaitingForMoreLoad = false;
+                        reTxTimerTask.cancel();
+                        sendCodedPacket(1, Constants.broadcastAddr, f1destSeqNo + 1, f2destSeqNo + 1);
+                        System.out.println("Node 1 sent CODED for seq nos. F1 = " + (f1destSeqNo + 1) + " and F2 = " + (f2destSeqNo + 1));
+                    }
+                } else if (msg.msgType == Message.MessageType.MSG_ACK) {
+                    if (msg.src == 2) {
+                        // ignore overheard ACK from 0
+                        if (msg.msgSeqNo == f1destSeqNo + 1) {
+                            // reTxTimerTask.cancel();
+                            f1destSeqNo++;
+                            if (Constants.CompileTimeCondition.DEBUG)
+                                System.out.println("Node 1 received ACK from node 2 for seq no. " + f1destSeqNo);
+                        }
+                    } else if (msg.src == 0) {
+                        if (msg.msgSeqNo == f2destSeqNo + 1) {
+                            // reTxTimerTask.cancel();
+                            f2destSeqNo++;
+                            if (Constants.CompileTimeCondition.DEBUG)
+                                System.out.println("Node 1 received ACK from node 0 for seq no. " + f2destSeqNo);
+                        }
+                    }
+                    if (f1destSeqNo == f2destSeqNo) {
+                        // implies this ACK is second ACK for this coded packet
+                        reTxTimerTask.cancel();
+                        if (f1srcSeqNo > f1destSeqNo && f2srcSeqNo > f2destSeqNo) {
+                            // implies that both queues have load
+                            sendCodedPacket(1, Constants.broadcastAddr, f1destSeqNo + 1, f2destSeqNo + 1);
+                            System.out.println("Node 1 sent CODED for seq nos. F1 = " + (f1destSeqNo + 1) + " and F2 = " + (f2destSeqNo + 1));
+                        } else {
+                            bWaitingForMoreLoad = true;
+                        }
+                        if (f1destSeqNo == Constants.dataCount) {
+                            // nodeCount packets reached to both destinations
+                            System.out.println("ETX of coded packets is **** " + NwSim.ETX3 + " ****");
+                            System.exit(0);
+                        }
+                    }
+                }
+            }
+            break;
+        case 2:
+            {
+                if (msg.msgType == Message.MessageType.MSG_ACK) {
+                    if (msg.src == 3) {
+                        // ignore overheard ACK from 1
+                        if (msg.msgSeqNo == f2srcSeqNo) {
+                            // avoid duplicate ACKs from pushing source ahead
+                            reTxTimerTask.cancel();
+                            if (Constants.CompileTimeCondition.DEBUG)
+                                System.out.println("Node 2 got ACK from " + msg.src + " for pkt seq no. " + f2srcSeqNo);
+                            if (f2srcSeqNo < Constants.dataCount) {
+                                f2srcSeqNo++;
+                                sendPacket(2, 3, f2srcSeqNo, 2, Message.MessageType.MSG_NATIVE);
+                                System.out.println("Node 2 injected NATIVE packet of seqNo " + f2srcSeqNo);
+                            } else {
+                                System.out.println("### Node 2 is done with its streaming ###");
+                            }
+                        }
+                    } else if ((msg.src == 1) && (msg.flowID == 2)) {
+                        // ignore overheard ACK from 3 or overheard ACK 1->0
+                        if (msg.msgSeqNo == f2srcSeqNo) {
+                            // avoid duplicate ACKs from pushing source ahead
+                            reTxTimerTask.cancel();
+                            if (Constants.CompileTimeCondition.DEBUG)
+                                System.out.println("Node 2 got ACK from " + msg.src + " for pkt seq no. " + f2srcSeqNo);
+                            if (f2srcSeqNo < Constants.dataCount) {
+                                f2srcSeqNo++;
+                                sendPacket(2, 1, f2srcSeqNo, 2, Message.MessageType.MSG_NATIVE);
+                                System.out.println("Node 2 injected NATIVE packet of seqNo " + f2srcSeqNo);
+                            } else {
+                                System.out.println("### Node 2 is done with its streaming ###");
+                            }
+                        }
+                    }
+                } else if (msg.msgType == Message.MessageType.MSG_NATIVE) {
+                    if (msg.src == 1) {
+                        // ignore overheard from 3
+                        if (msg.msgSeqNo == f1destSeqNo + 1) {
+                            f1destSeqNo++;
+                            sendPacket(2, 1, f1destSeqNo, 1, Message.MessageType.MSG_ACK);
+                            if (Constants.CompileTimeCondition.DEBUG)
+                                System.out.println("Node 2 received NATIVE and sent ACK to node 1 for seq no. " + f1destSeqNo);
+                            if (f1destSeqNo == Constants.dataCount) {
+                                System.out.println("All packets received at node 2 with *** ETX1 = " + NwSim.ETX1 + " *** Stopping simulation...");
+                            // NwSim.stopSimulation();
+                            }
+                        }
+                    }
+                } else if (msg.msgType == Message.MessageType.MSG_CODED) {
+                    if (msg.f1SeqNo == f1destSeqNo + 1) {
+                        f1destSeqNo++;
+                        sendPacket(2, 1, f1destSeqNo, 1, Message.MessageType.MSG_ACK);
+                        if (Constants.CompileTimeCondition.DEBUG)
+                            System.out.println("Node 2 received CODED and sent ACK to node 1 for seq no. " + f1destSeqNo);
+                        if (f1destSeqNo == Constants.dataCount) {
+                            System.out.println("All packets received at node 2 with *** ETX1 = " + NwSim.ETX1 + " *** Stopping simulation...");
+                        // NwSim.stopSimulation();
+                        }
+                    }
+                }
+            }
+            break;
+        case 3:
+            /*{
+				if(msg.msgType == Message.MessageType.MSG_ACK) {
+					if(msg.src == 0) { //ignore overheard from 2
+						if(msg.msgSeqNo == f2destSeqNo + 1) {
+							reTxTimerTask.cancel();
+							f2destSeqNo++;
+							if(Constants.CompileTimeCondition.DEBUG)
+								System.out.println("Node 3 received ACK from node 0 for seq no. " + f2destSeqNo);
+							if(f2srcSeqNo > f2destSeqNo) {
+								sendPacket(3, 0, f2destSeqNo+1, 2, Message.MessageType.MSG_NATIVE);
+								if(Constants.CompileTimeCondition.DEBUG)
+									System.out.println("Node 3 sent NATIVE to node 0 for seq no. " + (f2destSeqNo+1));
+							}
+						}
+					}
+				}
+				else if(msg.msgType == Message.MessageType.MSG_NATIVE) {
+					if(msg.src == 2) { //ignore overheard from 0
+						if(msg.msgSeqNo == f2srcSeqNo + 1) {	//if new packet, store it
+							f2srcSeqNo++;
+							sendPacket(3, 2, f2srcSeqNo, 2, Message.MessageType.MSG_ACK); //send ACK to all received msgs
+							if(Constants.CompileTimeCondition.DEBUG)
+								System.out.println("Node 3 received NATIVE and sent ACK for seq no. " + f2srcSeqNo);
+							if(f2srcSeqNo == 1) { // self-initiate first packet
+								sendPacket(3, 0, f2srcSeqNo, 2, Message.MessageType.MSG_NATIVE);
+								if(Constants.CompileTimeCondition.DEBUG)
+									System.out.println("Node 3 sent NATIVE to node 0 for seq. no. " + f2srcSeqNo);
+							}
+						}
+					}
+				}
+			}*/
+            break;
+        case 4:
+            {
+                if (msg.msgType == Message.MessageType.MSG_ACK) {
+                    if (msg.src == 2) {
+                        if (msg.msgSeqNo == f1destSeqNo + 1) {
+                            reTxTimerTask.cancel();
+                            f1destSeqNo++;
+                            if (Constants.CompileTimeCondition.DEBUG)
+                                System.out.println("Node 4 overheard ACK from node 2 for seq no. " + f1destSeqNo);
+                        }
+                    } else if (msg.src == 1 && msg.flowID == 2) {
+                        // node 1 ACKing for NATIVE from 2->1
+                        if (msg.msgSeqNo == f2destSeqNo + 1) {
+                            reTxTimerTask.cancel();
+                            f2destSeqNo++;
+                            if (Constants.CompileTimeCondition.DEBUG)
+                                System.out.println("Node 4 overheard ACK from node 1 for seq no. " + f2destSeqNo);
+                        }
+                    }
+                } else if (msg.msgType == Message.MessageType.MSG_NACK) {
+                    if (msg.src == 2) {
+                        // Node 2 NACKing for a coded packet
+                        if (Constants.CompileTimeCondition.DEBUG)
+                            System.out.println("Node 4 overheard NACK for pkt seqNo " + msg.msgSeqNo + " IOW " + (f1destSeqNo + 1) + ". It has pkt " + f1srcSeqNo);
+                        if (f1srcSeqNo == msg.msgSeqNo) {
+                            // make sure you have what dest. wants
+                            // TODO: 2 reTxTimers for node 4
+                            sendCodedPacket(4, Constants.broadcastAddr, f1destSeqNo + 1, f1destSeqNo + 1);
+                            if (Constants.CompileTimeCondition.DEBUG)
+                                System.out.println("Node 4 replied to nack with CODED seq no. " + (f1destSeqNo + 1) + " and " + (f1destSeqNo + 1));
+                        }
+                    } else if (msg.src == 1) {
+                        // Node 1 NACKing for NATIVE of flow 2
+                        if (Constants.CompileTimeCondition.DEBUG)
+                            System.out.println("Node 4 overheard NACK for pkt seqNo " + msg.msgSeqNo + " IOW " + (f2destSeqNo + 1) + ". It has pkt " + f2srcSeqNo);
+                        if (f2srcSeqNo == msg.msgSeqNo) {
+                            // make sure you have what dest. wants
+                            sendPacket(4, 1, f2destSeqNo + 1, 2, Message.MessageType.MSG_NATIVE);
+                            if (Constants.CompileTimeCondition.DEBUG)
+                                System.out.println("Node 4 replied to nack with NATIVE seq no. " + (f2destSeqNo + 1));
+                        }
+                    }
+                } else if (msg.msgType == Message.MessageType.MSG_CODED) {
+                    // update urself with src's status
+                    f1srcSeqNo = msg.f1SeqNo;
+                    if (Constants.CompileTimeCondition.DEBUG)
+                        System.out.println("Node 4 overheard CODED pkt seq no. " + f1srcSeqNo);
+                } else if (msg.msgType == Message.MessageType.MSG_NATIVE) {
+                    // NATIVE overheard from 2
+                    // update urself with src's status
+                    f2srcSeqNo = msg.msgSeqNo;
+                    if (Constants.CompileTimeCondition.DEBUG)
+                        System.out.println("Node 4 overheard native pkt seq no. " + f2srcSeqNo);
+                }
+            }
+            break;
+        default:
+            System.out.println("What the hell");
+            break;
+    }
+}

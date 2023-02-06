@@ -1,0 +1,42 @@
+public static void updateStatus(String jobId, String status, String ss, Map<String, HttpSession> st) throws Exception {
+    Logger log = Logger.getLogger(Fax.class);
+    Database db = new Database();
+    ResultSet rs = db.dbQuery("select * from fax_log where job_id = " + jobId, true);
+    while (rs.next()) {
+        log.debug("Found fax_log entry");
+        String username = rs.getString("username");
+        rs.updateString("status", status);
+        rs.updateBoolean("viewed", false);
+        rs.updateRow();
+        HttpSession session = null;
+        for (Iterator<Map.Entry<String, HttpSession>> i = st.entrySet().iterator(); i.hasNext(); ) {
+            session = i.next().getValue();
+            Attributes attr = (Attributes) session.getAttribute("attr");
+            if (attr != null) {
+                log.debug("Found session related to fax log entry");
+                if (username.equals(attr.getUserName())) {
+                    FaxStatus fs = (FaxStatus) session.getAttribute("fax_status");
+                    if (fs != null) {
+                        if (log.isDebugEnabled()) {
+                            log.debug("Found fax_status with session reason: " + ss);
+                        }
+                        if (SendEvent.REASON_DONE.equals(ss) || SendEvent.REASON_KILLED.equals(ss)) {
+                            fs.decrementQueue();
+                            if (log.isDebugEnabled())
+                                log.debug("Remainging faxes in user queue: " + fs.getQueue());
+                            if (fs.getQueue() == 0) {
+                                fs.setMessage(status);
+                                fs.setResetMessage(true);
+                            }
+                        } else if (!SendEvent.REASON_REQUEUED.equals(ss)) {
+                            fs.setHasError(true);
+                            fs.setMessage(status);
+                            fs.setResetMessage(false);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    db.disconnect();
+}

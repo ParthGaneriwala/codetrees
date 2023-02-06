@@ -1,0 +1,44 @@
+public static void main(String[] args) throws Exception {
+    OptionParser optParser = new OptionParser(Options.class);
+    final Options opts = (Options) optParser.parse(args, true);
+    Experiment.initialize(opts.config);
+    final Experiment experiment = Experiment.getInstance();
+    experiment.buildPrefixes();
+    experiment.buildWordPrefixes();
+    JobManager.initialize(opts.jobs, opts.jobs + 2);
+    Thread thread = new Thread(JobManager.getInstance(), "Job Manager");
+    thread.setDaemon(true);
+    thread.start();
+    LanguageModel lm = experiment.getLM(opts.lm);
+    Files files = experiment.getFiles();
+    File tmpDir = opts.datadir == null ? new File("populate-" + lm.getId()) : new File(opts.datadir);
+    if (!tmpDir.isDirectory()) {
+        tmpDir.mkdirs();
+    }
+    // AbstractProbTreeStorage storage;
+    if (opts.useBDB) {
+        final Environment env = BDBProbTreeStorage.createEnvironment(files.getDb(), true);
+        env.getConfig().setCachePercent(50);
+        final BDBProbTreeStorage storage = new BDBProbTreeStorage(env);
+        storage.open(lm.getId(), lm.getIdNum(), true);
+        doPopulate(lm, storage, tmpDir);
+        storage.close(lm.getIdNum());
+        env.close();
+    } else {
+        final MemoryMXBean memoryBean = ManagementFactory.getMemoryMXBean();
+        MemoryUsage memuse = memoryBean.getHeapMemoryUsage();
+        long cacheSize = memuse.getMax() / 4;
+        CompactProbTreeStorage storage = new CompactProbTreeStorage(cacheSize);
+        int maxClusterId = 0;
+        for (BinaryTreeIterator<HistoryTreePayload> it = lm.getHistoryTree().getPostOrderIterator(); it.hasNext(); ) {
+            HistoryTreePayload p = it.next();
+            if (p.clusterid > maxClusterId) {
+                maxClusterId = p.clusterid;
+            }
+        }
+        storage.openForWriting(lm.getIdNum(), maxClusterId);
+        doPopulate(lm, storage, tmpDir);
+        System.err.printf("CompactStorage: %s\n", storage.getStats());
+        storage.close(lm.getIdNum());
+    }
+}

@@ -1,0 +1,41 @@
+public void onlineBackupAndRestore(String baseTarName, boolean populate, boolean compress, String restoreDest) throws SQLException, IOException, TarMalformatException {
+    try {
+        setupConn("db1");
+        conn.createStatement().executeUpdate("DELETE FROM t");
+        // For this case, we wipe the data that we so carefully set up,
+        // so that we can call this method repeatedly without worrying
+        // about left-over data from a previous run.
+        conn.commit();
+        conn.createStatement().executeUpdate("INSERT INTO t VALUES(1)");
+        conn.createStatement().executeUpdate("INSERT INTO t VALUES(2)");
+        conn.createStatement().executeUpdate("INSERT INTO t VALUES(3)");
+        conn.commit();
+        conn.createStatement().executeUpdate("INSERT INTO t VALUES(4)");
+        conn.createStatement().executeUpdate("INSERT INTO t VALUES(5)");
+        conn.createStatement().executeUpdate("BACKUP DATABASE TO '" + baseDir.getAbsolutePath() + '/' + baseTarName + "' BLOCKING" + (compress ? "" : " NOT COMPRESSED"));
+        conn.createStatement().executeUpdate("INSERT INTO t VALUES(6)");
+        conn.commit();
+        conn.createStatement().executeUpdate("SHUTDOWN");
+        alreadyShut = true;
+        if (verbose) {
+            System.err.println("Shut down 'db1'");
+        }
+    } finally {
+        shutdownAndCloseConn();
+    }
+    File destDir = new File(baseDir, restoreDest);
+    if (!destDir.mkdir()) {
+        throw new IOException("Failed to make new dir. to restore to: " + destDir.getAbsolutePath());
+    }
+    DbBackup.main(new String[] { "--extract", baseDir.getAbsolutePath() + '/' + baseTarName, destDir.getAbsolutePath() });
+    try {
+        setupConn(restoreDest);
+        conn.createStatement().executeUpdate("ROLLBACK");
+        ResultSet rs = conn.createStatement().executeQuery("SELECT count(*) c FROM t;");
+        rs.next();
+        // 3 committed, 5 uncommited before saving:
+        assertEquals("Wrong table 't' contents", 5, rs.getInt("c"));
+    } finally {
+        shutdownAndCloseConn();
+    }
+}

@@ -1,0 +1,60 @@
+public static ByteArrayOutputStream addPDFAttachmentsAndStamp(String id, String t, int orgPages, byte[] in) throws Exception {
+    ResultSet rs = null;
+    Database db = null;
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    try {
+        db = new Database();
+        rs = db.dbQuery("select file from files where id = '" + id + "' and type = '" + t + "' and content_type like '%pdf' and print = 1 and protected = 0 order by uploaded desc");
+        PdfReader orginal = new PdfReader(in, "3p(0pdf".getBytes());
+        PdfStamper stamp = new PdfStamper(orginal, baos);
+        stamp.setEncryption(null, "3p(0pdf".getBytes(), PdfWriter.ALLOW_COPY | PdfWriter.ALLOW_PRINTING, PdfWriter.STANDARD_ENCRYPTION_128);
+        PdfReader file = null;
+        PdfContentByte under;
+        int totalPages = orginal.getNumberOfPages();
+        int curOriginalPages = orginal.getNumberOfPages();
+        while (rs.next()) {
+            file = new PdfReader(new InflaterInputStream(rs.getBinaryStream("file")));
+            for (int i = 1; i <= file.getNumberOfPages(); i++) {
+                // BlankPage
+                totalPages++;
+                stamp.insertPage(curOriginalPages + i, file.getPageSizeWithRotation(i));
+                under = stamp.getOverContent(curOriginalPages + i);
+                under.addTemplate(stamp.getImportedPage(file, i), 1, 0, 0, 1, 0, 0);
+            }
+            file = null;
+        }
+        // Stamp the cramp out of them...
+        PdfContentByte fake = stamp.getOverContent(1);
+        Barcode39 code39 = new Barcode39();
+        code39.setCode(t + id);
+        code39.setStartStopText(false);
+        Image image39 = code39.createImageWithBarcode(fake, null, null);
+        image39.setRotationDegrees(270);
+        BaseFont bf = BaseFont.createFont(BaseFont.HELVETICA_BOLD, BaseFont.WINANSI, BaseFont.EMBEDDED);
+        float offset = image39.getScaledWidth() + 10;
+        for (int i = orgPages + 1; i <= totalPages; i++) {
+            under = stamp.getOverContent(i);
+            image39.setAbsolutePosition(stamp.getReader().getPageSizeWithRotation(i).getWidth() - offset, 10);
+            under.addImage(image39);
+            under.beginText();
+            under.setFontAndSize(bf, 10);
+            under.setTextMatrix(10, 10);
+            under.showText("Contrack ID: " + t + id + "     Page: " + i + " of " + totalPages);
+            under.endText();
+        }
+        stamp.close();
+        orginal = null;
+    } catch (SQLException e) {
+        e.printStackTrace();
+    } finally {
+        try {
+            if (rs != null)
+                rs.getStatement().close();
+            rs = null;
+            db.disconnectFinal();
+            db = null;
+        } catch (SQLException se) {
+        }
+    }
+    return baos;
+}

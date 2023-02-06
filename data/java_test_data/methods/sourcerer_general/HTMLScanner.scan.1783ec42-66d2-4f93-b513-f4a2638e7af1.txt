@@ -1,0 +1,156 @@
+// 
+// Scanner methods
+// 
+public boolean scan(boolean complete) throws IOException {
+    boolean next;
+    do {
+        try {
+            next = false;
+            switch(fScannerState) {
+                case STATE_CONTENT:
+                    {
+                        fBeginLineNumber = fCurrentEntity.lineNumber;
+                        fBeginColumnNumber = fCurrentEntity.columnNumber;
+                        int c = read();
+                        if (c == '<') {
+                            setScannerState(STATE_MARKUP_BRACKET);
+                            next = true;
+                        } else if (c == '&') {
+                            scanEntityRef(fStringBuffer, true);
+                        } else if (c == -1) {
+                            throw new EOFException();
+                        } else {
+                            fCurrentEntity.offset--;
+                            fCurrentEntity.columnNumber--;
+                            scanCharacters();
+                        }
+                        break;
+                    }
+                case STATE_MARKUP_BRACKET:
+                    {
+                        int c = read();
+                        if (c == '!') {
+                            if (skip("--", false)) {
+                                scanComment();
+                            } else if (skip("[CDATA[", false)) {
+                                scanCDATA();
+                            } else if (skip("DOCTYPE", false)) {
+                                scanDoctype();
+                            } else {
+                                if (fReportErrors) {
+                                    fErrorReporter.reportError("HTML1002", null);
+                                }
+                                skipMarkup(true);
+                            }
+                        } else if (c == '?') {
+                            scanPI();
+                        } else if (c == '/') {
+                            scanEndElement();
+                        } else if (c == -1) {
+                            if (fReportErrors) {
+                                fErrorReporter.reportError("HTML1003", null);
+                            }
+                            if (fDocumentHandler != null && fElementCount >= fElementDepth) {
+                                fStringBuffer.clear();
+                                fStringBuffer.append('<');
+                                fDocumentHandler.characters(fStringBuffer, null);
+                            }
+                            throw new EOFException();
+                        } else {
+                            fCurrentEntity.offset--;
+                            fCurrentEntity.columnNumber--;
+                            fElementCount++;
+                            fSingleBoolean[0] = false;
+                            String ename = scanStartElement(fSingleBoolean);
+                            if (ename != null && !fSingleBoolean[0] && HTMLElements.getElement(ename).isSpecial()) {
+                                setScanner(fSpecialScanner.setElementName(ename));
+                                setScannerState(STATE_CONTENT);
+                                return true;
+                            }
+                        }
+                        setScannerState(STATE_CONTENT);
+                        break;
+                    }
+                case STATE_START_DOCUMENT:
+                    {
+                        if (fDocumentHandler != null && fElementCount >= fElementDepth) {
+                            if (DEBUG_CALLBACKS) {
+                                System.out.println("startDocument()");
+                            }
+                            XMLLocator locator = HTMLScanner.this;
+                            String encoding = fIANAEncoding;
+                            Augmentations augs = locationAugs();
+                            try {
+                                // NOTE: Hack to allow the default filter to work with
+                                // old and new versions of the XNI document handler
+                                // interface. -Ac
+                                Class cls = fDocumentHandler.getClass();
+                                Class[] types = { XMLLocator.class, String.class, NamespaceContext.class, Augmentations.class };
+                                Method method = cls.getMethod("startDocument", types);
+                                NamespaceContext nscontext = new NamespaceSupport();
+                                Object[] params = { locator, encoding, nscontext, augs };
+                                method.invoke(fDocumentHandler, params);
+                            } catch (IllegalAccessException e) {
+                                throw new XNIException(e);
+                            } catch (InvocationTargetException e) {
+                                throw new XNIException(e);
+                            } catch (NoSuchMethodException e) {
+                                try {
+                                    // NOTE: Hack to allow the default filter to work with
+                                    // old and new versions of the XNI document handler
+                                    // interface. -Ac
+                                    Class cls = fDocumentHandler.getClass();
+                                    Class[] types = { XMLLocator.class, String.class, Augmentations.class };
+                                    Method method = cls.getMethod("startDocument", types);
+                                    Object[] params = { locator, encoding, augs };
+                                    method.invoke(fDocumentHandler, params);
+                                } catch (IllegalAccessException ex) {
+                                    // NOTE: Should never reach here!
+                                    throw new XNIException(ex);
+                                } catch (InvocationTargetException ex) {
+                                    // NOTE: Should never reach here!
+                                    throw new XNIException(ex);
+                                } catch (NoSuchMethodException ex) {
+                                    // NOTE: Should never reach here!
+                                    throw new XNIException(ex);
+                                }
+                            }
+                        }
+                        if (fInsertDoctype && fDocumentHandler != null) {
+                            String root = HTMLElements.getElement(HTMLElements.HTML).name;
+                            root = modifyName(root, fNamesElems);
+                            String pubid = fDoctypePubid;
+                            String sysid = fDoctypeSysid;
+                            fDocumentHandler.doctypeDecl(root, pubid, sysid, synthesizedAugs());
+                        }
+                        setScannerState(STATE_CONTENT);
+                        break;
+                    }
+                case STATE_END_DOCUMENT:
+                    {
+                        if (fDocumentHandler != null && fElementCount >= fElementDepth) {
+                            if (DEBUG_CALLBACKS) {
+                                System.out.println("endDocument()");
+                            }
+                            fEndLineNumber = fCurrentEntity.lineNumber;
+                            fEndColumnNumber = fCurrentEntity.columnNumber;
+                            fDocumentHandler.endDocument(locationAugs());
+                        }
+                        return false;
+                    }
+                default:
+                    {
+                        throw new RuntimeException("unknown scanner state: " + fScannerState);
+                    }
+            }
+        } catch (EOFException e) {
+            if (fCurrentEntityStack.empty()) {
+                setScannerState(STATE_END_DOCUMENT);
+            } else {
+                fCurrentEntity = (CurrentEntity) fCurrentEntityStack.pop();
+            }
+            next = true;
+        }
+    } while (next || complete);
+    return true;
+}

@@ -1,0 +1,82 @@
+public OWLOntology buildOntology(FeatureModel fm) {
+    ontology = null;
+    try {
+        ontology = manager.createOntology(IRI.create("http://www.earthsystemcurator.org/fm"));
+    } catch (OWLOntologyCreationException e) {
+        e.printStackTrace();
+        return null;
+    }
+    Set<OWLClass> disjoints = new HashSet<OWLClass>();
+    for (Feature f : fm.getFeatures()) {
+        // create a class for each feature
+        OWLClass featureClass = getFeatureOWLClass(f);
+        OWLDeclarationAxiom declarationAxiom = factory.getOWLDeclarationAxiom(featureClass);
+        manager.addAxiom(ontology, declarationAxiom);
+        disjoints.add(featureClass);
+        // create a rule class for each feature
+        OWLClass featureClassRule = getFeatureRuleOWLClass(f);
+        declarationAxiom = factory.getOWLDeclarationAxiom(featureClassRule);
+        manager.addAxiom(ontology, declarationAxiom);
+        // create object property for each feature
+        OWLObjectProperty p = getFeatureOWLObjectProperty(f);
+        declarationAxiom = factory.getOWLDeclarationAxiom(p);
+        manager.addAxiom(ontology, declarationAxiom);
+        // add range axiom for feature object property
+        manager.addAxiom(ontology, factory.getOWLObjectPropertyRangeAxiom(p, featureClass));
+        // equivalent class for feature rule
+        OWLEquivalentClassesAxiom e = factory.getOWLEquivalentClassesAxiom(featureClassRule, factory.getOWLObjectSomeValuesFrom(p, featureClass));
+        manager.addAxiom(ontology, e);
+        // handle alternative children
+        if (f.isAlternative() || f.isOr()) {
+            Set<OWLObjectSomeValuesFrom> unionSuperclass = new HashSet<OWLObjectSomeValuesFrom>();
+            for (Feature altFeature : f.getChildren()) {
+                OWLClass altFeatureClass = getFeatureOWLClass(altFeature);
+                OWLObjectProperty altFeatureProperty = getFeatureOWLObjectProperty(altFeature);
+                unionSuperclass.add(factory.getOWLObjectSomeValuesFrom(altFeatureProperty, altFeatureClass));
+            }
+            OWLSubClassOfAxiom s = factory.getOWLSubClassOfAxiom(featureClassRule, factory.getOWLObjectUnionOf(unionSuperclass));
+            manager.addAxiom(ontology, s);
+            if (f.isAlternative()) {
+                // add axioms to ensure only one alternative feature selected
+                for (int i = 0; i < f.getChildrenCount(); i++) {
+                    for (int j = 0; j < f.getChildrenCount(); j++) {
+                        // take care of every combination of alternative features
+                        if (i < j) {
+                            OWLClass altFeatureClassA = getFeatureOWLClass(f.getChildren().get(i));
+                            OWLObjectProperty altFeaturePropertyA = getFeatureOWLObjectProperty(f.getChildren().get(i));
+                            OWLClass altFeatureClassB = getFeatureOWLClass(f.getChildren().get(j));
+                            OWLObjectProperty altFeaturePropertyB = getFeatureOWLObjectProperty(f.getChildren().get(j));
+                            OWLObjectSomeValuesFrom a = factory.getOWLObjectSomeValuesFrom(altFeaturePropertyA, altFeatureClassA);
+                            OWLObjectSomeValuesFrom b = factory.getOWLObjectSomeValuesFrom(altFeaturePropertyB, altFeatureClassB);
+                            OWLObjectComplementOf comp = factory.getOWLObjectComplementOf(factory.getOWLObjectIntersectionOf(a, b));
+                            s = factory.getOWLSubClassOfAxiom(featureClassRule, comp);
+                            manager.addAxiom(ontology, s);
+                        }
+                    }
+                }
+            }
+        }
+        // handle a set of mandatory children
+        if (f.isAnd()) {
+            for (Feature andFeature : f.getChildren()) {
+                if (andFeature.isMandatory()) {
+                    OWLClass andFeatureClass = getFeatureOWLClass(andFeature);
+                    OWLObjectProperty andFeatureProperty = getFeatureOWLObjectProperty(andFeature);
+                    OWLObjectSomeValuesFrom some = factory.getOWLObjectSomeValuesFrom(andFeatureProperty, andFeatureClass);
+                    manager.addAxiom(ontology, factory.getOWLSubClassOfAxiom(featureClassRule, some));
+                }
+            }
+        }
+    }
+    // make features disjoint
+    manager.addAxiom(ontology, factory.getOWLDisjointClassesAxiom(disjoints));
+    // handle constraints
+    for (Constraint c : fm.getConstraints()) {
+        System.out.println("\n\n========CONSTRAINT===========");
+        printNode(c.getNode().toCNF());
+    // SatSolver ss;
+    // NodeReader nr;
+    // NodeWriter nw;
+    }
+    return ontology;
+}

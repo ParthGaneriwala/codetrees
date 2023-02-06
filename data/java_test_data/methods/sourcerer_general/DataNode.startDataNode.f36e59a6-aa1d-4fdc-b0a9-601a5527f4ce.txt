@@ -1,0 +1,112 @@
+void startDataNode(Configuration conf, AbstractList<File> dataDirs) throws IOException {
+    // use configured nameserver & interface to get local hostname
+    if (conf.get("slave.host.name") != null) {
+        machineName = conf.get("slave.host.name");
+    }
+    if (machineName == null) {
+        machineName = DNS.getDefaultHost(conf.get("dfs.datanode.dns.interface", "default"), conf.get("dfs.datanode.dns.nameserver", "default"));
+    }
+    InetSocketAddress nameNodeAddr = NameNode.getAddress(conf);
+    this.socketTimeout = conf.getInt("dfs.socket.timeout", HdfsConstants.READ_TIMEOUT);
+    this.socketWriteTimeout = conf.getInt("dfs.datanode.socket.write.timeout", HdfsConstants.WRITE_TIMEOUT);
+    /* Based on results on different platforms, we might need set the default 
+     * to false on some of them. */
+    this.transferToAllowed = conf.getBoolean("dfs.datanode.transferTo.allowed", true);
+    this.writePacketSize = conf.getInt("dfs.write.packet.size", 64 * 1024);
+    String address = NetUtils.getServerAddress(conf, "dfs.datanode.bindAddress", "dfs.datanode.port", "dfs.datanode.address");
+    InetSocketAddress socAddr = NetUtils.createSocketAddr(address);
+    int tmpPort = socAddr.getPort();
+    storage = new DataStorage();
+    // construct registration
+    this.dnRegistration = new DatanodeRegistration(machineName + ":" + tmpPort);
+    // connect to name node
+    this.namenode = (DatanodeProtocol) RPC.waitForProxy(DatanodeProtocol.class, DatanodeProtocol.versionID, nameNodeAddr, conf);
+    // get version and id info from the name-node
+    NamespaceInfo nsInfo = handshake();
+    StartupOption startOpt = getStartupOption(conf);
+    assert startOpt != null : "Startup option must be set.";
+    boolean simulatedFSDataset = conf.getBoolean("dfs.datanode.simulateddatastorage", false);
+    if (simulatedFSDataset) {
+        setNewStorageID(dnRegistration);
+        dnRegistration.storageInfo.layoutVersion = FSConstants.LAYOUT_VERSION;
+        dnRegistration.storageInfo.namespaceID = nsInfo.namespaceID;
+        // it would have been better to pass storage as a parameter to
+        // constructor below - need to augment ReflectionUtils used below.
+        conf.set("StorageId", dnRegistration.getStorageID());
+        try {
+            // Equivalent of following (can't do because Simulated is in test dir)
+            // this.data = new SimulatedFSDataset(conf);
+            this.data = (FSDatasetInterface) ReflectionUtils.newInstance(Class.forName("org.apache.org.fit.hiai.hadoop.hdfs.server.datanode.SimulatedFSDataset"), conf);
+        } catch (ClassNotFoundException e) {
+            throw new IOException(StringUtils.stringifyException(e));
+        }
+    } else {
+        // real storage
+        // read storage info, lock data dirs and transition fs state if necessary
+        storage.recoverTransitionRead(nsInfo, dataDirs, startOpt);
+        // adjust
+        this.dnRegistration.setStorageInfo(storage);
+        // initialize data node internal structure
+        this.data = new FSDataset(storage, conf);
+    }
+    // find free port
+    ServerSocket ss = (socketWriteTimeout > 0) ? ServerSocketChannel.open().socket() : new ServerSocket();
+    Server.bind(ss, socAddr, 0);
+    ss.setReceiveBufferSize(DEFAULT_DATA_SOCKET_SIZE);
+    // adjust machine name with the actual port
+    tmpPort = ss.getLocalPort();
+    selfAddr = new InetSocketAddress(ss.getInetAddress().getHostAddress(), tmpPort);
+    this.dnRegistration.setName(machineName + ":" + tmpPort);
+    LOG.info("Opened info server at " + tmpPort);
+    this.threadGroup = new ThreadGroup("dataXceiverServer");
+    this.dataXceiverServer = new Daemon(threadGroup, new DataXceiverServer(ss, conf, this));
+    // auto destroy when empty
+    this.threadGroup.setDaemon(true);
+    this.blockReportInterval = conf.getLong("dfs.blockreport.intervalMsec", BLOCKREPORT_INTERVAL);
+    this.initialBlockReportDelay = conf.getLong("dfs.blockreport.initialDelay", BLOCKREPORT_INITIAL_DELAY) * 1000L;
+    if (this.initialBlockReportDelay >= blockReportInterval) {
+        this.initialBlockReportDelay = 0;
+        LOG.info("dfs.blockreport.initialDelay is greater than " + "dfs.blockreport.intervalMsec." + " Setting initial delay to 0 msec:");
+    }
+    this.heartBeatInterval = conf.getLong("dfs.heartbeat.interval", HEARTBEAT_INTERVAL) * 1000L;
+    DataNode.nameNodeAddr = nameNodeAddr;
+    // initialize periodic block scanner
+    String reason = null;
+    if (conf.getInt("dfs.datanode.scan.period.hours", 0) < 0) {
+        reason = "verification is turned off by configuration";
+    } else if (!(data instanceof FSDataset)) {
+        reason = "verifcation is supported only with FSDataset";
+    }
+    if (reason == null) {
+        blockScanner = new DataBlockScanner(this, (FSDataset) data, conf);
+    } else {
+        LOG.info("Periodic Block Verification is disabled because " + reason + ".");
+    }
+    // create a servlet to serve full-file content
+    String infoAddr = NetUtils.getServerAddress(conf, "dfs.datanode.info.bindAddress", "dfs.datanode.info.port", "dfs.datanode.http.address");
+    InetSocketAddress infoSocAddr = NetUtils.createSocketAddr(infoAddr);
+    String infoHost = infoSocAddr.getHostName();
+    int tmpInfoPort = infoSocAddr.getPort();
+    this.infoServer = new HttpServer("datanode", infoHost, tmpInfoPort, tmpInfoPort == 0, conf);
+    InetSocketAddress secInfoSocAddr = NetUtils.createSocketAddr(conf.get("dfs.datanode.https.address", infoHost + ":" + 0));
+    Configuration sslConf = new Configuration(conf);
+    sslConf.addResource(conf.get("https.keystore.info.rsrc", "sslinfo.xml"));
+    String keyloc = sslConf.get("https.keystore.location");
+    if (null != keyloc) {
+        this.infoServer.addSslListener(secInfoSocAddr, keyloc, sslConf.get("https.keystore.password", ""), sslConf.get("https.keystore.keypassword", ""));
+    }
+    this.infoServer.addInternalServlet(null, "/streamFile/*", StreamFile.class);
+    this.infoServer.addInternalServlet(null, "/getFileChecksum/*", FileChecksumServlets.GetServlet.class);
+    this.infoServer.setAttribute("datanode.blockScanner", blockScanner);
+    this.infoServer.addServlet(null, "/blockScannerReport", DataBlockScanner.Servlet.class);
+    this.infoServer.start();
+    // adjust info port
+    this.dnRegistration.setInfoPort(this.infoServer.getPort());
+    myMetrics = new DataNodeMetrics(conf, dnRegistration.getStorageID());
+    // init ipc server
+    InetSocketAddress ipcAddr = NetUtils.createSocketAddr(conf.get("dfs.datanode.ipc.address"));
+    ipcServer = RPC.getServer(this, ipcAddr.getHostName(), ipcAddr.getPort(), conf.getInt("dfs.datanode.handler.count", 3), false, conf);
+    ipcServer.start();
+    dnRegistration.setIpcPort(ipcServer.getListenerAddress().getPort());
+    LOG.info("dnRegistration = " + dnRegistration);
+}

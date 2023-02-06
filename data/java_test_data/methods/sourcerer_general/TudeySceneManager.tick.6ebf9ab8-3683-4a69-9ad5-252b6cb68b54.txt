@@ -1,0 +1,81 @@
+public void tick() {
+    // cancel the ticker if enough time has elapsed with no occupants
+    long now = RunAnywhere.currentTimeMillis();
+    if (_plobj.occupants.size() == 0 && (now - _emptyTime) >= idleTickPeriod()) {
+        _ticker.remove(this);
+        return;
+    }
+    // update the scene timestamp
+    _previousTimestamp = _timestamp;
+    _timestamp += (int) (now - _lastTick);
+    _lastTick = now;
+    // copy the runnables into another list and clear
+    synchronized (_runnables) {
+        _runlist.addAll(_runnables);
+        _runnables.clear();
+    }
+    if (_tickProfEnabled) {
+        // tick the participants
+        _profileTickOp.init(_timestamp);
+        _tickParticipants.apply(_profileTickOp);
+        // process the runnables in the list
+        for (int ii = 0, nn = _runlist.size(); ii < nn; ii++) {
+            Runnable runnable = _runlist.get(ii);
+            try {
+                if (_tickParticipantCount++ % _tickProfInterval == 0) {
+                    long started = System.nanoTime();
+                    runnable.run();
+                    updateTickProfile(runnable, started);
+                } else {
+                    runnable.run();
+                }
+            } catch (Throwable t) {
+                log.warning("Caught throwable executing runnable.", "where", where(), "runnable", runnable, t);
+            }
+        }
+        _runlist.clear();
+        // post deltas for all clients
+        for (ClientLiaison client : _clients.values()) {
+            try {
+                if (_tickParticipantCount++ % _tickProfInterval == 0) {
+                    long started = System.nanoTime();
+                    client.postDelta();
+                    updateTickProfile(client, started);
+                } else {
+                    client.postDelta();
+                }
+            } catch (Throwable t) {
+                log.warning("Caught throwable posting delta.", "where", where(), "client", client, t);
+            }
+        }
+    } else {
+        // tick the participants
+        _tickOp.init(_timestamp);
+        _tickParticipants.apply(_tickOp);
+        // process the runnables in the list
+        for (int ii = 0, nn = _runlist.size(); ii < nn; ii++) {
+            Runnable runnable = _runlist.get(ii);
+            try {
+                runnable.run();
+            } catch (Throwable t) {
+                log.warning("Caught throwable executing runnable.", "where", where(), "runnable", runnable, t);
+            }
+        }
+        _runlist.clear();
+        // post deltas for all clients
+        for (ClientLiaison client : _clients.values()) {
+            try {
+                client.postDelta();
+            } catch (Throwable t) {
+                log.warning("Caught throwable posting delta.", "where", where(), "client", client, t);
+            }
+        }
+    }
+    // clear the lists
+    _staticActorsAdded.clear();
+    _staticActorsUpdated.clear();
+    _staticActorsRemoved.clear();
+    _effectsFired.clear();
+    // note how long the tick took
+    _tickDuration = (RunAnywhere.currentTimeMillis() - _lastTick);
+}

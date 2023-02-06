@@ -1,0 +1,85 @@
+@Override
+public boolean handlePacket(Packet pPacket) {
+    super.handlePacket(pPacket);
+    boolean shouldBreak = false;
+    switch(pPacket.getType()) {
+        case CHAT:
+            aChatBox.addLine(pPacket.getClientName() + ": " + (String) pPacket.getData(), pPacket.getClientID());
+            break;
+        case SHIP:
+            Ship received = (Ship) pPacket.getData();
+            received.setID(Application.shipID++);
+            aMap.addRemoteShip(received, pPacket.getClientName(), pPacket.getClientID());
+            // Application.aClock.addObject(received);
+            break;
+        case SHIP_MOVE:
+            Ship lShip = aMap.getShipAtLocation(((ShipMoveEvent) pPacket.getData()).getStart(), true, false);
+            if (lShip == null) {
+                System.err.println("CLIENT :: Could not find the ship in the ShipMoveEvent");
+            // System.err.println("  PACKET @ " + ((ShipMoveEvent) pPacket.getData()).getStart()
+            // + " || SHIP @ " + aShipSelector.getSelected().getLocation());
+            } else {
+                ShipMoveEvent sme = (ShipMoveEvent) pPacket.getData();
+                lShip.moveTo(sme.getDestination());
+                lShip.setDirection(sme.getDirection());
+            }
+            break;
+        case SHOT:
+            Shot shot = (Shot) pPacket.getData();
+            boolean hasShaken = false;
+            for (DamageTile dt : shot.getDamageTiles()) {
+                Ship ship = aMap.getLocalPlayer().getShip(dt.getLocation(), true, false);
+                if (ship != null) {
+                    miniMap.imHit(dt.getLocation());
+                    if (!hasShaken) {
+                        Application.aClock250.addObject(new ScreenShakeEffect(2000));
+                        hasShaken = true;
+                    }
+                }
+            }
+            aMap.handleShot(shot);
+            ArrayList<Ship> deadShips = new ArrayList<Ship>();
+            for (DamageTile dt : shot.getDamageTiles()) {
+                Ship ship = aMap.getLocalPlayer().getShip(dt.getLocation(), false, true);
+                if (ship != null) {
+                    aShipSelector.killShip(ship);
+                    selectShip(aShipSelector.getSelected());
+                    if (!deadShips.contains(ship))
+                        Application.aData.unitsLost++;
+                    deadShips.add(ship);
+                }
+                ship = aMap.getShipAtLocation(dt.getLocation(), false, true);
+                if (ship != null)
+                    ship.setCarcass(true);
+            }
+            if (!Application.enableDebug)
+                winCheck();
+            spectator();
+            aMap.updateFogOverlay();
+            break;
+        case SHOT_DATA:
+            ShotData lShotData = (ShotData) pPacket.getData();
+            Application.aData.hits += lShotData.hits;
+            Application.aData.misses += lShotData.misses;
+            Application.aData.shipsKilled += lShotData.kills;
+            break;
+        case POWER_UP:
+            PowerUp powerUp = (PowerUp) pPacket.getData();
+            if (powerUp != null) {
+                aMap.addPowerUp(powerUp);
+            }
+            break;
+        case PLAYER_DISCONNECT:
+            Application.aManager.setGameState(new MainMenuState());
+            Application.resetVars();
+            shouldBreak = true;
+            break;
+        case GAME_OVER:
+            Application.aManager.setGameState(new GameOverState());
+            if (server != null)
+                server.setInGame(true);
+            shouldBreak = true;
+            break;
+    }
+    return shouldBreak;
+}

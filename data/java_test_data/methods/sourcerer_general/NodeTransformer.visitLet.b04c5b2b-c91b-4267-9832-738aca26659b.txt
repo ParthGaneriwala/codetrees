@@ -1,0 +1,107 @@
+protected Node visitLet(boolean createWith, Node parent, Node previous, Node scopeNode) {
+    Node vars = scopeNode.getFirstChild();
+    Node body = vars.getNext();
+    scopeNode.removeChild(vars);
+    scopeNode.removeChild(body);
+    boolean isExpression = scopeNode.getType() == Token.LETEXPR;
+    Node result;
+    Node newVars;
+    if (createWith) {
+        result = new Node(isExpression ? Token.WITHEXPR : Token.BLOCK);
+        result = replaceCurrent(parent, previous, scopeNode, result);
+        ArrayList<Object> list = new ArrayList<Object>();
+        Node objectLiteral = new Node(Token.OBJECTLIT);
+        for (Node v = vars.getFirstChild(); v != null; v = v.getNext()) {
+            Node current = v;
+            if (current.getType() == Token.LETEXPR) {
+                // destructuring in let expr, e.g. let ([x, y] = [3, 4]) {}
+                List<?> destructuringNames = (List<?>) current.getProp(Node.DESTRUCTURING_NAMES);
+                Node c = current.getFirstChild();
+                if (c.getType() != Token.LET)
+                    throw Kit.codeBug();
+                // Add initialization code to front of body
+                if (isExpression) {
+                    body = new Node(Token.COMMA, c.getNext(), body);
+                } else {
+                    body = new Node(Token.BLOCK, new Node(Token.EXPR_VOID, c.getNext()), body);
+                }
+                // defined in the destructuring assignment
+                if (destructuringNames != null) {
+                    list.addAll(destructuringNames);
+                    for (int i = 0; i < destructuringNames.size(); i++) {
+                        objectLiteral.addChildToBack(new Node(Token.VOID, Node.newNumber(0.0)));
+                    }
+                }
+                // should be a NAME, checked below
+                current = c.getFirstChild();
+            }
+            if (current.getType() != Token.NAME)
+                throw Kit.codeBug();
+            list.add(ScriptRuntime.getIndexObject(current.getString()));
+            Node init = current.getFirstChild();
+            if (init == null) {
+                init = new Node(Token.VOID, Node.newNumber(0.0));
+            }
+            objectLiteral.addChildToBack(init);
+        }
+        objectLiteral.putProp(Node.OBJECT_IDS_PROP, list.toArray());
+        newVars = new Node(Token.ENTERWITH, objectLiteral);
+        result.addChildToBack(newVars);
+        result.addChildToBack(new Node(Token.WITH, body));
+        result.addChildToBack(new Node(Token.LEAVEWITH));
+    } else {
+        result = new Node(isExpression ? Token.COMMA : Token.BLOCK);
+        result = replaceCurrent(parent, previous, scopeNode, result);
+        newVars = new Node(Token.COMMA);
+        for (Node v = vars.getFirstChild(); v != null; v = v.getNext()) {
+            Node current = v;
+            if (current.getType() == Token.LETEXPR) {
+                // destructuring in let expr, e.g. let ([x, y] = [3, 4]) {}
+                Node c = current.getFirstChild();
+                if (c.getType() != Token.LET)
+                    throw Kit.codeBug();
+                // Add initialization code to front of body
+                if (isExpression) {
+                    body = new Node(Token.COMMA, c.getNext(), body);
+                } else {
+                    body = new Node(Token.BLOCK, new Node(Token.EXPR_VOID, c.getNext()), body);
+                }
+                // We're removing the LETEXPR, so move the symbols
+                Scope.joinScopes((Scope) current, (Scope) scopeNode);
+                // should be a NAME, checked below
+                current = c.getFirstChild();
+            }
+            if (current.getType() != Token.NAME)
+                throw Kit.codeBug();
+            Node stringNode = Node.newString(current.getString());
+            stringNode.setScope((Scope) scopeNode);
+            Node init = current.getFirstChild();
+            if (init == null) {
+                init = new Node(Token.VOID, Node.newNumber(0.0));
+            }
+            newVars.addChildToBack(new Node(Token.SETVAR, stringNode, init));
+        }
+        if (isExpression) {
+            result.addChildToBack(newVars);
+            scopeNode.setType(Token.COMMA);
+            result.addChildToBack(scopeNode);
+            scopeNode.addChildToBack(body);
+            if (body instanceof Scope) {
+                Scope scopeParent = ((Scope) body).getParentScope();
+                ((Scope) body).setParentScope((Scope) scopeNode);
+                ((Scope) scopeNode).setParentScope(scopeParent);
+            }
+        } else {
+            result.addChildToBack(new Node(Token.EXPR_VOID, newVars));
+            scopeNode.setType(Token.BLOCK);
+            result.addChildToBack(scopeNode);
+            scopeNode.addChildrenToBack(body);
+            if (body instanceof Scope) {
+                Scope scopeParent = ((Scope) body).getParentScope();
+                ((Scope) body).setParentScope((Scope) scopeNode);
+                ((Scope) scopeNode).setParentScope(scopeParent);
+            }
+        }
+    }
+    return result;
+}

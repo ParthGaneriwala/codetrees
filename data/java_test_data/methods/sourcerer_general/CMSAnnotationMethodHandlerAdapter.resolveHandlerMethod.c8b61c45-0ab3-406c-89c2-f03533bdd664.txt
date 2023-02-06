@@ -1,0 +1,83 @@
+public Method resolveHandlerMethod(HttpServletRequest request) throws ServletException {
+    String lookupPath = urlPathHelper.getLookupPathForRequest(request);
+    Comparator<String> pathComparator = pathMatcher.getPatternComparator(lookupPath);
+    Map<RequestSpecificMappingInfo, Method> targetHandlerMethods = new LinkedHashMap<RequestSpecificMappingInfo, Method>();
+    Set<String> allowedMethods = new LinkedHashSet<String>(7);
+    String resolvedMethodName = null;
+    for (Method handlerMethod : getHandlerMethods()) {
+        RequestSpecificMappingInfo mappingInfo = new RequestSpecificMappingInfo(this.mappings.get(handlerMethod));
+        boolean match = false;
+        if (mappingInfo.hasPatterns()) {
+            for (String pattern : mappingInfo.getPatterns()) {
+                if (!hasTypeLevelMapping() && !pattern.startsWith("/")) {
+                    pattern = "/" + pattern;
+                }
+                String combinedPattern = getCombinedPattern(pattern, lookupPath, request);
+                if (combinedPattern != null) {
+                    if (mappingInfo.matches(request)) {
+                        match = true;
+                        mappingInfo.addMatchedPattern(combinedPattern);
+                    } else {
+                        if (!mappingInfo.matchesRequestMethod(request)) {
+                            allowedMethods.addAll(mappingInfo.methodNames());
+                        }
+                        break;
+                    }
+                }
+            }
+            mappingInfo.sortMatchedPatterns(pathComparator);
+        } else {
+            // No paths specified: parameter match sufficient.
+            match = mappingInfo.matches(request);
+            if (match && mappingInfo.getMethodCount() == 0 && mappingInfo.getParamCount() == 0 && resolvedMethodName != null && !resolvedMethodName.equals(handlerMethod.getName())) {
+                match = false;
+            } else {
+                if (!mappingInfo.matchesRequestMethod(request)) {
+                    allowedMethods.addAll(mappingInfo.methodNames());
+                }
+            }
+        }
+        if (match) {
+            Method oldMappedMethod = targetHandlerMethods.put(mappingInfo, handlerMethod);
+            if (oldMappedMethod != null && oldMappedMethod != handlerMethod) {
+                if (methodNameResolver != null && !mappingInfo.hasPatterns()) {
+                    if (!oldMappedMethod.getName().equals(handlerMethod.getName())) {
+                        if (resolvedMethodName == null) {
+                            resolvedMethodName = methodNameResolver.getHandlerMethodName(request);
+                        }
+                        if (!resolvedMethodName.equals(oldMappedMethod.getName())) {
+                            oldMappedMethod = null;
+                        }
+                        if (!resolvedMethodName.equals(handlerMethod.getName())) {
+                            if (oldMappedMethod != null) {
+                                targetHandlerMethods.put(mappingInfo, oldMappedMethod);
+                                oldMappedMethod = null;
+                            } else {
+                                targetHandlerMethods.remove(mappingInfo);
+                            }
+                        }
+                    }
+                }
+                if (oldMappedMethod != null) {
+                    throw new IllegalStateException("Ambiguous handler methods mapped for HTTP path '" + lookupPath + "': {" + oldMappedMethod + ", " + handlerMethod + "}. If you intend to handle the same path in multiple methods, then factor " + "them out into a dedicated handler class with that path mapped at the type level!");
+                }
+            }
+        }
+    }
+    if (!targetHandlerMethods.isEmpty()) {
+        List<RequestSpecificMappingInfo> matches = new ArrayList<RequestSpecificMappingInfo>(targetHandlerMethods.keySet());
+        RequestSpecificMappingInfoComparator requestMappingInfoComparator = new RequestSpecificMappingInfoComparator(pathComparator, request);
+        Collections.sort(matches, requestMappingInfoComparator);
+        RequestSpecificMappingInfo bestMappingMatch = matches.get(0);
+        String bestMatchedPath = bestMappingMatch.bestMatchedPattern();
+        if (bestMatchedPath != null) {
+            extractHandlerMethodUriTemplates(bestMatchedPath, lookupPath, request);
+        }
+        return targetHandlerMethods.get(bestMappingMatch);
+    } else {
+        if (!allowedMethods.isEmpty()) {
+            throw new HttpRequestMethodNotSupportedException(request.getMethod(), StringUtils.toStringArray(allowedMethods));
+        }
+        throw new NoSuchRequestHandlingMethodException(lookupPath, request.getMethod(), request.getParameterMap());
+    }
+}

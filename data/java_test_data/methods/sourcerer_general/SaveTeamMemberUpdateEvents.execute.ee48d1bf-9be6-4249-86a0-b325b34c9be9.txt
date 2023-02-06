@@ -1,0 +1,88 @@
+public boolean execute(ComponentContext context) {
+    boolean result = false;
+    Connection db = null;
+    try {
+        db = getConnection(context);
+        TeamMember thisMember = (TeamMember) context.getThisObject();
+        TeamMember prevMember = (TeamMember) context.getPreviousObject();
+        // load the user that invited the team member
+        User user = UserUtils.loadUser(thisMember.getModifiedBy());
+        Project userProfile = ProjectUtils.loadProject(user.getProfileProjectId());
+        // load the user that is being updated
+        User member = UserUtils.loadUser(thisMember.getUserId());
+        Project memberProfile = ProjectUtils.loadProject(member.getProfileProjectId());
+        // load the project profile
+        Project projectProfile = ProjectUtils.loadProject(thisMember.getProjectId());
+        if (prevMember.getStatus() != TeamMember.STATUS_ADDED && thisMember.getStatus() == TeamMember.STATUS_ADDED) {
+            // An existing team member accepted an invitation
+            // Prepare the wiki links
+            context.setParameter("user", WikiLink.generateLink(userProfile));
+            context.setParameter("member", WikiLink.generateLink(memberProfile));
+            context.setParameter("profile", WikiLink.generateLink(projectProfile));
+            // Insert the history
+            ProjectHistory history = new ProjectHistory();
+            history.setProjectId(thisMember.getProjectId());
+            history.setLinkObject(ProjectHistoryList.INVITES_OBJECT);
+            history.setLinkItemId(thisMember.getId());
+            if (projectProfile.getProfile()) {
+                // Became a friend
+                history.setDescription(context.getParameter(HISTORY_FRIEND_INVITE_TEXT));
+                history.setEventType(ProjectHistoryList.ACCEPT_INVITATION_EVENT);
+                history.setEnteredBy(thisMember.getUserId());
+            } else {
+                // Determine how the user was added...
+                if (prevMember.getStatus() == TeamMember.STATUS_JOINED_NEEDS_APPROVAL) {
+                    // Was approved by a manager
+                    history.setDescription(context.getParameter(HISTORY_MEMBERSHIP_INVITE_TEXT));
+                    history.setEventType(ProjectHistoryList.APPROVED_MEMBER_EVENT);
+                    history.setEnteredBy(user.getId());
+                } else {
+                    // Added themself
+                    history.setDescription(context.getParameter(HISTORY_INVITE_TEXT));
+                    history.setEventType(ProjectHistoryList.ACCEPT_INVITATION_EVENT);
+                    history.setEnteredBy(thisMember.getUserId());
+                }
+            }
+            history.insert(db);
+        }
+        if (prevMember.getRoleId() != thisMember.getRoleId() && thisMember.getRoleId() == TeamMember.VIP) {
+            LookupList roleList = CacheUtils.getLookupList("lookup_project_role");
+            // team member was upgraded to a VIP role
+            // Prepare the wiki links
+            context.setParameter("user", WikiLink.generateLink(userProfile));
+            context.setParameter("member", WikiLink.generateLink(memberProfile));
+            context.setParameter("profile", WikiLink.generateLink(projectProfile));
+            context.setParameter("role", roleList.getValueFromId(thisMember.getUserLevel()));
+            // Insert the history
+            ProjectHistory history = new ProjectHistory();
+            history.setEnteredBy(user.getId());
+            history.setProjectId(thisMember.getProjectId());
+            history.setLinkObject(ProjectHistoryList.ROLE_OBJECT);
+            history.setEventType(ProjectHistoryList.PROMOTE_MEMBER_EVENT);
+            history.setLinkItemId(thisMember.getId());
+            history.setDescription(context.getParameter(HISTORY_PROMOTE_TEXT));
+            history.insert(db);
+        }
+        if (!prevMember.getTools() && thisMember.getTools()) {
+            // team member just received tools access
+            // Prepare the wiki links
+            context.setParameter("user", WikiLink.generateLink(userProfile));
+            context.setParameter("member", WikiLink.generateLink(memberProfile));
+            // Insert the history
+            ProjectHistory history = new ProjectHistory();
+            history.setEnteredBy(user.getId());
+            history.setProjectId(thisMember.getProjectId());
+            history.setLinkObject(ProjectHistoryList.TOOLS_OBJECT);
+            history.setEventType(ProjectHistoryList.GRANT_MEMBER_TOOLS_EVENT);
+            history.setLinkItemId(thisMember.getId());
+            history.setDescription(context.getParameter(HISTORY_GRANT_TEXT));
+            history.insert(db);
+        }
+        result = true;
+    } catch (Exception e) {
+        e.printStackTrace(System.out);
+    } finally {
+        freeConnection(context, db);
+    }
+    return result;
+}

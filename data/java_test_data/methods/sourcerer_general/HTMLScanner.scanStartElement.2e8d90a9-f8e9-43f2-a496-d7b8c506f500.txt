@@ -1,0 +1,102 @@
+// scanPI()
+protected String scanStartElement(boolean[] empty) throws IOException {
+    String ename = scanName();
+    int length = ename != null ? ename.length() : 0;
+    int c = length > 0 ? ename.charAt(0) : -1;
+    if (length == 0 || !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) {
+        if (fReportErrors) {
+            fErrorReporter.reportError("HTML1009", null);
+        }
+        if (fDocumentHandler != null && fElementCount >= fElementDepth) {
+            fStringBuffer.clear();
+            fStringBuffer.append('<');
+            if (length > 0) {
+                fStringBuffer.append(ename);
+            }
+            fDocumentHandler.characters(fStringBuffer, null);
+        }
+        return null;
+    }
+    ename = modifyName(ename, fNamesElems);
+    fAttributes.removeAllAttributes();
+    boolean print = false;
+    int beginLineNumber = fBeginLineNumber;
+    int beginColumnNumber = fBeginColumnNumber;
+    while (scanAttribute(fAttributes, empty)) {
+    // do nothing
+    }
+    fBeginLineNumber = beginLineNumber;
+    fBeginColumnNumber = beginColumnNumber;
+    if (fByteStream != null && fElementDepth == -1) {
+        if (ename.equalsIgnoreCase("META")) {
+            if (DEBUG_CHARSET) {
+                System.out.println("+++ <META>");
+            }
+            String httpEquiv = getValue(fAttributes, "http-equiv");
+            if (httpEquiv != null && httpEquiv.equalsIgnoreCase("content-type")) {
+                if (DEBUG_CHARSET) {
+                    System.out.println("+++ @content-type: \"" + httpEquiv + '"');
+                }
+                String content = getValue(fAttributes, "content");
+                int index1 = content != null ? content.toLowerCase().indexOf("charset=") : -1;
+                if (index1 != -1 && !fIgnoreSpecifiedCharset) {
+                    int index2 = content.indexOf(';', index1);
+                    String charset = index2 != -1 ? content.substring(index1 + 8, index2) : content.substring(index1 + 8);
+                    try {
+                        String ianaEncoding = charset;
+                        String javaEncoding = EncodingMap.getIANA2JavaMapping(ianaEncoding.toUpperCase());
+                        if (DEBUG_CHARSET) {
+                            System.out.println("+++ ianaEncoding: " + ianaEncoding);
+                            System.out.println("+++ javaEncoding: " + javaEncoding);
+                        }
+                        if (javaEncoding == null) {
+                            javaEncoding = ianaEncoding;
+                            if (fReportErrors) {
+                                fErrorReporter.reportError("HTML1001", new Object[] { ianaEncoding });
+                            }
+                        }
+                        fIso8859Encoding = ianaEncoding == null || ianaEncoding.toUpperCase().startsWith("ISO-8859") || ianaEncoding.equalsIgnoreCase(fDefaultIANAEncoding);
+                        fCurrentEntity.stream = new InputStreamReader(fByteStream, javaEncoding);
+                        fByteStream.playback();
+                        fElementDepth = fElementCount;
+                        fElementCount = 0;
+                        fCurrentEntity.offset = fCurrentEntity.length = 0;
+                        fCurrentEntity.lineNumber = 1;
+                        fCurrentEntity.columnNumber = 1;
+                    } catch (UnsupportedEncodingException e) {
+                        if (fReportErrors) {
+                            fErrorReporter.reportError("HTML1010", new Object[] { charset });
+                        }
+                        // NOTE: If the encoding change doesn't work,
+                        // then there's no point in continuing to
+                        // buffer the input stream.
+                        fByteStream.clear();
+                    }
+                }
+            }
+        } else if (ename.equalsIgnoreCase("BODY")) {
+            fByteStream.clear();
+        } else {
+            HTMLElements.Element element = HTMLElements.getElement(ename);
+            if (element.parent != null && element.parent.length > 0) {
+                if (element.parent[0].code == HTMLElements.BODY) {
+                    fByteStream.clear();
+                }
+            }
+        }
+    }
+    if (fDocumentHandler != null && fElementCount >= fElementDepth) {
+        fQName.setValues(null, ename, ename, null);
+        if (DEBUG_CALLBACKS) {
+            System.out.println("startElement(" + fQName + ',' + fAttributes + ")");
+        }
+        fEndLineNumber = fCurrentEntity.lineNumber;
+        fEndColumnNumber = fCurrentEntity.columnNumber;
+        if (empty[0]) {
+            fDocumentHandler.emptyElement(fQName, fAttributes, locationAugs());
+        } else {
+            fDocumentHandler.startElement(fQName, fAttributes, locationAugs());
+        }
+    }
+    return ename;
+}

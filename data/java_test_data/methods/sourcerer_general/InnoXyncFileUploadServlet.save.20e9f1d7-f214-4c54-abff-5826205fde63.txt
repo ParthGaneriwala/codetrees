@@ -1,0 +1,56 @@
+protected void save(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    Map<String, Object> paramMap = RequestUtils.getParameterMap(request);
+    logger.debug("paramMap: {}", paramMap);
+    RepositoryType acceptedRepositoryType = repositoryType;
+    String requestedRepositoryType = (String) paramMap.get("repositoryType");
+    if (StringUtil.isNotEmpty(requestedRepositoryType)) {
+        acceptedRepositoryType = RepositoryType.valueOf(requestedRepositoryType);
+    }
+    IXyncInputStream gis = null;
+    IXyncOutputStream gos = null;
+    try {
+        // innoxync stream
+        gis = ((HttpIXyncRequest) request).getIXyncInputStream();
+        gos = ((HttpIXyncResponse) response).getIXyncOutputStream();
+        // get dataset
+        IXyncDataSet dataset = gis.read("dsetFile");
+        if (dataset == null) {
+        } else {
+            int mapIdIndex = dataset.indexOfColumn("map_id");
+            int fileIdIndex = dataset.indexOfColumn("file_id");
+            int fileNameIndex = dataset.indexOfColumn("file_name");
+            int fileReferenceIndex = dataset.indexOfColumn("file_reference");
+            IXyncDataRow[] dataRows = dataset.getDataRows();
+            for (IXyncDataRow dataRow : dataRows) {
+                switch(dataRow.getJobType()) {
+                    case IXyncDataRow.TB_JOB_INSERT:
+                        String mapId = dataRow.getString(mapIdIndex);
+                        String fileName = dataRow.getString(fileNameIndex);
+                        InputStream is = dataRow.getInputStream(fileReferenceIndex);
+                        FileDTO fileDTO = null;
+                        fileDTO = new FileDTO();
+                        fileDTO.setMapId(mapId);
+                        fileDTO.setRealFileName(UploadUtils.stripPathInfo(fileName));
+                        fileDTO.setUniqueFileName(uniqueFileNameGenerationService.getNextStringId());
+                        // fileDTO.setContentType(fileItem.getContentType());
+                        fileDTO.setRepositoryPath(realRepositoryPath);
+                        UploadUtils.processFile(acceptedRepositoryType, is, fileDTO);
+                        if (fileDTO != null)
+                            fileManager.insertFile(fileDTO);
+                        break;
+                    case IXyncDataRow.TB_JOB_DELETE:
+                        String fileId = dataRow.getString(fileIdIndex);
+                        fileManager.deleteFile(fileId);
+                        break;
+                }
+            }
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+        logger.error(e.getMessage());
+    } finally {
+        if (gos != null) {
+            gos.close();
+        }
+    }
+}

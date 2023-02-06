@@ -1,0 +1,87 @@
+protected boolean performIteration(int iteration, double[][] trainYs, double[][] trainFs, double[][] probs, Instances trainNumeric) throws Exception {
+    SimpleLinearRegression[] linearRegressionForEachClass = new SimpleLinearRegression[m_numClasses];
+    // Store weights
+    double[] oldWeights = new double[trainNumeric.numInstances()];
+    for (int i = 0; i < oldWeights.length; i++) {
+        oldWeights[i] = trainNumeric.instance(i).weight();
+    }
+    for (int j = 0; j < m_numClasses; j++) {
+        // Keep track of sum of weights
+        double weightSum = 0.0;
+        for (int i = 0; i < trainNumeric.numInstances(); i++) {
+            // compute response and weight
+            double p = probs[i][j];
+            double actual = trainYs[i][j];
+            double z = getZ(actual, p);
+            double w = (actual - p) / z;
+            // set values for instance
+            Instance current = trainNumeric.instance(i);
+            current.setValue(trainNumeric.classIndex(), z);
+            current.setWeight(oldWeights[i] * w);
+            weightSum += current.weight();
+        }
+        Instances instancesCopy = trainNumeric;
+        if (weightSum > 0) {
+            // classifier
+            if (m_weightTrimBeta > 0) {
+                // Need to make an empty dataset
+                instancesCopy = new Instances(trainNumeric, trainNumeric.numInstances());
+                // Get weights
+                double[] weights = new double[oldWeights.length];
+                for (int i = 0; i < oldWeights.length; i++) {
+                    weights[i] = trainNumeric.instance(i).weight();
+                }
+                double weightPercentage = 0.0;
+                int[] weightsOrder = Utils.sort(weights);
+                for (int i = weightsOrder.length - 1; (i >= 0) && (weightPercentage < (1 - m_weightTrimBeta)); i--) {
+                    instancesCopy.add(trainNumeric.instance(weightsOrder[i]));
+                    weightPercentage += (weights[weightsOrder[i]] / weightSum);
+                }
+                // Update the sum of weights
+                weightSum = instancesCopy.sumOfWeights();
+            }
+            // Scale the weights
+            double multiplier = instancesCopy.numInstances() / weightSum;
+            for (Instance current : instancesCopy) {
+                current.setWeight(current.weight() * multiplier);
+            }
+        }
+        // fit simple regression function
+        linearRegressionForEachClass[j] = new SimpleLinearRegression();
+        linearRegressionForEachClass[j].buildClassifier(instancesCopy);
+        boolean foundAttribute = linearRegressionForEachClass[j].foundUsefulAttribute();
+        if (!foundAttribute) {
+            // Restore weights
+            for (int i = 0; i < oldWeights.length; i++) {
+                trainNumeric.instance(i).setWeight(oldWeights[i]);
+            }
+            return false;
+        }
+    }
+    // Add each linear regression model to the sum
+    for (int i = 0; i < m_numClasses; i++) {
+        m_regressions[i][linearRegressionForEachClass[i].getAttributeIndex()].addModel(linearRegressionForEachClass[i]);
+    }
+    // Evaluate / increment trainFs from the classifier
+    for (int i = 0; i < trainFs.length; i++) {
+        double[] pred = new double[m_numClasses];
+        double predSum = 0;
+        for (int j = 0; j < m_numClasses; j++) {
+            pred[j] = linearRegressionForEachClass[j].classifyInstance(trainNumeric.instance(i));
+            predSum += pred[j];
+        }
+        predSum /= m_numClasses;
+        for (int j = 0; j < m_numClasses; j++) {
+            trainFs[i][j] += (pred[j] - predSum) * (m_numClasses - 1) / m_numClasses;
+        }
+    }
+    // Compute the current probability estimates
+    for (int i = 0; i < trainYs.length; i++) {
+        probs[i] = probs(trainFs[i]);
+    }
+    // Restore weights
+    for (int i = 0; i < oldWeights.length; i++) {
+        trainNumeric.instance(i).setWeight(oldWeights[i]);
+    }
+    return true;
+}

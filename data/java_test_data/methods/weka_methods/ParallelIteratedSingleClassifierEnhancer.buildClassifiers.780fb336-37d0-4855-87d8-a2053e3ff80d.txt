@@ -1,0 +1,51 @@
+/**
+ * Start the pool of execution threads
+ */
+protected void buildClassifiers() throws Exception {
+    if (m_numExecutionSlots != 1) {
+        int numCores = (m_numExecutionSlots == 0) ? Runtime.getRuntime().availableProcessors() : m_numExecutionSlots;
+        ExecutorService executorPool = Executors.newFixedThreadPool(numCores);
+        final CountDownLatch doneSignal = new CountDownLatch(m_Classifiers.length);
+        final AtomicInteger numFailed = new AtomicInteger();
+        for (int i = 0; i < m_Classifiers.length; i++) {
+            final Classifier currentClassifier = m_Classifiers[i];
+            // MultiClassClassifier may produce occasional NULL classifiers ...
+            if (currentClassifier == null)
+                continue;
+            final int iteration = i;
+            if (m_Debug) {
+                System.out.print("Training classifier (" + (i + 1) + ")");
+            }
+            Runnable newTask = new Runnable() {
+
+                @Override
+                public void run() {
+                    try {
+                        currentClassifier.buildClassifier(getTrainingSet(iteration));
+                    } catch (Throwable ex) {
+                        ex.printStackTrace();
+                        numFailed.incrementAndGet();
+                        if (m_Debug) {
+                            System.err.println("Iteration " + iteration + " failed!");
+                        }
+                    } finally {
+                        doneSignal.countDown();
+                    }
+                }
+            };
+            // launch this task
+            executorPool.submit(newTask);
+        }
+        // wait for all tasks to finish, then shutdown pool
+        doneSignal.await();
+        executorPool.shutdownNow();
+        if (m_Debug && numFailed.intValue() > 0) {
+            System.err.println("Problem building classifiers - some iterations failed.");
+        }
+    } else {
+        // simple single-threaded execution
+        for (int i = 0; i < m_Classifiers.length; i++) {
+            m_Classifiers[i].buildClassifier(getTrainingSet(i));
+        }
+    }
+}

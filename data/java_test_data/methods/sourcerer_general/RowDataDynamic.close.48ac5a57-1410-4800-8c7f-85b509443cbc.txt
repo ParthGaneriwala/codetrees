@@ -1,0 +1,60 @@
+public void close() throws SQLException {
+    // Belt and suspenders here - if we don't
+    // have a reference to the connection
+    // it's more than likely dead/gone and we
+    // won't be able to consume rows anyway
+    Object mutex = this;
+    MySQLConnection conn = null;
+    if (this.owner != null) {
+        conn = this.owner.connection;
+        if (conn != null) {
+            mutex = conn.getMutex();
+        }
+    }
+    boolean hadMore = false;
+    int howMuchMore = 0;
+    synchronized (mutex) {
+        // drain the rest of the records.
+        while (next() != null) {
+            hadMore = true;
+            howMuchMore++;
+            if (howMuchMore % 100 == 0) {
+                Thread.yield();
+            }
+        }
+        if (conn != null) {
+            if (!conn.getClobberStreamingResults() && conn.getNetTimeoutForStreamingResults() > 0) {
+                String oldValue = conn.getServerVariable("net_write_timeout");
+                if (oldValue == null || oldValue.length() == 0) {
+                    // the current default
+                    oldValue = "60";
+                }
+                this.io.clearInputStream();
+                java.sql.Statement stmt = null;
+                try {
+                    stmt = conn.createStatement();
+                    ((com.mysql.jdbc.StatementImpl) stmt).executeSimpleNonQuery(conn, "SET net_write_timeout=" + oldValue);
+                } finally {
+                    if (stmt != null) {
+                        stmt.close();
+                    }
+                }
+            }
+            if (conn.getUseUsageAdvisor()) {
+                if (hadMore) {
+                    ProfilerEventHandler eventSink = ProfilerEventHandlerFactory.getInstance(conn);
+                    eventSink.consumeEvent(new ProfilerEvent(ProfilerEvent.TYPE_WARN, // $NON-NLS-1$
+                    "", // $NON-NLS-1$
+                    this.owner.owningStatement == null ? "N/A" : this.owner.owningStatement.currentCatalog, this.owner.connectionId, this.owner.owningStatement == null ? -1 : this.owner.owningStatement.getId(), -1, System.currentTimeMillis(), 0, Constants.MILLIS_I18N, null, null, // $NON-NLS-1$
+                    Messages.getString("RowDataDynamic.2") + howMuchMore + Messages.getString(// $NON-NLS-1$
+                    "RowDataDynamic.3") + Messages.getString(// $NON-NLS-1$
+                    "RowDataDynamic.4") + Messages.getString(// $NON-NLS-1$
+                    "RowDataDynamic.5") + Messages.getString(// $NON-NLS-1$
+                    "RowDataDynamic.6") + this.owner.pointOfOrigin));
+                }
+            }
+        }
+    }
+    this.metadata = null;
+    this.owner = null;
+}

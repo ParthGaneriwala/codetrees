@@ -1,0 +1,103 @@
+private Time getTimeFromString(String timeAsString, Calendar targetCalendar, int columnIndex, TimeZone tz, boolean rollForward) throws SQLException {
+    int hr = 0;
+    int min = 0;
+    int sec = 0;
+    try {
+        if (timeAsString == null) {
+            this.wasNullFlag = true;
+            return null;
+        }
+        // 
+        // JDK-6 doesn't like trailing whitespace
+        // 
+        // Note this isn't a performance issue, other
+        // than the iteration over the string, as String.trim()
+        // will return a new string only if whitespace is present
+        // 
+        timeAsString = timeAsString.trim();
+        if (timeAsString.equals("0") || timeAsString.equals("0000-00-00") || timeAsString.equals("0000-00-00 00:00:00") || timeAsString.equals("00000000000000")) {
+            if (ConnectionPropertiesImpl.ZERO_DATETIME_BEHAVIOR_CONVERT_TO_NULL.equals(this.connection.getZeroDateTimeBehavior())) {
+                this.wasNullFlag = true;
+                return null;
+            } else if (ConnectionPropertiesImpl.ZERO_DATETIME_BEHAVIOR_EXCEPTION.equals(this.connection.getZeroDateTimeBehavior())) {
+                throw SQLError.createSQLException("Value '" + timeAsString + "' can not be represented as java.sql.Time", SQLError.SQL_STATE_ILLEGAL_ARGUMENT, getExceptionInterceptor());
+            }
+            // represent, which is '00:00:00'
+            return fastTimeCreate(targetCalendar, 0, 0, 0);
+        }
+        this.wasNullFlag = false;
+        Field timeColField = this.fields[columnIndex - 1];
+        if (timeColField.getMysqlType() == MysqlDefs.FIELD_TYPE_TIMESTAMP) {
+            // It's a timestamp
+            int length = timeAsString.length();
+            switch(length) {
+                case 19:
+                    {
+                        // YYYY-MM-DD hh:mm:ss
+                        hr = Integer.parseInt(timeAsString.substring(length - 8, length - 6));
+                        min = Integer.parseInt(timeAsString.substring(length - 5, length - 3));
+                        sec = Integer.parseInt(timeAsString.substring(length - 2, length));
+                    }
+                    break;
+                case 14:
+                case 12:
+                    {
+                        hr = Integer.parseInt(timeAsString.substring(length - 6, length - 4));
+                        min = Integer.parseInt(timeAsString.substring(length - 4, length - 2));
+                        sec = Integer.parseInt(timeAsString.substring(length - 2, length));
+                    }
+                    break;
+                case 10:
+                    {
+                        hr = Integer.parseInt(timeAsString.substring(6, 8));
+                        min = Integer.parseInt(timeAsString.substring(8, 10));
+                        sec = 0;
+                    }
+                    break;
+                default:
+                    throw SQLError.createSQLException(Messages.getString(// $NON-NLS-1$
+                    "ResultSet.Timestamp_too_small_to_convert_to_Time_value_in_column__257") + columnIndex + "(" + this.fields[columnIndex - 1] + ").", SQLError.SQL_STATE_ILLEGAL_ARGUMENT, getExceptionInterceptor());
+            }
+            /* endswitch */
+            SQLWarning precisionLost = new SQLWarning(Messages.getString(// $NON-NLS-1$
+            "ResultSet.Precision_lost_converting_TIMESTAMP_to_Time_with_getTime()_on_column__261") + columnIndex + "(" + this.fields[columnIndex - 1] + ").");
+            if (this.warningChain == null) {
+                this.warningChain = precisionLost;
+            } else {
+                this.warningChain.setNextWarning(precisionLost);
+            }
+        } else if (timeColField.getMysqlType() == MysqlDefs.FIELD_TYPE_DATETIME) {
+            hr = Integer.parseInt(timeAsString.substring(11, 13));
+            min = Integer.parseInt(timeAsString.substring(14, 16));
+            sec = Integer.parseInt(timeAsString.substring(17, 19));
+            SQLWarning precisionLost = new SQLWarning(Messages.getString(// $NON-NLS-1$
+            "ResultSet.Precision_lost_converting_DATETIME_to_Time_with_getTime()_on_column__264") + columnIndex + "(" + this.fields[columnIndex - 1] + ").");
+            if (this.warningChain == null) {
+                this.warningChain = precisionLost;
+            } else {
+                this.warningChain.setNextWarning(precisionLost);
+            }
+        } else if (timeColField.getMysqlType() == MysqlDefs.FIELD_TYPE_DATE) {
+            // midnight on the given
+            return fastTimeCreate(targetCalendar, 0, 0, 0);
+        // date
+        } else {
+            // convert a String to a Time
+            if ((timeAsString.length() != 5) && (timeAsString.length() != 8)) {
+                throw SQLError.createSQLException(Messages.getString(// $NON-NLS-1$
+                "ResultSet.Bad_format_for_Time____267") + timeAsString + Messages.getString("ResultSet.___in_column__268") + columnIndex, SQLError.SQL_STATE_ILLEGAL_ARGUMENT, getExceptionInterceptor());
+            }
+            hr = Integer.parseInt(timeAsString.substring(0, 2));
+            min = Integer.parseInt(timeAsString.substring(3, 5));
+            sec = (timeAsString.length() == 5) ? 0 : Integer.parseInt(timeAsString.substring(6));
+        }
+        Calendar sessionCalendar = this.getCalendarInstanceForSessionOrNew();
+        synchronized (sessionCalendar) {
+            return TimeUtil.changeTimezone(this.connection, sessionCalendar, targetCalendar, fastTimeCreate(sessionCalendar, hr, min, sec), this.connection.getServerTimezoneTZ(), tz, rollForward);
+        }
+    } catch (Exception ex) {
+        SQLException sqlEx = SQLError.createSQLException(ex.toString(), SQLError.SQL_STATE_ILLEGAL_ARGUMENT, getExceptionInterceptor());
+        sqlEx.initCause(ex);
+        throw sqlEx;
+    }
+}

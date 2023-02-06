@@ -1,0 +1,51 @@
+public ValidityReport validate() {
+    checkOpen();
+    prepare();
+    StandardValidityReport report = new StandardValidityReport();
+    // look for incoherent KB by listing the individuals
+    try {
+        m_adapter.collectNamedTerms(DIGProfile.ALL_INDIVIDUALS, new String[] { DIGProfile.INDIVIDUAL_SET, DIGProfile.INDIVIDUAL });
+    } catch (DIGInconsistentKBException e) {
+        report.add(true, "DIG KB inconsistent", e.getMessage());
+        // no point continuing further
+        return report;
+    } catch (DIGErrorResponseException e) {
+        report.add(true, "DIG KB incoherent", e.getMessage());
+    }
+    // now look for unsatisfiable classes
+    Profile p = m_adapter.getOntLanguage();
+    Node nothing = p.NOTHING().asNode();
+    Property equivClass = p.EQUIVALENT_CLASS();
+    DIGQueryEquivalentsTranslator q = new DIGQueryEquivalentsTranslator(equivClass.getURI(), true);
+    ExtendedIterator i = q.find(new TriplePattern(null, equivClass.asNode(), p.NOTHING().asNode()), m_adapter);
+    while (i.hasNext()) {
+        Triple t = (Triple) i.next();
+        Node subj = t.getSubject();
+        if (subj != nothing) {
+            report.add(true, "unsatisfiable class", (subj.isBlank() ? subj.getBlankNodeId().toString() : subj.getURI()), t.getSubject());
+        }
+    }
+    // look for incoherent instances
+    DIGQueryTypesTranslator q1 = new DIGQueryTypesTranslator(RDF.type.getURI());
+    DIGValueToNodeMapper vMap = new DIGValueToNodeMapper();
+    for (Iterator j = m_adapter.getKnownIndividuals().iterator(); j.hasNext(); ) {
+        String ind = (String) j.next();
+        Node indNode = (Node) vMap.map1(ind);
+        ExtendedIterator i1 = null;
+        try {
+            i1 = q1.find(new TriplePattern(indNode, RDF.type.asNode(), null), m_adapter);
+        } catch (DIGInconsistentKBException e) {
+            report.add(true, "DIG KB inconsistent", e.getMessage());
+            // no point continuing further
+            break;
+        } catch (DIGErrorResponseException e) {
+            // we assume this is an incoherent KB exception - should check
+            report.add(true, "meaningless individual", (indNode.isBlank() ? indNode.getBlankNodeId().toString() : indNode.getURI()), ind);
+        } finally {
+            if (i1 != null) {
+                i1.close();
+            }
+        }
+    }
+    return report;
+}

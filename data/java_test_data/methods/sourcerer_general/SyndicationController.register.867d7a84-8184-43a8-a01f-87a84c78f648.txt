@@ -1,0 +1,144 @@
+public ModelAndView register(HttpServletRequest request, HttpServletResponse response) {
+    ModelAndView mav = new ModelAndView("jsonView");
+    String userName = request.getParameter("userName");
+    String emailAddress = request.getParameter("emailAddress");
+    String userPass = request.getParameter("userPass");
+    String confirmPassword = request.getParameter("confirmPassword");
+    String firstName = request.getParameter("firstName");
+    String countryId = request.getParameter("countryId");
+    String lastName = request.getParameter("lastName");
+    String cellPhone = request.getParameter("cellPhone");
+    String acceptTermAndConditions = request.getParameter("acceptTermAndConditions");
+    List<Message> errors = new ArrayList<Message>();
+    // validate countryId
+    if (StringUtils.isBlank(countryId)) {
+        errors.add(newError("countryId", getString("errors.notEmpty"), new Object[] { getString("register.countryId") }));
+    }
+    // validate user
+    if (StringUtils.isEmpty(userName)) {
+        errors.add(newError("userName", getString("errors.notEmpty"), new Object[] { getString("register.userName") }));
+    } else {
+        // validate user name existence
+        if (!getProfileDSO().isUserValid(userName)) {
+            errors.add(newError("userName", getString("errors.userAlreadyExists"), new Object[] { userName }));
+        }
+    }
+    // validate email address
+    if (StringUtils.isEmpty(emailAddress)) {
+        errors.add(newError("emailAddress", getString("errors.notEmpty"), new Object[] { getString("register.emailAddress") }));
+    } else {
+        // validate emailAddress format
+        if (!EmailValidator.validate(emailAddress)) {
+            errors.add(newError("emailAddress", getString("errors.emailInvalidFormat"), new Object[] { emailAddress }));
+        } else {
+            // validate emailAddress existence
+            if (!getProfileDSO().isEmailValid(emailAddress)) {
+                errors.add(newError("emailAddress", getString("errors.emailAlreadyExists"), new Object[] { emailAddress }));
+            }
+        }
+    }
+    // validate password
+    if (StringUtils.isEmpty(userPass)) {
+        errors.add(newError("userPass", getString("errors.notEmpty"), new Object[] { getString("register.userPass") }));
+    }
+    if (StringUtils.isEmpty(firstName)) {
+        errors.add(newError("firstName", getString("errors.notEmpty"), new Object[] { getString("register.firstName") }));
+    }
+    if (StringUtils.isEmpty(cellPhone)) {
+        errors.add(newError("cellPhone", getString("errors.notEmpty"), new Object[] { getString("register.cellPhone") }));
+    }
+    if (StringUtils.isEmpty(countryId)) {
+        errors.add(newError("countryId", getString("errors.notEmpty"), new Object[] { getString("register.countryId") }));
+    }
+    if (StringUtils.isEmpty(lastName)) {
+        errors.add(newError("lastName", getString("errors.notEmpty"), new Object[] { getString("register.lastName") }));
+    }
+    if (!StringUtils.equalsIgnoreCase(acceptTermAndConditions, "true")) {
+        errors.add(newError("acceptTermAndConditions", getString("errors.acceptTermAndConditions")));
+    }
+    if (StringUtils.isEmpty(confirmPassword)) {
+        errors.add(newError("confirmPassword", getString("errors.notEmpty"), new Object[] { getString("register.confirmPassword") }));
+    }
+    if (!StringUtils.equals(userPass, confirmPassword)) {
+        errors.add(newError("userPass", getString("errors.passwordDoesNotMatch")));
+    }
+    // proceed to registration, if no errors found.
+    if (errors.isEmpty()) {
+        // create a user and get the newly generated user id,
+        // this user by default is disabled, need to
+        // validate after registration
+        long userId = getProfileDSO().registerUser(userName, userPass, emailAddress, firstName, lastName, cellPhone, new Integer(countryId));
+        // data objets
+        UserDAO userDAO = (UserDAO) getBean("userDAO");
+        UserDTO userDTO = userDAO.findById(userId);
+        ConfigDAO configDAO = (ConfigDAO) getBean("configDAO");
+        // set other user properties
+        if (StringUtils.isNumeric(countryId)) {
+            CountryDTO country = new CountryDTO();
+            country.setCountryId(new Integer(countryId));
+            userDTO.setCountry(country);
+        }
+        if (logger.isDebugEnabled()) {
+            logger.debug("UID @ " + userId + "/" + userDTO.getGuid());
+        }
+        // check if store is configured for mail confirmation
+        final String CONFIRM_KEY = "REGISTRATION_MAIL_CONFIRM";
+        String confirmEmailAddress = configDAO.findById(CONFIRM_KEY);
+        // send confirmation mail if mailer is configured
+        if (StringUtils.equalsIgnoreCase("Yes", confirmEmailAddress)) {
+            SendMail mailer = (SendMail) getBean("mailer");
+            if (mailer != null)
+                try {
+                    // get variables from database
+                    String storeName = configDAO.findById("STORE_NAME");
+                    String storeURL = configDAO.findById("STORE_URL");
+                    String from = configDAO.findById("REGISTRATION_MAIL_FROM");
+                    String subject = configDAO.findById("REGISTRATION_MAIL_SUBJECT");
+                    String prefixURL = "/profile.jspa?aid=confirm&uid=";
+                    String url = storeURL + prefixURL + userDTO.getGuid();
+                    // get store
+                    StoreDTO store = new StoreDTO();
+                    store.setStoreId(1);
+                    store.setStoreName(storeName);
+                    store.setStoreUrl(storeURL);
+                    // build registration information object
+                    RegistrationInfo info = new RegistrationInfo();
+                    info.setUser(userDTO);
+                    info.setStore(store);
+                    info.setUrl(url);
+                    // serializae registration object to XML
+                    File inputFile = File.createTempFile("UID" + userId, "xml");
+                    XStream xstream = new XStream();
+                    xstream.alias("registration", RegistrationInfo.class);
+                    xstream.toXML(info, new FileOutputStream(inputFile));
+                    // transform xml object source to html mail output
+                    StringWriter outWriter = new StringWriter();
+                    InputStream xslStream = getClass().getResourceAsStream("/templates/welcome_mail.xsl");
+                    InputStream xmlStream = new FileInputStream(inputFile);
+                    xslTransform(xmlStream, xslStream, outWriter);
+                    // send mail using mailer implementation
+                    mailer.sendMessage(from, new String[] { emailAddress }, subject, outWriter.getBuffer().toString());
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    if (logger.isErrorEnabled()) {
+                        logger.error(e);
+                    }
+                }
+        } else {
+            // if no email confirmation is required, then set the user
+            // active
+            userDTO.setActive(1);
+            userDAO.update(userDTO);
+        }
+        // all ok, send nice response
+        mav.addObject("responseCode", SUCCESS);
+        mav.addObject("responseMessage", "Registro Completo");
+        mav.addObject("userId", userId);
+    } else {
+        // something wron, send failure response
+        mav.addObject("responseCode", FAILURE);
+        mav.addObject("responseMessage", "Registro Incompleto, favor verificar");
+        mav.addObject("errors", errors);
+    }
+    return mav;
+}

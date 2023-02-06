@@ -1,0 +1,67 @@
+public void initializePrefs(ServletContext context) {
+    LOG.info("Initializing...");
+    // Load the application node name, if any
+    try {
+        Properties instanceProperties = new Properties();
+        instanceProperties.load(context.getResourceAsStream("/WEB-INF/instance.property"));
+        node = instanceProperties.getProperty("node", DEFAULT_NODE);
+        LOG.info("Node: " + node);
+    } catch (Exception e) {
+        LOG.info("Default Node: " + DEFAULT_NODE);
+        node = DEFAULT_NODE;
+    }
+    // Determine the file library
+    String fileLibrary = retrieveFileLibraryLocation(context);
+    if (fileLibrary != null) {
+        loadProperties(fileLibrary);
+        this.add(FILE_LIBRARY_PATH, fileLibrary);
+        configureDebug();
+        verifyKey(context, fileLibrary);
+        configureConnectionPool(context);
+        configureFreemarker(context);
+        configureWebdavManager(context);
+        configureSystemSettings(context);
+        configureCache(context);
+        if (isConfigured()) {
+            if (ApplicationVersion.isOutOfDate(this)) {
+                LOG.info("Upgrade triggered... obtaining lock to continue");
+                // Use a lock file to to start upgrading
+                File upgradeLockFile = new File(fileLibrary + "upgrade.lock");
+                FileChannel fileChannel = null;
+                FileLock fileLock = null;
+                try {
+                    // Configure the file for locking
+                    fileChannel = new RandomAccessFile(upgradeLockFile, "rw").getChannel();
+                    // Use fileChannel.lock which blocks until the lock is obtained
+                    fileLock = fileChannel.lock();
+                    // Reload the prefs to make sure the upgrade isn't already complete
+                    loadProperties(fileLibrary);
+                    if (ApplicationVersion.isOutOfDate(this)) {
+                        // The application needs an update
+                        LOG.info("Installed version " + ApplicationVersion.getInstalledVersion(this) + " will be upgraded to " + ApplicationVersion.VERSION);
+                        performUpgrade(context);
+                    }
+                } catch (Exception e) {
+                    LOG.error("initializePrefs-> performUpgrade", e);
+                } finally {
+                    try {
+                        if (fileLock != null) {
+                            fileLock.release();
+                        }
+                        if (fileChannel != null) {
+                            fileChannel.close();
+                        }
+                    } catch (Exception eclose) {
+                        LOG.error("initializePrefs-> lock", eclose);
+                    }
+                }
+            }
+            if (!ApplicationVersion.isOutOfDate(this)) {
+                // Start the services now that everything is ready
+                initializeServices(context);
+            }
+        }
+    }
+    configureDefaultBehavior(context);
+    loadApplicationDictionaries(context);
+}

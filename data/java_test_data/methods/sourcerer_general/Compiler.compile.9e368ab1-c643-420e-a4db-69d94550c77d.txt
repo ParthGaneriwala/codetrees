@@ -1,0 +1,65 @@
+public static Object compile(Reader rdr, String sourcePath, String sourceName) throws Exception {
+    if (COMPILE_PATH.deref() == null)
+        throw new Exception("*compile-path* not set");
+    Object EOF = new Object();
+    Object ret = null;
+    LineNumberingPushbackReader pushbackReader = (rdr instanceof LineNumberingPushbackReader) ? (LineNumberingPushbackReader) rdr : new LineNumberingPushbackReader(rdr);
+    Var.pushThreadBindings(RT.map(SOURCE_PATH, sourcePath, SOURCE, sourceName, RT.CURRENT_NS, RT.CURRENT_NS.deref(), LINE_BEFORE, pushbackReader.getLineNumber(), LINE_AFTER, pushbackReader.getLineNumber(), CONSTANTS, PersistentVector.EMPTY, KEYWORDS, PersistentHashMap.EMPTY, VARS, PersistentHashMap.EMPTY));
+    try {
+        // generate loader class
+        FnExpr fn = new FnExpr(null);
+        fn.internalName = sourcePath.replace(File.separator, "/").substring(0, sourcePath.lastIndexOf('.')) + RT.LOADER_SUFFIX;
+        fn.fntype = Type.getObjectType(fn.internalName);
+        ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+        ClassVisitor cv = cw;
+        cv.visit(V1_5, ACC_PUBLIC + ACC_SUPER, fn.internalName, null, "java/lang/Object", null);
+        // static load method
+        GeneratorAdapter gen = new GeneratorAdapter(ACC_PUBLIC + ACC_STATIC, Method.getMethod("void load ()"), null, null, cv);
+        gen.visitCode();
+        for (Object r = LispReader.read(pushbackReader, false, EOF, false); r != EOF; r = LispReader.read(pushbackReader, false, EOF, false)) {
+            LINE_AFTER.set(pushbackReader.getLineNumber());
+            compile1(gen, fn, r);
+            LINE_BEFORE.set(pushbackReader.getLineNumber());
+        }
+        // end of load
+        gen.returnValue();
+        gen.endMethod();
+        // static fields for constants
+        for (int i = 0; i < fn.constants.count(); i++) {
+            cv.visitField(ACC_PUBLIC + ACC_FINAL + ACC_STATIC, fn.constantName(i), fn.constantType(i).getDescriptor(), null, null);
+        }
+        // static init for constants, keywords and vars
+        GeneratorAdapter clinitgen = new GeneratorAdapter(ACC_PUBLIC + ACC_STATIC, Method.getMethod("void <clinit> ()"), null, null, cv);
+        clinitgen.visitCode();
+        Label startTry = clinitgen.newLabel();
+        Label endTry = clinitgen.newLabel();
+        Label end = clinitgen.newLabel();
+        Label finallyLabel = clinitgen.newLabel();
+        if (fn.constants.count() > 0) {
+            fn.emitConstants(clinitgen);
+        }
+        clinitgen.invokeStatic(Type.getType(Compiler.class), Method.getMethod("void pushNS()"));
+        clinitgen.mark(startTry);
+        clinitgen.invokeStatic(fn.fntype, Method.getMethod("void load()"));
+        clinitgen.mark(endTry);
+        clinitgen.invokeStatic(VAR_TYPE, Method.getMethod("void popThreadBindings()"));
+        clinitgen.goTo(end);
+        clinitgen.mark(finallyLabel);
+        // exception should be on stack
+        clinitgen.invokeStatic(VAR_TYPE, Method.getMethod("void popThreadBindings()"));
+        clinitgen.throwException();
+        clinitgen.mark(end);
+        clinitgen.visitTryCatchBlock(startTry, endTry, finallyLabel, null);
+        // end of static init
+        clinitgen.returnValue();
+        clinitgen.endMethod();
+        // end of class
+        cv.visitEnd();
+        writeClassFile(fn.internalName, cw.toByteArray());
+    } catch (LispReader.ReaderException e) {
+        throw new CompilerException(sourceName, e.line, e.getCause());
+    } finally {
+        Var.popThreadBindings();
+    }
+    return ret;
+}

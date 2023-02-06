@@ -1,0 +1,181 @@
+public VirtualMachine localhostSocketLaunch(File initDir, DebuggerTerminal term, VirtualMachineManager mgr) {
+    // try to connect max of 5 times
+    final int CONNECT_TRIES = 5;
+    // wait half a sec between each connect
+    final int CONNECT_WAIT = 500;
+    int portNumber;
+    String[] launchParams;
+    // launch the VM using the runtime classpath.
+    Boot boot = Boot.getInstance();
+    File[] filesPath = BPClassLoader.toFiles(boot.getRuntimeUserClassPath());
+    String allClassPath = BPClassLoader.toClasspathString(filesPath);
+    ArrayList<String> paramList = new ArrayList<String>(10);
+    paramList.add(Config.getJDKExecutablePath(null, "java"));
+    // check if any vm args are specified in Config, at the moment these
+    // are only Locale options: user.language and user.country
+    paramList.addAll(Config.getDebugVMArgs());
+    paramList.add("-classpath");
+    paramList.add(allClassPath);
+    paramList.add("-Xdebug");
+    paramList.add("-Xnoagent");
+    if (Config.isMacOS()) {
+        paramList.add("-Xdock:icon=" + Config.getBlueJIconPath() + "/" + Config.getVMIconsName());
+        paramList.add("-Xdock:name=" + Config.getVMDockName());
+    }
+    paramList.add("-Xrunjdwp:transport=dt_socket,server=y");
+    // set index of memory transport, this may be used later if socket launch
+    // will not work
+    transportIndex = paramList.size() - 1;
+    paramList.add(SERVER_CLASSNAME);
+    // set output encoding if specified, default is to use system default
+    // this gets passed to ExecServer's main as an arg which can then be
+    // used to specify encoding
+    streamEncoding = Config.getPropString("bluej.terminal.encoding", null);
+    isDefaultEncoding = (streamEncoding == null);
+    if (!isDefaultEncoding) {
+        paramList.add(streamEncoding);
+    }
+    launchParams = (String[]) paramList.toArray(new String[0]);
+    String transport = Config.getPropString("bluej.vm.transport");
+    AttachingConnector tcpipConnector = null;
+    AttachingConnector shmemConnector = null;
+    Throwable tcpipFailureReason = null;
+    Throwable shmemFailureReason = null;
+    // Attempt to connect via TCP/IP transport
+    List connectors = mgr.attachingConnectors();
+    AttachingConnector connector = null;
+    // find the known connectors
+    Iterator it = connectors.iterator();
+    while (it.hasNext()) {
+        AttachingConnector c = (AttachingConnector) it.next();
+        if (c.transport().name().equals("dt_socket")) {
+            tcpipConnector = c;
+        } else if (c.transport().name().equals("dt_shmem")) {
+            shmemConnector = c;
+        }
+    }
+    connector = tcpipConnector;
+    // try to use the dt_shmem connector first.
+    if (transport.equals("dt_shmem") && shmemConnector != null)
+        connector = null;
+    for (int i = 0; i < CONNECT_TRIES; i++) {
+        if (connector != null) {
+            try {
+                final StringBuffer listenMessage = new StringBuffer();
+                remoteVMprocess = launchVM(initDir, launchParams, listenMessage, term);
+                portNumber = extractPortNumber(listenMessage.toString());
+                if (portNumber == -1) {
+                    closeIO();
+                    remoteVMprocess.destroy();
+                    remoteVMprocess = null;
+                    throw new Exception() {
+
+                        public void printStackTrace() {
+                            Debug.message("Could not find port number to connect to debugger");
+                            Debug.message("Line received from debugger was: " + listenMessage);
+                        }
+                    };
+                }
+                Map arguments = connector.defaultArguments();
+                Connector.Argument hostnameArg = (Connector.Argument) arguments.get("hostname");
+                Connector.Argument portArg = (Connector.Argument) arguments.get("port");
+                Connector.Argument timeoutArg = (Connector.Argument) arguments.get("timeout");
+                if (hostnameArg == null || portArg == null) {
+                    throw new Exception() {
+
+                        public void printStackTrace() {
+                            Debug.message("incompatible JPDA socket launch connector");
+                        }
+                    };
+                }
+                hostnameArg.setValue("127.0.0.1");
+                portArg.setValue(Integer.toString(portNumber));
+                if (timeoutArg != null) {
+                    // The timeout appears to be in milliseconds.
+                    // The default is apparently no timeout.
+                    timeoutArg.setValue("1000");
+                }
+                VirtualMachine m = null;
+                try {
+                    m = connector.attach(arguments);
+                } catch (Throwable t) {
+                    // failed to connect.
+                    closeIO();
+                    remoteVMprocess.destroy();
+                    remoteVMprocess = null;
+                    throw t;
+                }
+                Debug.log("Connected to debug VM via dt_socket transport...");
+                machine = m;
+                setupEventHandling();
+                waitForStartup();
+                Debug.log("Communication with debug VM fully established.");
+                return m;
+            } catch (Throwable t) {
+                tcpipFailureReason = t;
+            }
+        }
+        // Attempt launch using shared memory transport, if available
+        connector = shmemConnector;
+        if (connector != null) {
+            try {
+                Map arguments = connector.defaultArguments();
+                Connector.Argument addressArg = (Connector.Argument) arguments.get("name");
+                if (addressArg == null) {
+                    throw new Exception() {
+
+                        public void printStackTrace() {
+                            Debug.message("Shared memory connector is incompatible - no 'name' argument");
+                        }
+                    };
+                } else {
+                    String shmName = "bluej" + shmCount++;
+                    addressArg.setValue(shmName);
+                    launchParams[transportIndex] = "-Xrunjdwp:transport=dt_shmem,address=" + shmName + ",server=y,suspend=y";
+                    StringBuffer listenMessage = new StringBuffer();
+                    remoteVMprocess = launchVM(initDir, launchParams, listenMessage, term);
+                    VirtualMachine m = null;
+                    try {
+                        m = connector.attach(arguments);
+                    } catch (Throwable t) {
+                        // failed to connect.
+                        closeIO();
+                        remoteVMprocess.destroy();
+                        remoteVMprocess = null;
+                        throw t;
+                    }
+                    Debug.log("Connected to debug VM via dt_shmem transport...");
+                    machine = m;
+                    setupEventHandling();
+                    waitForStartup();
+                    Debug.log("Communication with debug VM fully established.");
+                    return m;
+                }
+            } catch (Throwable t) {
+                shmemFailureReason = t;
+            }
+        }
+        // Do a small wait between connection attempts
+        try {
+            if (i != CONNECT_TRIES - 1)
+                Thread.sleep(CONNECT_WAIT);
+        } catch (InterruptedException ie) {
+            break;
+        }
+        connector = tcpipConnector;
+    }
+    // failed to connect
+    Debug.message("Failed to connect to debug VM. Reasons follow:");
+    if (tcpipConnector != null && tcpipFailureReason != null) {
+        Debug.message("dt_socket transport:");
+        tcpipFailureReason.printStackTrace();
+    }
+    if (shmemConnector != null && shmemFailureReason != null) {
+        Debug.message("dt_shmem transport:");
+        tcpipFailureReason.printStackTrace();
+    }
+    if (shmemConnector == null && tcpipConnector == null) {
+        Debug.message(" No suitable transports available.");
+    }
+    return null;
+}

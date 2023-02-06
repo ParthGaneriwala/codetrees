@@ -1,0 +1,137 @@
+public void handle(String message) {
+    if (message.equals("RESET")) {
+        timeSamples.clear();
+        this.killTimers();
+        this.createTimers();
+        this.init();
+    } else if (message.equals("TICK")) {
+        theGUI.setCurrentTime();
+        if (theGUI.enabled == true) {
+            theGUI.setResetTime(tickClock);
+            tickClock++;
+        }
+    } else if (message.equals("POWERON")) {
+        this.createTimers();
+        this.init();
+        theGUI.powerOnDose = true;
+        theHardware.powerOn = true;
+        tickClock = 0;
+        String sBattery;
+    } else if (message.equals("POWEROFF")) {
+        theHardware.powerOn = false;
+        killTimers();
+        timeSamples.clear();
+        theGUI.displayBSL(timeSamples);
+        theGUI.setLblCurrentBattery("");
+        theGUI.resetHardwareCheckBoxes();
+        theGUI.setOKLight(false);
+        theGUI.setWarnLight(false);
+        theGUI.setErrorLight(false);
+    } else if (message.equals("AUTO") && !hasError()) {
+        theGUI.powerOnDose = false;
+        MAX_SINGLE_DOSE_EXCEEDED = false;
+        long ct = System.currentTimeMillis() / 1000;
+        long lit = 0;
+        int lid = 0;
+        boolean flag = false;
+        for (int i = timeSamples.size() - 1; i >= 0 && !flag; i--) {
+            if (timeSamples.get(i).getInsulinDose() != 0) {
+                lid = timeSamples.get(i).getInsulinDose();
+                lit = timeSamples.get(i).getTime();
+                flag = true;
+            }
+        }
+        Debug.println("LID = " + lid);
+        float[] bsl = new float[2];
+        int i = 0, j = timeSamples.size() - 1;
+        while (i < 2) {
+            while (timeSamples.get(j).getBloodSugar() < 0) j--;
+            bsl[i++] = timeSamples.get(j--).getBloodSugar();
+        }
+        float previousBSL = bsl[0];
+        float previousPreviousBSL = bsl[1];
+        int compDose = 0;
+        if ((currentBSL >= UNSAFE) && (currentBSL <= UNDESIRABLE)) {
+            // sugar level stable or falling
+            Debug.println("SAFE");
+            if (currentBSL <= previousBSL) {
+                compDose = 0;
+            } else // sugar level increasing but rate of increasing falling
+            if ((currentBSL > previousBSL) && ((currentBSL - previousBSL) < (previousBSL - previousPreviousBSL))) {
+                compDose = 0;
+            } else // a minimum dose must be delivered if rounded to zero
+            if ((currentBSL > previousBSL) && ((currentBSL - previousBSL) >= (previousBSL - previousPreviousBSL)) && (Math.round((currentBSL - previousBSL) / 4) > 0)) {
+                compDose = Math.round((currentBSL - previousBSL) / 4);
+            } else if ((currentBSL > previousBSL) && ((currentBSL - previousBSL) >= (previousBSL - previousPreviousBSL)) && ((Math.round((currentBSL - previousBSL) / 4) == 0))) {
+                compDose = MINSINGLEDOSE;
+            }
+        } else if (currentBSL > UNDESIRABLE) {
+            // sugar level increasing
+            Debug.println("UNDESIRABLE");
+            if ((currentBSL > previousBSL) && (Math.round((currentBSL - previousBSL) / 4) == 0)) {
+                Debug.println("SINGLE DOSE - INCREASING");
+                compDose = MINSINGLEDOSE;
+            } else if ((currentBSL > previousBSL) && (Math.round((currentBSL - previousBSL) / 4) > 0)) {
+                compDose = Math.round((currentBSL - previousBSL) / 4);
+                if (compDose > MAXSINGLEDOSE) {
+                    MAX_SINGLE_DOSE_EXCEEDED = true;
+                    compDose = MAXSINGLEDOSE;
+                }
+                Debug.println("DOSE = " + compDose + " - INCREASING");
+            } else // sugar level stable
+            if (currentBSL == previousBSL) {
+                Debug.println("SINGLE DOSE - STABLE");
+                compDose = MINSINGLEDOSE;
+            } else // sugar level falling and rate of decrease increasing
+            if ((currentBSL < previousBSL) && ((currentBSL - previousBSL) <= (previousBSL - previousPreviousBSL))) {
+                Debug.println("DOSE = 0 - DECREASING");
+                compDose = 0;
+            } else // sugar level falling and rate of decrease decreasing
+            if ((currentBSL < previousBSL) && ((currentBSL - previousBSL) > (previousBSL - previousPreviousBSL))) {
+                Debug.println("SINGLE DOSE - DECREASING");
+                compDose = MINSINGLEDOSE;
+            }
+        }
+        theHardware.insulinLevel -= compDose;
+        theHardware.accumulatedDose += compDose;
+        Sample newSample = new Sample((System.currentTimeMillis() / 1000), currentBSL, compDose, theHardware.insulinLevel);
+        timeSamples.add(newSample);
+        theGUI.displayBSL(timeSamples);
+        currentBSL = (float) (currentBSL - 3 * Math.pow(Math.E, -((ct - lit) / lid) * 0.04));
+        if (currentBSL < 0)
+            currentBSL = 0;
+    } else if (message.equals("START_MANUAL") && !hasError()) {
+        theGUI.powerOnDose = false;
+        theGUI.giveDoseGag();
+        autoTimer.gag();
+        manualDoseAmount = 0;
+        manualTimer = new Timer("END_MANUAL", 5, this);
+    } else if (message.equals("END_MANUAL")) {
+        int dose;
+        manualTimer.die();
+        theGUI.giveDoseGag();
+        autoTimer.ungag();
+        dose = manualDoseAmount;
+        Debug.println("DOSE = " + dose);
+        if (dose > 0) {
+            manualDoseAmount = 0;
+            if (dose > theHardware.insulinLevel)
+                dose = theHardware.insulinLevel;
+            if (dose > MAXSINGLEDOSE)
+                MAX_SINGLE_DOSE_EXCEEDED = true;
+            else
+                MAX_SINGLE_DOSE_EXCEEDED = false;
+            theHardware.insulinLevel -= dose;
+            Sample newSample = new Sample((System.currentTimeMillis() / 1000), -1, dose, theHardware.insulinLevel);
+            timeSamples.add(newSample);
+            theGUI.displayBSL(timeSamples);
+        }
+    } else if (message.equals("GIVE_DOSE_CLICK")) {
+        manualDoseAmount++;
+    } else if (message.equals("NEXT_WARN_ERROR")) {
+        displayNextWarnError();
+    } else if (message.equals("BATTERY")) {
+        theHardware.battery -= 4;
+        theGUI.setLblCurrentBattery(Integer.toString(theHardware.battery));
+    }
+}

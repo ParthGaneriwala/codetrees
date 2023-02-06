@@ -1,0 +1,76 @@
+public int run(String[] argv) throws IOException {
+    JobConf job = new JobConf(getConf());
+    EnumSet<CCodec> cc = null;
+    EnumSet<CType> ct = null;
+    EnumSet<Format> f = null;
+    EnumSet<RW> rw = null;
+    Path root = null;
+    FileSystem fs = FileSystem.get(job);
+    for (int i = 0; i < argv.length; ++i) {
+        try {
+            if ("-dir".equals(argv[i])) {
+                root = new Path(argv[++i]).makeQualified(fs);
+                System.out.println("DIR: " + root.toString());
+            } else if ("-seed".equals(argv[i])) {
+                job.setLong("filebench.seed", Long.valueOf(argv[++i]));
+            } else if (argv[i].startsWith("-no")) {
+                String arg = argv[i].substring(3);
+                cc = rem(CCodec.class, cc, arg);
+                ct = rem(CType.class, ct, arg);
+                f = rem(Format.class, f, arg);
+                rw = rem(RW.class, rw, arg);
+            } else {
+                String arg = argv[i].substring(1);
+                cc = add(CCodec.class, cc, arg);
+                ct = add(CType.class, ct, arg);
+                f = add(Format.class, f, arg);
+                rw = add(RW.class, rw, arg);
+            }
+        } catch (Exception e) {
+            throw (IOException) new IOException().initCause(e);
+        }
+    }
+    if (null == root) {
+        System.out.println("Missing -dir param");
+        printUsage();
+        return -1;
+    }
+    fillBlocks(job);
+    job.setOutputKeyClass(Text.class);
+    job.setOutputValueClass(Text.class);
+    FileInputFormat.setInputPaths(job, root);
+    FileOutputFormat.setOutputPath(job, root);
+    if (null == cc)
+        cc = EnumSet.allOf(CCodec.class);
+    if (null == ct)
+        ct = EnumSet.allOf(CType.class);
+    if (null == f)
+        f = EnumSet.allOf(Format.class);
+    if (null == rw)
+        rw = EnumSet.allOf(RW.class);
+    for (RW rwop : rw) {
+        for (Format fmt : f) {
+            fmt.configure(job);
+            for (CCodec cod : cc) {
+                cod.configure(job);
+                if (!(fmt == Format.txt || cod == CCodec.pln)) {
+                    for (CType typ : ct) {
+                        String fn = fmt.name().toUpperCase() + "_" + cod.name().toUpperCase() + "_" + typ.name().toUpperCase();
+                        typ.configure(job);
+                        System.out.print(rwop.name().toUpperCase() + " " + fn + ": ");
+                        System.out.println(rwop.exec(fn, job) / 1000 + " seconds");
+                    }
+                } else {
+                    String fn = fmt.name().toUpperCase() + "_" + cod.name().toUpperCase();
+                    Path p = new Path(root, fn);
+                    if (rwop == RW.r && !fs.exists(p)) {
+                        fn += cod.getExt();
+                    }
+                    System.out.print(rwop.name().toUpperCase() + " " + fn + ": ");
+                    System.out.println(rwop.exec(fn, job) / 1000 + " seconds");
+                }
+            }
+        }
+    }
+    return 0;
+}

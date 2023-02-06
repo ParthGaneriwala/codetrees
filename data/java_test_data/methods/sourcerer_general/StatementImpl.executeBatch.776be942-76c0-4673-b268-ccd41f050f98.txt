@@ -1,0 +1,91 @@
+public synchronized int[] executeBatch() throws SQLException {
+    checkClosed();
+    MySQLConnection locallyScopedConn = this.connection;
+    if (locallyScopedConn.isReadOnly()) {
+        throw SQLError.createSQLException(Messages.getString(// $NON-NLS-1$
+        "Statement.34") + // $NON-NLS-1$
+        Messages.getString("Statement.35"), SQLError.SQL_STATE_ILLEGAL_ARGUMENT, // $NON-NLS-1$
+        getExceptionInterceptor());
+    }
+    if (this.results != null) {
+        if (!locallyScopedConn.getHoldResultsOpenOverStatementClose()) {
+            this.results.realClose(false);
+        }
+    }
+    synchronized (locallyScopedConn.getMutex()) {
+        if (this.batchedArgs == null || this.batchedArgs.size() == 0) {
+            return new int[0];
+        }
+        // we timeout the entire batch, not individual statements
+        int individualStatementTimeout = this.timeoutInMillis;
+        this.timeoutInMillis = 0;
+        CancelTask timeoutTask = null;
+        try {
+            resetCancelledState();
+            // The JDBC spec doesn't forbid this, but doesn't provide for it either...we do..
+            this.retrieveGeneratedKeys = true;
+            int[] updateCounts = null;
+            if (this.batchedArgs != null) {
+                int nbrCommands = this.batchedArgs.size();
+                this.batchedGeneratedKeys = new ArrayList(this.batchedArgs.size());
+                boolean multiQueriesEnabled = locallyScopedConn.getAllowMultiQueries();
+                if (locallyScopedConn.versionMeetsMinimum(4, 1, 1) && (multiQueriesEnabled || (locallyScopedConn.getRewriteBatchedStatements() && nbrCommands > 4))) {
+                    return executeBatchUsingMultiQueries(multiQueriesEnabled, nbrCommands, individualStatementTimeout);
+                }
+                if (locallyScopedConn.getEnableQueryTimeouts() && individualStatementTimeout != 0 && locallyScopedConn.versionMeetsMinimum(5, 0, 0)) {
+                    timeoutTask = new CancelTask(this);
+                    locallyScopedConn.getCancelTimer().schedule(timeoutTask, individualStatementTimeout);
+                }
+                updateCounts = new int[nbrCommands];
+                for (int i = 0; i < nbrCommands; i++) {
+                    updateCounts[i] = -3;
+                }
+                SQLException sqlEx = null;
+                int commandIndex = 0;
+                for (commandIndex = 0; commandIndex < nbrCommands; commandIndex++) {
+                    try {
+                        String sql = (String) this.batchedArgs.get(commandIndex);
+                        updateCounts[commandIndex] = executeUpdate(sql, true, true);
+                        // limit one generated key per OnDuplicateKey statement
+                        getBatchedGeneratedKeys(containsOnDuplicateKeyInString(sql) ? 1 : 0);
+                    } catch (SQLException ex) {
+                        updateCounts[commandIndex] = EXECUTE_FAILED;
+                        if (this.continueBatchOnError && !(ex instanceof MySQLTimeoutException) && !(ex instanceof MySQLStatementCancelledException) && !hasDeadlockOrTimeoutRolledBackTx(ex)) {
+                            sqlEx = ex;
+                        } else {
+                            int[] newUpdateCounts = new int[commandIndex];
+                            if (hasDeadlockOrTimeoutRolledBackTx(ex)) {
+                                for (int i = 0; i < newUpdateCounts.length; i++) {
+                                    newUpdateCounts[i] = Statement.EXECUTE_FAILED;
+                                }
+                            } else {
+                                System.arraycopy(updateCounts, 0, newUpdateCounts, 0, commandIndex);
+                            }
+                            throw new java.sql.BatchUpdateException(ex.getMessage(), ex.getSQLState(), ex.getErrorCode(), newUpdateCounts);
+                        }
+                    }
+                }
+                if (sqlEx != null) {
+                    throw new java.sql.BatchUpdateException(sqlEx.getMessage(), sqlEx.getSQLState(), sqlEx.getErrorCode(), updateCounts);
+                }
+            }
+            if (timeoutTask != null) {
+                if (timeoutTask.caughtWhileCancelling != null) {
+                    throw timeoutTask.caughtWhileCancelling;
+                }
+                timeoutTask.cancel();
+                locallyScopedConn.getCancelTimer().purge();
+                timeoutTask = null;
+            }
+            return (updateCounts != null) ? updateCounts : new int[0];
+        } finally {
+            if (timeoutTask != null) {
+                timeoutTask.cancel();
+                locallyScopedConn.getCancelTimer().purge();
+            }
+            resetCancelledState();
+            this.timeoutInMillis = individualStatementTimeout;
+            clearBatch();
+        }
+    }
+}

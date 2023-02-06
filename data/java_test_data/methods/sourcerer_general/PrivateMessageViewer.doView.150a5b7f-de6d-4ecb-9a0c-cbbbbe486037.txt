@@ -1,0 +1,53 @@
+public String doView(RenderRequest request, RenderResponse response) throws Exception {
+    // The JSP to show upon success
+    String defaultView = VIEW_PAGE;
+    // General display preferences
+    request.setAttribute(TITLE, request.getPreferences().getValue(PREF_TITLE, "Message"));
+    // Determine the project container to use
+    Project project = findProject(request);
+    // Check the user's permissions
+    User user = getUser(request);
+    if (!ProjectUtils.hasAccess(project.getId(), user, "project-private-messages-view")) {
+        throw new PortletException("Unauthorized to view in this project");
+    }
+    String folder = PortalUtils.getPageView(request);
+    request.setAttribute(FOLDER, folder);
+    // Determine the database connection to use
+    Connection db = useConnection(request);
+    boolean validAccess = false;
+    String messageId = PortalUtils.getPageParameter(request);
+    PrivateMessage privateMessage = new PrivateMessage(db, Integer.parseInt(messageId));
+    if (privateMessage.getProjectId() == project.getId()) {
+        // viewing a message in the inbox
+        request.setAttribute(PRIVATE_MESSAGE, privateMessage);
+        validAccess = true;
+    } else {
+        // viewing a reply to a message
+        int parentId = privateMessage.getParentId();
+        if (parentId != -1) {
+            PrivateMessage parentPrivateMessage = new PrivateMessage(db, parentId);
+            if (parentPrivateMessage.getProjectId() == project.getId()) {
+                validAccess = true;
+                request.setAttribute(PRIVATE_MESSAGE, privateMessage);
+            }
+        } else {
+            // a user viewing his sent messages in his profile
+            int privateMessageEnteredBy = privateMessage.getEnteredBy();
+            User enteredByUser = UserUtils.loadUser(privateMessageEnteredBy);
+            if (project.getId() == enteredByUser.getProfileProjectId()) {
+                validAccess = true;
+                request.setAttribute(PRIVATE_MESSAGE, privateMessage);
+            } else {
+                throw new PortletException("Unauthorized access to message");
+            }
+        }
+    }
+    if (privateMessage.getReadBy() == -1 && validAccess) {
+        privateMessage.setReadDate(new Timestamp(Calendar.getInstance().getTimeInMillis()));
+        privateMessage.setReadBy(user.getId());
+        privateMessage.update(db);
+    }
+    request.setAttribute(PROJECT, project);
+    // JSP view
+    return defaultView;
+}

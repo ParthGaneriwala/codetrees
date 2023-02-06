@@ -1,0 +1,164 @@
+public static void main(String[] args) throws ClassNotFoundException, IOException, InterruptedException {
+    String s = null;
+    Integer is = 0;
+    initGUI();
+    while (true) {
+        try {
+            // Poll every ~10 ms
+            Thread.sleep(5);
+        } catch (InterruptedException e) {
+        }
+        switch(connectionStatus) {
+            case BEGIN_CONNECT:
+                try {
+                    // Try to set up a server if host
+                    if (isHost) {
+                        hostServer = new ServerSocket(port);
+                        socket = hostServer.accept();
+                    } else // If guest, try to connect to the server
+                    {
+                        socket = new Socket(hostIP, port);
+                    }
+                    // in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                    // out = new PrintWriter(socket.getOutputStream(), true);
+                    bis = new BufferedInputStream(socket.getInputStream());
+                    bos = new BufferedOutputStream(socket.getOutputStream());
+                    changeStatusTS(CONNECTED, true);
+                }// If error, clean up and output an error message
+                 catch (IOException e) {
+                    cleanUp();
+                    changeStatusTS(DISCONNECTED, false);
+                }
+                break;
+            case CONNECTED:
+                try {
+                    if (toSend.length() != 0) {
+                        byte[] codificar = new byte[64];
+                        byte[] codificar2 = new byte[64];
+                        codificar = toSend.toString().getBytes("ISO-8859-1");
+                        codificar2 = "chave_grande_pra_testar_tamanho_do_byte".getBytes("ISO-8859-1");
+                        CarregadorChavePublica ccp = new CarregadorChavePublica();
+                        PublicKey pub = ccp.carregaChavePublica(new File("chave.publica"));
+                        Cifrador cf = new Cifrador();
+                        try {
+                            byte[][] cifrado = cf.cifra(pub, codificar);
+                            System.out.println(cifrado[0].length + "tamanho do texto_cifrado");
+                            System.out.println(cifrado[1].length + "tamanho da chave cifrada");
+                            int j = 0;
+                            int k = 0;
+                            byte[] ciff = new byte[cifrado[0].length];
+                            ciff = cifrado[0];
+                            byte[] ciff2 = new byte[cifrado[1].length];
+                            ciff2 = cifrado[1];
+                            byte[] enviar = new byte[cifrado[0].length + cifrado[1].length];
+                            for (int i = 0; i < 128 + ciff.length; i++) {
+                                if (i < 128) {
+                                    enviar[i] = ciff2[i];
+                                    j = 128;
+                                }
+                                if (i >= 128 && i < 128 + ciff.length) {
+                                    enviar[j] = ciff[k];
+                                    j++;
+                                    k++;
+                                }
+                            }
+                            System.out.println(new String(cifrado[1], "ISO-8859-1") + "  saida de chave cifrada");
+                            System.out.println(new String(cifrado[0], "ISO-8859-1") + "  saida de texto cifrado");
+                            System.out.println(enviar.length);
+                            bos.write(enviar, 0, enviar.length);
+                            chatText2.append("CRIPTO: " + new String(cifrado[0], "ISO-8859-1") + "\n");
+                        } catch (NoSuchAlgorithmException ex) {
+                            Logger.getLogger(TCPChat.class.getName()).log(Level.SEVERE, null, ex);
+                        } catch (NoSuchPaddingException ex) {
+                            Logger.getLogger(TCPChat.class.getName()).log(Level.SEVERE, null, ex);
+                        } catch (InvalidKeyException ex) {
+                            Logger.getLogger(TCPChat.class.getName()).log(Level.SEVERE, null, ex);
+                        } catch (IllegalBlockSizeException ex) {
+                            Logger.getLogger(TCPChat.class.getName()).log(Level.SEVERE, null, ex);
+                        } catch (BadPaddingException ex) {
+                            Logger.getLogger(TCPChat.class.getName()).log(Level.SEVERE, null, ex);
+                        } catch (InvalidAlgorithmParameterException ex) {
+                            Logger.getLogger(TCPChat.class.getName()).log(Level.SEVERE, null, ex);
+                        }
+                        bos.flush();
+                        toSend.setLength(0);
+                        changeStatusTS(NULL, true);
+                    }
+                    // Receive data
+                    if (bis.available() > 1) {
+                        int tamanho = bis.available();
+                        System.out.println(tamanho + "tamanho da saida");
+                        byte[] ler = new byte[tamanho];
+                        bis.read(ler, 0, tamanho);
+                        System.out.println(new String(ler, "ISO-8859-1") + "  saida de dados");
+                        byte[] texto_decrypt = new byte[tamanho - 128];
+                        byte[] chave_decrypt = new byte[128];
+                        int j = 0;
+                        for (int i = 0; i < ler.length; i++) {
+                            if (i < 128) {
+                                chave_decrypt[i] = ler[i];
+                                j = 0;
+                            }
+                            if (i >= 128 && i < tamanho) {
+                                texto_decrypt[j] = ler[i];
+                                j++;
+                            }
+                        }
+                        System.out.println(chave_decrypt.length + "  saida de chave cifrada");
+                        System.out.println(texto_decrypt.length + "  saida de texto cifrado");
+                        // -- Decifrando a mensagem
+                        CarregadorChavePrivada ccpv = new CarregadorChavePrivada();
+                        System.out.println("carregando chave");
+                        PrivateKey pvk = ccpv.carregaChavePrivada(new File("chave.privada"));
+                        System.out.println("chave carregada");
+                        Decifrador dcf = new Decifrador();
+                        byte[] decifrado = null;
+                        try {
+                            decifrado = dcf.decifra(pvk, texto_decrypt, chave_decrypt);
+                        } catch (NoSuchAlgorithmException ex) {
+                            Logger.getLogger(TCPChat.class.getName()).log(Level.SEVERE, null, ex);
+                        } catch (NoSuchPaddingException ex) {
+                            Logger.getLogger(TCPChat.class.getName()).log(Level.SEVERE, null, ex);
+                        } catch (InvalidKeyException ex) {
+                            Logger.getLogger(TCPChat.class.getName()).log(Level.SEVERE, null, ex);
+                        } catch (IllegalBlockSizeException ex) {
+                            Logger.getLogger(TCPChat.class.getName()).log(Level.SEVERE, null, ex);
+                        } catch (BadPaddingException ex) {
+                            ex.printStackTrace();
+                            Logger.getLogger(TCPChat.class.getName()).log(Level.SEVERE, null, ex);
+                        } catch (InvalidAlgorithmParameterException ex) {
+                            Logger.getLogger(TCPChat.class.getName()).log(Level.SEVERE, null, ex);
+                        }
+                        String mensagem_recebida_decriptografada = new String(decifrado, "ISO-8859-1");
+                        System.out.println(mensagem_recebida_decriptografada + "  mensagem recebida");
+                        if ((mensagem_recebida_decriptografada != null) && (mensagem_recebida_decriptografada.length() != 0)) {
+                            // Check if it is the end of a trasmission
+                            if (mensagem_recebida_decriptografada.equals(END_CHAT_SESSION)) {
+                                changeStatusTS(DISCONNECTING, true);
+                            } else // Otherwise, receive what text
+                            {
+                                appendToChatBox("RECEBIDO: " + new String(texto_decrypt, "ISO-8859-1") + "\n");
+                                chatText2.append("DECRIPTO: " + mensagem_recebida_decriptografada + "\n");
+                                changeStatusTS(NULL, true);
+                            }
+                        }
+                    }
+                } catch (IOException e) {
+                    cleanUp();
+                    changeStatusTS(DISCONNECTED, false);
+                }
+                break;
+            case DISCONNECTING:
+                // Tell other chatter to disconnect as well
+                out.write(END_CHAT_SESSION, 0, END_CHAT_SESSION.length());
+                bos.flush();
+                // Clean up (close all streams/sockets)
+                cleanUp();
+                changeStatusTS(DISCONNECTED, true);
+                break;
+            // do nothing
+            default:
+                break;
+        }
+    }
+}

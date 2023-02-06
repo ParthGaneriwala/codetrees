@@ -1,0 +1,53 @@
+private Iq handlePubSubPublish(JID from, XmlStanza stanza, Iq iq, PubSubExtension pubSubExtension) {
+    Iq iqResponse = null;
+    Iq.Type type = iq.getType();
+    if (type != Iq.Type.set) {
+        iqResponse = PacketUtils.createErrorIq(iq);
+        iqResponse.setError(new XmppError(XmppError.Condition.bad_request));
+        if (iqResponse.getFrom() == null) {
+            iqResponse.setFrom(new JID(null, getSubDomain(), null));
+        }
+        return iqResponse;
+    }
+    String jid = from.toBareJID();
+    PubSubPublish pubSubPublish = (PubSubPublish) stanza;
+    String node = pubSubPublish.getNode();
+    List<PubSubItem> items = new ArrayList<PubSubItem>();
+    for (PubSubPublish.Item item : pubSubPublish.getItems()) {
+        PubSubItem pubSubItem = new PubSubItem();
+        pubSubItem.setServiceId(PubSubManagerImpl.this.getServiceId());
+        pubSubItem.setNodeId(node);
+        pubSubItem.setJid(jid);
+        pubSubItem.setPayload(item.getPayload());
+        String itemId = item.getId();
+        if (itemId == null) {
+            itemId = StringUtils.hash(node + System.nanoTime(), "MD5");
+        }
+        pubSubItem.setItemId(itemId);
+        items.add(pubSubItem);
+    }
+    try {
+        pubSubEngine.publishItem(jid, node, items.toArray(new PubSubItem[] {}));
+        PubSubExtension pubSubExtensionResponse = new PubSubExtension(pubSubExtension.getNamespace());
+        PubSubPublish pubSubPublishResponse = new PubSubPublish(node);
+        for (PubSubItem item : items) {
+            PubSubPublish.Item pubSubItem = new PubSubPublish.Item(item.getItemId());
+            pubSubPublishResponse.addItem(pubSubItem);
+        }
+        pubSubExtensionResponse.addStanza(pubSubPublishResponse);
+        iqResponse = PacketUtils.createResultIq(iq);
+        iqResponse.addExtension(pubSubExtensionResponse);
+    } catch (NodeNotExistException e) {
+        iqResponse = PacketUtils.createErrorIq(iq);
+        iqResponse.setError(new XmppError(XmppError.Condition.item_not_found));
+    } catch (CannotPublishException e) {
+        iqResponse = PacketUtils.createErrorIq(iq);
+        iqResponse.setError(new XmppError(XmppError.Condition.forbidden));
+    } catch (Exception e) {
+        // TODO Auto-generated catch block
+        e.printStackTrace();
+        iqResponse = PacketUtils.createErrorIq(iq);
+        iqResponse.setError(new XmppError(XmppError.Condition.internal_server_error));
+    }
+    return iqResponse;
+}

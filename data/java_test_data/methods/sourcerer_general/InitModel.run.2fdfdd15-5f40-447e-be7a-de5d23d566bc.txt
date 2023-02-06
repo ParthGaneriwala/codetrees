@@ -1,0 +1,41 @@
+private void run() throws Exception {
+    if (opts.order < 2 || opts.order > LM_NAMES.length) {
+        System.err.printf("LM order must be between 2 and %d\n", LM_NAMES.length);
+        return;
+    }
+    dataFiles = opts.data.split(",");
+    // create the hierarchy of descriptions
+    Map<String, FactorDescription> descriptions = createDescriptions();
+    // populate vocabularies and create tuple description
+    WordClassConfig wordClassConfig = opts.numClasses < 1 ? null : new WordClassConfig(opts.numClasses, opts.noClassFile);
+    FactorTupleDescription tupleDescription = createVocabs(descriptions, wordClassConfig);
+    // initialize the experiment
+    Experiment.initialize();
+    Experiment exp = Experiment.getInstance();
+    exp.setTupleDescription(tupleDescription);
+    // set up the LMs
+    LinkedList<LanguageModel> lms = new LinkedList<LanguageModel>();
+    for (byte o = 1; o <= opts.order; ++o) {
+        String lmName = LM_NAMES[o - 1];
+        LanguageModel lm = new LanguageModel(lmName + "-lm", o, o);
+        exp.addLM(lm);
+        lms.addFirst(lm);
+        if (lm.getOrder() > 1) {
+            tuneLM(lm);
+        }
+        String forestName = o == opts.order ? LanguageModel.PRIMARY_LM_ID : LM_NAMES[o - 1];
+        ForestModel forest = new ForestModel(forestName);
+        for (LanguageModel _lm : lms) {
+            forest.addLM(_lm);
+        }
+        exp.addForest(forest);
+    }
+    // create shell scripts to train the LM
+    processTemplates();
+    // create the HFT
+    HFTTrainerMDI.trainHFT(dataFiles, true, null, opts.jobs);
+    exp.buildPrefixes();
+    // convert FLM data into binary format
+    convertFLMs();
+    exp.saveConfig(opts.config);
+}

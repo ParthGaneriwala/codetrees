@@ -1,0 +1,100 @@
+private void Solve(final BBTimeStep step) {
+    // Size the island for the worst case.
+    BBIsland island = new BBIsland(m_bodyCount, m_contactManager.m_contactCount, m_jointCount, m_contactManager.m_contactListener);
+    // Clear all the island flags.
+    for (BBBody b = m_bodyList; b != null; b = b.m_next) {
+        b.m_flags &= ~BBBody.e_islandFlag;
+    }
+    for (BBContact c = m_contactManager.m_contactList; c != null; c = c.m_next) {
+        c.m_flags &= ~BBContact.e_islandFlag;
+    }
+    for (BBJoint j = m_jointList; j != null; j = j.m_next) {
+        j.m_islandFlag = false;
+    }
+    // Build and simulate all awake islands.
+    int stackSize = m_bodyCount;
+    BBBody[] stack = new BBBody[stackSize];
+    for (BBBody seed = m_bodyList; seed != null; seed = seed.m_next) {
+        if ((seed.m_flags & (BBBody.e_islandFlag | BBBody.e_sleepFlag)) != 0) {
+            continue;
+        }
+        if (seed.isStatic()) {
+            continue;
+        }
+        // Reset island and stack.
+        island.Clear();
+        int stackCount = 0;
+        stack[stackCount++] = seed;
+        seed.m_flags |= BBBody.e_islandFlag;
+        // Perform a depth first search (DFS) on the constraint graph.
+        while (stackCount > 0) {
+            // Grab the next body off the stack and add it to the island.
+            BBBody b = stack[--stackCount];
+            island.add(b);
+            // Make sure the body is awake.
+            b.m_flags &= ~BBBody.e_sleepFlag;
+            // propagate islands across static bodies.
+            if (b.isStatic()) {
+                continue;
+            }
+            // Search all contacts connected to this body.
+            for (BBContactEdge ce = b.m_contactList; ce != null; ce = ce.next) {
+                // Has this contact already been added to an island?
+                if ((ce.contact.m_flags & BBContact.e_islandFlag) != 0) {
+                    continue;
+                }
+                // Is this contact solid and touching?
+                if (!ce.contact.isSolid() || !ce.contact.isTouching()) {
+                    continue;
+                }
+                island.add(ce.contact);
+                ce.contact.m_flags |= BBContact.e_islandFlag;
+                BBBody other = ce.other;
+                // Was the other body already added to this island?
+                if ((other.m_flags & BBBody.e_islandFlag) != 0) {
+                    continue;
+                }
+                assert (stackCount < stackSize);
+                stack[stackCount++] = other;
+                other.m_flags |= BBBody.e_islandFlag;
+            }
+            // Search all joints connect to this body.
+            for (BBJointEdge je = b.m_jointList; je != null; je = je.next) {
+                if (je.joint.m_islandFlag) {
+                    continue;
+                }
+                island.add(je.joint);
+                je.joint.m_islandFlag = true;
+                BBBody other = je.other;
+                if ((other.m_flags & BBBody.e_islandFlag) != 0) {
+                    continue;
+                }
+                assert (stackCount < stackSize);
+                stack[stackCount++] = other;
+                other.m_flags |= BBBody.e_islandFlag;
+            }
+        }
+        island.solve(step, m_gravity, m_allowSleep);
+        // Post solve cleanup.
+        for (int i = 0; i < island.m_bodyCount; ++i) {
+            // Allow static bodies to participate in other islands.
+            BBBody b = island.m_bodies[i];
+            if (b.isStatic()) {
+                b.m_flags &= ~BBBody.e_islandFlag;
+            }
+        }
+    }
+    // synchronize fixtures, check for out of range bodies.
+    for (BBBody b = m_bodyList; b != null; b = b.getNext()) {
+        if ((b.m_flags & BBBody.e_sleepFlag) != 0) {
+            continue;
+        }
+        if (b.isStatic()) {
+            continue;
+        }
+        // Update fixtures (for broad-phase).
+        b.synchronizeFixtures();
+    }
+    // Look for new contacts.
+    m_contactManager.findNewContacts();
+}

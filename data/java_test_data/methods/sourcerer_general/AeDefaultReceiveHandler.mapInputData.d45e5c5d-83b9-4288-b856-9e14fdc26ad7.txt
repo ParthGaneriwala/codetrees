@@ -1,0 +1,59 @@
+public IAeMessageData mapInputData(IAeProcessPlan aPlan, AeExtendedMessageContext aContext, Document[] aDocArray) throws AeBusinessProcessException {
+    // Find the WSDL def for service
+    QName portTypeQName = getMyRolePortTypeQName(aPlan, aContext);
+    AeBPELExtendedWSDLDef portTypeDef = AeWSDLDefHelper.getWSDLDefinitionForPortType(aPlan, portTypeQName);
+    // Match the signature to an operation
+    AeOperationSignatureMatcher opFinder = new AeOperationSignatureMatcher(portTypeDef, portTypeQName, aContext.getOperation(), aDocArray);
+    if (!opFinder.foundMatch()) {
+        // $NON-NLS-1$
+        throw new AeBusinessProcessException(AeMessages.getString("AeBPELReceiveHandler.0"));
+    }
+    // update the operation on the context
+    aContext.setOperation(opFinder.getOperationName());
+    Operation operation = opFinder.getOperation();
+    if (operation.getOutput() != null) {
+        AeBPELExtendedWSDLDef outputMessageDef = AeWSDLDefHelper.getWSDLDefinitionForMsg(aPlan, operation.getOutput().getMessage().getQName());
+        if (outputMessageDef == null) {
+            // $NON-NLS-1$
+            throw new AeBusinessProcessException(AeMessages.format("AeDefaultReceiveHandler.MSG_NOT_FOUND", operation.getOutput().getMessage().getQName()));
+        }
+        aContext.setProperty(AE_CONTEXT_KEY_WSDL_OUTPUT, outputMessageDef);
+    }
+    // create the input data
+    Map partAsKeyMap = opFinder.getPartsMap();
+    IAeMessageData inputMsg = AeMessageDataFactory.instance().createMessageData(opFinder.getMessageName());
+    for (Iterator iter = partAsKeyMap.keySet().iterator(); iter.hasNext(); ) {
+        // Get the Part from the data map and determine the part type
+        Part part = (Part) iter.next();
+        XMLType type = null;
+        boolean complex = false;
+        if (part.getTypeName() != null) {
+            try {
+                type = portTypeDef.findType(part.getTypeName());
+            } catch (AeException ex) {
+                throw new AeBusinessProcessException(ex.getLocalizedMessage(), ex);
+            }
+            complex = AeXmlUtil.isComplexOrAny(type);
+        } else if (part.getElementName() != null) {
+            complex = true;
+            ElementDecl element = portTypeDef.findElement(part.getElementName());
+            if (element != null)
+                type = element.getType();
+        }
+        Document doc = (Document) partAsKeyMap.get(part);
+        if (type == null || complex) {
+            // with no namespace (per WS-I BP 1)
+            if (part.getTypeName() != null) {
+                Element root = doc.getDocumentElement();
+                if (!AeUtil.compareObjects(part.getName(), root.getLocalName()) || !AeUtil.isNullOrEmpty(root.getNamespaceURI())) {
+                    doc = AeXmlUtil.createMessagePartTypeDocument(part.getName(), root);
+                }
+            }
+            inputMsg.setData(part.getName(), doc);
+        } else {
+            // Concat all text nodes to get the data value
+            inputMsg.setData(part.getName(), AeXmlUtil.getText(doc.getDocumentElement()));
+        }
+    }
+    return inputMsg;
+}

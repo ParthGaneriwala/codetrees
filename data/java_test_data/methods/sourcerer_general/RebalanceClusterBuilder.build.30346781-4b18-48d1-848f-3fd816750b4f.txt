@@ -1,0 +1,35 @@
+public void build(String targetClusterXmlFile, String host, int httpPort, int socketPort, int adminPort) throws IOException {
+    // First find the store with the highest N
+    StoreDefinition store = stores.get(0);
+    for (int i = 1; i < stores.size(); i++) {
+        StoreDefinition curr = stores.get(i);
+        if (store.getReplicationFactor() > curr.getReplicationFactor())
+            store = curr;
+    }
+    RebalanceClusterTool clusterTool = new RebalanceClusterTool(cluster, store);
+    VoldemortClusterViewer voldemortClusterViewer = new VoldemortClusterViewer(cluster, store);
+    System.out.println("Original layout: ");
+    voldemortClusterViewer.viewMasterToReplica();
+    Node template = new Node(cluster.getNumberOfNodes(), host, httpPort, socketPort, adminPort, ImmutableList.<Integer>of());
+    System.out.println("Inserting " + template + "\n");
+    System.out.println("Configuration " + Joiner.on(" ").withKeyValueSeparator("=").join(ImmutableMap.<String, Integer>builder().put("maxRemappedReplicas", maxRemappedReplicas).put("minNumPartitions", minNumPartitions).put("desiredNumPartitions", desiredNumPartitions).build()));
+    Cluster targetCluster = clusterTool.insertNode(template, minNumPartitions, desiredNumPartitions, maxRemappedReplicas);
+    if (targetCluster == null)
+        Utils.croak("Unable to insert " + template + " into " + cluster);
+    System.out.println("Created target cluster layout: ");
+    voldemortClusterViewer.viewMasterToReplica(targetCluster);
+    voldemortClusterViewer.compareToCluster(targetCluster);
+    String clusterXmlString = new ClusterMapper().writeCluster(targetCluster);
+    if (targetClusterXmlFile == null) {
+        System.err.println("Warning: target-cluster not specified, printing to STDOUT instead\n");
+        System.out.println(clusterXmlString);
+    } else {
+        BufferedWriter out = new BufferedWriter(new FileWriter(targetClusterXmlFile));
+        try {
+            out.write(clusterXmlString);
+        } finally {
+            out.close();
+        }
+        System.out.println("Wrote target cluster.xml to " + targetClusterXmlFile);
+    }
+}

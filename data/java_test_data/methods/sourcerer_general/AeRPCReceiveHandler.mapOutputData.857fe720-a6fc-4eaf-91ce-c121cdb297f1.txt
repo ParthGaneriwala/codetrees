@@ -1,0 +1,63 @@
+public IAeWebServiceResponse mapOutputData(IAeExtendedMessageContext aContext, IAeWebServiceResponse aResponse) throws AeBusinessProcessException {
+    try {
+        MessageContext axisContext = (MessageContext) aContext.getProperty(MessageContext.class.getName());
+        SOAPEnvelope reqEnv = axisContext.getRequestMessage().getSOAPEnvelope();
+        RPCElement reqBody = findFirstRPCElement(reqEnv);
+        // If we don't have a response message, make sure we set one up
+        // with the appropriate versions of SOAP and Schema
+        SOAPEnvelope resEnv = (SOAPEnvelope) createEnvelope();
+        // Setup the response message body based on information in the request body
+        // $NON-NLS-1$
+        RPCElement resBody = new RPCElement(reqBody.getMethodName() + "Response");
+        resBody.setPrefix(reqBody.getPrefix());
+        resBody.setNamespaceURI(reqBody.getNamespaceURI());
+        resBody.setEncodingStyle(aContext.getEncodingStyle());
+        // Get the definition for the output message type
+        IAeWebServiceMessageData outputMsg = aResponse.getMessageData();
+        AeBPELExtendedWSDLDef def = (AeBPELExtendedWSDLDef) aContext.getProperty(AE_CONTEXT_KEY_WSDL_OUTPUT);
+        if (def == null) {
+            IAeProcessPlan plan = getProcessPlan(AeMessageContext.convert(aContext));
+            def = AeWSDLDefHelper.getWSDLDefinitionForMsg(plan, outputMsg.getMessageType());
+        }
+        Message outputMessage = def.getMessage(outputMsg.getMessageType());
+        // Loop through all parts for the ouput message and add an output param to the response body
+        for (Iterator iter = outputMessage.getOrderedParts(null).iterator(); iter.hasNext(); ) {
+            Part part = (Part) iter.next();
+            Object partData = outputMsg.getMessageData().get(part.getName());
+            // if it's a derived simple type, then add a wrapper so it'll hit our serializer
+            if (!(partData instanceof Document) && def.isDerivedSimpleType(part)) {
+                partData = new AeSimpleValueWrapper(partData);
+            }
+            // if it's a Document and a type, make sure it has an xsi:type value
+            if (partData instanceof Document && AeBPELExtendedWSDLDef.isXsiTypeRequired(part, (Document) partData)) {
+                AeXmlUtil.declarePartType((Document) partData, part.getTypeName());
+            }
+            // the part name will be namespace qualified only if it's an element
+            QName partQName = null;
+            if (part.getElementName() == null) {
+                // $NON-NLS-1$
+                partQName = new QName("", part.getName());
+            } else {
+                Document doc = (Document) partData;
+                partQName = AeXmlUtil.getElementType(doc.getDocumentElement());
+            }
+            RPCParam rpcParam = new RPCParam(partQName, partData);
+            resBody.addParam(rpcParam);
+            // here to ensure that the operation is set since I need it to set the param descriptor
+            if (aContext.getOperation() == null) {
+                reqBody.deserialize();
+            }
+            if (aContext.getOperation() != null) {
+                // $NON-NLS-1$
+                rpcParam.setParamDesc(axisContext.getOperation().getParamByQName(new QName("", part.getName())));
+            }
+        }
+        // Add the response body to the response envelope
+        resEnv.addBodyElement(resBody);
+        mapResponseAddressing(resEnv, aContext.getWsAddressingHeaders());
+        return createWsResponse(aResponse, resEnv);
+    } catch (Exception ex) {
+        // $NON-NLS-1$
+        throw new AeBusinessProcessException(AeMessages.getString("AeBpelRPCHandler.ERROR_6"), ex);
+    }
+}

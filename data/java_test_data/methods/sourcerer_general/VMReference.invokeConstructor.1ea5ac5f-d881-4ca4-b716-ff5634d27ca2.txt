@@ -1,0 +1,54 @@
+private ObjectReference invokeConstructor(String className, String[] paramTypes, ObjectReference[] args) {
+    // Calls to this method are serialized via serverThreadLock in JdiDebugger
+    serverThreadStartWait();
+    boolean needsMachineResume = false;
+    try {
+        int length = paramTypes.length;
+        if (args.length != length) {
+            throw new IllegalArgumentException();
+        }
+        // Store the class, parameter types and arguments
+        ArrayType objectArray = (ArrayType) loadClass("[Ljava.lang.Object;");
+        ArrayType stringArray = (ArrayType) loadClass("[Ljava.lang.String;");
+        // avoid problems with ObjectCollectedExceptions, see:
+        // http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=4257193
+        // We suspend the machine which seems to prevent GC from occurring.
+        machine.suspend();
+        needsMachineResume = true;
+        ArrayReference argsArray = objectArray.newInstance(length);
+        ArrayReference typesArray = stringArray.newInstance(length);
+        // Fill the arrays with the correct values
+        for (int i = 0; i < length; i++) {
+            StringReference s = machine.mirrorOf(paramTypes[i]);
+            typesArray.setValue(i, s);
+            argsArray.setValue(i, args[i]);
+        }
+        setStaticFieldValue(serverClass, ExecServer.PARAMETER_TYPES_NAME, typesArray);
+        setStaticFieldValue(serverClass, ExecServer.ARGUMENTS_NAME, argsArray);
+        setStaticFieldObject(serverClass, ExecServer.CLASS_TO_RUN_NAME, className);
+        setStaticFieldValue(serverClass, ExecServer.EXEC_ACTION_NAME, machine.mirrorOf(ExecServer.INSTANTIATE_CLASS_ARGS));
+        machine.resume();
+        needsMachineResume = false;
+        // Resume the thread, wait for it to finish and the new thread to start
+        serverThreadStarted = false;
+        resumeServerThread();
+        serverThreadStartWait();
+        // Get return value and check for exceptions
+        Value rval = getStaticFieldObject(serverClass, ExecServer.METHOD_RETURN_NAME);
+        if (rval == null) {
+            ObjectReference exception = getStaticFieldObject(serverClass, ExecServer.EXCEPTION_NAME);
+            if (exception != null) {
+                exceptionEvent(new InvocationException(exception));
+            }
+        }
+        return (ObjectReference) rval;
+    } catch (ClassNotFoundException cnfe) {
+    } catch (ClassNotLoadedException cnle) {
+    } catch (InvalidTypeException ite) {
+    } finally {
+        if (needsMachineResume) {
+            machine.resume();
+        }
+    }
+    return null;
+}

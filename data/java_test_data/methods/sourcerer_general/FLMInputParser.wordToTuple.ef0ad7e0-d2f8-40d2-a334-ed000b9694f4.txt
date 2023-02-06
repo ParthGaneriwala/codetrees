@@ -1,0 +1,71 @@
+@Override
+public long wordToTuple(String word) {
+    String[] factors = factorDelimiter.split(word);
+    assert (factors.length > 0);
+    long tuple = 0;
+    String[] values = new String[Math.max(factors.length, tupleDescription.numFactors())];
+    String surfaceWord = null;
+    for (String factor : factors) {
+        factor = unquote(factor);
+        Matcher matcher = factorRE.matcher(factor);
+        byte idx;
+        String value;
+        if (matcher.matches()) {
+            String id = matcher.group(1);
+            value = matcher.group(2);
+            idx = tupleDescription.getFactorIndex(id);
+            if (idx == -1)
+                continue;
+        } else {
+            // when there are no explicit factors, assume it's plain text
+            idx = tupleDescription.getMainFactorIndex();
+            value = factor;
+        }
+        if (idx == tupleDescription.getMainFactorIndex()) {
+            surfaceWord = value;
+        }
+        values[idx] = value;
+        Dictionary dict;
+        byte parentIdx = tupleDescription.getParentIndex(idx);
+        if (parentIdx == -1) {
+            // set independent values
+            dict = tupleDescription.getDescription(idx).getDictionary();
+            tuple = FactorTuple.setValue(tuple, idx, dict.getId(value));
+        }
+    }
+    byte[] overtFactors = tupleDescription.getOvertFactors();
+    if (overtFactors.length > 1 && surfaceWord != null) {
+        if (Dictionary.isStartWord(word)) {
+            tuple &= tupleDescription.createStartTuple() & tupleDescription.getOvertFactorsMask();
+        } else if (Dictionary.isEndWord(word)) {
+            tuple &= tupleDescription.createEndTuple() & tupleDescription.getOvertFactorsMask();
+        } else {
+            for (byte idx : overtFactors) {
+                if (idx == tupleDescription.getMainFactorIndex())
+                    continue;
+                FactorDescription desc = tupleDescription.getDescription(idx);
+                String factorValue = desc.getWordToOvertFactor().wordToOvertFactor(surfaceWord);
+                Dictionary dict = desc.getDictionary();
+                int factorId = dict.getId(factorValue);
+                if (Dictionary.isUnk(factorId) && dict.isOpen()) {
+                    factorId = dict.add(factorValue);
+                }
+                tuple = FactorTuple.setValue(tuple, idx, factorId);
+            }
+        }
+    }
+    // set dependent values
+    for (byte i = 0; i < tupleDescription.numFactors(); ++i) {
+        byte parentIdx = tupleDescription.getParentIndex(i);
+        if (parentIdx == -1)
+            continue;
+        int parentVal = FactorTuple.getValue(tuple, parentIdx);
+        if (Dictionary.isNull(parentVal))
+            continue;
+        Dictionary dict = tupleDescription.getDescription(i).getDictionary(parentVal);
+        if (dict != null) {
+            tuple = FactorTuple.setValue(tuple, i, dict.getId(values[i]));
+        }
+    }
+    return tuple;
+}

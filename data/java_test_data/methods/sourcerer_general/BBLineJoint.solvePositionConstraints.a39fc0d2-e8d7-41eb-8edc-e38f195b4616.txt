@@ -1,0 +1,86 @@
+public boolean solvePositionConstraints(float baumgarte) {
+    BBBody b1 = m_bodyA;
+    BBBody b2 = m_bodyB;
+    BBVec2 c1 = b1.m_sweep.c;
+    float a1 = b1.m_sweep.a;
+    BBVec2 c2 = b2.m_sweep.c;
+    float a2 = b2.m_sweep.a;
+    // solve linear limit constraint.
+    float linearError = 0.0f, angularError = 0.0f;
+    boolean active = false;
+    float C2 = 0.0f;
+    BBMat22 R1 = new BBMat22(a1), R2 = new BBMat22(a2);
+    BBVec2 r1 = mul(R1, sub(m_localAnchor1, m_localCenter1));
+    BBVec2 r2 = mul(R2, sub(m_localAnchor2, m_localCenter2));
+    BBVec2 d = sub(sub(add(c2, r2), c1), r1);
+    if (m_enableLimit) {
+        m_axis = mul(R1, m_localXAxis1);
+        m_a1 = BBMath.cross(add(d, r1), m_axis);
+        m_a2 = BBMath.cross(r2, m_axis);
+        float translation = BBMath.dot(m_axis, d);
+        if (abs(m_upperTranslation - m_lowerTranslation) < 2.0f * linearSlop) {
+            // Prevent large angular corrections
+            C2 = clamp(translation, -maxLinearCorrection, maxLinearCorrection);
+            linearError = abs(translation);
+            active = true;
+        } else if (translation <= m_lowerTranslation) {
+            // Prevent large linear corrections and allow some slop.
+            C2 = clamp(translation - m_lowerTranslation + linearSlop, -maxLinearCorrection, 0.0f);
+            linearError = m_lowerTranslation - translation;
+            active = true;
+        } else if (translation >= m_upperTranslation) {
+            // Prevent large linear corrections and allow some slop.
+            C2 = clamp(translation - m_upperTranslation - linearSlop, 0.0f, maxLinearCorrection);
+            linearError = translation - m_upperTranslation;
+            active = true;
+        }
+    }
+    m_perp = mul(R1, m_localYAxis1);
+    m_s1 = BBMath.cross(add(d, r1), m_perp);
+    m_s2 = BBMath.cross(r2, m_perp);
+    BBVec2 impulse = new BBVec2();
+    float C1;
+    C1 = BBMath.dot(m_perp, d);
+    linearError = max(linearError, abs(C1));
+    angularError = 0.0f;
+    if (active) {
+        float m1 = m_invMass1, m2 = m_invMass2;
+        float i1 = m_invI1, i2 = m_invI2;
+        float k11 = m1 + m2 + i1 * m_s1 * m_s1 + i2 * m_s2 * m_s2;
+        float k12 = i1 * m_s1 * m_a1 + i2 * m_s2 * m_a2;
+        float k22 = m1 + m2 + i1 * m_a1 * m_a1 + i2 * m_a2 * m_a2;
+        m_K.col1.set(k11, k12);
+        m_K.col2.set(k12, k22);
+        BBVec2 C = new BBVec2();
+        C.x = C1;
+        C.y = C2;
+        impulse = m_K.solve(C.neg());
+    } else {
+        float m1 = m_invMass1, m2 = m_invMass2;
+        float i1 = m_invI1, i2 = m_invI2;
+        float k11 = m1 + m2 + i1 * m_s1 * m_s1 + i2 * m_s2 * m_s2;
+        float impulse1;
+        if (k11 != 0.0f) {
+            impulse1 = -C1 / k11;
+        } else {
+            impulse1 = 0.0f;
+        }
+        impulse.x = impulse1;
+        impulse.y = 0.0f;
+    }
+    BBVec2 P = add(mul(impulse.x, m_perp), mul(impulse.y, m_axis));
+    float L1 = impulse.x * m_s1 + impulse.y * m_a1;
+    float L2 = impulse.x * m_s2 + impulse.y * m_a2;
+    c1.sub(mul(m_invMass1, P));
+    a1 -= m_invI1 * L1;
+    c2.add(mul(m_invMass2, P));
+    a2 += m_invI2 * L2;
+    // TODO_ERIN remove need for this.
+    b1.m_sweep.c = c1;
+    b1.m_sweep.a = a1;
+    b2.m_sweep.c = c2;
+    b2.m_sweep.a = a2;
+    b1.synchronizeTransform();
+    b2.synchronizeTransform();
+    return linearError <= linearSlop & angularError <= angularSlop;
+}

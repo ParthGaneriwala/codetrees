@@ -1,0 +1,74 @@
+private void insertPhiFunctions(HashMap dominanceFrontiers) {
+    HashMap variableVsNodesNeedingPhiFunctions = new HashMap();
+    // A map of variable versus the nodes in which
+    HashMap variableVsNodeDefined = new HashMap();
+    // Populate the above map (variableVsNodeDefined)
+    for (int i = 0; i < controlFlowGraph.getNumNodes(); i++) {
+        ControlFlowNode controlFlowNode = (ControlFlowNode) controlFlowGraph.getNode(i);
+        HashSet definitions = controlFlowNode.getDefinitions();
+        Iterator iterator = definitions.iterator();
+        while (iterator.hasNext()) {
+            Temp temp = (Temp) iterator.next();
+            addNodeToDefSite(temp, controlFlowNode, variableVsNodeDefined);
+        }
+    }
+    // printTempVsNodesDefined(variableVsNodeDefined);
+    // Get the list of "global" variables - these are variables that are used in several blocks;
+    // that is, they are either defined or used in more than one block. Use only these variables
+    // for the worklist
+    HashMap newVariableVsNodeDefined = new HashMap();
+    HashSet globals = getGlobalVariables();
+    Iterator iterGlobals = globals.iterator();
+    while (iterGlobals.hasNext()) {
+        Temp temp = (Temp) iterGlobals.next();
+        HashSet workList = (HashSet) variableVsNodeDefined.get(temp);
+        newVariableVsNodeDefined.put(temp, workList);
+    }
+    // Using a worklist, for each node containing the definition of a variable,
+    // insert phi functions in dominance frontiers of that node
+    Vector variables = controlFlowGraph.getVariables();
+    for (int i = 0; i < variables.size(); i++) {
+        Temp temp = (Temp) variables.elementAt(i);
+        // The worklist of nodes in which
+        HashSet workList = (HashSet) newVariableVsNodeDefined.get(temp);
+        if (workList == null)
+            continue;
+        while (!workList.isEmpty()) {
+            Iterator iterator = workList.iterator();
+            ControlFlowNode defNode = (ControlFlowNode) iterator.next();
+            workList.remove(defNode);
+            // Insert phi functions for each node in the dominance frontier of defNode
+            HashSet dominanceFrontierOfNode = (HashSet) dominanceFrontiers.get(defNode);
+            if (dominanceFrontierOfNode == null)
+                continue;
+            Iterator dfIter = dominanceFrontierOfNode.iterator();
+            while (dfIter.hasNext()) {
+                ControlFlowNode frontierNode = (ControlFlowNode) dfIter.next();
+                // If this is the last (exit) node in the graph, ignore it
+                if (frontierNode == controlFlowGraph.getEndNode())
+                    continue;
+                HashSet nodesWithPhiFuncsForVariable = (HashSet) variableVsNodesNeedingPhiFunctions.get(temp);
+                if (nodesWithPhiFuncsForVariable == null)
+                    nodesWithPhiFuncsForVariable = new HashSet();
+                if (!nodesWithPhiFuncsForVariable.contains(frontierNode)) {
+                    int numPreds = frontierNode.getNumIncomingEdges();
+                    SSAPhiFunction phiFunction = new SSAPhiFunction(temp, numPreds);
+                    Vector<AssemblyInstruction> instrsInNode = frontierNode.getInstructions();
+                    // Add the phi function after the label
+                    instrsInNode.add(1, phiFunction);
+                    // Update the list of transformed quadruples
+                    Vector<AssemblyInstruction> newInstrs = new Vector<AssemblyInstruction>();
+                    // The only new instruction
+                    newInstrs.add(phiFunction);
+                    int index = getIndexForInstructionInTransformedListing(instrsInNode.elementAt(0));
+                    transformedQuadruples.addAll(index + 1, newInstrs);
+                    // Add the frontier node to the list of nodes with phi functions for the variable
+                    nodesWithPhiFuncsForVariable.add(frontierNode);
+                    variableVsNodesNeedingPhiFunctions.put(temp, nodesWithPhiFuncsForVariable);
+                    // Add the frontier node to the work-list (if it already exists, it will not be added)
+                    workList.add(frontierNode);
+                }
+            }
+        }
+    }
+}

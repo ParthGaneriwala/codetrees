@@ -1,0 +1,78 @@
+public Object intercept(Object obj, Method method, Object[] args, MethodProxy proxy) throws Throwable {
+    if (MethodUtils.isPropertyChangeListenerAdder(method)) {
+        if (args.length == 1) {
+            pcSupport.addPropertyChangeListener((PropertyChangeListener) args[0]);
+        } else {
+            pcSupport.addPropertyChangeListener((String) args[0], (PropertyChangeListener) args[1]);
+        }
+        return null;
+    }
+    if (MethodUtils.isPropertyChangeListenerRemover(method)) {
+        if (args.length == 1) {
+            pcSupport.removePropertyChangeListener((PropertyChangeListener) args[0]);
+        } else {
+            pcSupport.removePropertyChangeListener((String) args[0], (PropertyChangeListener) args[1]);
+        }
+        return null;
+    }
+    if (MethodUtils.isOriginalObject(method)) {
+        return this.original;
+    }
+    PropertyMetadata pm;
+    if ((pm = this.beanMeta.getPropertyBySetter(method)) != null) {
+        Object oldValue = pm.getGetterMethod().invoke(obj, (Object[]) null);
+        method.invoke(original, args);
+        if (this.beanMeta.getEnhancedProperties().contains(pm)) {
+            if (pm.isCollection()) {
+                enhanceCollectionProperty(pm);
+            } else {
+                enhanceProperty(pm);
+            }
+        }
+        PropertyChangeEvent event = new PropertyChangeEvent(obj, pm.getPropertyName(), oldValue, args[0]);
+        pcSupport.firePropertyChange(event);
+        return null;
+    }
+    if ((pm = this.beanMeta.getPropertyByGetter(method)) != null) {
+        String propertyName = pm.getPropertyName();
+        Object enhancedField = this.enhancedFields.get(propertyName);
+        if (enhancedField != null) {
+            return enhancedField;
+        } else {
+            return method.invoke(this.original, (Object[]) null);
+        }
+    }
+    if ((pm = this.beanMeta.getPropertyByIndexedSetter(method)) != null) {
+        Object oldValue = pm.getIndexedGetterMethod().invoke(obj, args[0]);
+        Integer index = (Integer) args[0];
+        PropertyChangeListener[] listeners = this.enhancedIndexedFieldListeners.get(pm.getPropertyName());
+        if (pm.isEnhanced() && oldValue != null) {
+            // Remove old listener
+            PropertyChangeListener listener = listeners[index];
+            if (listener != null) {
+                ((PropertyChangeListenerSupport) oldValue).removePropertyChangeListener(listener);
+                listeners[index] = null;
+            }
+        }
+        method.invoke(original, args);
+        if (pm.isEnhanced()) {
+            enhanceIndexedPropertyElement(pm.getPropertyName(), index, this.enhancedFields.get(pm.getPropertyName()), args[1], listeners);
+        }
+        pcSupport.fireIndexedPropertyChange(pm.getPropertyName(), index, oldValue, args[1]);
+        return null;
+    }
+    if ((pm = this.beanMeta.getPropertyByIndexedGetter(method)) != null) {
+        Integer index = (Integer) args[0];
+        String propertyName = pm.getPropertyName();
+        Object enhancedField = this.enhancedFields.get(propertyName);
+        if (enhancedField != null) {
+            return Array.get(enhancedField, index);
+        } else {
+            return method.invoke(this.original, args);
+        }
+    }
+    if (MethodUtils.isEquals(method)) {
+        args = stripProxies(args);
+    }
+    return method.invoke(this.original, args);
+}

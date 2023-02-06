@@ -1,0 +1,64 @@
+private void buildCollationMapping() throws SQLException {
+    if (versionMeetsMinimum(4, 1, 0)) {
+        TreeMap sortedCollationMap = null;
+        if (getCacheServerConfiguration()) {
+            synchronized (serverConfigByUrl) {
+                sortedCollationMap = (TreeMap) serverCollationByUrl.get(getURL());
+            }
+        }
+        java.sql.Statement stmt = null;
+        java.sql.ResultSet results = null;
+        try {
+            if (sortedCollationMap == null) {
+                sortedCollationMap = new TreeMap();
+                stmt = getMetadataSafeStatement();
+                results = stmt.executeQuery("SHOW COLLATION");
+                while (results.next()) {
+                    String charsetName = results.getString(2);
+                    Integer charsetIndex = Constants.integerValueOf(results.getInt(3));
+                    sortedCollationMap.put(charsetIndex, charsetName);
+                }
+                if (getCacheServerConfiguration()) {
+                    synchronized (serverConfigByUrl) {
+                        serverCollationByUrl.put(getURL(), sortedCollationMap);
+                    }
+                }
+            }
+            // Now, merge with what we already know
+            int highestIndex = ((Integer) sortedCollationMap.lastKey()).intValue();
+            if (CharsetMapping.INDEX_TO_CHARSET.length > highestIndex) {
+                highestIndex = CharsetMapping.INDEX_TO_CHARSET.length;
+            }
+            this.indexToCharsetMapping = new String[highestIndex + 1];
+            for (int i = 0; i < CharsetMapping.INDEX_TO_CHARSET.length; i++) {
+                this.indexToCharsetMapping[i] = CharsetMapping.INDEX_TO_CHARSET[i];
+            }
+            for (Iterator indexIter = sortedCollationMap.entrySet().iterator(); indexIter.hasNext(); ) {
+                Map.Entry indexEntry = (Map.Entry) indexIter.next();
+                String mysqlCharsetName = (String) indexEntry.getValue();
+                this.indexToCharsetMapping[((Integer) indexEntry.getKey()).intValue()] = CharsetMapping.getJavaEncodingForMysqlEncoding(mysqlCharsetName, this);
+            }
+        } catch (java.sql.SQLException e) {
+            throw e;
+        } finally {
+            if (results != null) {
+                try {
+                    results.close();
+                } catch (java.sql.SQLException sqlE) {
+                // ignore
+                }
+            }
+            if (stmt != null) {
+                try {
+                    stmt.close();
+                } catch (java.sql.SQLException sqlE) {
+                // ignore
+                }
+            }
+        }
+    } else {
+        // Safety, we already do this as an initializer, but this makes
+        // the intent more clear
+        this.indexToCharsetMapping = CharsetMapping.INDEX_TO_CHARSET;
+    }
+}

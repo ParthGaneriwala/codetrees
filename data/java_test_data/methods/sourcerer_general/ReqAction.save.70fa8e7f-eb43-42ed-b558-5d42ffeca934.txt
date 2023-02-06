@@ -1,0 +1,135 @@
+public String save() throws Exception {
+    boolean isNew = cardData.getCardDataId() == null ? true : false;
+    currentProject = this.getCurrentProject();
+    List<DataFormat> dataFormats = this.cardDataManager.getDataFormatsByProject(currentProject);
+    HttpServletRequest request = getRequest();
+    Set<CardDataDetail> cardDataDetails = new HashSet<CardDataDetail>(0);
+    if (dataFormats != null && dataFormats.size() > 0) {
+        for (DataFormat dataFormat : dataFormats) {
+            CardDataDetail cardDataDetail = new CardDataDetail();
+            String key = dataFormat.getFieldName();
+            String value = request.getParameter(key);
+            cardDataDetail.setCardData(cardData);
+            cardDataDetail.setFieldName(key);
+            cardDataDetail.setFieldValue(value);
+            cardDataDetails.add(cardDataDetail);
+        }
+        cardData.setCardDataDetails(cardDataDetails);
+    }
+    try {
+        if (file != null) {
+            Set<Attachment> attachments = new HashSet<Attachment>(0);
+            // the directory to upload to
+            String uploadDir = ServletActionContext.getServletContext().getRealPath("/resources") + "/" + this.getCurrentProject().getProjectId() + "/image/";
+            // write the file to the file specified
+            File dirPath = new File(uploadDir);
+            if (!dirPath.exists()) {
+                dirPath.mkdirs();
+            }
+            Integer[] imgSize = ImageUtil.getImage(file);
+            if (!(imgSize != null && imgSize.length == 2 && imgSize[0] <= Constants.IMG_WIDTH && imgSize[1] <= Constants.IMG_HEITH)) {
+                addActionError(getText("error.req.image.upload"));
+                initForm();
+                return SUCCESS;
+            }
+            // String fileFileName = file.getName();
+            // retrieve the file data
+            InputStream stream = new FileInputStream(file);
+            // write the file to the file specified
+            OutputStream bos = new FileOutputStream(uploadDir + fileFileName);
+            int bytesRead;
+            byte[] buffer = new byte[8192];
+            while ((bytesRead = stream.read(buffer, 0, 8192)) != -1) {
+                bos.write(buffer, 0, bytesRead);
+            }
+            bos.close();
+            stream.close();
+            attachment.setProject(this.getCurrentProject());
+            attachment.setFilePath(uploadDir + fileFileName);
+            attachment.setCreatedDate(new Date());
+            attachment.setLoginName(this.getUser().getLoginName());
+            attachment.setCardData(cardData);
+            attachments.add(attachment);
+            cardData.setAttachments(attachments);
+        }
+        Set<CardDataStatus> cardDataStatuses = new HashSet<CardDataStatus>();
+        if (isNew) {
+            CardData c1 = this.cardDataManager.getCardDataByProjectAndName(currentProject, cardData.getUserName());
+            if (c1 != null) {
+                List<String> args = new ArrayList<String>();
+                args.add(cardData.getUserName());
+                addActionError(getText("error.existing.req", args));
+                initForm();
+                return SUCCESS;
+            }
+            Workflow confirmWorkflow = workflowManager.getWorkflowByProjectAndType(this.getCurrentProject(), Constants.WORKFLOW_CONFIRM);
+            Workflow createCardWorkflow = workflowManager.getWorkflowByProjectAndType(this.getCurrentProject(), Constants.WORKFLOW_CREATE_CARD);
+            cardData.setStatus(Constants.CARD_STATUS_INIT);
+            if (confirmWorkflow == null) {
+                cardData.setNextStatus(Constants.CARD_STATUS_CONFIRMED);
+            } else {
+                WorkflowTask task = confirmWorkflow.getFirstTask();
+                if (task != null) {
+                    cardData.setNextStatus(Constants.CARD_STATUS_CONFIRMING);
+                    cardData.setConfirmRole(task.getTaskName());
+                } else {
+                    cardData.setNextStatus(Constants.CARD_STATUS_CONFIRMED);
+                }
+            }
+            if (Constants.CARD_STATUS_CONFIRMED.equals(cardData.getNextStatus()) && createCardWorkflow != null) {
+                WorkflowTask task = createCardWorkflow.getFirstTask();
+                if (task != null) {
+                    cardData.setTask(task.getTaskType());
+                }
+            }
+            CardDataStatus cardDataStatus = new CardDataStatus();
+            cardDataStatus.setCardData(cardData);
+            cardDataStatus.setCreatedDate(new Date());
+            cardDataStatus.setCreatedUser(this.getUser().getLoginName());
+            cardDataStatus.setStatus(Constants.CARD_STATUS_INIT);
+            cardDataStatuses.add(cardDataStatus);
+        } else {
+            if (!(Constants.CARD_STATUS_UPDATED.equals(cardData.getStatus()) || Constants.CARD_STATUS_INIT.equals(cardData.getStatus()))) {
+                addActionError(getText("error.req.viewabled"));
+                initForm();
+                return SUCCESS;
+            }
+            cardData.setStatus(Constants.CARD_STATUS_UPDATED);
+            cardDataStatuses = cardData.getCardDataStatuses();
+            CardDataStatus cardDataStatus = new CardDataStatus();
+            cardDataStatus.setCardData(cardData);
+            cardDataStatus.setCreatedDate(new Date());
+            cardDataStatus.setCreatedUser(this.getUser().getLoginName());
+            cardDataStatus.setStatus(Constants.CARD_STATUS_UPDATED);
+            cardDataStatuses.add(cardDataStatus);
+        }
+        cardData.setCardDataStatuses(cardDataStatuses);
+        // cardData.setCardDataDetails(cardDataDetails);
+        cardData.setProject(this.getCurrentProject());
+        if (cardData.getCardDataId() != null) {
+            cardData.setUpdatedDate(new Date());
+            cardData.setUpdatedUser(this.getUser().getLoginName());
+        } else {
+            cardData.setCardSn(genCardNo());
+            cardData.setCreatedDate(new Date());
+            cardData.setCreatedUser(this.getUser().getLoginName());
+        }
+        cardData = this.cardDataManager.saveCardData(cardData);
+    } catch (Exception ex) {
+        List<String> args = new ArrayList<String>();
+        args.add(cardData.getUserName());
+        args.add(ex.getMessage());
+        addActionError(getText("error.req.added", args));
+        initForm();
+        return SUCCESS;
+    }
+    List<String> args = new ArrayList<String>();
+    args.add(cardData.getUserName());
+    if (isNew) {
+        saveMessage(getText("req.added", args));
+    } else {
+        saveMessage(getText("req.saved", args));
+    }
+    initForm();
+    return SUCCESS;
+}

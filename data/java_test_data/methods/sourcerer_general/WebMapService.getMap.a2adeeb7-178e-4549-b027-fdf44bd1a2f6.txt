@@ -1,0 +1,111 @@
+public MapResponse getMap(MapRequest map) {
+    long startTime = System.currentTimeMillis();
+    List<GISDatum> data = new ArrayList<GISDatum>();
+    GeoRegion unresolved = map.getRegion().getRegion();
+    for (Iterator rectItr = unresolved.getSimplified().getRectangles().iterator(); rectItr.hasNext(); ) {
+        GeoRectangle rect = (GeoRectangle) rectItr.next();
+        GeoResoluteRectangle resRect = new GeoResoluteRectangle(rect, map.getRegion().getResolution());
+        resRect = new GeoResoluteRectangle(rect.getCenter().getLongitude(), rect.getCenter().getLatitude(), resRect.getImageWidth().intValue(), resRect.getImageHeight().intValue(), resRect.getResolution().doubleValue());
+        rect = resRect.getRectangle();
+        double dMinLat = rect.getMinimumLatitude();
+        double dMaxLat = rect.getMaximumLatitude();
+        double dMinLong = rect.getMinimumLongitude();
+        double dMaxLong = rect.getMaximumLongitude();
+        String[] layers = map.getLayer().split("\\|");
+        String[] queries = new String[layers.length];
+        for (int index = 0; index < layers.length; index++) {
+            queries[index] = (String) query.get(layers[index]);
+        }
+        String width = resRect.getImageWidth().toString();
+        String height = resRect.getImageHeight().toString();
+        String minLong = Double.toString(dMinLong);
+        String maxLong = Double.toString(dMaxLong);
+        String minLat = Double.toString(dMinLat);
+        String maxLat = Double.toString(dMaxLat);
+        // construct getMap url
+        StringBuffer buffer = new StringBuffer();
+        buffer.append(baseUrl);
+        boolean version1pt0 = version.equals("1.0.0") || version.equals("1.0") || version.equals("1");
+        if (version1pt0) {
+            if (buffer.toString().indexOf('?') == -1) {
+                buffer.append("?WMTVER=" + version);
+            } else {
+                buffer.append("&WMTVER=" + version);
+            }
+            buffer.append("&REQUEST=map");
+        } else {
+            if (buffer.toString().indexOf('?') == -1) {
+                buffer.append("?VERSION=" + version);
+            } else {
+                buffer.append("&VERSION=" + version);
+            }
+            buffer.append("&SERVICE=WMS");
+            buffer.append("&REQUEST=GetMap");
+        }
+        // encode variables
+        String encodedFormat = null, encodedStyles = null;
+        String[] encodedLayers = new String[layers.length];
+        try {
+            encodedFormat = URLEncoder.encode(format, "ISO8859_1");
+            encodedStyles = URLEncoder.encode(style, "ISO8859_1");
+            for (int index = 0; index < layers.length; index++) {
+                encodedLayers[index] = URLEncoder.encode(layers[index], "ISO8859_1");
+            }
+        } catch (UnsupportedEncodingException e1) {
+            e1.printStackTrace();
+        }
+        buffer.append("&BBox=" + minLong + "," + minLat + "," + maxLong + "," + maxLat);
+        buffer.append("&FORMAT=" + encodedFormat);
+        // buffer.append("&EXCEPTIONS=" + exceptions);
+        boolean styleInQuery = false;
+        for (int i = 0; i < queries.length; i++) {
+            if ("query".equalsIgnoreCase(queries[i])) {
+                styleInQuery = true;
+                break;
+            }
+        }
+        if (!styleInQuery) {
+            buffer.append("&STYLES=" + encodedStyles);
+        }
+        // buffer.append("&BGCOLOR=" + bgColor);
+        buffer.append("&TRANSPARENT=" + transparentColor);
+        for (int index = 0; index < encodedLayers.length; index++) {
+            buffer.append('&');
+            buffer.append(queries[index]);
+            if (!queries[index].endsWith("s")) {
+                buffer.append('s');
+            }
+            buffer.append('=');
+            buffer.append(encodedLayers[index]);
+        }
+        // add width and height
+        buffer.append("&WIDTH=");
+        buffer.append(width);
+        buffer.append("&HEIGHT=");
+        buffer.append(height);
+        // add projection name
+        // buffer.append("&SRS="+layersPane.getProjection().getSrsString());
+        buffer.append("&SRS=" + srs);
+        String requestURL = buffer.toString();
+        ServerLogger.info(requestURL);
+        // get the image from the request url
+        byte[] image = this.getFileOverHttp(requestURL);
+        if (image == null)
+            continue;
+        long endTime = System.currentTimeMillis();
+        long totalRequestTime = endTime - startTime;
+        ServerLogger.info("Fielding Map Request took " + (float) totalRequestTime / 1000 + " secs");
+        javax.imageio.stream.ImageInputStream stream = null;
+        stream = new javax.imageio.stream.MemoryCacheImageInputStream(new ByteArrayInputStream(image));
+        if (ImageIO.getImageReaders(stream).hasNext()) {
+            WMSDatum datum = new WMSDatum(resRect, null, dataSourceName, map.getLayer(), image);
+            data.add(datum);
+        }
+        try {
+            stream.close();
+        } catch (IOException err) {
+        }
+    }
+    MapResponse response = new MapResponse(map, data, null);
+    return response;
+}

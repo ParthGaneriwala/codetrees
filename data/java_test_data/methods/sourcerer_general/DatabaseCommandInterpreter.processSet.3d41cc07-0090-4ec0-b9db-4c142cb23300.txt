@@ -1,0 +1,238 @@
+private void processSet() throws HsqlException {
+    String token;
+    session.setScripting(true);
+    token = tokenizer.getSimpleToken();
+    switch(Token.get(token)) {
+        case Token.PROPERTY:
+            {
+                HsqlDatabaseProperties p;
+                session.checkAdmin();
+                token = tokenizer.getSimpleName();
+                if (!tokenizer.wasQuotedIdentifier()) {
+                    throw Trace.error(Trace.QUOTED_IDENTIFIER_REQUIRED);
+                }
+                p = database.getProperties();
+                boolean isboolean = p.isBoolean(token);
+                boolean isintegral = p.isIntegral(token);
+                boolean isstring = p.isString(token);
+                Trace.check(isboolean || isintegral || isstring, Trace.ACCESS_IS_DENIED, token);
+                int type = isboolean ? Types.BOOLEAN : isintegral ? Types.INTEGER : Types.VARCHAR;
+                Object value = tokenizer.getInType(type);
+                if (HsqlDatabaseProperties.hsqldb_cache_file_scale.equals(token)) {
+                    if (database.logger.hasCache() || ((Integer) value).intValue() != 8) {
+                        Trace.throwerror(Trace.ACCESS_IS_DENIED, token);
+                    }
+                }
+                p.setDatabaseProperty(token, value.toString().toLowerCase());
+                p.setDatabaseVariables();
+                break;
+            }
+        case Token.SCHEMA:
+            {
+                session.setScripting(false);
+                session.setSchema(tokenizer.getSimpleName());
+                break;
+            }
+        case Token.PASSWORD:
+            {
+                session.checkDDLWrite();
+                session.getUser().setPassword(getPassword());
+                break;
+            }
+        case Token.READONLY:
+            {
+                session.commit();
+                session.setReadOnly(processTrueOrFalse());
+                break;
+            }
+        case Token.LOGSIZE:
+            {
+                session.checkAdmin();
+                session.checkDDLWrite();
+                int i = tokenizer.getInt();
+                database.logger.setLogSize(i);
+                break;
+            }
+        case Token.SCRIPTFORMAT:
+            {
+                session.checkAdmin();
+                session.checkDDLWrite();
+                session.setScripting(false);
+                token = tokenizer.getSimpleToken();
+                int i = ArrayUtil.find(ScriptWriterBase.LIST_SCRIPT_FORMATS, token);
+                if (i == 0 || i == 1 || i == 3) {
+                    database.logger.setScriptType(i);
+                } else {
+                    throw Trace.error(Trace.UNEXPECTED_TOKEN, token);
+                }
+                break;
+            }
+        case Token.IGNORECASE:
+            {
+                session.checkAdmin();
+                session.checkDDLWrite();
+                database.setIgnoreCase(processTrueOrFalse());
+                break;
+            }
+        case Token.MAXROWS:
+            {
+                session.setScripting(false);
+                int i = tokenizer.getInt();
+                session.setSQLMaxRows(i);
+                break;
+            }
+        case Token.AUTOCOMMIT:
+            {
+                session.setAutoCommit(processTrueOrFalse());
+                break;
+            }
+        case Token.TABLE:
+            {
+                session.checkAdmin();
+                session.checkDDLWrite();
+                token = tokenizer.getName();
+                String schema = session.getSchemaNameForWrite(tokenizer.getLongNameFirst());
+                Table t = database.schemaManager.getTable(session, token, schema);
+                token = tokenizer.getSimpleToken();
+                session.setScripting(true);
+                switch(Token.get(token)) {
+                    default:
+                        {
+                            throw Trace.error(Trace.UNEXPECTED_TOKEN, token);
+                        }
+                    case Token.SOURCE:
+                        {
+                            session.checkAdmin();
+                            // SET TABLE <table> SOURCE HEADER
+                            if (tokenizer.isGetThis(Token.T_HEADER)) {
+                                token = tokenizer.getString();
+                                if (!tokenizer.wasQuotedIdentifier()) {
+                                    throw Trace.error(Trace.TEXT_TABLE_SOURCE);
+                                }
+                                try {
+                                    t.setHeader(token);
+                                } catch (Throwable e) {
+                                    if (session.isProcessingLog() || session.isProcessingScript()) {
+                                        HsqlException warning = Trace.error(Trace.GENERAL_IO_ERROR, e.getMessage());
+                                        session.addWarning(warning);
+                                    // add an entry to applog too
+                                    } else {
+                                        if (e instanceof HsqlException) {
+                                            throw (HsqlException) e;
+                                        } else {
+                                            throw Trace.error(Trace.GENERAL_IO_ERROR, e.getMessage());
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                            // SET TABLE <table> SOURCE ON
+                            if (tokenizer.isGetThis(Token.T_ON)) {
+                                t.connect(session);
+                                database.setMetaDirty(false);
+                                break;
+                            }
+                            // SET TABLE <table> SOURCE OFF
+                            if (tokenizer.isGetThis(Token.T_OFF)) {
+                                t.disconnect(session);
+                                database.setMetaDirty(false);
+                                break;
+                            }
+                            // SET TABLE <table> SOURCE <source>
+                            token = tokenizer.getString();
+                            if (!tokenizer.wasQuotedIdentifier()) {
+                                throw Trace.error(Trace.TEXT_TABLE_SOURCE);
+                            }
+                            boolean isDesc = false;
+                            isDesc = tokenizer.isGetThis(Token.T_DESC);
+                            try {
+                                t.setDataSource(session, token, isDesc, false);
+                            } catch (Throwable e) {
+                                if (session.isProcessingLog() || session.isProcessingScript()) {
+                                    HsqlException warning = Trace.error(Trace.GENERAL_IO_ERROR, e.getMessage());
+                                    session.addWarning(warning);
+                                // add an entry to applog too
+                                } else {
+                                    if (e instanceof HsqlException) {
+                                        throw (HsqlException) e;
+                                    } else {
+                                        throw Trace.error(Trace.GENERAL_IO_ERROR, e.getMessage());
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    case Token.READONLY:
+                        {
+                            session.checkAdmin();
+                            t.setDataReadOnly(processTrueOrFalse());
+                            database.setMetaDirty(false);
+                            break;
+                        }
+                    case Token.INDEX:
+                        {
+                            session.checkAdmin();
+                            String roots = (String) tokenizer.getInType(Types.VARCHAR);
+                            t.setIndexRoots(roots);
+                            break;
+                        }
+                }
+                break;
+            }
+        case Token.REFERENTIAL_INTEGRITY:
+            {
+                session.checkAdmin();
+                session.checkDDLWrite();
+                session.setScripting(false);
+                database.setReferentialIntegrity(processTrueOrFalse());
+                break;
+            }
+        case Token.CHECKPOINT:
+            {
+                session.checkAdmin();
+                session.checkDDLWrite();
+                tokenizer.getThis(Token.T_DEFRAG);
+                int size = tokenizer.getInt();
+                database.getProperties().setProperty(HsqlDatabaseProperties.hsqldb_defrag_limit, size);
+                break;
+            }
+        case Token.WRITE_DELAY:
+            {
+                session.checkAdmin();
+                session.checkDDLWrite();
+                int delay = 0;
+                tokenizer.getString();
+                Object value = tokenizer.getAsValue();
+                if (tokenizer.getType() == Types.INTEGER) {
+                    delay = ((Integer) value).intValue();
+                } else if (Boolean.TRUE.equals(value)) {
+                    delay = database.getProperties().getDefaultWriteDelay();
+                } else if (Boolean.FALSE.equals(value)) {
+                    delay = 0;
+                } else {
+                    throw Trace.error(Trace.UNEXPECTED_TOKEN);
+                }
+                if (!tokenizer.isGetThis("MILLIS")) {
+                    delay *= 1000;
+                }
+                database.logger.setWriteDelay(delay);
+                break;
+            }
+        case Token.DATABASE:
+            {
+                session.checkAdmin();
+                session.checkDDLWrite();
+                tokenizer.getThis(Token.T_COLLATION);
+                String cname = tokenizer.getSimpleName();
+                if (!tokenizer.wasQuotedIdentifier()) {
+                    throw Trace.error(Trace.INVALID_IDENTIFIER);
+                }
+                database.collation.setCollation(cname);
+                break;
+            }
+        default:
+            {
+                throw Trace.error(Trace.UNEXPECTED_TOKEN, token);
+            }
+    }
+}

@@ -1,0 +1,84 @@
+// -----------------------------------------------------------------
+// The only time Yahoo can actually send us any packets is when we
+// send it some.  Yahoo encodes its packets in a POST body - the
+// format is the same binary representation used for direct connections
+// (with one or two extra codes).
+// 
+// After posting a packet, the connection will receive a HTTP response
+// who's payload consists of four bytes followed by zero or more
+// packets.  The first byte of the four is a count of packets encoded
+// in the following body.
+// 
+// Each incoming packet is transfered to a queue, where receivePacket()
+// takes them off - thus preserving the effect that input and output
+// packets are being received independently, as with other connection
+// handlers.  As readPacket() can throw an exception, these are caught
+// and transfered onto the queue too, then rethrown by receivePacket() .
+synchronized void sendPacket(PacketBodyBuffer body, int service, long status, long sessionID) throws IOException, IllegalStateException {
+    if (!connected) {
+        throw new IllegalStateException("Not logged in");
+    }
+    if (filterOutput(body, service)) {
+        return;
+    }
+    byte[] b = body.getBuffer();
+    Socket soc = new Socket(proxyHost, proxyPort);
+    PushbackInputStream pbis = new PushbackInputStream(soc.getInputStream());
+    DataOutputStream dos = new DataOutputStream(soc.getOutputStream());
+    // -----HTTP header
+    dos.writeBytes(headerHttpPost);
+    dos.writeBytes("Content-length: " + (b.length + YMSG9_HEADER_SIZE) + END);
+    dos.writeBytes(headerAgent);
+    dos.writeBytes(headerHost);
+    if (headerProxyAuth != null) {
+        dos.writeBytes(headerProxyAuth);
+    }
+    if (cookie != null) {
+        dos.writeBytes("Cookie: " + cookie + END);
+    }
+    dos.writeBytes(END);
+    // -----YMSG9 header
+    dos.write(MAGIC, 0, 4);
+    dos.write(VERSION_HTTP, 0, 4);
+    dos.writeShort(b.length & 0xffff);
+    dos.writeShort(service & 0xffff);
+    dos.writeInt((int) (status & 0xffffffff));
+    dos.writeInt((int) (sessionID & 0xffffffff));
+    // -----YMSG9 body
+    dos.write(b, 0, b.length);
+    dos.flush();
+    // -----HTTP response header
+    String s = readLine(pbis);
+    if (s == null || s.indexOf(" 200 ") < 0) {
+        // Not "HTTP/1.0 200 OK"
+        return;
+    }
+    while (s != null && // Read past header
+    s.trim().length() > 0) {
+        s = readLine(pbis);
+    }
+    // -----Payload count
+    byte[] code = new byte[4];
+    pbis.read(code, 0, // Packet count (Little-Endian?)
+    4);
+    int count = code[0];
+    // -----Payload body
+    YMSG9InputStream yip = new YMSG9InputStream(pbis);
+    YMSG9Packet pkt;
+    try {
+        for (int i = 0; i < count; i++) {
+            pkt = yip.readPacket();
+            if (!filterInput(pkt)) {
+                push(pkt);
+            }
+        }
+    } catch (Exception e) {
+        push(e);
+    }
+    if (Util.debugMode) {
+        System.out.println("Size:" + packets.size());
+    }
+    soc.close();
+    // -----Reset idle timeout
+    lastFetch = System.currentTimeMillis();
+}

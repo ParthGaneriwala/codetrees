@@ -1,0 +1,112 @@
+public OnDiskCompactProbTree computeProbTree(BinaryTree<HistoryTreePayload>[] nodes, long overtFactors, Map<Key, OnDiskCompactProbTree> allProbTrees, ClusterId clusterID) {
+    StringBuilder debugOut = null;
+    if (debug > 1) {
+        debugOut = new StringBuilder('[');
+    }
+    int numTrees = 0;
+    OnDiskCompactProbTree[] probTrees = new OnDiskCompactProbTree[nodes.length];
+    double[] treeWeights = new double[nodes.length];
+    double totalWeight = 0.0;
+    for (int lmNum = 0; lmNum < lms.length; ++lmNum) {
+        LanguageModel lm = lms[lmNum];
+        double[] weights = forest.getDecodingRuntime().getWeights(lmNum);
+        int lmid = lm.getIdNum();
+        BinaryTree<HistoryTreePayload> node = nodes[lmid];
+        if (node == null)
+            continue;
+        int clusterid = node.getPayload().clusterid;
+        if (clusterID != null) {
+            clusterID.setId(lmid, clusterid);
+        }
+        if (node.getPayload().isBackoff) {
+            if (forest.isBackoffLeavesUseGrandparent()) {
+                // a backoff cluster, take the grandparent for interpolation
+                BinaryTree<HistoryTreePayload> grandparent = node.getParent().getParent();
+                Key storageKey = new Key(lm.getIdNum(), grandparent.getPayload().clusterid, overtFactors);
+                OnDiskCompactProbTree gpProbTree = allProbTrees.get(storageKey);
+                if (gpProbTree == null && !allProbTrees.containsKey(storageKey)) {
+                    System.err.println("bad key (backoff)");
+                }
+                // ProbTree gpProbTree = decoder.getInterpolatedProbTree(grandparent, overtFactors);
+                double gpBackoff = weights[grandparent.getPayload().clusterid];
+                if (gpProbTree != null && gpProbTree.getScale() > 0) {
+                    treeWeights[numTrees] = gpBackoff;
+                    // gpProbTree = (OnDiskCompactProbTree) gpProbTree.clone();
+                    // gpProbTree.scale(gpBackoff);
+                    probTrees[numTrees] = gpProbTree;
+                    ++numTrees;
+                    totalWeight += gpBackoff;
+                }
+            }
+        } else {
+            Key storageKey = new Key(lm.getIdNum(), node.getPayload().clusterid, overtFactors);
+            OnDiskCompactProbTree probTree = allProbTrees.get(storageKey);
+            // ProbTree probTree = decoder.getInterpolatedProbTree(node, slice.getOvertFactors().getBits());
+            if (probTree == null && !allProbTrees.containsKey(storageKey)) {
+                System.err.println("bad key");
+            }
+            double boWeight = weights[clusterid];
+            if (probTree != null && probTree.getScale() > 0) {
+                // if (boWeight != 1.0) {
+                // probTree = (OnDiskCompactProbTree) probTree.clone();
+                // probTree.scale(boWeight);
+                // }
+                treeWeights[numTrees] = boWeight;
+                probTrees[numTrees] = probTree;
+                ++numTrees;
+                totalWeight += boWeight;
+            }
+        }
+    }
+    if (debug > 2 && clusterID != null) {
+        System.out.println(clusterID);
+    }
+    if (debugOut != null) {
+        debugOut.append(']');
+        System.out.println(debugOut.toString());
+    }
+    if (totalWeight == 0) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Ayee! totalWeight=0\n");
+        for (int lmNum = 0; lmNum < lms.length; ++lmNum) {
+            LanguageModel lm = lms[lmNum];
+            double[] weights = forest.getDecodingRuntime().getWeights(lmNum);
+            int lmid = lm.getIdNum();
+            BinaryTree<HistoryTreePayload> node = nodes[lmid];
+            if (node == null)
+                continue;
+            int clusterid = node.getPayload().clusterid;
+            double weight = 0;
+            String backoffStr = "";
+            if (node.getPayload().isBackoff) {
+                backoffStr = " backoff (0)";
+                if (forest.isBackoffLeavesUseGrandparent()) {
+                    // a backoff cluster, take the grandparent for interpolation
+                    BinaryTree<HistoryTreePayload> grandparent = node.getParent().getParent();
+                    weight = weights[grandparent.getPayload().clusterid];
+                    backoffStr = " backoff (gp)";
+                }
+            } else {
+                weight = weights[clusterid];
+            }
+            sb.append(String.format("[%s@%d w=%f%s] ", lm.getId(), clusterid, weight, backoffStr));
+        }
+        System.err.println(sb.toString());
+    }
+    OnDiskCompactProbTree probTree = null;
+    if (numTrees == 0) {
+        return null;
+    } else if (numTrees == 1) {
+        probTree = (OnDiskCompactProbTree) probTrees[0].clone();
+    } else {
+        if (numTrees < treeWeights.length) {
+            treeWeights = Arrays.copyOf(treeWeights, numTrees);
+            probTrees = Arrays.copyOf(probTrees, numTrees);
+        }
+        probTree = OnDiskCompactProbTree.merge(probTrees, treeWeights);
+        if (probTree != null && totalWeight != 1.0) {
+            probTree.scale(1.0 / totalWeight);
+        }
+    }
+    return probTree;
+}

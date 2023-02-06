@@ -1,0 +1,111 @@
+private double stopProbUsingEntropy() {
+    String debug = "(KStarNominalAttribute.stopProbUsingEntropy)";
+    if (m_ClassType != Attribute.NOMINAL) {
+        System.err.println("Error: " + debug + " attribute class must be nominal!");
+        System.exit(1);
+    }
+    int itcount = 0;
+    double stopProb;
+    double lower, upper, pstop;
+    double bestminprob = 0.0, bestpsum = 0.0;
+    double bestdiff = 0.0, bestpstop = 0.0;
+    double currentdiff, lastdiff, stepsize, delta;
+    KStarWrapper botvals = new KStarWrapper();
+    KStarWrapper upvals = new KStarWrapper();
+    KStarWrapper vals = new KStarWrapper();
+    // Initial values for root finder
+    lower = 0.0 + ROOT_FINDER_ACCURACY / 2.0;
+    upper = 1.0 - ROOT_FINDER_ACCURACY / 2.0;
+    // Find (approx) entropy ranges
+    calculateEntropy(upper, upvals);
+    calculateEntropy(lower, botvals);
+    if (upvals.avgProb == 0) {
+        // When there are no training instances with the test value:
+        // doesn't matter what exact value we use for pstop, just acts as
+        // a constant scale factor in this case.
+        calculateEntropy(lower, vals);
+    } else {
+        // Optimise the scale factor
+        if ((upvals.randEntropy - upvals.actEntropy < botvals.randEntropy - botvals.actEntropy) && (botvals.randEntropy - botvals.actEntropy > FLOOR)) {
+            bestpstop = pstop = lower;
+            stepsize = INITIAL_STEP;
+            bestminprob = botvals.minProb;
+            bestpsum = botvals.avgProb;
+        } else {
+            bestpstop = pstop = upper;
+            stepsize = -INITIAL_STEP;
+            bestminprob = upvals.minProb;
+            bestpsum = upvals.avgProb;
+        }
+        bestdiff = currentdiff = FLOOR;
+        itcount = 0;
+        /* Enter the root finder */
+        while (true) {
+            itcount++;
+            lastdiff = currentdiff;
+            pstop += stepsize;
+            if (pstop <= lower) {
+                pstop = lower;
+                currentdiff = 0.0;
+                delta = -1.0;
+            } else if (pstop >= upper) {
+                pstop = upper;
+                currentdiff = 0.0;
+                delta = -1.0;
+            } else {
+                calculateEntropy(pstop, vals);
+                currentdiff = vals.randEntropy - vals.actEntropy;
+                if (currentdiff < FLOOR) {
+                    currentdiff = FLOOR;
+                    if ((Math.abs(stepsize) < INITIAL_STEP) && (bestdiff == FLOOR)) {
+                        bestpstop = lower;
+                        bestminprob = botvals.minProb;
+                        bestpsum = botvals.avgProb;
+                        break;
+                    }
+                }
+                delta = currentdiff - lastdiff;
+            }
+            if (currentdiff > bestdiff) {
+                bestdiff = currentdiff;
+                bestpstop = pstop;
+                bestminprob = vals.minProb;
+                bestpsum = vals.avgProb;
+            }
+            if (delta < 0) {
+                if (Math.abs(stepsize) < ROOT_FINDER_ACCURACY) {
+                    break;
+                } else {
+                    stepsize /= -2.0;
+                }
+            }
+            if (itcount > ROOT_FINDER_MAX_ITER) {
+                break;
+            }
+        }
+    }
+    m_SmallestProb = bestminprob;
+    m_AverageProb = bestpsum;
+    // Set the probability of transforming to a missing value
+    switch(m_MissingMode) {
+        case M_DELETE:
+            m_MissingProb = 0.0;
+            break;
+        case M_NORMAL:
+            m_MissingProb = 1.0;
+            break;
+        case M_MAXDIFF:
+            m_MissingProb = m_SmallestProb;
+            break;
+        case M_AVERAGE:
+            m_MissingProb = m_AverageProb;
+            break;
+    }
+    if (Math.abs(bestpsum - m_TotalCount) < EPSILON) {
+        // No difference in the values
+        stopProb = 1.0;
+    } else {
+        stopProb = bestpstop;
+    }
+    return stopProb;
+}

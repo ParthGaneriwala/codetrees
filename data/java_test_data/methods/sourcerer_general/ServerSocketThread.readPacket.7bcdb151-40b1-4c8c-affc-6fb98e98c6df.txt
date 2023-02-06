@@ -1,0 +1,128 @@
+private byte[] readPacket(ClientSocket client, ClientPacketHandler clientHandler) throws IOException {
+    // Read until:
+    // - Timeout
+    // - IO error
+    // - Read 'maxLen' characters
+    // - Read 'actualLen' characters
+    /* timeouts */
+    long idleTimeoutMS = ServerSocketThread.this.getIdleTimeout();
+    long pcktTimeoutMS = ServerSocketThread.this.getPacketTimeout();
+    long pcktTimeoutAt = (idleTimeoutMS > 0L) ? (DateTime.getCurrentTimeMillis() + idleTimeoutMS) : -1L;
+    /* packet/read length */
+    int maxLen = ServerSocketThread.this.getMaximumPacketLength();
+    int minLen = ServerSocketThread.this.getMinimumPacketLength();
+    int actualLen = 0;
+    /* set default socket timeout */
+    // client.setSoTimeout(10000);
+    /* packet */
+    byte[] packet = new byte[maxLen];
+    int packetLen = 0;
+    boolean isIdle = true;
+    boolean isTextLine = false;
+    try {
+        while (true) {
+            /* read byte */
+            int lastByte = this.readByte(client, pcktTimeoutAt, packetLen);
+            /* reset idle timeout */
+            if (isIdle) {
+                isIdle = false;
+                if (pcktTimeoutMS > 0L) {
+                    // reset packet timeout
+                    pcktTimeoutAt = DateTime.getCurrentTimeMillis() + pcktTimeoutMS;
+                }
+            }
+            /* look for line terminator? */
+            if (isTextLine) {
+                if (ServerSocketThread.this.isLineTerminatorChar(lastByte)) {
+                    // end of line (typically '\n')
+                    break;
+                } else if (ServerSocketThread.this.isIgnoreChar(lastByte)) {
+                    // ignore this character (typically '\r')
+                    continue;
+                } else {
+                    // save byte
+                    packet[packetLen++] = (byte) lastByte;
+                }
+            } else {
+                // save byte
+                packet[packetLen++] = (byte) lastByte;
+            }
+            /* check lengths */
+            if (packetLen >= maxLen) {
+                // we've read all the bytes we can
+                break;
+            } else if ((actualLen > 0) && (packetLen >= actualLen)) {
+                // we've read the bytes we expected to read
+                break;
+            } else if ((clientHandler != null) && (actualLen <= 0) && (packetLen >= minLen)) {
+                // we've read the minimum number of bytes
+                // get the actual expected packet length
+                actualLen = clientHandler.getActualPacketLength(packet, packetLen);
+                if (actualLen == PACKET_LEN_ASCII_LINE_TERMINATOR) {
+                    // Print.logInfo("Last Byte Read: %s [%s]", StringTools.toHexString(lastByte,8), StringTools.toHexString(packet[packetLen-1]));
+                    if (ServerSocketThread.this.isLineTerminatorChar(lastByte)) {
+                        // last byte was already a line terminator
+                        // remove terminator
+                        packetLen--;
+                        break;
+                    } else {
+                        actualLen = maxLen;
+                        isTextLine = true;
+                    }
+                } else if (actualLen <= PACKET_LEN_END_OF_STREAM) {
+                    // read the rest of the stream
+                    actualLen = maxLen;
+                } else if (actualLen > maxLen) {
+                    Print.logStackTrace("Actual length [" + actualLen + "] > Maximum length [" + maxLen + "]");
+                    actualLen = maxLen;
+                } else {
+                // Print.logDebug("New actual packet len: " + actualLen);
+                }
+                // check to see if we've already read everything we need to
+                if (actualLen == packetLen) {
+                    // we already have exactly what we need
+                    break;
+                }
+            }
+        }
+    } catch (SSReadTimeoutException t) {
+        // This could mean a protocol error
+        if (packetLen > 0) {
+            String h = StringTools.toHexString(packet, 0, packetLen);
+            Print.logWarn("Timout: " + h);
+        }
+        if (ServerSocketThread.this.getTerminateOnTimeout()) {
+            throw t;
+        }
+    } catch (SSEndOfStreamException eos) {
+        // This could mean a protocol error
+        if (packetLen > 0) {
+            String h = StringTools.toHexString(packet, 0, packetLen);
+            Print.logWarn("EOS: " + h);
+        }
+        if (client.isTCP()) {
+            // readPacket
+            Print.logError(eos.getMessage());
+            throw eos;
+        } else {
+        // We're at the end of the UDP datastream
+        // (just fall through to return what bytes we've already read.)
+        }
+    } catch (SocketException se) {
+        Print.logError("ReadPacket error - " + se);
+        throw se;
+    } catch (IOException ioe) {
+        Print.logError("ReadPacket error - " + ioe);
+        throw ioe;
+    }
+    /* return packet */
+    if (packet.length == packetLen) {
+        // highly unlikely
+        return packet;
+    } else {
+        // resize buffer
+        byte[] newPacket = new byte[packetLen];
+        System.arraycopy(packet, 0, newPacket, 0, packetLen);
+        return newPacket;
+    }
+}

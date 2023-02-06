@@ -1,0 +1,91 @@
+public ConnectionImpl pickConnection(LoadBalancingConnectionProxy proxy, List<String> configuredHosts, Map<String, ConnectionImpl> liveConnections, long[] responseTimes, int numRetries) throws SQLException {
+    int numHosts = configuredHosts.size();
+    SQLException ex = null;
+    Map<String, Long> blackList = proxy.getGlobalBlacklist();
+    for (int attempts = 0; attempts < numRetries; ) {
+        if (numHosts == 1) {
+            // pathological case
+            currentHostIndex = 0;
+        } else if (currentHostIndex == -1) {
+            int random = (int) Math.floor((Math.random() * numHosts));
+            for (int i = random; i < numHosts; i++) {
+                if (!blackList.containsKey(configuredHosts.get(i))) {
+                    currentHostIndex = i;
+                    break;
+                }
+            }
+            if (currentHostIndex == -1) {
+                for (int i = 0; i < random; i++) {
+                    if (!blackList.containsKey(configuredHosts.get(i))) {
+                        currentHostIndex = i;
+                        break;
+                    }
+                }
+            }
+            if (currentHostIndex == -1) {
+                // it may have changed
+                blackList = proxy.getGlobalBlacklist();
+                try {
+                    Thread.sleep(250);
+                } catch (InterruptedException e) {
+                }
+                // retry
+                continue;
+            }
+        } else {
+            int i = currentHostIndex + 1;
+            boolean foundGoodHost = false;
+            for (; i < numHosts; i++) {
+                if (!blackList.containsKey(configuredHosts.get(i))) {
+                    currentHostIndex = i;
+                    foundGoodHost = true;
+                    break;
+                }
+            }
+            if (!foundGoodHost) {
+                for (i = 0; i < currentHostIndex; i++) {
+                    if (!blackList.containsKey(configuredHosts.get(i))) {
+                        currentHostIndex = i;
+                        foundGoodHost = true;
+                        break;
+                    }
+                }
+            }
+            if (!foundGoodHost) {
+                // it may have changed
+                blackList = proxy.getGlobalBlacklist();
+                try {
+                    Thread.sleep(250);
+                } catch (InterruptedException e) {
+                }
+                // retry
+                continue;
+            }
+        }
+        String hostPortSpec = configuredHosts.get(currentHostIndex);
+        ConnectionImpl conn = liveConnections.get(hostPortSpec);
+        if (conn == null) {
+            try {
+                conn = proxy.createConnectionForHost(hostPortSpec);
+            } catch (SQLException sqlEx) {
+                ex = sqlEx;
+                if (sqlEx instanceof CommunicationsException || "08S01".equals(sqlEx.getSQLState())) {
+                    proxy.addToGlobalBlacklist(hostPortSpec);
+                    try {
+                        Thread.sleep(250);
+                    } catch (InterruptedException e) {
+                    }
+                    continue;
+                } else {
+                    throw sqlEx;
+                }
+            }
+        }
+        return conn;
+    }
+    if (ex != null) {
+        throw ex;
+    }
+    // we won't get here, compiler can't tell
+    return null;
+}

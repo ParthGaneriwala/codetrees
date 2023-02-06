@@ -1,0 +1,116 @@
+private Instance vectorizeInstance(Instance input, int[] offsetHolder, boolean retainStringAttValuesInMemory) throws Exception {
+    if (!m_inputContainsStringAttributes) {
+        return input;
+    }
+    if (m_inputFormat == null) {
+        throw new Exception("No input format available. Call setup() and " + "make sure a dictionary has been built first.");
+    }
+    if (m_consolidatedDict == null) {
+        throw new Exception("Dictionary hasn't been built or consolidated yet!");
+    }
+    int indexOffset = 0;
+    int classIndex = m_outputFormat.classIndex();
+    Map<Integer, double[]> contained = new TreeMap<Integer, double[]>();
+    for (int i = 0; i < m_inputFormat.numAttributes(); i++) {
+        if (!m_selectedRange.isInRange(i)) {
+            if (!m_inputFormat.attribute(i).isString() && !m_inputFormat.attribute(i).isRelationValued()) {
+                // add nominal and numeric directly
+                if (input.value(i) != 0.0) {
+                    contained.put(indexOffset, new double[] { input.value(i) });
+                }
+            } else {
+                if (input.isMissing(i)) {
+                    contained.put(indexOffset, new double[] { Utils.missingValue() });
+                } else if (m_inputFormat.attribute(i).isString()) {
+                    String strVal = input.stringValue(i);
+                    if (retainStringAttValuesInMemory) {
+                        double strIndex = m_outputFormat.attribute(indexOffset).addStringValue(strVal);
+                        contained.put(indexOffset, new double[] { strIndex });
+                    } else {
+                        m_outputFormat.attribute(indexOffset).setStringValue(strVal);
+                        contained.put(indexOffset, new double[] { 0 });
+                    }
+                } else {
+                    // relational
+                    if (m_outputFormat.attribute(indexOffset).numValues() == 0) {
+                        Instances relationalHeader = m_outputFormat.attribute(indexOffset).relation();
+                        // hack to defeat sparse instances bug
+                        m_outputFormat.attribute(indexOffset).addRelation(relationalHeader);
+                    }
+                    int newIndex = m_outputFormat.attribute(indexOffset).addRelation(input.relationalValue(i));
+                    contained.put(indexOffset, new double[] { newIndex });
+                }
+            }
+            indexOffset++;
+        }
+    }
+    offsetHolder[0] = indexOffset;
+    // dictionary entries
+    for (int i = 0; i < m_inputFormat.numAttributes(); i++) {
+        if (m_selectedRange.isInRange(i) && !input.isMissing(i)) {
+            m_tokenizer.tokenize(input.stringValue(i));
+            while (m_tokenizer.hasMoreElements()) {
+                String word = m_tokenizer.nextElement();
+                if (m_lowerCaseTokens) {
+                    word = word.toLowerCase();
+                }
+                word = m_stemmer.stem(word);
+                int[] idxAndDocCount = m_consolidatedDict.get(word);
+                if (idxAndDocCount != null) {
+                    if (m_outputCounts) {
+                        double[] inputCount = contained.get(idxAndDocCount[0] + indexOffset);
+                        if (inputCount != null) {
+                            inputCount[0]++;
+                        } else {
+                            contained.put(idxAndDocCount[0] + indexOffset, new double[] { 1 });
+                        }
+                    } else {
+                        contained.put(idxAndDocCount[0] + indexOffset, new double[] { 1 });
+                    }
+                }
+            }
+        }
+    }
+    // TF transform
+    if (m_TFTransform) {
+        for (Map.Entry<Integer, double[]> e : contained.entrySet()) {
+            int index = e.getKey();
+            if (index >= indexOffset) {
+                double[] val = e.getValue();
+                val[0] = Math.log(val[0] + 1);
+            }
+        }
+    }
+    // IDF transform
+    if (m_IDFTransform) {
+        for (Map.Entry<Integer, double[]> e : contained.entrySet()) {
+            int index = e.getKey();
+            if (index >= indexOffset) {
+                double[] val = e.getValue();
+                String word = m_outputFormat.attribute(index).name();
+                word = word.substring(m_Prefix.length());
+                int[] idxAndDocCount = m_consolidatedDict.get(word);
+                if (idxAndDocCount == null) {
+                    throw new Exception("This should never occur");
+                }
+                if (idxAndDocCount.length != 2) {
+                    throw new Exception("Can't compute IDF transform as document " + "counts are not available");
+                }
+                val[0] = val[0] * Math.log(m_count / (double) idxAndDocCount[1]);
+            }
+        }
+    }
+    double[] values = new double[contained.size()];
+    int[] indices = new int[contained.size()];
+    int i = 0;
+    for (Map.Entry<Integer, double[]> e : contained.entrySet()) {
+        values[i] = e.getValue()[0];
+        indices[i++] = e.getKey().intValue();
+    }
+    Instance inst = new SparseInstance(input.weight(), values, indices, m_outputFormat.numAttributes());
+    inst.setDataset(m_outputFormat);
+    if (m_normalize) {
+        normalizeInstance(inst, indexOffset);
+    }
+    return inst;
+}

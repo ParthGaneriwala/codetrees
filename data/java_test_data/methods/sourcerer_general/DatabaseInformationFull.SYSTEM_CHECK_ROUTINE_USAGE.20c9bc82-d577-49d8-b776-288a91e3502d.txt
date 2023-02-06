@@ -1,0 +1,85 @@
+Table SYSTEM_CHECK_ROUTINE_USAGE() throws HsqlException {
+    Table t = sysTables[SYSTEM_CHECK_ROUTINE_USAGE];
+    if (t == null) {
+        t = createBlankTable(sysTableHsqlNames[SYSTEM_CHECK_ROUTINE_USAGE]);
+        addColumn(t, "CONSTRAINT_CATALOG", Types.VARCHAR);
+        addColumn(t, "CONSTRAINT_SCHEMA", Types.VARCHAR);
+        // not null
+        addColumn(t, "CONSTRAINT_NAME", Types.VARCHAR, false);
+        addColumn(t, "SPECIFIC_CATALOG", Types.VARCHAR);
+        addColumn(t, "SPECIFIC_SCHEMA", Types.VARCHAR);
+        // not null
+        addColumn(t, "SPECIFIC_NAME", Types.VARCHAR, false);
+        t.createPrimaryKey(null, new int[] { 0, 1, 2, 3, 4, 5 }, false);
+        return t;
+    }
+    // calculated column values
+    String constraintCatalog;
+    String constraintSchema;
+    String constraintName;
+    // Intermediate holders
+    Iterator tables;
+    Table table;
+    Constraint[] constraints;
+    int constraintCount;
+    Constraint constraint;
+    Expression.Collector collector;
+    Expression expression;
+    Function function;
+    Iterator iterator;
+    HashSet methodSet;
+    Method method;
+    Object[] row;
+    // column number mappings
+    final int icons_cat = 0;
+    final int icons_schem = 1;
+    final int icons_name = 2;
+    final int ir_cat = 3;
+    final int ir_schem = 4;
+    final int ir_name = 5;
+    tables = database.schemaManager.allTablesIterator();
+    collector = new Expression.Collector();
+    while (tables.hasNext()) {
+        collector.clear();
+        table = (Table) tables.next();
+        if (!isAccessibleTable(table)) {
+            continue;
+        }
+        constraints = table.getConstraints();
+        constraintCount = constraints.length;
+        constraintCatalog = ns.getCatalogName(table);
+        constraintSchema = table.getSchemaName();
+        for (int i = 0; i < constraintCount; i++) {
+            constraint = (Constraint) constraints[i];
+            if (constraint.getType() != Constraint.CHECK) {
+                continue;
+            }
+            constraintName = constraint.getName().name;
+            collector.addAll(constraint.core.check, Expression.FUNCTION);
+            methodSet = new HashSet();
+            iterator = collector.iterator();
+            while (iterator.hasNext()) {
+                expression = (Expression) iterator.next();
+                function = expression.function;
+                if (!session.isAccessible(function.getMethod().getDeclaringClass().getName())) {
+                    continue;
+                }
+                methodSet.add(function.getMethod());
+            }
+            iterator = methodSet.iterator();
+            while (iterator.hasNext()) {
+                method = (Method) iterator.next();
+                row = t.getEmptyRowData();
+                row[icons_cat] = constraintCatalog;
+                row[icons_schem] = constraintSchema;
+                row[icons_name] = constraintName;
+                row[ir_cat] = ns.getCatalogName(method);
+                row[ir_schem] = ns.getSchemaName(method);
+                row[ir_name] = DINameSpace.getMethodSpecificName(method);
+                t.insertSys(row);
+            }
+        }
+    }
+    t.setDataReadOnly(true);
+    return t;
+}

@@ -1,0 +1,146 @@
+protected static URL _getConfigURL() throws MalformedURLException {
+    // This module checks for the runtime config file in the following order:
+    // - Explicit "-configFile=<file>" specification
+    // - Explicit "-conf=<file>" specification                         (if command-line)
+    // - Resource "[default|webapp]_<host>.conf"
+    // - Resource "[default|webapp].conf"
+    // - Servlet "<Context>/WEB-INF/webapp_<host>.conf"                (if servlet)
+    // - Servlet "<Context>/WEB-INF/webapp.conf"                       (if servlet)
+    // - FileSystem "<CONFIG_FILE_DIR>/[default|webapp]_<host>.conf"
+    // - FileSystem "<CONFIG_FILE_DIR>/[default|webapp].conf"
+    /* init */
+    // should not be null
+    String hostName = RTConfig.getHostName();
+    Class servletClass = null;
+    RTProperties cmdLineProps = getCommandLineProperties();
+    boolean isCommandLine = (cmdLineProps != null);
+    RTProperties servletProps = getServletContextProperties();
+    boolean isServlet = !isCommandLine && ((servletProps != null) || ((servletClass = getServletClass()) != null));
+    // Check for "-configFile=<file>"
+    if (RTConfig.hasProperty(RTKey.CONFIG_FILE, false)) {
+        File cfgFile = RTConfig.getFile(RTKey.CONFIG_FILE);
+        if (RTConfig.hasProperty(RTKey.CONFIG_FILE_DIR, false)) {
+            File cfgDir = RTConfig.getFile(RTKey.CONFIG_FILE_DIR);
+            cfgFile = new File(cfgDir, cfgFile.toString());
+        }
+        if (cfgFile.isFile()) {
+            return cfgFile.toURL();
+        } else {
+            Print.logError("Specified config file does not exist: " + cfgFile);
+            return null;
+        }
+    } else // Check for "-conf=<file>"
+    if (isCommandLine) {
+        /* check for alternate command line override '-conf=<file>' */
+        File cfgFile = cmdLineProps.getFile(RTKey.COMMAND_LINE_CONF, null);
+        if (cfgFile != null) {
+            if (RTConfig.hasProperty(RTKey.CONFIG_FILE_DIR, false)) {
+                File cfgDir = RTConfig.getFile(RTKey.CONFIG_FILE_DIR);
+                cfgFile = new File(cfgDir, cfgFile.toString());
+            }
+            if (cfgFile.isFile()) {
+                return cfgFile.toURL();
+            } else {
+                Print.logError("Specified config file does not exist: " + cfgFile);
+                return null;
+            }
+        }
+    }
+    /* separate directory from path */
+    File rtCfgDir;
+    File rtCfgFile;
+    if (isServlet) {
+        rtCfgDir = RTConfig.getFile(RTKey.CONFIG_FILE_DIR);
+        // should be simply "webapp.conf"
+        rtCfgFile = RTConfig.getFile(RTKey.WEBAPP_FILE);
+    } else {
+        rtCfgFile = RTConfig.getFile(RTKey.CONFIG_FILE);
+        if (rtCfgFile.isAbsolute()) {
+            rtCfgDir = rtCfgFile.getParentFile();
+            rtCfgFile = new File(rtCfgFile.getName());
+        } else {
+            File cf = new File(RTConfig.getFile(RTKey.CONFIG_FILE_DIR), rtCfgFile.toString());
+            rtCfgDir = cf.getParentFile();
+            rtCfgFile = new File(cf.getName());
+        }
+    }
+    /* separate file name from extension */
+    String cfgFileName = rtCfgFile.toString();
+    int cfgExtPos = cfgFileName.lastIndexOf(".");
+    String cfgName = (cfgExtPos >= 0) ? cfgFileName.substring(0, cfgExtPos) : cfgFileName;
+    String cfgExtn = (cfgExtPos >= 0) ? cfgFileName.substring(cfgExtPos) : "";
+    /* check for config file in resources */
+    Class mainClass = RTConfig.getMainClass();
+    if (mainClass != null) {
+        try {
+            ClassLoader mainClassLoader = mainClass.getClassLoader();
+            if (mainClassLoader == null) {
+                // bootstrap classloader
+                // may still be null
+                mainClassLoader = ClassLoader.getSystemClassLoader();
+            }
+            if (mainClassLoader != null) {
+                // Check for resource "default_<host>.conf"
+                URL cfgHostRes = mainClassLoader.getResource(cfgName + "_" + hostName + cfgExtn);
+                if (cfgHostRes != null) {
+                    return cfgHostRes;
+                }
+                // Check for resource "default.conf"
+                URL cfgRes = mainClassLoader.getResource(cfgFileName);
+                if (cfgRes != null) {
+                    return cfgRes;
+                }
+            } else {
+                Print.logWarn("System class loader is null");
+            }
+        } catch (Throwable t) {
+            Print.logException("Error retrieving class loader", t);
+        }
+    }
+    /* special context (command-line/servlet) config files */
+    if (isCommandLine) {
+    // continue below
+    } else if (servletProps != null) {
+        /* check "<ContextPath>/[WEB-INF/]webapp[_<host>].conf" */
+        String ctxPath = servletProps.getString(RTKey.WEBAPP_CONTEXT_PATH, null);
+        if (ctxPath != null) {
+            File web_inf = new File(ctxPath, "WEB-INF");
+            // Check for "<Context>/WEB-INF/webapp_<host>.conf"
+            File webInfHostFile = new File(web_inf, cfgName + "_" + hostName + cfgExtn);
+            if (webInfHostFile.isFile()) {
+                return webInfHostFile.toURL();
+            }
+            // Print.logInfo("Config not found: " + webInfHostFile);
+            // Check for "<Context>/WEB-INF/webapp.conf"
+            File webInfFile = new File(web_inf, cfgFileName);
+            if (webInfFile.isFile()) {
+                return webInfFile.toURL();
+            }
+        // Print.logInfo("Config not found: " + webInfFile);
+        }
+    } else if (servletClass != null) {
+        // context and we are initializing late (possible too late).
+        if (RTConfig.verbose) {
+            Print.logInfo("--------------------------------------------------------");
+            Print.logInfo("******* WebApp: " + StringTools.className(servletClass));
+            Print.logInfo("--------------------------------------------------------");
+        }
+    } else {
+        // this only occurs if we're attempting to acces RTConfig properties and we
+        // haven't previously been properly initialized
+        Print.logStackTrace("CommandLine/ServletContext properties not specified");
+    }
+    // Check for "<CONFIG_FILE_DIR>/[default|webapp]_<host>.conf"
+    File cfgDirHostFile = new File(rtCfgDir, cfgName + "_" + hostName + cfgExtn);
+    if (cfgDirHostFile.isFile()) {
+        return cfgDirHostFile.toURL();
+    }
+    // Print.logInfo("Config not found: " + cfgDirHostFile);
+    // Check for "<CONFIG_FILE_DIR>/[default|webapp].conf"
+    File cfgDirFile = new File(rtCfgDir, rtCfgFile.toString());
+    if (cfgDirFile.isFile()) {
+        return cfgDirFile.toURL();
+    }
+    /* no config file */
+    return null;
+}

@@ -1,0 +1,84 @@
+public void run() {
+    // Basic process is get the next action and do it in a cycle until done or told to stop
+    try {
+        forceStop = false;
+        running = true;
+        long runTimer = System.currentTimeMillis() + (mill.getProperties().getMaxCutTimeSecs() * 1000);
+        if (!stepMode) {
+            startStopAction.setState(StartStopAction.STATE_STOP);
+        } else {
+            startStopAction.setEnabled(false);
+        }
+        while (!actionsList2.isAtEndOfList()) {
+            statusBar.setMessage("Processing actions...");
+            if (forceStop) {
+                throw new RuntimeException("Stopped by user");
+            }
+            if (!stepMode && mill.getProperties().isCoolDown() && System.currentTimeMillis() > runTimer) {
+                // Take a break
+                // first save the state of the vacuum and drill motors
+                boolean vacstate = mill.isVacuumRelay();
+                boolean drillstate = mill.isDrillRelay();
+                mill.readStatus();
+                MillLocation currentLoc = mill.getLocation();
+                mill.moveTo(-9999, -9999, mill.getProperties().getZsafe());
+                // turn the drill off
+                mill.setDrillRelay(false);
+                // turn the vacuum off
+                mill.setVacuumRelay(false);
+                startStopAction.setState(StartStopAction.STATE_RESUME);
+                try {
+                    long restTimer = System.currentTimeMillis() + (mill.getProperties().getCoolDownSecs() * 1000);
+                    do {
+                        statusBar.setMessage("Cooling down - " + (restTimer - System.currentTimeMillis()) / 1000L + " seconds");
+                        // wait for 1 second
+                        Thread.sleep(1000);
+                    } while (!forceStop && System.currentTimeMillis() < restTimer);
+                } catch (InterruptedException e) {
+                    log.error("Motor cool down delay interrupted", e);
+                }
+                forceStop = false;
+                startStopAction.setState(StartStopAction.STATE_STOP);
+                statusBar.setMessage("Processing actions...");
+                // return everything back to where it was
+                mill.setVacuumRelay(vacstate);
+                mill.setDrillRelay(drillstate);
+                // put the z-axis back where it was
+                mill.moveTo(currentLoc);
+                // set the next cool down interval
+                runTimer = System.currentTimeMillis() + (mill.getProperties().getMaxCutTimeSecs() * 1000);
+            }
+            actionsList2.processNextAction(mill);
+            if (stepMode)
+                break;
+        }
+    } catch (RuntimeException e) {
+        log.error("in MillingMachineFrame.startStopAction", e);
+        statusBar.setMessage("Processing interrupted!");
+        mill.readStatus();
+        mill.setDrillRelay(false);
+        mill.setVacuumRelay(false);
+        refreshFromMill();
+        showExceptionDialog(e);
+    } finally {
+        actionsList2.drawAll();
+        mill.setDrillRelay(false);
+        mill.setVacuumRelay(false);
+        running = false;
+        mill.readStatus();
+        if (mill.getZLocation() >= mill.getZSafe()) {
+            // raise the bit (unless it is already up)
+            mill.moveTo(-9999, -9999, mill.getZSafe());
+        }
+        refreshFromMill();
+        startStopAction.setEnabled(true);
+        if (!stepMode || actionsList2.isAtEndOfList()) {
+            startStopAction.setState(StartStopAction.STATE_START);
+        }
+        if (actionsList2.isAtEndOfList()) {
+            // at the end - tell them
+            statusBar.setMessage("Milling is complete!");
+            JOptionPane.showMessageDialog(this, "Milling is Complete!", "Milling is Complete!", JOptionPane.INFORMATION_MESSAGE);
+        }
+    }
+}

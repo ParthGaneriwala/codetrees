@@ -1,0 +1,93 @@
+public com.chinatelecom.ismp.sp.rsp.Response orderRelationUpdateNotify(com.chinatelecom.ismp.sp.req.OrderRelationUpdateNotifyReq req) throws java.rmi.RemoteException {
+    String linkid = "";
+    MessageContext context = MessageContext.getCurrentContext();
+    SOAPEnvelope requestEnvelope = context.getRequestMessage().getSOAPEnvelope();
+    SOAPHeaderElement requestSequenceIdHeader = requestEnvelope.getHeaderByName("http://www.chinatelecom.com.cn/schema/ctcc/common/v2_1", "OrderRelationSOAPHeader");
+    if (requestSequenceIdHeader != null) {
+        Iterator iterator = requestSequenceIdHeader.getChildElements();
+        while (iterator.hasNext()) {
+            SOAPElement element = (SOAPElement) iterator.next();
+            String elementName = element.getElementName().getLocalName();
+            System.out.println("订购头部信息：" + elementName + "==>" + element.getValue());
+            if (elementName.equals("linkId"))
+                linkid = element.getValue();
+        // soapHeader.setServiceCode(element.getValue());
+        // else if (elementName.equals("servicePwd"))
+        // soapHeader.setServicePwd(element.getValue());
+        }
+    // soapHeader.setIp(this.getIP());
+    }
+    LOG.debug(df.format(new Date()) + "=>订购关系=>" + req.getOPType() + "=>" + req.getPackageID() + "=>" + req.getProductID() + "=>" + req.getStreamingNo() + "=>" + req.getUserID() + "=>" + req.getUserIDType());
+    // 0：定购
+    // 1：暂停
+    // 2：暂停恢复
+    // 3：退定
+    // 4：退定该SP的所有产品和套餐
+    // 5：暂停该SP的所有产品和套餐
+    int optype = req.getOPType();
+    String packageId = req.getPackageID();
+    String productId = req.getProductID();
+    String streamNo = req.getStreamingNo();
+    String userId = req.getUserID();
+    int userIdType = req.getUserIDType();
+    Response resp = new Response();
+    try {
+        OrderService orderService = (OrderService) Globals.getWebBean("orderService");
+        int logid = orderService.logUserOrder(userId, packageId, productId, streamNo, "", optype, userIdType, "");
+        LOG.debug("订购日志处理ID:" + logid);
+        int result = -2;
+        if (optype == 0) {
+            // 下发短信，提示发送上行短信. 车牌号#车牌类型#地市电话区号
+            result = orderService.order(userId, packageId, productId, streamNo, "", userIdType);
+            if (result >= 0) {
+                // LOG.warn(userId+"您的订购信息已受理成功,请按照如下的格式上传您的车牌号、车牌类型和车牌所在地市区号："
+                // + OrderConstant.ORDER_MO_CONTENT);
+                String sms = "";
+                if (productId.equals(OrderConstant.TY_DZJC_PRODUCTID))
+                    sms = "您已成功定制新疆宽洋汽车保姆体验业务，本业务信息费0元/月，请回复您所在地区号，如乌鲁木齐请回复B#0991。询09915881229";
+                else
+                    sms = "您已成功定制新疆宽洋汽车保姆业务，本业务信息费10元/月，请回复您所在地区号，如乌鲁木齐请回复B#0991。询09915881229";
+                // Sms.sendSms(userId,
+                // "您的订购信息已受理成功,请按照如下的格式上传您的车牌号、车牌类型和车牌所在地市区号：" +
+                // OrderConstant.ORDER_MO_CONTENT,"order");
+                Sms.sendSms(userId, sms, "order", linkid, productId);
+            } else {
+                LOG.warn("订购业务处理失败,不下发短信（即使下发也不能成功,因为没有订购关系）");
+            // Sms.sendSms(userId,"");
+            }
+        } else if (optype == 1) {
+            result = orderService.pause(userId, productId);
+            LOG.info("业务暂停:" + result);
+        // Sms.sendSms(userId, OrderConstant.ORDER_PAUSE_CONTENT);//
+        // 下发暂停短信
+        } else if (optype == 2) {
+            result = orderService.resume(userId, productId);
+            LOG.info("业务恢复:" + result);
+        // Sms.sendSms(userId, OrderConstant.ORDER_CANCEL_CONTENT); //
+        // 下发退订短信
+        } else if (optype == 3) {
+            result = orderService.cancel(userId, productId);
+            LOG.info("业务退订:" + result);
+        // Sms.sendSms(userId, OrderConstant.ORDER_CANCEL_CONTENT); //
+        // 下发退订短信
+        } else if (optype == 4) {
+            LOG.warn("其他类型忽略:" + optype);
+        } else if (optype == 5) {
+            LOG.warn("其他类型忽略:" + optype);
+        } else {
+            LOG.warn("其他类型忽略:" + optype);
+        }
+        orderService.updateLogOrderResult(logid, result + "");
+        if (result >= 0)
+            resp.setResultCode(0);
+        else
+            resp.setResultCode(result);
+        resp.setStreamingNo(req.getStreamingNo());
+        LOG.info("返回消息OK");
+    } catch (Exception e) {
+        resp.setResultCode(-100);
+        resp.setStreamingNo(req.getStreamingNo());
+        LOG.error("orderRelationUpdateNotify", e);
+    }
+    return resp;
+}

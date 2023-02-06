@@ -1,0 +1,148 @@
+private void sendInvitation(ActionRequest request) throws Exception {
+    Connection db = PortalUtils.useConnection(request);
+    ApplicationPrefs prefs = PortalUtils.getApplicationPrefs(request);
+    Project project = PortalUtils.getProject(request);
+    User user = PortalUtils.getUser(request);
+    // Get message body and subject
+    String optionalMessage = request.getParameter(OPTIONAL_MESSAGE);
+    // Get invitation list
+    String[] matches = (String[]) request.getPortletSession().getAttribute("matches");
+    String[] accessToTools = (String[]) request.getPortletSession().getAttribute("accessToTools");
+    // Determine which kinds of users this user can invite
+    boolean canInviteMembers = true;
+    boolean canInviteNonMembers = true;
+    if (!("true".equals(prefs.get(ApplicationPrefs.USERS_CAN_INVITE)) || user.getAccessInvite() || user.getAccessAdmin())) {
+        canInviteNonMembers = false;
+    }
+    // Determine if a maxRole has been defined, enforce it
+    int maxUserId = -1;
+    String maxRole = request.getPreferences().getValue(PREF_MAX_ROLE, null);
+    if (maxRole != null && !PortalUtils.getUser(request).getAccessAdmin()) {
+        // This cachedList can be used
+        LookupList cachedRoleList = CacheUtils.getLookupList("lookup_project_role");
+        maxUserId = cachedRoleList.getIdFromValue(maxRole);
+    }
+    // Determine if tools are allowed when adding a user
+    boolean toolsEnabled = true;
+    if (!(ProjectUtils.hasAccess(project.getId(), user, "project-team-tools") && (StringUtils.hasText(project.getConcursiveCRMUrl())))) {
+        toolsEnabled = false;
+    }
+    if (matches != null) {
+        for (String chosenId : matches) {
+            String matchedUserId = (String) request.getPortletSession().getAttribute("matchUserId-" + chosenId);
+            String matchedRole = (String) request.getPortletSession().getAttribute("matchedRole-" + chosenId);
+            request.getPortletSession().removeAttribute("matchUserId-" + chosenId);
+            request.getPortletSession().removeAttribute("matchedRole-" + chosenId);
+            // Determine if this user needs to be provided access to tools
+            boolean provideAccessToTools = false;
+            if (accessToTools != null) {
+                for (String toolsEntry : accessToTools) {
+                    if (toolsEntry.equals(chosenId)) {
+                        provideAccessToTools = true;
+                        break;
+                    }
+                }
+            }
+            // Add as team members
+            TeamMember thisMember = new TeamMember();
+            thisMember.setProjectId(PortalUtils.getProject(request).getId());
+            thisMember.setUserId(matchedUserId);
+            if (toolsEnabled) {
+                thisMember.setTools(provideAccessToTools);
+            }
+            if (maxUserId > -1) {
+                thisMember.setUserLevel(maxUserId);
+            } else {
+                thisMember.setUserLevel(PortalUtils.getUserLevel(Integer.parseInt(matchedRole)));
+            }
+            thisMember.setEnteredBy(PortalUtils.getUser(request).getId());
+            thisMember.setModifiedBy(PortalUtils.getUser(request).getId());
+            thisMember.setStatus(TeamMember.STATUS_PENDING);
+            thisMember.setCustomInvitationMessage(optionalMessage);
+            if (!TeamMemberList.isOnTeam(db, PortalUtils.getProject(request).getId(), Integer.parseInt(matchedUserId))) {
+                if (canInviteMembers) {
+                    if (thisMember.insert(db)) {
+                        PortalUtils.processInsertHook(request, thisMember);
+                    }
+                }
+            }
+        }
+    }
+    if (canInviteNonMembers) {
+        String[] mismatches = (String[]) request.getPortletSession().getAttribute("mismatches");
+        String[] notMatchedAccessToTools = (String[]) request.getPortletSession().getAttribute("notMatchedAccessToTools");
+        if (mismatches != null) {
+            for (String unmatchedEntry : mismatches) {
+                String firstName = (String) request.getPortletSession().getAttribute("firstName-" + unmatchedEntry);
+                String lastName = (String) request.getPortletSession().getAttribute("lastName-" + unmatchedEntry);
+                String email = (String) request.getPortletSession().getAttribute("email-" + unmatchedEntry);
+                String notMatchedRole = (String) request.getPortletSession().getAttribute("notMatchedRole-" + unmatchedEntry);
+                Project thisProject = PortalUtils.getProject(request);
+                request.getPortletSession().removeAttribute("email-" + unmatchedEntry);
+                request.getPortletSession().removeAttribute("firstName-" + unmatchedEntry);
+                request.getPortletSession().removeAttribute("lastName-" + unmatchedEntry);
+                request.getPortletSession().removeAttribute("notMatchedRole-" + notMatchedRole);
+                // insert user
+                User thisUser = new User();
+                thisUser.setInstanceId(PortalUtils.getInstance(request).getId());
+                thisUser.setGroupId(1);
+                thisUser.setDepartmentId(1);
+                thisUser.setFirstName(firstName);
+                thisUser.setLastName(lastName);
+                // company will be set when user completes their own registration
+                thisUser.setEmail(email);
+                thisUser.setUsername(email);
+                thisUser.setPassword("unregistered");
+                thisUser.setEnteredBy(PortalUtils.getUser(request).getId());
+                thisUser.setModifiedBy(PortalUtils.getUser(request).getId());
+                // the user will be enabled after completing registration
+                thisUser.setEnabled(false);
+                thisUser.setStartPage(1);
+                thisUser.setRegistered(false);
+                thisUser.setAccountSize(prefs.get("ACCOUNT.SIZE"));
+                thisUser.setAccessAddProjects(prefs.get(ApplicationPrefs.USERS_CAN_START_PROJECTS));
+                // the user will supply location info during registration
+                // city
+                // state
+                // country
+                // postalCode
+                // Create the user, and the user's profile
+                thisUser.insert(db, null, prefs);
+                // Insert user into project as pending
+                TeamMember thisMember = new TeamMember();
+                thisMember.setProjectId(thisProject.getId());
+                thisMember.setUserId(thisUser.getId());
+                if (maxUserId > -1) {
+                    thisMember.setUserLevel(maxUserId);
+                } else {
+                    thisMember.setUserLevel(PortalUtils.getUserLevel(Integer.parseInt(notMatchedRole)));
+                }
+                thisMember.setStatus(TeamMember.STATUS_INVITING);
+                thisMember.setEnteredBy(PortalUtils.getUser(request).getId());
+                thisMember.setModifiedBy(PortalUtils.getUser(request).getId());
+                thisMember.setCustomInvitationMessage(optionalMessage);
+                // Determine if this user needs to be provided access to tools
+                boolean provideAccessToTools = false;
+                if (notMatchedAccessToTools != null) {
+                    for (String notMatchedToolsEntry : notMatchedAccessToTools) {
+                        if (notMatchedToolsEntry.equals(unmatchedEntry)) {
+                            provideAccessToTools = true;
+                            break;
+                        }
+                    }
+                }
+                if (toolsEnabled) {
+                    thisMember.setTools(provideAccessToTools);
+                }
+                if (thisMember.insert(db)) {
+                    PortalUtils.processInsertHook(request, thisMember);
+                }
+            }
+        }
+    }
+    // remove session attributes
+    request.getPortletSession().removeAttribute("matches");
+    request.getPortletSession().removeAttribute("accessToTools");
+    request.getPortletSession().removeAttribute("mismatches");
+    request.getPortletSession().removeAttribute("notMatchedAccessToTools");
+}

@@ -1,0 +1,70 @@
+@Override
+protected Object doMainTask(TaskMonitor monitor, ObjectRepository repository) {
+    // get varied parameter values
+    ALMultiParamTask multiParamTask = (ALMultiParamTask) this.multiParamTaskOption.getPreMaterializedObject();
+    Option[] variedParamValueOptions = multiParamTask.variedParamValuesOption.getList();
+    int numVariedParams = variedParamValueOptions.length;
+    double[] variedParamValues = new double[numVariedParams];
+    for (int i = 0; i < numVariedParams; i++) {
+        variedParamValues[i] = Double.valueOf(variedParamValueOptions[i].getValueAsCLIString());
+    }
+    // initialize the learning curve collection
+    PreviewCollection<PreviewCollection<PreviewCollectionLearningCurveWrapper>> previewCollection = new PreviewCollection<>("partition evaluation entry id", "partition id", this.getClass(), multiParamTask.variedParamNameOption.getValueAsCLIString(), variedParamValues);
+    monitor.setCurrentActivity("Performing evaluation...", 50.0);
+    // start subtasks
+    monitor.setCurrentActivity("Performing evaluation...", -1.0);
+    for (int i = 0; i < this.subtaskThreads.size(); ++i) {
+        subtaskThreads.get(i).start();
+    }
+    // get the number of subtask threads
+    int numSubtaskThreads = subtaskThreads.size();
+    // check the previews of subtaskthreads
+    boolean allThreadsCompleted = false;
+    // iterate while there are threads active
+    while (!allThreadsCompleted) {
+        allThreadsCompleted = true;
+        int oldNumEntries = previewCollection.numEntries();
+        double completionSum = 0;
+        // iterate over all threads
+        for (int i = 0; i < numSubtaskThreads; ++i) {
+            ALTaskThread currentTaskThread = subtaskThreads.get(i);
+            // check if the thread is completed
+            allThreadsCompleted &= currentTaskThread.isComplete();
+            // request cancel if subtask failed or was cancelled
+            if (currentTaskThread.isFailed() || currentTaskThread.isCancelled()) {
+                monitor.requestCancel();
+            }
+            // get the completion fraction
+            completionSum += currentTaskThread.getCurrentActivityFracComplete();
+            // get the latest preview
+            @SuppressWarnings("unchecked") PreviewCollection<PreviewCollectionLearningCurveWrapper> latestPreview = (PreviewCollection<PreviewCollectionLearningCurveWrapper>) currentTaskThread.getLatestResultPreview();
+            // ignore the preview if it is null
+            if (latestPreview != null && latestPreview.numEntries() > 0) {
+                // update/add the learning curve to the learning curve collection
+                previewCollection.setPreview(i, latestPreview);
+            } else if (!currentTaskThread.isComplete()) {
+                // skip for loop until all threads before were at least added once
+                break;
+            } else {
+                // set final result as latest preview
+                @SuppressWarnings("unchecked") PreviewCollection<PreviewCollectionLearningCurveWrapper> finalPreview = (PreviewCollection<PreviewCollectionLearningCurveWrapper>) currentTaskThread.getFinalResult();
+                previewCollection.setPreview(i, finalPreview);
+            }
+        }
+        double completionFraction = completionSum / numSubtaskThreads;
+        monitor.setCurrentActivityFractionComplete(completionFraction);
+        // check if the task should abort or paused
+        if (monitor.taskShouldAbort()) {
+            return null;
+        }
+        // check if the preview has actually changed
+        if (oldNumEntries < previewCollection.numEntries()) {
+            // check if a preview is requested
+            if (monitor.resultPreviewRequested() || isSubtask()) {
+                // send the latest preview to the monitor
+                monitor.setLatestResultPreview(previewCollection.copy());
+            }
+        }
+    }
+    return previewCollection;
+}

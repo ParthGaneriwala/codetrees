@@ -1,0 +1,118 @@
+public static String findText(Class aClass, String aTextName, Locale locale, String defaultMessage, Object[] args, ValueStack valueStack) {
+    String indexedTextName = null;
+    if (aTextName == null) {
+        LOG.warn("Trying to find text with null key!");
+        aTextName = "";
+    }
+    // calculate indexedTextName (collection[*]) if applicable
+    if (aTextName.indexOf("[") != -1) {
+        int i = -1;
+        indexedTextName = aTextName;
+        while ((i = indexedTextName.indexOf("[", i + 1)) != -1) {
+            int j = indexedTextName.indexOf("]", i);
+            String a = indexedTextName.substring(0, i);
+            String b = indexedTextName.substring(j);
+            indexedTextName = a + "[*" + b;
+        }
+    }
+    // search up class hierarchy
+    String msg = findMessage(aClass, aTextName, indexedTextName, locale, args, null, valueStack);
+    if (msg != null) {
+        return msg;
+    }
+    if (ModelDriven.class.isAssignableFrom(aClass)) {
+        ActionContext context = ActionContext.getContext();
+        // search up model's class hierarchy
+        ActionInvocation actionInvocation = context.getActionInvocation();
+        // ActionInvocation may be null if we're being run from a Sitemesh filter, so we won't get model texts if this is null
+        if (actionInvocation != null) {
+            Object action = actionInvocation.getAction();
+            Object model = ((ModelDriven) action).getModel();
+            if (model != null) {
+                msg = findMessage(model.getClass(), aTextName, indexedTextName, locale, args, null, valueStack);
+                if (msg != null) {
+                    return msg;
+                }
+            }
+        }
+    }
+    // nothing still? alright, search the package hierarchy now
+    for (Class clazz = aClass; (clazz != null) && !clazz.equals(Object.class); clazz = clazz.getSuperclass()) {
+        String basePackageName = clazz.getName();
+        while (basePackageName.lastIndexOf('.') != -1) {
+            basePackageName = basePackageName.substring(0, basePackageName.lastIndexOf('.'));
+            String packageName = basePackageName + ".package";
+            msg = getMessage(packageName, locale, aTextName, valueStack, args);
+            if (msg != null) {
+                return msg;
+            }
+            if (indexedTextName != null) {
+                msg = getMessage(packageName, locale, indexedTextName, valueStack, args);
+                if (msg != null) {
+                    return msg;
+                }
+            }
+        }
+    }
+    // see if it's a child property
+    int idx = aTextName.indexOf(".");
+    if (idx != -1) {
+        String newKey = null;
+        String prop = null;
+        if (aTextName.startsWith(XWorkConverter.CONVERSION_ERROR_PROPERTY_PREFIX)) {
+            idx = aTextName.indexOf(".", XWorkConverter.CONVERSION_ERROR_PROPERTY_PREFIX.length());
+            if (idx != -1) {
+                prop = aTextName.substring(XWorkConverter.CONVERSION_ERROR_PROPERTY_PREFIX.length(), idx);
+                newKey = XWorkConverter.CONVERSION_ERROR_PROPERTY_PREFIX + aTextName.substring(idx + 1);
+            }
+        } else {
+            prop = aTextName.substring(0, idx);
+            newKey = aTextName.substring(idx + 1);
+        }
+        if (prop != null) {
+            Object obj = valueStack.findValue(prop);
+            try {
+                Object actionObj = OgnlUtil.getRealTarget(prop, valueStack.getContext(), valueStack.getRoot());
+                if (actionObj != null) {
+                    PropertyDescriptor propertyDescriptor = OgnlRuntime.getPropertyDescriptor(actionObj.getClass(), prop);
+                    if (propertyDescriptor != null) {
+                        Class clazz = propertyDescriptor.getPropertyType();
+                        if (clazz != null) {
+                            if (obj != null)
+                                valueStack.push(obj);
+                            msg = findText(clazz, newKey, locale, null, args);
+                            if (obj != null)
+                                valueStack.pop();
+                            if (msg != null) {
+                                return msg;
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                _log.debug("unable to find property " + prop, e);
+            }
+        }
+    }
+    // get default
+    GetDefaultMessageReturnArg result = null;
+    if (indexedTextName == null) {
+        result = getDefaultMessage(aTextName, locale, valueStack, args, defaultMessage);
+    } else {
+        result = getDefaultMessage(aTextName, locale, valueStack, args, null);
+        if (result.message != null) {
+            return result.message;
+        }
+        result = getDefaultMessage(indexedTextName, locale, valueStack, args, defaultMessage);
+    }
+    // could we find the text, if not log a warn
+    if (unableToFindTextForKey(result)) {
+        String warn = "Unable to find text for key '" + aTextName + "' ";
+        if (indexedTextName != null) {
+            warn += " or indexed key '" + indexedTextName + "' ";
+        }
+        warn += "in class '" + aClass.getName() + "' and locale '" + locale + "'";
+        LOG.debug(warn);
+    }
+    return result != null ? result.message : null;
+}

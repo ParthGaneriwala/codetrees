@@ -1,0 +1,230 @@
+@Override
+protected void analyze() {
+    double[] accumulator = { 0.0, 0.0, 0.0 };
+    // these variables allow you to analyze a subset of the available
+    // analysis files (i.e., all .mdb files)
+    int firstSessionToAnalyze = 1;
+    int lastSessionToAnalyze = _fileNames.length;
+    // based on the report type, print a nice header
+    switch(reportType) {
+        case BY_TYPE_WITH_CUMULATIVE:
+            DataPrinter.printWithTabs(true, "session", "trialCount", "overallAccuray", "noPeckAccuracy", "peckCorrLast", "peckIncLast", "noPeckCount", "peckCorrCount", "peckIncCount", "noPeckCuml", "peckCorrCuml", "peckIncCuml");
+            break;
+        case BY_TYPE_AND_INTERVAL:
+            System.out.print("session");
+            for (String type : new String[] { "pCorr", "pInc" }) {
+                for (String test : new String[] { "AccBin", "CountBin" }) {
+                    for (int i = 1; i <= 5; i++) System.out.print("\t" + type + test + i);
+                }
+            }
+            System.out.print("\n");
+            break;
+        case BY_COUNT_AND_TYPE_WITH_ALT:
+            System.out.print("session");
+            for (String count : new String[] { "countLow", "countHigh" }) {
+                for (String type : new String[] { "Corr", "Inc" }) System.out.print("\t" + count + type);
+            }
+            for (String count : new String[] { "altTrue", "altRet" }) {
+                for (String type : new String[] { "Corr", "Inc" }) System.out.print("\t" + count + type);
+            }
+            System.out.print("\n");
+            break;
+    }
+    for (int session = firstSessionToAnalyze; session <= lastSessionToAnalyze; session++) {
+        // connect to the database
+        String database = Paths.DB_OPEN_STR + _path + _dir + "/" + _fileNames[session - 1] + Paths.DB_CLOSE_STR;
+        // set up peck counter and alternation counter vectors
+        Vector<Double> trialPeckIndex = new Vector<Double>();
+        Vector<Double> alternationIndex = new Vector<Double>();
+        // overall accuracy
+        double overall_correct = 0.0;
+        double trial_counter = 0.0;
+        // no peck accuracy
+        double noPeck_Counter = 0.0;
+        double noPeck_NumRight = 0.0;
+        // peck correct last accuracy
+        double peckCorrect_Counter = 0.0;
+        double peckCorrect_NumRight = 0.0;
+        // peck incorrect last accuracy
+        double peckIncorrect_Counter = 0.0;
+        double peckIncorrect_NumRight = 0.0;
+        // Accuracy by last peck time | Peck Inc
+        // Five intervals of peck time
+        double[] peckIncorrect_NumRightByRT = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+        double[] peckIncorrect_CounterByRT = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+        // Accuracy by last peck time | Peck Corr
+        // Five intervals of peck time
+        double[] peckCorrect_NumRightByRT = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+        double[] peckCorrect_CounterByRT = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+        // Split peck counts into HI and LOW (see class vars defined above)
+        // determine accuracy by last peck type as well
+        double[] peckCount_peckType_Correct = { 0.0, 0.0, 0.0, 0.0 };
+        double[] peckCount_peckType_Counter = { 0.0, 0.0, 0.0, 0.0 };
+        // Split alternations into HI and LOW (see class vars defined above)
+        // determine accuracy by type of alternation as well
+        double[] peckAlt_peckType_Correct = { 0.0, 0.0, 0.0, 0.0 };
+        double[] peckAlt_peckType_Counter = { 0.0, 0.0, 0.0, 0.0 };
+        // zero out the vector
+        for (int i = 0; i <= PeckCounter.MAX_PECKS; i++) {
+            trialPeckIndex.add(0.0);
+        }
+        // zero out the vector
+        for (int i = 0; i <= PeckCounter.MAX_ALTERNATIONS; i++) {
+            alternationIndex.add(0.0);
+        }
+        Connection connection;
+        PeckCounter peckCounter;
+        // must be in try-catch block to catch SQLException
+        try {
+            connection = DriverManager.getConnection(database, "", "");
+            peckCounter = new PeckCounter(connection);
+            Statement statement = connection.createStatement();
+            // Uncomment the next 3 lines (starting with int responseTimeCutoff = 1000;) to only
+            // analyze trials below a certain RT, in milliseconds
+            // int responseTimeCutoff = 1000;
+            // statement.execute("SELECT TrialNum, Response, Item4, Item6, CorrectPosition, IncorrectCorrections as incCorr "
+            // + "FROM TrialResults Where ResponseTime < " + responseTimeCutoff +
+            // " ORDER BY TrialNum ASC");
+            // comment out these two lines if you have uncommented the above three lines
+            statement.execute("SELECT TrialNum, Response, Item4, Item6, " + "CorrectPosition, IncorrectCorrections as incCorr FROM TrialResults ORDER BY TrialNum ASC");
+            int previousTrialNumber = -1;
+            ResultSet rs = statement.getResultSet();
+            while (rs.next()) {
+                int trialNumber = rs.getInt("TrialNum");
+                // check to make sure this isn't a duplicate trial
+                if (trialNumber == previousTrialNumber) {
+                // This is a correction trial, bail
+                // System.out.println("duplicate: " + trialNumber);
+                } else {
+                    previousTrialNumber = trialNumber;
+                    int choice = rs.getInt("Response");
+                    int correctChoice = rs.getInt("CorrectPosition");
+                    int corrections = rs.getInt("incCorr");
+                    trialPeckIndex.set(peckCounter.getPecksAtTrial(trialNumber), trialPeckIndex.get(peckCounter.getPecksAtTrial(trialNumber)) + 1);
+                    alternationIndex.set(peckCounter.getNumberOfAlternations(trialNumber), alternationIndex.get(peckCounter.getNumberOfAlternations(trialNumber)) + 1);
+                    trial_counter++;
+                    boolean correct = (choice == correctChoice && corrections == 0);
+                    int toBeChangedLocation = rs.getInt("Item6");
+                    if (correct)
+                        overall_correct++;
+                    // did pecks occur pre-choice display
+                    if (peckCounter.getPecksAtTrial(trialNumber) > 0) {
+                        int interval = (int) (peckCounter.getLastPeckRT(trialNumber) / 1000);
+                        if (interval == 5)
+                            interval = 4;
+                        // Last Peck == PECK_CORRECT
+                        if (peckCounter.getLastPeckPosition(trialNumber) == toBeChangedLocation) {
+                            peckCorrect_Counter++;
+                            peckCorrect_CounterByRT[interval]++;
+                            // low peck count
+                            if (peckCounter.getPecksAtTrial(trialNumber) <= 2.0) {
+                                peckCount_peckType_Counter[LOW_COUNT_PECK_CORRECT]++;
+                            } else // high peck count
+                            {
+                                peckCount_peckType_Counter[HIGH_COUNT_PECK_CORRECT]++;
+                            }
+                            // 2,4 alt count (RET_ALT
+                            if (peckCounter.getNumberOfAlternations(trialNumber) == 2 || peckCounter.getNumberOfAlternations(trialNumber) == 4) {
+                                peckAlt_peckType_Counter[RET_ALT_PECK_CORRECT]++;
+                            } else {
+                                peckAlt_peckType_Counter[TRUE_ALT_PECK_CORRECT]++;
+                            }
+                            if (correct) {
+                                peckCorrect_NumRight++;
+                                peckCorrect_NumRightByRT[interval]++;
+                                // low peck count
+                                if (peckCounter.getPecksAtTrial(trialNumber) <= 2.0) {
+                                    peckCount_peckType_Correct[LOW_COUNT_PECK_CORRECT]++;
+                                } else // high peck count
+                                {
+                                    peckCount_peckType_Correct[HIGH_COUNT_PECK_CORRECT]++;
+                                }
+                                // 2,4 alt count (RET_ALT
+                                if (peckCounter.getNumberOfAlternations(trialNumber) == 2 || peckCounter.getNumberOfAlternations(trialNumber) == 4) {
+                                    peckAlt_peckType_Correct[RET_ALT_PECK_CORRECT]++;
+                                } else {
+                                    peckAlt_peckType_Correct[TRUE_ALT_PECK_CORRECT]++;
+                                }
+                            }
+                        } else // Last Peck == PECK_INCORRECT
+                        {
+                            peckIncorrect_Counter++;
+                            peckIncorrect_CounterByRT[interval]++;
+                            // low peck count
+                            if (peckCounter.getPecksAtTrial(trialNumber) <= 2.0) {
+                                peckCount_peckType_Counter[LOW_COUNT_PECK_INCORRECT]++;
+                            } else // high peck count
+                            {
+                                peckCount_peckType_Counter[HIGH_COUNT_PECK_INCORRECT]++;
+                            }
+                            // 2,4 alt count (RET_ALT
+                            if (peckCounter.getNumberOfAlternations(trialNumber) == 2 || peckCounter.getNumberOfAlternations(trialNumber) == 4) {
+                                peckAlt_peckType_Counter[RET_ALT_PECK_INCORRECT]++;
+                            } else {
+                                peckAlt_peckType_Counter[TRUE_ALT_PECK_INCORRECT]++;
+                            }
+                            if (correct) {
+                                peckIncorrect_NumRight++;
+                                peckIncorrect_NumRightByRT[interval]++;
+                                // low peck count
+                                if (peckCounter.getPecksAtTrial(trialNumber) <= 2.0) {
+                                    peckCount_peckType_Correct[LOW_COUNT_PECK_INCORRECT]++;
+                                } else // high peck count
+                                {
+                                    peckCount_peckType_Correct[HIGH_COUNT_PECK_INCORRECT]++;
+                                }
+                                // 2,4 alt count (RET_ALT
+                                if (peckCounter.getNumberOfAlternations(trialNumber) == 2 || peckCounter.getNumberOfAlternations(trialNumber) == 4) {
+                                    peckAlt_peckType_Correct[RET_ALT_PECK_INCORRECT]++;
+                                } else {
+                                    peckAlt_peckType_Correct[TRUE_ALT_PECK_INCORRECT]++;
+                                }
+                            }
+                        }
+                    } else {
+                        noPeck_Counter++;
+                        if (correct)
+                            noPeck_NumRight++;
+                    }
+                }
+            }
+            if (DataPrinter.Rand0_10() > 2)
+                connection.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        accumulator[0] += noPeck_Counter;
+        accumulator[1] += peckCorrect_Counter;
+        accumulator[2] += peckIncorrect_Counter;
+        switch(reportType) {
+            // Prints overall accuracy, accuracy by peck type and cumulative peck type
+            case BY_TYPE_WITH_CUMULATIVE:
+                DataPrinter.printWithTabs(true, session, trial_counter, 100 * (overall_correct / trial_counter), 100 * (noPeck_NumRight / noPeck_Counter), 100 * (peckCorrect_NumRight / peckCorrect_Counter), 100 * (peckIncorrect_NumRight / peckIncorrect_Counter), noPeck_Counter, peckCorrect_Counter, peckIncorrect_Counter, accumulator[0], accumulator[1], accumulator[2]);
+                break;
+            // Prints accuracy by last peck interval
+            case BY_TYPE_AND_INTERVAL:
+                double[] peckIncorrectAccByRT = new double[5];
+                double[] peckCorrectAccByRT = new double[5];
+                for (int count = 0; count < 5; count++) {
+                    peckIncorrectAccByRT[count] = 100 * (peckIncorrect_NumRightByRT[count] / peckIncorrect_CounterByRT[count]);
+                    peckCorrectAccByRT[count] = 100 * (peckCorrect_NumRightByRT[count] / peckCorrect_CounterByRT[count]);
+                }
+                DataPrinter.printWithTabs(false, peckCorrectAccByRT, peckCorrect_CounterByRT);
+                DataPrinter.printTab();
+                DataPrinter.printWithTabs(true, session, peckIncorrectAccByRT, peckIncorrect_CounterByRT);
+                break;
+            // Prints accuracy by peck count and alternation count
+            case BY_COUNT_AND_TYPE_WITH_ALT:
+                double[] peckCount_peckType_Accuracy = { 0.0, 0.0, 0.0, 0.0 };
+                double[] peckAlt_peckType_Accuracy = { 0.0, 0.0, 0.0, 0.0 };
+                for (int i = 0; i < 4; i++) {
+                    peckCount_peckType_Accuracy[i] = peckCount_peckType_Correct[i] / peckCount_peckType_Counter[i];
+                    peckAlt_peckType_Accuracy[i] = peckAlt_peckType_Correct[i] / peckAlt_peckType_Counter[i];
+                }
+                DataPrinter.printWithTabs(false, peckCount_peckType_Accuracy);
+                DataPrinter.printTab();
+                DataPrinter.printWithTabs(true, peckAlt_peckType_Accuracy);
+                break;
+        }
+    }
+}

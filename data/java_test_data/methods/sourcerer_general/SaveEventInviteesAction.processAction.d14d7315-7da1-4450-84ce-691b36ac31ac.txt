@@ -1,0 +1,82 @@
+public GenericBean processAction(ActionRequest request, ActionResponse response) throws Exception {
+    // Find current project
+    Project project = findProject(request);
+    // Determine if Save or Cancel was selected
+    String submitAction = request.getParameter("submitAction");
+    LOG.debug("Submit action: " + submitAction);
+    if ("Cancel".equals(submitAction)) {
+        return (PortalUtils.performRefresh(request, response, "/show/calendar"));
+    }
+    // Determine the db connection to use
+    Connection db = useConnection(request);
+    // Reload the meeting information
+    int meetingId = Integer.parseInt(request.getParameter("meetingId"));
+    LOG.debug("Loading the meetingId: " + meetingId);
+    Meeting meeting = new Meeting();
+    meeting.queryRecord(db, meetingId);
+    // Verify permissions
+    User user = getUser(request);
+    if (meeting.getProjectId() != project.getId()) {
+        throw new PortletException("Project and meeting mismatch");
+    }
+    if (!ProjectUtils.hasAccess(project.getId(), user, "project-calendar-add")) {
+        throw new PortletException("Unauthorized to add in this project");
+    }
+    // Initialize invitee bean class
+    MeetingInviteesBean meetingInviteesBean = new MeetingInviteesBean(meeting, project, Integer.parseInt(request.getParameter("meetingAction")));
+    meetingInviteesBean.setIsModifiedMeeting("true".equalsIgnoreCase(request.getParameter("isModifiedMeeting")));
+    // Populate the email user list
+    LOG.debug("populateMailUserList");
+    meetingInviteesBean.populateMailUserList(request.getParameter("membersInvited"), request.getParameter("rejectedUsers"), request.getParameter("cancelledUsers"), request.getParameter("meetingChangeUsers"));
+    // comma seperate the invitee profile list.
+    LOG.debug("profiles");
+    String[] profiles = request.getParameterValues("multipleInvitees");
+    if (profiles != null) {
+        String meetingInvitees = "";
+        for (String profile : profiles) {
+            if (!"".equals(meetingInvitees)) {
+                meetingInvitees += ", ";
+            }
+            meetingInvitees += profile;
+        }
+        meetingInviteesBean.getMeeting().setMeetingInvitees(meetingInvitees);
+        meetingInviteesBean.processInvitees(db, request);
+    }
+    // process new members
+    LOG.debug("processNewMembers");
+    String[] firstName = request.getParameterValues("firstName");
+    String[] lastName = request.getParameterValues("lastName");
+    String[] emailAddress = request.getParameterValues("emailAddress");
+    if (firstName != null && lastName != null && emailAddress != null) {
+        meetingInviteesBean.inviteeNewMembers(db, request, firstName, lastName, emailAddress);
+    }
+    // update dimdim credentials
+    String dimdimUrl = request.getParameter("dimdimUrl");
+    if (dimdimUrl == null) {
+        dimdimUrl = PortalUtils.getApplicationPrefs(request).get(ApplicationPrefs.DIMDIM_API_DOMAIN);
+    }
+    String dimdimUsername = request.getParameter("dimdimUsername");
+    String dimdimPassword = request.getParameter("dimdimPassword");
+    if (StringUtils.hasText(dimdimUrl) && StringUtils.hasText(dimdimUsername) && StringUtils.hasText(dimdimPassword)) {
+        meeting.setDimdimUrl(dimdimUrl);
+        meeting.setDimdimUsername(dimdimUsername);
+        meeting.setDimdimPassword(dimdimPassword);
+    }
+    // for save action check if no invitees were inserted
+    LOG.debug("Check for members");
+    if (meeting.getByInvitationOnly() && meetingInviteesBean.getMembersFoundList().isEmpty() && meetingInviteesBean.getAction() == DimDimUtils.ACTION_MEETING_DIMDIM_SCHEDULE) {
+        meeting.addError("inviteesError", "No participants were invited");
+        setMeetingInvitees(meeting, meetingInviteesBean);
+        return meeting;
+    }
+    // schedule dimdim meeting
+    if (meeting.getIsDimdim() && !scheduleDimdimMeeting(db, meetingInviteesBean)) {
+        LOG.debug("Meeting not scheduled.");
+        return meeting;
+    }
+    // send invitation mail
+    LOG.debug("Sending meeting invitations");
+    PortalUtils.processInsertHook(request, meetingInviteesBean);
+    LOG.debug("Closing and refreshing the calendar");
+    return (PortalUtils.performRefresh(request, response, "/show/calendar"));
+}

@@ -1,0 +1,238 @@
+private void listTables(char c, String inFilter) throws BadSpecial, SqlToolError {
+    requireConnection();
+    String schema = null;
+    int[] listSet = null;
+    String[] types = null;
+    /**
+     * For workaround for \T for Oracle
+     */
+    String[] additionalSchemas = null;
+    /**
+     * This is for specific non-getTable() queries
+     */
+    Statement statement = null;
+    ResultSet rs = null;
+    String narrower = "";
+    /*
+         * Doing case-sensitive filters now, for greater portability.
+        String                    filter = ((inFilter == null)
+                                          ? null : inFilter.toUpperCase());
+         */
+    String filter = inFilter;
+    try {
+        DatabaseMetaData md = shared.jdbcConn.getMetaData();
+        String dbProductName = md.getDatabaseProductName();
+        int majorVersion = 0;
+        int minorVersion = 0;
+        // The calls avoided here avoid problems with non-confirmant drivers
+        if (dbProductName.indexOf("HSQL") > -1)
+            try {
+                majorVersion = md.getDatabaseMajorVersion();
+                minorVersion = md.getDatabaseMinorVersion();
+            } catch (UnsupportedOperationException uoe) {
+                // It seems that Sun's JDBC/ODBC bridge throws here
+                majorVersion = 2;
+                minorVersion = 0;
+            }
+        // System.err.println("DB NAME = (" + dbProductName + ')');
+        // Database-specific table filtering.
+        /* 3 Types of actions:
+             *    1) Special handling.  Return from the "case" block directly.
+             *    2) Execute a specific query.  Set statement in the "case".
+             *    3) Otherwise, set filter info for dbmd.getTable() in the
+             *       "case".
+             */
+        types = new String[1];
+        switch(c) {
+            case '*':
+                types = null;
+                break;
+            case 'S':
+                if (dbProductName.indexOf("Oracle") > -1) {
+                    errprintln(SqltoolRB.vendor_oracle_dS.getString());
+                    types[0] = "TABLE";
+                    schema = "SYS";
+                    additionalSchemas = oracleSysSchemas;
+                } else {
+                    types[0] = "SYSTEM TABLE";
+                }
+                break;
+            case 's':
+                if (dbProductName.indexOf("HSQL") > -1) {
+                    // DatabaseMetaData.getTables().
+                    if (filter != null) {
+                        Matcher matcher = dotPattern.matcher(filter);
+                        if (matcher.matches()) {
+                            filter = (matcher.group(2).length() > 0) ? matcher.group(2) : null;
+                            narrower = "\nWHERE sequence_schema = '" + ((matcher.group(1).length() > 0) ? matcher.group(1) : getCurrentSchema()) + "'";
+                        }
+                    }
+                    statement = shared.jdbcConn.createStatement();
+                    statement.execute("SELECT sequence_schema, sequence_name FROM " + "information_schema." + ((minorVersion > 8 || majorVersion > 1) ? "sequences" : "system_sequences") + narrower);
+                } else {
+                    types[0] = "SEQUENCE";
+                }
+                break;
+            case 'r':
+                if (dbProductName.indexOf("HSQL") > -1) {
+                    statement = shared.jdbcConn.createStatement();
+                    statement.execute("SELECT authorization_name FROM information_schema." + ((minorVersion > 8 || majorVersion > 1) ? "authorizations" : "system_authorizations") + "\nWHERE authorization_type = 'ROLE'\n" + "ORDER BY authorization_name");
+                } else if (dbProductName.indexOf("Adaptive Server Enterprise") > -1) {
+                    // This is the basic Sybase server.  Sybase also has
+                    // their "Anywhere", ASA (for embedded), and replication
+                    // databases, but I don't know the Metadata strings for
+                    // those.
+                    statement = shared.jdbcConn.createStatement();
+                    statement.execute("SELECT name FROM syssrvroles ORDER BY name");
+                } else if (dbProductName.indexOf("Apache Derby") > -1) {
+                    throw new BadSpecial(SqltoolRB.vendor_derby_dr.getString());
+                } else {
+                    throw new BadSpecial(SqltoolRB.vendor_nosup_d.getString("r"));
+                }
+                break;
+            case 'u':
+                if (dbProductName.indexOf("HSQL") > -1) {
+                    statement = shared.jdbcConn.createStatement();
+                    statement.execute("SELECT " + ((minorVersion > 8 || majorVersion > 1) ? "user_name" : "user") + ", admin FROM " + "information_schema.system_users\n" + "ORDER BY user_name");
+                } else if (dbProductName.indexOf("Oracle") > -1) {
+                    statement = shared.jdbcConn.createStatement();
+                    statement.execute("SELECT username, created FROM all_users " + "ORDER BY username");
+                } else if (dbProductName.indexOf("PostgreSQL") > -1) {
+                    statement = shared.jdbcConn.createStatement();
+                    statement.execute("SELECT usename, usesuper FROM pg_catalog.pg_user " + "ORDER BY usename");
+                } else if (dbProductName.indexOf("Adaptive Server Enterprise") > -1) {
+                    // This is the basic Sybase server.  Sybase also has
+                    // their "Anywhere", ASA (for embedded), and replication
+                    // databases, but I don't know the Metadata strings for
+                    // those.
+                    statement = shared.jdbcConn.createStatement();
+                    statement.execute("SELECT name, accdate, fullname FROM syslogins " + "ORDER BY name");
+                } else if (dbProductName.indexOf("Apache Derby") > -1) {
+                    throw new BadSpecial(SqltoolRB.vendor_derby_du.getString());
+                } else {
+                    throw new BadSpecial(SqltoolRB.vendor_nosup_d.getString("u"));
+                }
+                break;
+            case 'a':
+                if (dbProductName.indexOf("HSQL") > -1 && (minorVersion < 9 && majorVersion < 2)) {
+                    // the aliases listed in DatabaseMetaData.getTables().
+                    if (filter != null) {
+                        Matcher matcher = dotPattern.matcher(filter);
+                        if (matcher.matches()) {
+                            filter = (matcher.group(2).length() > 0) ? matcher.group(2) : null;
+                            narrower = "\nWHERE alias_schema = '" + ((matcher.group(1).length() > 0) ? matcher.group(1) : getCurrentSchema()) + "'";
+                        }
+                    }
+                    statement = shared.jdbcConn.createStatement();
+                    statement.execute("SELECT alias_schem, alias FROM " + "information_schema.system_aliases" + narrower);
+                } else {
+                    types[0] = "ALIAS";
+                }
+                break;
+            case 't':
+                excludeSysSchemas = (dbProductName.indexOf("Oracle") > -1);
+                types[0] = "TABLE";
+                break;
+            case 'v':
+                types[0] = "VIEW";
+                break;
+            case 'n':
+                rs = md.getSchemas();
+                if (rs == null) {
+                    throw new BadSpecial("Failed to get metadata from database");
+                }
+                displayResultSet(null, rs, listMDSchemaCols, filter);
+                return;
+            case 'i':
+                // Some databases require to specify table, some don't.
+                /*
+                    if (filter == null) {
+                        throw new BadSpecial("You must specify the index's "
+                                + "table as argument to \\di");
+                    }
+                     */
+                String table = null;
+                if (filter != null) {
+                    Matcher matcher = dotPattern.matcher(filter);
+                    if (matcher.matches()) {
+                        table = (matcher.group(2).length() > 0) ? matcher.group(2) : null;
+                        schema = (matcher.group(1).length() > 0) ? matcher.group(1) : getCurrentSchema();
+                    } else {
+                        table = filter;
+                    }
+                    filter = null;
+                }
+                // N.b. Oracle incorrectly reports the INDEX SCHEMA as
+                // the TABLE SCHEMA.  The Metadata structure seems to
+                // be designed with the assumption that the INDEX schema
+                // will be the same as the TABLE schema.
+                rs = md.getIndexInfo(null, schema, table, false, true);
+                if (rs == null) {
+                    throw new BadSpecial("Failed to get metadata from database");
+                }
+                displayResultSet(null, rs, listMDIndexCols, null);
+                return;
+            default:
+                throw new BadSpecial(SqltoolRB.special_d_unknown.getString(Character.toString(c)) + LS + D_OPTIONS_TEXT);
+        }
+        if (statement == null) {
+            if (dbProductName.indexOf("HSQL") > -1) {
+                listSet = listMDTableCols[HSQLDB_ELEMENT];
+            } else if (dbProductName.indexOf("Oracle") > -1) {
+                listSet = listMDTableCols[ORACLE_ELEMENT];
+            } else {
+                listSet = listMDTableCols[DEFAULT_ELEMENT];
+            }
+            if (schema == null && filter != null) {
+                Matcher matcher = dotPattern.matcher(filter);
+                if (matcher.matches()) {
+                    filter = (matcher.group(2).length() > 0) ? matcher.group(2) : null;
+                    schema = (matcher.group(1).length() > 0) ? matcher.group(1) : getCurrentSchema();
+                }
+            }
+        }
+        rs = ((statement == null) ? md.getTables(null, schema, null, types) : statement.getResultSet());
+        if (rs == null) {
+            throw new BadSpecial(SqltoolRB.metadata_fetch_fail.getString());
+        }
+        displayResultSet(null, rs, listSet, filter);
+        if (additionalSchemas != null) {
+            for (String additionalSchema : additionalSchemas) {
+                /*
+                     * Inefficient, but we have to do each successful query
+                     * twice in order to prevent calling displayResultSet
+                     * for empty/non-existent schemas
+                     */
+                rs = md.getTables(null, additionalSchema, null, types);
+                if (rs == null) {
+                    throw new BadSpecial(SqltoolRB.metadata_fetch_failfor.getString(additionalSchema));
+                }
+                if (!rs.next()) {
+                    continue;
+                }
+                displayResultSet(null, md.getTables(null, additionalSchema, null, types), listSet, filter);
+            }
+        }
+    } catch (SQLException se) {
+        throw new BadSpecial(SqltoolRB.metadata_fetch_fail.getString(), se);
+    } catch (NullPointerException npe) {
+        throw new BadSpecial(SqltoolRB.metadata_fetch_fail.getString(), npe);
+    } finally {
+        excludeSysSchemas = false;
+        if (rs != null) {
+            try {
+                rs.close();
+            } catch (SQLException se) {
+            // We already got what we want from it, or have/are
+            // processing a more specific error.
+            }
+        }
+        if (statement != null) {
+            try {
+                statement.close();
+            } catch (SQLException se) {
+            // Purposefully doing nothing
+            }
+        }
+    }
+}

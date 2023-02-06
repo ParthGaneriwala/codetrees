@@ -1,0 +1,126 @@
+public void doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    Connection db = null;
+    try {
+        db = PortalUtils.useConnection(request);
+        String defaultView = VIEW_PAGE;
+        Project project = null;
+        // General Display Preferences
+        String showGetInvolved = request.getPreferences().getValue(PREF_SHOW_GET_INVOLVED, "false");
+        String showAuthor = request.getPreferences().getValue(PREF_SHOW_AUTHOR, "false");
+        String getInvolvedText = request.getPreferences().getValue(PREF_GET_INVOLVED_TEXT, "Get Involved...");
+        boolean isLinkTitle = "true".equals(request.getPreferences().getValue(PREF_LINK_TITLE, "false"));
+        boolean hideBasicInformation = "true".equals(request.getPreferences().getValue(PREF_HIDE_BASIC_INFORMATION, "false"));
+        String title = request.getPreferences().getValue(PREF_TITLE, "");
+        request.setAttribute(SHOW_GET_INVOLVED, showGetInvolved);
+        request.setAttribute(SHOW_AUTHOR, showAuthor);
+        request.setAttribute(GET_INVOLVED_TEXT, getInvolvedText);
+        request.setAttribute(HIDE_BASIC_INFORMATION, String.valueOf(hideBasicInformation));
+        request.setAttribute(TITLE, title);
+        // Build links for profile
+        buildLinksForProfile(request);
+        // Use the specified project in preferences first
+        String uniqueId = request.getPreferences().getValue(PREF_PROJECT_UNIQUE_ID, null);
+        if (uniqueId != null) {
+            int projectId = ProjectUtils.retrieveProjectIdFromUniqueId(uniqueId);
+            if (projectId > -1) {
+                project = ProjectUtils.loadProject(projectId);
+            }
+        }
+        // This portlet can consume data from other portlets
+        if (project == null) {
+            for (String event : PortalUtils.getDashboardPortlet(request).getConsumeDataEvents()) {
+                project = (Project) PortalUtils.getGeneratedData(request, event);
+            }
+        }
+        // Object from the portal
+        if (project == null) {
+            project = PortalUtils.getProject(request);
+        }
+        // Determine if there are random preferences to retrieve a project
+        if (project == null) {
+            project = getRandomProject(request, db);
+        }
+        // Check the project's permissions
+        if (project != null) {
+            User user = PortalUtils.getUser(request);
+            if (!ProjectUtils.hasAccess(project.getId(), user, "project-profile-view")) {
+                project = null;
+            }
+        }
+        if (project != null) {
+            // Add the project to this portlet's request scope
+            request.setAttribute(PROJECT, project);
+            // Add this user's membership level (to allow for edit links and such)
+            request.setAttribute(CURRENT_TEAM_MEMBER, PortalUtils.getCurrentTeamMember(request));
+            // Add a preference based on the project
+            if (isLinkTitle) {
+                request.setAttribute(PROJECT_TITLE_LINK, request.getContextPath() + "/show/" + project.getUniqueId());
+            }
+            // Get this project's sub-categories
+            if (project.getSubCategory1Id() > -1) {
+                ProjectCategory category = new ProjectCategory(db, project.getSubCategory1Id());
+                request.setAttribute(PROJECT_SUBCATEGORY1, category);
+            }
+            // Get this project's specified wiki form
+            String wikiFormName = request.getPreferences().getValue(PREF_WIKI_FORM_NAME, null);
+            if (wikiFormName != null) {
+                WikiList wikiList = new WikiList();
+                wikiList.setProjectId(project.getId());
+                wikiList.setWithFormName(wikiFormName);
+                wikiList.buildList(db);
+                if (wikiList.size() > 0) {
+                    Wiki wiki = wikiList.get(0);
+                    CustomForm wikiForm = CustomFormUtils.retrieveForm(wiki, wikiFormName);
+                    if (wikiForm != null) {
+                        request.setAttribute(PROJECT_WIKI, wiki);
+                        // Determine which fields to show, or all
+                        ArrayList<CustomFormField> attributeList = new ArrayList<CustomFormField>();
+                        String[] attributes = request.getPreferences().getValues(PREF_WIKI_FORM_ATTRIBUTES, null);
+                        if (attributes != null) {
+                            for (String name : attributes) {
+                                CustomFormField field = wikiForm.getField(name);
+                                if (field != null && field.hasValue()) {
+                                    attributeList.add(field);
+                                }
+                            }
+                        } else {
+                            for (CustomFormGroup group : wikiForm) {
+                                for (CustomFormField field : group) {
+                                    if (field.hasValue()) {
+                                        attributeList.add(field);
+                                    }
+                                }
+                            }
+                        }
+                        request.setAttribute(PROJECT_WIKI_FORM_ATTRIBUTES, attributeList);
+                    }
+                }
+            }
+            // Get this project's tag cloud
+            TagList popularTagList = new TagList();
+            popularTagList.setTableName(Project.TABLE);
+            popularTagList.setUniqueField(Project.PRIMARY_KEY);
+            popularTagList.setLinkItemId(project.getId());
+            PagedListInfo tagListInfo = new PagedListInfo();
+            tagListInfo.setColumnToSortBy("tag");
+            popularTagList.setPagedListInfo(tagListInfo);
+            popularTagList.setDetermineTagWeights(true);
+            popularTagList.buildList(db);
+            request.setAttribute(PROJECT_TAG_LIST, popularTagList);
+            // Get this project's badges
+            ProjectBadgeList projectBadgeList = new ProjectBadgeList();
+            projectBadgeList.setProjectId(project.getId());
+            projectBadgeList.buildList(db);
+            request.setAttribute(PROJECT_BADGE_LIST, projectBadgeList);
+            // Record view
+            PortalUtils.processSelectHook(request, project);
+            // JSP view
+            PortletContext context = getPortletContext();
+            PortletRequestDispatcher requestDispatcher = context.getRequestDispatcher(defaultView);
+            requestDispatcher.include(request, response);
+        }
+    } catch (Exception e) {
+        e.printStackTrace(System.out);
+        throw new PortletException(e.getMessage());
+    }
+}

@@ -1,0 +1,71 @@
+private void determineNextResource(Airplane a) {
+    // setup a few local vars for easy reference
+    currentResource = a.getCurrentResource();
+    /*
+		 * landing planes state == incoming
+		 */
+    if (a.getCurrentState().contains("incoming")) {
+        if (currentResource.getResourceId().startsWith("Airspace")) {
+            // go to the holding pattern
+            nextResource = airportModel.getHoldingPattern();
+        // System.out.println("moving " + a.getAirplaneId() + " to " + nextResource.getResourceId());
+        } else if (currentResource.getResourceId().startsWith("HoldingPattern")) {
+            if (a != airportModel.getHoldingPattern().getNextAirplane()) {
+                // If plane isn't at the top of the queue, wait longer!
+                nextResource = null;
+            } else {
+                nextResource = airportModel.getBestRunwayForLanding();
+            }
+        } else if (currentResource.getResourceId().startsWith("Runway")) {
+            // should go to the taxiway at this point
+            // here is our opportunity to perhaps run things more efficiently. If there is another gate
+            // available sooner than the one we are going to, and this plane is already estimated
+            // to be later than ATTEMPT_REROUTING_INTERVAL, then we should send it to the best available
+            // gate no matter what.
+            boolean gateAdjusted = false;
+            if ((a.getAdjustedArrivalTime() - a.getTargetLandingTime()) > ATTEMPT_REROUTING_INTERVAL) {
+                ArrayList<Gate> airlineGates = airportModel.getGatesForAirline(a.getAirline());
+                Iterator<Gate> it = airlineGates.iterator();
+                while (it.hasNext()) {
+                    // if we have a better gate, we move to it.
+                    Gate tmp = it.next();
+                    if ((estimateGateWaitTime(a, tmp) + System.currentTimeMillis()) < a.getAdjustedArrivalTime()) {
+                        gateAdjusted = true;
+                        a.setGate(tmp);
+                    }
+                }
+            }
+            if (gateAdjusted) {
+                String msg = "rerouted due to schedule";
+                ModelEvent me = createModelEvent(a, msg);
+                notifyChanged(me);
+                GlobalLog.info("id " + a.getAirplaneId() + " moved to gate " + a.getGate().getResourceId());
+            }
+            nextResource = airportModel.getTaxiwayFrom((Runway) currentResource, a.getGate());
+        } else if (currentResource.getResourceId().startsWith("Taxiway")) {
+            nextResource = a.getGate();
+        } else if (currentResource.getResourceId().startsWith("Gate")) {
+            // do we need to have taxiways from gates to hangars?
+            nextResource = airportModel.getHangar();
+        } else if (currentResource.getResourceId().startsWith("Hangar")) {
+            nextResource = null;
+        }
+    // TODO: add the remaining resources, and repeat for outgoing.
+    /**
+     * Taking of plane state == "outgoing"
+     */
+    } else if (a.getCurrentState().contains("outgoing")) {
+        if (currentResource.getResourceId().startsWith("Hangar")) {
+            nextResource = a.getGate();
+        } else if (currentResource.getResourceId().startsWith("Gate")) {
+            nextResource = airportModel.getTaxiwayToBestRunwayForTakeoff((Gate) currentResource);
+        } else if (currentResource.getResourceId().startsWith("Taxiway")) {
+            nextResource = ((Taxiway) currentResource).getRunway();
+        } else if (currentResource.getResourceId().startsWith("Runway")) {
+            nextResource = airportModel.getAirspace();
+        } else {
+            nextResource = null;
+        }
+    }
+// nextResource = null;
+}

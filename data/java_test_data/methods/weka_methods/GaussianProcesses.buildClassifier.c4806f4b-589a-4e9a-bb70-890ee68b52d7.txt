@@ -1,0 +1,108 @@
+@Override
+public void buildClassifier(Instances insts) throws Exception {
+    // check the set of training instances
+    if (!m_checksTurnedOff) {
+        // can classifier handle the data?
+        getCapabilities().testWithFail(insts);
+        // remove instances with missing class
+        insts = new Instances(insts);
+        insts.deleteWithMissingClass();
+        m_Missing = new ReplaceMissingValues();
+        m_Missing.setInputFormat(insts);
+        insts = Filter.useFilter(insts, m_Missing);
+    } else {
+        m_Missing = null;
+    }
+    if (getCapabilities().handles(Capability.NUMERIC_ATTRIBUTES)) {
+        boolean onlyNumeric = true;
+        if (!m_checksTurnedOff) {
+            for (int i = 0; i < insts.numAttributes(); i++) {
+                if (i != insts.classIndex()) {
+                    if (!insts.attribute(i).isNumeric()) {
+                        onlyNumeric = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!onlyNumeric) {
+            m_NominalToBinary = new NominalToBinary();
+            m_NominalToBinary.setInputFormat(insts);
+            insts = Filter.useFilter(insts, m_NominalToBinary);
+        } else {
+            m_NominalToBinary = null;
+        }
+    } else {
+        m_NominalToBinary = null;
+    }
+    if (m_filterType == FILTER_STANDARDIZE) {
+        m_Filter = new Standardize();
+        ((Standardize) m_Filter).setIgnoreClass(true);
+        m_Filter.setInputFormat(insts);
+        insts = Filter.useFilter(insts, m_Filter);
+    } else if (m_filterType == FILTER_NORMALIZE) {
+        m_Filter = new Normalize();
+        ((Normalize) m_Filter).setIgnoreClass(true);
+        m_Filter.setInputFormat(insts);
+        insts = Filter.useFilter(insts, m_Filter);
+    } else {
+        m_Filter = null;
+    }
+    m_NumTrain = insts.numInstances();
+    // applied to the class by the filter
+    if (m_Filter != null) {
+        Instance witness = (Instance) insts.instance(0).copy();
+        witness.setValue(insts.classIndex(), 0);
+        m_Filter.input(witness);
+        m_Filter.batchFinished();
+        Instance res = m_Filter.output();
+        m_Blin = res.value(insts.classIndex());
+        witness.setValue(insts.classIndex(), 1);
+        m_Filter.input(witness);
+        m_Filter.batchFinished();
+        res = m_Filter.output();
+        m_Alin = res.value(insts.classIndex()) - m_Blin;
+    } else {
+        m_Alin = 1.0;
+        m_Blin = 0.0;
+    }
+    // Initialize kernel
+    m_actualKernel = Kernel.makeCopy(m_kernel);
+    if (m_kernel instanceof CachedKernel) {
+        // We don't need a cache at all
+        ((CachedKernel) m_actualKernel).setCacheSize(-1);
+    }
+    m_actualKernel.buildKernel(insts);
+    // Compute average target value
+    double sum = 0.0;
+    for (int i = 0; i < insts.numInstances(); i++) {
+        sum += insts.instance(i).weight() * insts.instance(i).classValue();
+    }
+    m_avg_target = sum / insts.sumOfWeights();
+    // Store squared noise level
+    m_deltaSquared = m_delta * m_delta;
+    // Store square roots of instance m_weights
+    m_weights = new double[insts.numInstances()];
+    for (int i = 0; i < insts.numInstances(); i++) {
+        m_weights[i] = Math.sqrt(insts.instance(i).weight());
+    }
+    // initialize kernel matrix/covariance matrix
+    int n = insts.numInstances();
+    m_L = new UpperSPDDenseMatrix(n);
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            m_L.set(i, j, m_weights[i] * m_weights[j] * m_actualKernel.eval(i, j, insts.instance(i)));
+        }
+        m_L.set(i, i, m_weights[i] * m_weights[i] * m_actualKernel.eval(i, i, insts.instance(i)) + m_deltaSquared);
+    }
+    // Compute inverse of kernel matrix
+    m_L = new DenseCholesky(n, true).factor((UpperSPDDenseMatrix) m_L).solve(Matrices.identity(n));
+    // Convert from DenseMatrix
+    m_L = new UpperSPDDenseMatrix(m_L);
+    // Compute t
+    Vector tt = new DenseVector(n);
+    for (int i = 0; i < n; i++) {
+        tt.set(i, m_weights[i] * (insts.instance(i).classValue() - m_avg_target));
+    }
+    m_t = m_L.mult(tt, new DenseVector(insts.numInstances()));
+}

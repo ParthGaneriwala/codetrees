@@ -1,0 +1,41 @@
+public void testRecoveryWithLostTracker(MiniDFSCluster dfs, MiniMRCluster mr) throws IOException {
+    FileSystem fileSys = dfs.getFileSystem();
+    JobConf jobConf = mr.createJobConf();
+    int numMaps = 50;
+    int numReds = 1;
+    String mapSignalFile = TestJobTrackerRestart.getMapSignalFile(shareDir);
+    String redSignalFile = TestJobTrackerRestart.getReduceSignalFile(shareDir);
+    // Configure the jobs
+    JobConf job = configureJob(jobConf, new int[] { numMaps }, new int[] { numReds }, mapSignalFile, redSignalFile);
+    TestJobTrackerRestart.cleanUp(fileSys, shareDir);
+    // Submit a master job
+    JobClient jobClient = new JobClient(job);
+    RunningJob rJob = jobClient.submitJob(job);
+    JobID id = rJob.getID();
+    // wait for the job to be inited
+    mr.initializeJob(id);
+    // Make sure that the master job is 50% completed
+    while (TestJobTrackerRestart.getJobStatus(jobClient, id).mapProgress() < 0.5f) {
+        TestJobTrackerRestart.waitFor(100);
+    }
+    // Kill the jobtracker
+    mr.stopJobTracker();
+    // Signal the maps to complete
+    TestJobTrackerRestart.signalTasks(dfs, fileSys, true, mapSignalFile, redSignalFile);
+    // Enable recovery on restart
+    mr.getJobTrackerConf().setBoolean("mapred.jobtracker.restart.recover", true);
+    // Kill the 2nd tasktracker
+    mr.stopTaskTracker(1);
+    // Wait for a minute before submitting a job
+    TestJobTrackerRestart.waitFor(60 * 1000);
+    // Restart the jobtracker
+    mr.startJobTracker();
+    // Check if the jobs are still running
+    // Wait for the JT to be ready
+    TestJobTrackerRestart.waitForJobTracker(jobClient);
+    // Signal the reducers to complete
+    TestJobTrackerRestart.signalTasks(dfs, fileSys, false, mapSignalFile, redSignalFile);
+    TestJobTrackerRestart.waitTillDone(jobClient);
+    // Check if the tasks on the lost tracker got re-executed
+    assertTrue("Tracker killed while the jobtracker was down did not get lost " + "upon restart", jobClient.getClusterStatus().getTaskTrackers() < mr.getNumTaskTrackers());
+}

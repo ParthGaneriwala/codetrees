@@ -1,0 +1,280 @@
+private void processPL(String inString) throws BadSpecial, SqlToolError {
+    Matcher m = plPattern.matcher(dereference(inString, false));
+    if (!m.matches()) {
+        throw new BadSpecial(rb.getString(SqltoolRB.PL_MALFORMAT));
+    // I think it's impossible to get here, since the pattern is
+    // so liberal.
+    }
+    if (m.groupCount() < 1 || m.group(1) == null) {
+        plMode = true;
+        stdprintln(rb.getString(SqltoolRB.PL_EXPANSIONMODE, "on"));
+        return;
+    }
+    String[] tokens = m.group(1).split("\\s+");
+    if (tokens[0].charAt(0) == '?') {
+        stdprintln(rb.getString(SqltoolRB.PL_HELP));
+        return;
+    }
+    // If user runs any PL command, we turn PL mode on.
+    plMode = true;
+    if (tokens[0].equals("end")) {
+        throw new BadSpecial(rb.getString(SqltoolRB.END_NOBLOCK));
+    }
+    if (tokens[0].equals("continue")) {
+        if (tokens.length > 1) {
+            if (tokens.length == 2 && (tokens[1].equals("foreach") || tokens[1].equals("while"))) {
+                throw new ContinueException(tokens[1]);
+            }
+            throw new BadSpecial(rb.getString(SqltoolRB.CONTINUE_SYNTAX));
+        }
+        throw new ContinueException();
+    }
+    if (tokens[0].equals("break")) {
+        if (tokens.length > 1) {
+            if (tokens.length == 2 && (tokens[1].equals("foreach") || tokens[1].equals("if") || tokens[1].equals("while") || tokens[1].equals("file"))) {
+                throw new BreakException(tokens[1]);
+            }
+            throw new BadSpecial(rb.getString(SqltoolRB.BREAK_SYNTAX));
+        }
+        throw new BreakException();
+    }
+    if (tokens[0].equals("list") || tokens[0].equals("listvalues") || tokens[0].equals("listsysprops")) {
+        boolean sysProps = tokens[0].equals("listsysprops");
+        String s;
+        boolean doValues = (tokens[0].equals("listvalues") || sysProps);
+        if (tokens.length == 1) {
+            stdprint(formatNicely((sysProps ? System.getProperties() : userVars), doValues));
+        } else {
+            if (doValues) {
+                stdprintln(rb.getString(SqltoolRB.PL_LIST_PARENS));
+            } else {
+                stdprintln(rb.getString(SqltoolRB.PL_LIST_LENGTHS));
+            }
+            for (int i = 1; i < tokens.length; i++) {
+                s = (String) (sysProps ? System.getProperties() : userVars).get(tokens[i]);
+                if (s == null)
+                    continue;
+                stdprintln("    " + tokens[i] + ": " + (doValues ? ("(" + s + ')') : Integer.toString(s.length())));
+            }
+        }
+        return;
+    }
+    if (tokens[0].equals("dump") || tokens[0].equals("load")) {
+        if (tokens.length != 3) {
+            throw new BadSpecial(rb.getString(SqltoolRB.DUMPLOAD_MALFORMAT));
+        }
+        String varName = tokens[1];
+        if (varName.indexOf(':') > -1) {
+            throw new BadSpecial(rb.getString(SqltoolRB.PLVAR_NOCOLON));
+        }
+        File file = new File(tokens[2]);
+        try {
+            if (tokens[0].equals("dump")) {
+                dump(varName, file);
+            } else {
+                load(varName, file, charset);
+            }
+        } catch (IOException ioe) {
+            throw new BadSpecial(rb.getString(SqltoolRB.DUMPLOAD_FAIL, varName, file.toString()), ioe);
+        }
+        return;
+    }
+    if (tokens[0].equals("prepare")) {
+        if (tokens.length != 2) {
+            throw new BadSpecial(rb.getString(SqltoolRB.PREPARE_MALFORMAT));
+        }
+        if (userVars.get(tokens[1]) == null) {
+            throw new BadSpecial(rb.getString(SqltoolRB.PLVAR_UNDEFINED, tokens[1]));
+        }
+        prepareVar = tokens[1];
+        doPrepare = true;
+        return;
+    }
+    if (tokens[0].equals("foreach")) {
+        Matcher foreachM = foreachPattern.matcher(dereference(inString, false));
+        if (!foreachM.matches()) {
+            throw new BadSpecial(rb.getString(SqltoolRB.FOREACH_MALFORMAT));
+        }
+        if (foreachM.groupCount() != 2) {
+            throw new RuntimeException("foreach pattern matched, but captured " + foreachM.groupCount() + " groups");
+        }
+        String varName = foreachM.group(1);
+        if (varName.indexOf(':') > -1) {
+            throw new BadSpecial(rb.getString(SqltoolRB.PLVAR_NOCOLON));
+        }
+        String[] values = foreachM.group(2).split("\\s+");
+        File tmpFile = null;
+        String varVal;
+        try {
+            tmpFile = plBlockFile("foreach");
+        } catch (IOException ioe) {
+            throw new BadSpecial(rb.getString(SqltoolRB.PL_TEMPFILE_FAIL), ioe);
+        }
+        String origval = (String) userVars.get(varName);
+        try {
+            SqlFile sf;
+            for (int i = 0; i < values.length; i++) {
+                try {
+                    varVal = values[i];
+                    userVars.put(varName, varVal);
+                    updateUserSettings();
+                    sf = new SqlFile(tmpFile, false, userVars);
+                    sf.plMode = true;
+                    sf.recursed = true;
+                    // Share the possiblyUncommitted state
+                    sf.possiblyUncommitteds = possiblyUncommitteds;
+                    sf.execute(curConn, continueOnError);
+                } catch (ContinueException ce) {
+                    String ceMessage = ce.getMessage();
+                    if (ceMessage != null && !ceMessage.equals("foreach")) {
+                        throw ce;
+                    }
+                }
+            }
+        } catch (BreakException be) {
+            String beMessage = be.getMessage();
+            // Handle "foreach" and plain breaks (by doing nothing)
+            if (beMessage != null && !beMessage.equals("foreach")) {
+                throw be;
+            }
+        } catch (QuitNow qn) {
+            throw qn;
+        } catch (Exception e) {
+            throw new BadSpecial(rb.getString(SqltoolRB.PL_BLOCK_FAIL), e);
+        }
+        if (origval == null) {
+            userVars.remove(varName);
+            updateUserSettings();
+        } else {
+            userVars.put(varName, origval);
+        }
+        if (tmpFile != null && !tmpFile.delete()) {
+            throw new BadSpecial(rb.getString(SqltoolRB.TEMPFILE_REMOVAL_FAIL, tmpFile.toString()));
+        }
+        return;
+    }
+    if (tokens[0].equals("if") || tokens[0].equals("while")) {
+        Matcher ifwhileM = ifwhilePattern.matcher(dereference(inString, false));
+        if (!ifwhileM.matches()) {
+            throw new BadSpecial(rb.getString(SqltoolRB.IFWHILE_MALFORMAT));
+        }
+        if (ifwhileM.groupCount() != 1) {
+            throw new RuntimeException("if/while pattern matched, but captured " + ifwhileM.groupCount() + " groups");
+        }
+        String[] values = ifwhileM.group(1).replaceAll("!([a-zA-Z0-9*])", "! $1").replaceAll("([a-zA-Z0-9*])!", "$1 !").split("\\s+");
+        File tmpFile = null;
+        if (tokens[0].equals("if")) {
+            try {
+                tmpFile = plBlockFile("if");
+            } catch (IOException ioe) {
+                throw new BadSpecial(rb.getString(SqltoolRB.PL_BLOCK_FAIL), ioe);
+            }
+            try {
+                if (eval(values)) {
+                    SqlFile sf = new SqlFile(tmpFile, false, userVars);
+                    sf.plMode = true;
+                    sf.recursed = true;
+                    // Share the possiblyUncommitted state
+                    sf.possiblyUncommitteds = possiblyUncommitteds;
+                    sf.execute(curConn, continueOnError);
+                }
+            } catch (BreakException be) {
+                String beMessage = be.getMessage();
+                // Handle "if" and plain breaks (by doing nothing)
+                if (beMessage == null || !beMessage.equals("if")) {
+                    throw be;
+                }
+            } catch (ContinueException ce) {
+                throw ce;
+            } catch (QuitNow qn) {
+                throw qn;
+            } catch (BadSpecial bs) {
+                bs.appendMessage(rb.getString(SqltoolRB.IF_MALFORMAT));
+                throw bs;
+            } catch (Exception e) {
+                throw new BadSpecial(rb.getString(SqltoolRB.PL_BLOCK_FAIL), e);
+            }
+        } else if (tokens[0].equals("while")) {
+            try {
+                tmpFile = plBlockFile("while");
+            } catch (IOException ioe) {
+                throw new BadSpecial(rb.getString(SqltoolRB.PL_TEMPFILE_FAIL), ioe);
+            }
+            try {
+                SqlFile sf;
+                while (eval(values)) {
+                    try {
+                        sf = new SqlFile(tmpFile, false, userVars);
+                        sf.recursed = true;
+                        // Share the possiblyUncommitted state
+                        sf.possiblyUncommitteds = possiblyUncommitteds;
+                        sf.plMode = true;
+                        sf.execute(curConn, continueOnError);
+                    } catch (ContinueException ce) {
+                        String ceMessage = ce.getMessage();
+                        if (ceMessage != null && !ceMessage.equals("while")) {
+                            throw ce;
+                        }
+                    }
+                }
+            } catch (BreakException be) {
+                String beMessage = be.getMessage();
+                // Handle "while" and plain breaks (by doing nothing)
+                if (beMessage != null && !beMessage.equals("while")) {
+                    throw be;
+                }
+            } catch (QuitNow qn) {
+                throw qn;
+            } catch (BadSpecial bs) {
+                bs.appendMessage(rb.getString(SqltoolRB.WHILE_MALFORMAT));
+                throw bs;
+            } catch (Exception e) {
+                throw new BadSpecial(rb.getString(SqltoolRB.PL_BLOCK_FAIL), e);
+            }
+        } else {
+            // Assertion
+            throw new RuntimeException(rb.getString(SqltoolRB.PL_UNKNOWN, tokens[0]));
+        }
+        if (tmpFile != null && !tmpFile.delete()) {
+            throw new BadSpecial(rb.getString(SqltoolRB.TEMPFILE_REMOVAL_FAIL, tmpFile.toString()));
+        }
+        return;
+    }
+    m = varsetPattern.matcher(dereference(inString, false));
+    if (!m.matches()) {
+        throw new BadSpecial(rb.getString(SqltoolRB.PL_UNKNOWN, tokens[0]));
+    }
+    if (m.groupCount() < 2 || m.groupCount() > 3) {
+        // Assertion
+        throw new RuntimeException("varset pattern matched but captured " + m.groupCount() + " groups");
+    }
+    String varName = m.group(1);
+    if (varName.indexOf(':') > -1) {
+        throw new BadSpecial(rb.getString(SqltoolRB.PLVAR_NOCOLON));
+    }
+    switch(m.group(2).charAt(0)) {
+        case '_':
+            silentFetch = true;
+        case '~':
+            if (m.groupCount() > 2 && m.group(3) != null) {
+                throw new BadSpecial(rb.getString(SqltoolRB.PLVAR_TILDEDASH_NOMOREARGS, m.group(3)));
+            }
+            userVars.remove(varName);
+            updateUserSettings();
+            fetchingVar = varName;
+            return;
+        case '=':
+            if (fetchingVar != null && fetchingVar.equals(varName)) {
+                fetchingVar = null;
+            }
+            if (m.groupCount() > 2 && m.group(3) != null) {
+                userVars.put(varName, m.group(3));
+            } else {
+                userVars.remove(varName);
+            }
+            updateUserSettings();
+            return;
+    }
+    throw new BadSpecial(rb.getString(SqltoolRB.PL_UNKNOWN, tokens[0]));
+// I think this would already be caught in the setvar block above.
+}

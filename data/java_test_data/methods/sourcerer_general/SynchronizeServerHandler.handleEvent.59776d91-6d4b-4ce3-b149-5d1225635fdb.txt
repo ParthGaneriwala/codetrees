@@ -1,0 +1,73 @@
+@Override
+public boolean handleEvent(Object data) {
+    // TODO Auto-generated method stub
+    if (!(data instanceof Request))
+        return false;
+    Request request = (Request) data;
+    Message.MessageType mType = request.getRequestType();
+    Response response = null;
+    ArrayList<String> recipients = new ArrayList<String>();
+    if (mType == Message.MessageType.SYNC_CHANGE_VIEW) {
+        response = new Response(request, Message.GEO_RESOLUTE_RECT, request.getData(Message.GEO_RESOLUTE_RECT));
+        response.setUser(request.getUser());
+        response.setData(Message.SHOWN_LAYERS, request.getData(Message.SHOWN_LAYERS));
+        if (request.getRecipients().isEmpty()) {
+            /* this means that the group or teacher button was pressed */
+            SYNC_TYPE syncType = (SYNC_TYPE) request.getData(Message.SYNC_TYPE);
+            /* populate recipient list depending on who the client wants to
+				 * share the location with */
+            if (syncType == SYNC_TYPE.SYNC_WITH_TEACHER) {
+                recipients.add(mAuthHandler.getTeacherUserName());
+            } else if (syncType == SYNC_TYPE.SYNC_WITH_GROUP) {
+                UserAdmin userAdmin = new UserAdmin();
+                try {
+                    recipients = userAdmin.getGroupMembers(response.getUser().getId());
+                } catch (DatabaseException e) {
+                    // TODO Auto-generated catch block
+                    e.printStackTrace();
+                }
+            }
+            /* if SYNC_TYPE is SYNC_WITH_LIST, the recipient list is 
+				already in the request's recipient list, it would not be in
+				this if statement */
+            response.setData(Message.SYNC_RECIPIENTS, recipients);
+            /* add each of these clients to the recipient list to send the
+				 * response to. then add the lead sync user so that they 
+				 * will receive the list of synchronized users.
+				 */
+            for (String recipient : recipients) {
+                request.addRecipient(recipient);
+            }
+            request.addRecipient(request.getUser().getUserName());
+        } else {
+        // recipients = request.getRecipients();
+        }
+    } else if (mType == Message.MessageType.STOP_SYNC) {
+        response = new Response(request, Message.SYNC_STOP, null);
+    } else if (mType == Message.MessageType.DECLINE_SYNC) {
+        response = new Response(request, Message.DECLINE_SYNC, request.getUser());
+    } else if (mType == Message.MessageType.SYNC_CHANGE_LAYER) {
+        response = new Response(request, Message.SHOWN_LAYERS, request.getData(Message.SHOWN_LAYERS));
+        response.setData(Message.SYNC_HIDDEN_LAYERS, request.getData(Message.SYNC_HIDDEN_LAYERS));
+        response.setUser(request.getUser());
+    // recipients = request.getRecipients();
+    } else {
+        /* this request type not handled by this handler */
+        return false;
+    }
+    SocketChannel channel;
+    for (String userName : request.getRecipients()) {
+        channel = mAuthHandler.getClientChannel(userName);
+        if (channel != null) {
+            // users in a group may not be logged on
+            this.setChannel(channel);
+            try {
+                sendMessage(response);
+            } catch (IOException e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+            }
+        }
+    }
+    return true;
+}

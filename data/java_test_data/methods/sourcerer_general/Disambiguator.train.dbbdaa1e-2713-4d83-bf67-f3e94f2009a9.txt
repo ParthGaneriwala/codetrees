@@ -1,0 +1,47 @@
+private void train(Article article, int snippetLength, RelatednessCache rc) throws Exception {
+    Vector<Anchor> unambigAnchors = new Vector<Anchor>();
+    Vector<TopicReference> ambigRefs = new Vector<TopicReference>();
+    String content = cleaner.getMarkupLinksOnly(article, snippetLength);
+    Pattern linkPattern = Pattern.compile("\\[\\[(.*?)\\]\\]");
+    Matcher linkMatcher = linkPattern.matcher(content);
+    // split references into ambiguous and unambiguous
+    while (linkMatcher.find()) {
+        String linkText = content.substring(linkMatcher.start() + 2, linkMatcher.end() - 2);
+        String anchorText = linkText;
+        String destText = linkText;
+        int pos = linkText.lastIndexOf('|');
+        if (pos > 0) {
+            destText = linkText.substring(0, pos);
+            anchorText = linkText.substring(pos + 1);
+        }
+        // System.out.println(linkText + ", " + anchorText + ", " + destText) ;
+        Anchor anchor = new Anchor(anchorText, tp, wikipedia.getDatabase());
+        int senseCount = anchor.getSenses().size();
+        Article dest = wikipedia.getArticleByTitle(destText);
+        if (dest != null && senseCount >= 1) {
+            TopicReference ref = new TopicReference(anchor, dest.getId(), new Position(0, 0));
+            if (senseCount == 1 || anchor.getSenses().first().getProbability() >= (1 - minSenseProbability))
+                unambigAnchors.add(anchor);
+            else
+                ambigRefs.add(ref);
+        }
+    }
+    // use all terms as context
+    Context context = getContext(article, snippetLength, rc);
+    // resolve ambiguous links
+    for (TopicReference ref : ambigRefs) {
+        for (Sense sense : ref.getAnchor().getSenses()) {
+            if (sense.getProbability() < minSenseProbability)
+                break;
+            double[] values = new double[attributes.size()];
+            values[0] = sense.getProbability();
+            values[1] = context.getRelatednessTo(sense);
+            values[2] = context.getQuality();
+            if (sense.getId() == ref.getTopicId())
+                values[3] = 0.0;
+            else
+                values[3] = 1.0;
+            trainingData.add(new Instance(1.0, values));
+        }
+    }
+}

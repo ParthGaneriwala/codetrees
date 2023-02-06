@@ -1,0 +1,212 @@
+public void decompose() throws Exception {
+    Reader dataReader;
+    Instances data;
+    // training pool size, size of segment E.
+    int tps;
+    // number of folds in segment E.
+    int k;
+    // number of segments of size tps.
+    int q;
+    // open file
+    dataReader = new BufferedReader(new FileReader(m_DataFileName));
+    // encapsulate in wrapper class called weka.Instances()
+    data = new Instances(dataReader);
+    if (m_ClassIndex < 0) {
+        data.setClassIndex(data.numAttributes() - 1);
+    } else {
+        data.setClassIndex(m_ClassIndex);
+    }
+    if (data.classAttribute().type() != Attribute.NOMINAL) {
+        throw new Exception("Class attribute must be nominal");
+    }
+    int numClasses = data.numClasses();
+    data.deleteWithMissingClass();
+    if (data.checkForStringAttributes()) {
+        throw new Exception("Can't handle string attributes!");
+    }
+    // Dataset size must be greater than 2
+    if (data.numInstances() <= 2) {
+        throw new Exception("Dataset size must be greater than 2.");
+    }
+    if (m_TrainSize == -1) {
+        // default value
+        m_TrainSize = (int) Math.floor((double) data.numInstances() / 2.0);
+    } else if (m_TrainSize < 0 || m_TrainSize >= data.numInstances() - 1) {
+        // Check if 0 < training Size < D - 1
+        throw new Exception("Training set size of " + m_TrainSize + " is invalid.");
+    }
+    if (m_P == -1) {
+        // default value
+        m_P = (double) m_TrainSize / ((double) data.numInstances() - 1);
+    } else if (m_P < (m_TrainSize / ((double) data.numInstances() - 1)) || m_P >= 1.0) {
+        // Check if p is in range: m/(|D|-1) <= p < 1.0
+        throw new Exception("Proportion is not in range: " + (m_TrainSize / ((double) data.numInstances() - 1)) + " <= p < 1.0 ");
+    }
+    // roundup tps from double to integer
+    tps = (int) Math.ceil(((double) m_TrainSize / (double) m_P) + 1);
+    k = (int) Math.ceil(tps / (tps - (double) m_TrainSize));
+    // number of folds cannot be more than the number of instances in the training pool
+    if (k > tps) {
+        throw new Exception("The required number of folds is too many." + "Change p or the size of the training set.");
+    }
+    // calculate the number of segments, round down.
+    q = (int) Math.floor((double) data.numInstances() / (double) tps);
+    // create confusion matrix, columns = number of instances in data set, as all will be used,  by rows = number of classes.
+    double[][] instanceProbs = new double[data.numInstances()][numClasses];
+    int[][] foldIndex = new int[k][2];
+    Vector<int[]> segmentList = new Vector<int[]>(q + 1);
+    // Set random seed
+    Random random = new Random(m_Seed);
+    data.randomize(random);
+    // create index arrays for different segments
+    int currentDataIndex = 0;
+    for (int count = 1; count <= (q + 1); count++) {
+        if (count > q) {
+            int[] segmentIndex = new int[(data.numInstances() - (q * tps))];
+            for (int index = 0; index < segmentIndex.length; index++, currentDataIndex++) {
+                segmentIndex[index] = currentDataIndex;
+            }
+            segmentList.add(segmentIndex);
+        } else {
+            int[] segmentIndex = new int[tps];
+            for (int index = 0; index < segmentIndex.length; index++, currentDataIndex++) {
+                segmentIndex[index] = currentDataIndex;
+            }
+            segmentList.add(segmentIndex);
+        }
+    }
+    // remainder is used to determine when to shrink the fold size by 1.
+    int remainder = tps % k;
+    // foldSize = ROUNDUP( tps / k ) (round up, eg 3 -> 3,  3.3->4)
+    // roundup fold size double to integer
+    int foldSize = (int) Math.ceil((double) tps / (double) k);
+    int index = 0;
+    int currentIndex;
+    for (int count = 0; count < k; count++) {
+        if (remainder != 0 && count == remainder) {
+            foldSize -= 1;
+        }
+        foldIndex[count][0] = index;
+        foldIndex[count][1] = foldSize;
+        index += foldSize;
+    }
+    for (int l = 0; l < m_ClassifyIterations; l++) {
+        for (int i = 1; i <= q; i++) {
+            int[] currentSegment = (int[]) segmentList.get(i - 1);
+            randomize(currentSegment, random);
+            // CROSS FOLD VALIDATION for current Segment
+            for (int j = 1; j <= k; j++) {
+                Instances TP = null;
+                for (int foldNum = 1; foldNum <= k; foldNum++) {
+                    if (foldNum != j) {
+                        // start index
+                        int startFoldIndex = foldIndex[foldNum - 1][0];
+                        foldSize = foldIndex[foldNum - 1][1];
+                        int endFoldIndex = startFoldIndex + foldSize - 1;
+                        for (int currentFoldIndex = startFoldIndex; currentFoldIndex <= endFoldIndex; currentFoldIndex++) {
+                            if (TP == null) {
+                                TP = new Instances(data, currentSegment[currentFoldIndex], 1);
+                            } else {
+                                TP.add(data.instance(currentSegment[currentFoldIndex]));
+                            }
+                        }
+                    }
+                }
+                TP.randomize(random);
+                if (getTrainSize() > TP.numInstances()) {
+                    throw new Exception("The training set size of " + getTrainSize() + ", is greater than the training pool " + TP.numInstances());
+                }
+                Instances train = new Instances(TP, 0, m_TrainSize);
+                Classifier current = AbstractClassifier.makeCopy(m_Classifier);
+                // create a clssifier using the instances in train.
+                current.buildClassifier(train);
+                // start index
+                int currentTestIndex = foldIndex[j - 1][0];
+                // size
+                int testFoldSize = foldIndex[j - 1][1];
+                int endTestIndex = currentTestIndex + testFoldSize - 1;
+                while (currentTestIndex <= endTestIndex) {
+                    Instance testInst = data.instance(currentSegment[currentTestIndex]);
+                    int pred = (int) current.classifyInstance(testInst);
+                    if (pred != testInst.classValue()) {
+                        // add 1 to mis-classifications.
+                        m_Error++;
+                    }
+                    instanceProbs[currentSegment[currentTestIndex]][pred]++;
+                    currentTestIndex++;
+                }
+                if (i == 1 && j == 1) {
+                    int[] segmentElast = (int[]) segmentList.lastElement();
+                    for (currentIndex = 0; currentIndex < segmentElast.length; currentIndex++) {
+                        Instance testInst = data.instance(segmentElast[currentIndex]);
+                        int pred = (int) current.classifyInstance(testInst);
+                        if (pred != testInst.classValue()) {
+                            // add 1 to mis-classifications.
+                            m_Error++;
+                        }
+                        instanceProbs[segmentElast[currentIndex]][pred]++;
+                    }
+                }
+            }
+        }
+    }
+    m_Error /= (double) (m_ClassifyIterations * data.numInstances());
+    m_KWBias = 0.0;
+    m_KWVariance = 0.0;
+    m_KWSigma = 0.0;
+    m_WBias = 0.0;
+    m_WVariance = 0.0;
+    for (int i = 0; i < data.numInstances(); i++) {
+        Instance current = data.instance(i);
+        double[] predProbs = instanceProbs[i];
+        double pActual, pPred;
+        double bsum = 0, vsum = 0, ssum = 0;
+        double wBSum = 0, wVSum = 0;
+        Vector<Integer> centralTendencies = findCentralTendencies(predProbs);
+        if (centralTendencies == null) {
+            throw new Exception("Central tendency was null.");
+        }
+        for (int j = 0; j < numClasses; j++) {
+            pActual = (current.classValue() == j) ? 1 : 0;
+            pPred = predProbs[j] / m_ClassifyIterations;
+            bsum += (pActual - pPred) * (pActual - pPred) - pPred * (1 - pPred) / (m_ClassifyIterations - 1);
+            vsum += pPred * pPred;
+            ssum += pActual * pActual;
+        }
+        m_KWBias += bsum;
+        m_KWVariance += (1 - vsum);
+        m_KWSigma += (1 - ssum);
+        for (int count = 0; count < centralTendencies.size(); count++) {
+            int wB = 0, wV = 0;
+            int centralTendency = ((Integer) centralTendencies.get(count)).intValue();
+            // For a single instance xi, find the bias and variance.
+            for (int j = 0; j < numClasses; j++) {
+                // Webb definition
+                if (j != (int) current.classValue() && j == centralTendency) {
+                    wB += predProbs[j];
+                }
+                if (j != (int) current.classValue() && j != centralTendency) {
+                    wV += predProbs[j];
+                }
+            }
+            wBSum += (double) wB;
+            wVSum += (double) wV;
+        }
+        // calculate bais by dividing bSum by the number of central tendencies and
+        // total number of instances. (effectively finding the average and dividing
+        // by the number of instances to get the nominalised probability).
+        m_WBias += (wBSum / ((double) (centralTendencies.size() * m_ClassifyIterations)));
+        // calculate variance by dividing vSum by the total number of interations
+        m_WVariance += (wVSum / ((double) (centralTendencies.size() * m_ClassifyIterations)));
+    }
+    m_KWBias /= (2.0 * (double) data.numInstances());
+    m_KWVariance /= (2.0 * (double) data.numInstances());
+    m_KWSigma /= (2.0 * (double) data.numInstances());
+    // bias = bias / number of data instances
+    m_WBias /= (double) data.numInstances();
+    // variance = variance / number of data instances.
+    m_WVariance /= (double) data.numInstances();
+    if (m_Debug) {
+        System.err.println("Decomposition finished");
+    }
+}

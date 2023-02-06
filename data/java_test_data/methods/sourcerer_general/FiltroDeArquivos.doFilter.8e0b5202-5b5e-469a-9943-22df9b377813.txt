@@ -1,0 +1,99 @@
+public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException {
+    HttpServletRequest httpRequest = (HttpServletRequest) request;
+    HttpServletResponse httpResponse = (HttpServletResponse) response;
+    String url = httpRequest.getRequestURL().toString();
+    ArquivoAction arquivoAction = new ArquivoAction();
+    String barra = String.valueOf(File.separatorChar);
+    try {
+        String pathLocal = arquivoAction.getArquivosPath();
+        if (!pathLocal.endsWith(barra)) {
+            pathLocal = pathLocal + barra;
+        }
+        String[] urlSplitted = url.split("/arquivos/");
+        Sitio sitio = (Sitio) httpRequest.getSession().getAttribute(Gerenciador.KEY_ULTIMO_SITIO);
+        if (sitio == null) {
+            // tentar do modo antigo
+            sitio = Gerenciador.encontrarSitioUrl(url);
+        }
+        String pastaSitio = sitio.getNoPastaArquivos();
+        // String[] arquivoSplitted = urlSplitted[1].split("/");
+        // int len = arquivoSplitted.length;
+        StringBuilder pathArquivoLocal = new StringBuilder(pathLocal);
+        pathArquivoLocal.append(pastaSitio);
+        pathArquivoLocal.append(barra);
+        pathArquivoLocal.append("arquivos");
+        pathArquivoLocal.append(barra);
+        /*
+			pathArquivoLocal.append(arquivoSplitted[len - 2]);
+			pathArquivoLocal.append(barra);
+			pathArquivoLocal.append(arquivoSplitted[len - 1]);
+			 */
+        /**
+         * ADAPTACAO:  Aceitando subniveis, porem tratando o antigo codigo da BVS
+         * TODO no futuro remover o tratamento do id 1 no path
+         */
+        String finalPathArquivo = urlSplitted[1];
+        // Trata o problema da BVS com url antiga
+        if (finalPathArquivo.startsWith("1/") && sitio.getNoSitio().toUpperCase().contains("BVS"))
+            finalPathArquivo = finalPathArquivo.substring(2);
+        pathArquivoLocal.append(finalPathArquivo.replace("/", barra));
+        File arquivo = new File(pathArquivoLocal.toString());
+        if (arquivo.exists()) {
+            String token = "\"M" + arquivo.lastModified() + '"';
+            String previousToken = httpRequest.getHeader("If-None-Match");
+            if (previousToken != null && previousToken.equals(token)) {
+                // compare previous token with current one
+                // Init servlet response.
+                httpResponse.reset();
+                logger.debug("ETag match: returning 304 Not Modified");
+                httpResponse.sendError(HttpServletResponse.SC_NOT_MODIFIED);
+                // use the same date we sent when we created the ETag the first time through
+                httpResponse.setHeader("Last-Modified", httpRequest.getHeader("If-Modified-Since"));
+            } else {
+                // Get content type by filename.
+                String contentType = httpRequest.getSession().getServletContext().getMimeType(arquivo.getName());
+                // To add new content types, add new mime-mapping entry in web.xml.
+                if (contentType == null) {
+                    logger.warn("Sem contentType para " + url);
+                    contentType = "application/octet-stream";
+                }
+                // Init servlet response.
+                httpResponse.reset();
+                httpResponse.setHeader("ETag", token);
+                // first time through - set last modified time to now
+                // Calendar cal = Calendar.getInstance();
+                // cal.set(Calendar.MILLISECOND, 0);
+                // Date lastModified = cal.getTime();
+                httpResponse.setDateHeader("Last-Modified", arquivo.lastModified());
+                httpResponse.setBufferSize(DEFAULT_BUFFER_SIZE);
+                httpResponse.setHeader("Content-Type", contentType);
+                httpResponse.setHeader("Content-Length", String.valueOf(arquivo.length()));
+                // httpResponse.setHeader("Content-Disposition", "attachment; filename=\"" + arquivo.getName() + "\"");
+                BufferedInputStream input = null;
+                BufferedOutputStream output = null;
+                try {
+                    // Open streams.
+                    input = new BufferedInputStream(new FileInputStream(arquivo), DEFAULT_BUFFER_SIZE);
+                    output = new BufferedOutputStream(httpResponse.getOutputStream(), DEFAULT_BUFFER_SIZE);
+                    // Write file contents to response.
+                    byte[] buffer = new byte[DEFAULT_BUFFER_SIZE];
+                    int length;
+                    while ((length = input.read(buffer)) > 0) {
+                        output.write(buffer, 0, length);
+                    }
+                    output.flush();
+                } finally {
+                    // Gently close streams.
+                    close(output);
+                    close(input);
+                }
+            }
+        } else {
+            logger.warn("404 pathArquivoLocal = " + pathArquivoLocal);
+        }
+    } catch (ClientAbortException e) {
+        logger.debug("Cliente abortou a conexao.");
+    } catch (Exception e) {
+        logger.error("Erro ao filtrar arquivo " + url, e);
+    }
+}

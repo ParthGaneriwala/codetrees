@@ -1,0 +1,59 @@
+@Override
+public void process(JCas jCas) throws AnalysisEngineProcessException {
+    JCas timemlView;
+    JCas initialView;
+    try {
+        timemlView = jCas.getView(TimeMLViewName.TIMEML);
+        initialView = jCas.getView(CAS.NAME_DEFAULT_SOFA);
+    } catch (CASException e) {
+        throw new AnalysisEngineProcessException(e);
+    }
+    String timeML = timemlView.getDocumentText();
+    SAXBuilder builder = new SAXBuilder();
+    builder.setDTDHandler(null);
+    Element root;
+    try {
+        Document doc = builder.build(new StringReader(timeML));
+        root = doc.getRootElement();
+    } catch (JDOMException e) {
+        getContext().getLogger().log(Level.SEVERE, "problem parsing document: " + ViewURIUtil.getURI(jCas));
+        throw new AnalysisEngineProcessException(e);
+    } catch (IOException e) {
+        throw new AnalysisEngineProcessException(e);
+    }
+    // collect the document text, add the Event, Time and TemporalLink annotations,
+    // and collect the necessary information to fill in the cross-annotation links
+    StringBuffer textBuffer = new StringBuffer();
+    Map<String, Anchor> anchors = new HashMap<String, Anchor>();
+    Map<Time, String> anchorTimeIDs = new HashMap<Time, String>();
+    List<Element> makeInstances = new ArrayList<Element>();
+    Map<TemporalLink, String> tlinkSourceIDs = new HashMap<TemporalLink, String>();
+    Map<TemporalLink, String> tlinkTargetIDs = new HashMap<TemporalLink, String>();
+    this.addAnnotations(initialView, root, textBuffer, anchors, anchorTimeIDs, makeInstances, tlinkSourceIDs, tlinkTargetIDs);
+    initialView.setDocumentText(textBuffer.toString());
+    // point make-instance IDs to their events, and copy attributes over
+    for (Element makeInstance : makeInstances) {
+        String eventID = makeInstance.getAttributeValue("eventID");
+        String eventInstanceID = makeInstance.getAttributeValue("eiid");
+        Event event = (Event) this.getAnchor(jCas, anchors, eventID);
+        anchors.put(eventInstanceID, event);
+        eventInstanceID = event.getEventInstanceID();
+        if (eventInstanceID == null) {
+            TimeMLUtil.copyAttributes(makeInstance, event, jCas);
+        } else {
+            TimeMLUtil.removeInconsistentAttributes(makeInstance, event, jCas);
+            event.setId(eventID);
+            event.setEventInstanceID(eventInstanceID);
+        }
+    }
+    // set anchor times
+    for (Time time : anchorTimeIDs.keySet()) {
+        Time anchorTime = (Time) this.getAnchor(jCas, anchors, anchorTimeIDs.get(time));
+        time.setAnchorTime(anchorTime);
+    }
+    // set tlink sources and targets
+    for (TemporalLink tlink : tlinkSourceIDs.keySet()) {
+        tlink.setSource(this.getAnchor(jCas, anchors, tlinkSourceIDs.get(tlink)));
+        tlink.setTarget(this.getAnchor(jCas, anchors, tlinkTargetIDs.get(tlink)));
+    }
+}

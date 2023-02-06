@@ -1,0 +1,94 @@
+public void service(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+    HttpSession session = request.getSession(true);
+    Database db = new Database();
+    Attributes attr = (Attributes) session.getAttribute("attr");
+    Info in = (Info) session.getServletContext().getAttribute("in");
+    String path = request.getPathInfo();
+    boolean fax = path.indexOf("fax") != -1;
+    boolean email = path.indexOf("email") != -1;
+    String id = request.getParameter("id");
+    PreparedStatement ps = null;
+    ResultSet rs = null;
+    if (fax || email) {
+        path = request.getParameter("doc");
+        id = path.substring(path.indexOf("id=") + 3);
+    }
+    log.debug("generating report: " + path + " id " + id);
+    Report r = getGeneratedReport(request, path, id, attr, in);
+    try {
+        ByteArrayOutputStream baos = r.getStream();
+        if (baos != null) {
+            if (!fax && !email) {
+                response.setContentLength(baos.size());
+                response.setHeader("Cache-Control", "private");
+                response.setHeader("Pragma", "expires");
+                response.setContentType("application/pdf");
+                ServletOutputStream out = response.getOutputStream();
+                baos.writeTo(out);
+                if (r.type != null && id != null) {
+                    ItemLogger.Printed.update(r.type, id, session);
+                }
+                out.flush();
+                out.close();
+            } else if (fax) {
+                response.setContentType("text/html");
+                String jobId = Fax.sendPDF(Fax.getFax(request.getParameter("fax")), baos.toByteArray(), in);
+                Fax.logFax(jobId, request.getParameter("fax"), path.substring(0, path.indexOf(".")), request.getParameter("contact"), request.getParameter("company"), request.getParameter("description"), session);
+                if (r.type != null && id != null) {
+                    ItemLogger.Faxed.update(r.type, id, "Sent to " + request.getParameter("fax"), session);
+                }
+                PrintWriter pw = response.getWriter();
+                pw.println("<html>");
+                pw.println("<script>window.alert('Fax Queued\\n----------------\\nFax Job Id: " + jobId + "');");
+                pw.println("window.location='../../utils/print.jsp?doc=" + path + "&add=" + request.getParameter("add") + "';");
+                pw.println("</script></html>");
+                pw.flush();
+                pw.close();
+                db.disconnect();
+            } else {
+                // TODO add error checking
+                String file = path.indexOf("?") != -1 ? path.substring(0, path.indexOf("?")) : path;
+                DocMailer dm = new DocMailer(attr.getEmail(), attr.getFullName(), request.getParameter("address"), request.getParameter("subject"), request.getParameter("body"), in);
+                dm.addFile(file, "Document", "application/pdf", baos.toByteArray());
+                rs = db.dbQuery("select * from files where type = '" + r.type.getCode() + "' and " + "id = '" + id + "' and email = 1");
+                InputStream is;
+                while (rs.next()) {
+                    is = FileServlet.getFileAsInputStream(rs);
+                    dm.addFile(rs.getString("filename"), rs.getString("description"), rs.getString("content_type"), is);
+                    is.close();
+                }
+                dm.send();
+                if (r.type != null && id != null) {
+                    ItemLogger.Emailed.update(r.type, id, "Sent to " + request.getParameter("address"), session);
+                }
+                response.sendRedirect("../../utils/print.jsp?doc=" + path + "&add=" + request.getParameter("add"));
+            }
+        } else {
+            response.setContentType("text/html");
+            ServletOutputStream out = response.getOutputStream();
+            out.print("<html><head><link rel=\"stylesheet\" href=\"../../stylesheets/v2.css\" type=\"text/css\" />");
+            out.print(com.sinkluge.utilities.Widgets.fontSizeStyle(attr));
+            out.print("</head><body><div class=\"title\">Error - No Document Returned</div><hr>");
+            out.print("Please try your request again or contact an administrator.</body></html>");
+            out.flush();
+            out.close();
+        }
+    } catch (IOException e) {
+        throw new ServletException("Report: " + e.toString(), e);
+    } catch (SQLException e) {
+        throw new ServletException("Report: " + e.toString(), e);
+    } catch (Exception e) {
+        throw new ServletException("Report: " + e.toString(), e);
+    } finally {
+        r = null;
+        try {
+            if (ps != null)
+                ps.close();
+            if (rs != null)
+                rs.close();
+            db.disconnect();
+        } catch (SQLException e) {
+            throw new ServletException("Report Exception: ", e);
+        }
+    }
+}

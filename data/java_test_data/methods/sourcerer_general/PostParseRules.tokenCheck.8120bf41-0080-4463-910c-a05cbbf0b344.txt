@@ -1,0 +1,116 @@
+@Override
+protected RuleResult tokenCheck(Field equationToken) {
+    RuleResult result = new IRule.Failure(getEquation(), "Either you are referring to different components OR components with different units.");
+    ModelElementData modelData = interpreter.getModelData(equationToken.getText().trim());
+    ITagComponent referencedTagComponent = null;
+    String currentMat = "";
+    String currentUnit = "";
+    final String token = equationToken.getText().trim();
+    if (token.isEmpty()) {
+        // result = new IRule.Failure(getEquation(), "Empty Token");
+        return result;
+    }
+    if (ParsingUtil.isOperator(token)) {
+        lastOperator = token;
+        // if = is passed then do not change the common material or common unit
+        if (lastOperator.equals("=")) {
+            bUpdateCommonMat = false;
+            bUpdateCommonUnit = false;
+        }
+        result = new IRule.Success((IModelElement) this.getEquation());
+        return result;
+    }
+    // check for number
+    if (ParsingUtil.isNumber(token)) {
+        result = new IRule.Success((IModelElement) this.getEquation());
+        return result;
+    }
+    if (null != modelData && modelData.getModel() instanceof ITagComponent) {
+        referencedTagComponent = (ITagComponent) modelData.getModel();
+        currentMat = referencedTagComponent.getMaterial();
+        currentUnit = referencedTagComponent.getUnits();
+        if (!currentMat.isEmpty() && !ParsingUtil.isOperator(currentMat) && !ParsingUtil.isNumber(currentMat) && !interpreter.modelExists(currentMat)) {
+            updateCommonMat(currentMat);
+        }
+        if (!currentUnit.isEmpty() && !ParsingUtil.isOperator(currentUnit) && !ParsingUtil.isNumber(currentUnit) && !interpreter.modelExists(currentUnit)) {
+            updateCommonUnit(currentUnit);
+        }
+        if (!lastOperator.isEmpty() && !commonUnit.isEmpty()) {
+            /*if(lastOperator.equals("*")&& commonUnit.equals("%")){
+						result = new IRule.Failure(getEquation(), "% = % * % or % = % * grams not allowed.");
+						return result;
+					}
+					else if(lastOperator.equals("=")&& commonUnit.equals("%"))
+					{
+						result = new IRule.Failure(getEquation(), "% = % or % + % = %  not allowed.");
+						lastUnit = currentUnit; // Copy the current unit into last unit
+						lastMaterial = currentMat; // Copy the current mat into last mat
+						return result;
+					}*/
+            if (commonUnit.equals("%")) {
+                // result = new IRule.Failure(getEquation(), "Percentages from different streams cannot be added nor can percentages ever be multiplied.\n Check all of the terms in your balances to insure the proper use of percentages. Please correct your equation by making changes like % * OverAlll.");
+                // Message changed after pilot study
+                result = new IRule.Failure(getEquation(), "Improper use of percentages.\nCheck that % from different streams are not added, equated or multiplied by other %s");
+                if (lastOperator.equals("=")) {
+                    bUpdateCommonUnit = false;
+                } else // update the common Unit with the current unit, "% * grams = grams"
+                if (!currentUnit.isEmpty() && !ParsingUtil.isOperator(currentUnit) && !ParsingUtil.isNumber(currentUnit) && !interpreter.modelExists(currentUnit) && lastOperator.equals("*") && bUpdateCommonUnit) {
+                    updateCommonUnit(currentUnit);
+                }
+                // if still common unit is % return the result
+                if (commonUnit.equals("%"))
+                    return result;
+            }
+        }
+        if (!currentMat.isEmpty() && !commonMaterial.isEmpty()) {
+            if (checkType(currentMat)) {
+                if (!(currentUnit.isEmpty()) && !(commonUnit.isEmpty())) {
+                    if (!checkUnit(currentUnit)) {
+                        // Case: m11 = M1(Overall) * m12(%)
+                        if (lastOperator.equals("*") && currentUnit.equals("%") && lastMaterial.equals("Overall") && checkUnit(lastUnit)) {
+                            result = new IRule.Success((IModelElement) this.getEquation());
+                        } else {
+                            lastMaterial = currentMat;
+                            lastUnit = currentUnit;
+                            result = new IRule.Failure(getEquation(), "All of the indiividual terms in a material balance must have the same units. \n Check the units on every term in this balance.");
+                        }
+                    } else {
+                        if (!(lastOperator.equals("*"))) {
+                            result = new IRule.Success((IModelElement) this.getEquation());
+                        } else // m11 = m11 * M1
+                        if (currentMat.equals("Overall") && lastUnit.equals("%")) {
+                            result = new IRule.Success((IModelElement) this.getEquation());
+                        }
+                    }
+                }
+            } else // Elements are not same
+            {
+                result = new IRule.Failure(getEquation(), "This material balance contains terms that involve more than one compound and is not an overall balance. \n Any material balance, other than the overall balalnce, must involve only a single chemical compound.");
+                // Units should be same for spl cases
+                if (checkUnit(currentUnit)) {
+                    // To avoid the case mmonia(gm) = water(%) * Overall(gms)
+                    if (lastOperator.equals("*") && lastUnit.equals("%") && (currentMat.equals("Overall") && checkType(lastMaterial))) {
+                        result = new IRule.Success((IModelElement) this.getEquation());
+                    } else if (commonMaterial.equals("Overall")) {
+                        result = new IRule.Success((IModelElement) this.getEquation());
+                    }
+                } else // Case: Overall(gms) = Overall * % + Overall * %
+                if (commonMaterial.equals("Overall") && lastOperator.equals("*") && currentUnit.equals("%")) {
+                    result = new IRule.Success((IModelElement) this.getEquation());
+                }
+                // else
+                // {
+                // result = new IRule.Failure(getEquation(), "The units on each term in a balance must be the same.\n Remember: The equation editior does not allow you to perform unit conversions. ");
+                // }
+                // Copy the current unit into last unit
+                lastUnit = currentUnit;
+                // Copy the current mat into last mat
+                lastMaterial = currentMat;
+            }
+        /*if (!checkType(currentMat)){
+						result = new IRule.Failure(getEquation(), "You can not operate on diffrent types of elements.This equation is invalid.\n Please correct your equation.");
+					}*/
+        }
+    }
+    return result;
+}

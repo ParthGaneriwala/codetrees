@@ -1,0 +1,100 @@
+public synchronized void initTasks() throws IOException {
+    if (tasksInited.get()) {
+        return;
+    }
+    synchronized (jobInitKillStatus) {
+        if (jobInitKillStatus.killed) {
+            return;
+        }
+        jobInitKillStatus.initStarted = true;
+    }
+    // log job info
+    JobHistory.JobInfo.logSubmitted(getJobID(), conf, jobFile.toString(), this.startTime);
+    // log the job priority
+    setPriority(this.priority);
+    // 
+    // read input splits and create a map per a split
+    // 
+    String jobFile = profile.getJobFile();
+    Path sysDir = new Path(this.jobtracker.getSystemDir());
+    FileSystem fs = sysDir.getFileSystem(conf);
+    DataInputStream splitFile = fs.open(new Path(conf.get("mapred.job.split.file")));
+    JobClient.RawSplit[] splits;
+    try {
+        splits = JobClient.readSplitFile(splitFile);
+    } finally {
+        splitFile.close();
+    }
+    numMapTasks = splits.length;
+    // if the number of splits is larger than a configured value
+    // then fail the job.
+    int maxTasks = jobtracker.getMaxTasksPerJob();
+    if (maxTasks > 0 && numMapTasks + numReduceTasks > maxTasks) {
+        throw new IOException("The number of tasks for this job " + (numMapTasks + numReduceTasks) + " exceeds the configured limit " + maxTasks);
+    }
+    maps = new TaskInProgress[numMapTasks];
+    for (int i = 0; i < numMapTasks; ++i) {
+        inputLength += splits[i].getDataLength();
+        maps[i] = new TaskInProgress(jobId, jobFile, splits[i], jobtracker, conf, this, i);
+    }
+    LOG.info("Input size for job " + jobId + " = " + inputLength);
+    if (numMapTasks > 0) {
+        LOG.info("Split info for job:" + jobId);
+        nonRunningMapCache = createCache(splits, maxLevel);
+    }
+    // set the launch time
+    this.launchTime = System.currentTimeMillis();
+    // if no split is returned, job is considered completed and successful
+    if (numMapTasks == 0) {
+        // Finished time need to be setted here to prevent this job to be retired
+        // from the job tracker jobs at the next retire iteration.
+        this.finishTime = this.launchTime;
+        status.setSetupProgress(1.0f);
+        status.setMapProgress(1.0f);
+        status.setReduceProgress(1.0f);
+        status.setCleanupProgress(1.0f);
+        status.setRunState(JobStatus.SUCCEEDED);
+        tasksInited.set(true);
+        JobHistory.JobInfo.logInited(profile.getJobID(), this.launchTime, 0, 0);
+        JobHistory.JobInfo.logFinished(profile.getJobID(), this.finishTime, 0, 0, 0, 0, getCounters());
+        // Special case because the Job is not queued
+        JobEndNotifier.registerNotification(this.getJobConf(), this.getStatus());
+        return;
+    }
+    // 
+    // Create reduce tasks
+    // 
+    this.reduces = new TaskInProgress[numReduceTasks];
+    for (int i = 0; i < numReduceTasks; i++) {
+        reduces[i] = new TaskInProgress(jobId, jobFile, numMapTasks, i, jobtracker, conf, this);
+        nonRunningReduces.add(reduces[i]);
+    }
+    // create cleanup two cleanup tips, one map and one reduce.
+    cleanup = new TaskInProgress[2];
+    // cleanup map tip. This map is doesn't use split.
+    // Just assign splits[0]
+    cleanup[0] = new TaskInProgress(jobId, jobFile, splits[0], jobtracker, conf, this, numMapTasks);
+    cleanup[0].setCleanupTask();
+    // cleanup reduce tip.
+    cleanup[1] = new TaskInProgress(jobId, jobFile, numMapTasks, numReduceTasks, jobtracker, conf, this);
+    cleanup[1].setCleanupTask();
+    // create two setup tips, one map and one reduce.
+    setup = new TaskInProgress[2];
+    // setup map tip. This map is doesn't use split.
+    // Just assign splits[0]
+    setup[0] = new TaskInProgress(jobId, jobFile, splits[0], jobtracker, conf, this, numMapTasks + 1);
+    setup[0].setSetupTask();
+    // setup reduce tip.
+    setup[1] = new TaskInProgress(jobId, jobFile, numMapTasks, numReduceTasks + 1, jobtracker, conf, this);
+    setup[1].setSetupTask();
+    synchronized (jobInitKillStatus) {
+        jobInitKillStatus.initDone = true;
+        if (jobInitKillStatus.killed) {
+            // setup not launched so directly terminate
+            terminateJob(JobStatus.KILLED);
+            return;
+        }
+    }
+    tasksInited.set(true);
+    JobHistory.JobInfo.logInited(profile.getJobID(), this.launchTime, numMapTasks, numReduceTasks);
+}

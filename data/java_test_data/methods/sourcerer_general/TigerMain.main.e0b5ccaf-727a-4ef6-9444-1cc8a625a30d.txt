@@ -1,0 +1,147 @@
+public static void main(String[] argv) {
+    try {
+        String filename = argv[0];
+        /*
+	       * - To check out only the lexer, uncomment this part and comment the rest 
+	      java.io.InputStream inp = new java.io.FileInputStream(filename);
+	      Lexer lexer = new Lexer(inp);
+	      java_cup.runtime.Symbol tok;
+	
+	      do { 
+	         tok = lexer.next_token();
+	         System.out.println(TigerSym.getTokenDesription(tok.sym) + " " + 
+	        		 lexer.yytext() + " " + tok.left);
+	      } 
+	      while (tok.sym != TigerSym.EOF);
+	
+	      inp.close();
+	      ************ end lexer test
+	      */
+        /* - To check out only the parser, uncomment this part and comment the rest
+    	  TigerParser tp = new TigerParser(new Lexer(new FileReader(filename)));
+    	  Object result = tp.parse().value;
+    	  
+    	  System.out.println("Object = " + result);
+    	  // ************ end parser test
+    	   * */
+        // - To check out only the semantic analysis, uncomment this part and comment the rest
+        System.out.println("File: " + filename);
+        // Generate name of the output file
+        File inFile = new File(filename);
+        String folderStr = inFile.getParentFile().getAbsolutePath();
+        String inFileName = inFile.getName();
+        int periodPos = inFileName.indexOf(".");
+        String outFileNameInterim = // Name and path of the output file
+        folderStr + File.separator + inFileName.substring(0, periodPos) + // for intermediate result
+        "_intrm.s";
+        String outFileName = // Name and path of the output file
+        folderStr + File.separator + inFileName.substring(0, periodPos) + // for final code after register allocation
+        ".s";
+        File outFile = new File(outFileNameInterim);
+        // Lexical analysis and parsing
+        TigerParser tp = new TigerParser(new Lexer(new FileReader(filename)));
+        Object result = tp.parse().value;
+        // Semantic analysis
+        System.out.println("Completed generating abstract syntax tree");
+        SemanticAnalyzer semantAnalyzer = new SemanticAnalyzer();
+        Vector functionLevels = semantAnalyzer.translateAbstractTree((Absyn) result);
+        ErrorHandler errorHandler = ErrorHandler.getInstance();
+        errorHandler.displayResult();
+        // Intermediate code generation
+        Debug debug = new Debug();
+        TigerMain tigerMain = new TigerMain();
+        if (errorHandler.getNumErrors() != 0)
+            return;
+        // No errors in semantic analysis; continue with intermediate code generation
+        // for each function
+        Vector intermediateCodeListing = new Vector();
+        Vector finalCodeListing = new Vector();
+        boolean compiledSuccessfully = true;
+        int numFuncs = functionLevels.size();
+        HashMap fNameVsNumRegsUsed = new HashMap();
+        Vector commonData = new Vector();
+        for (int i = 0; i < numFuncs; i++) {
+            Level fLevel = (Level) functionLevels.elementAt(i);
+            String functionName = fLevel.getLevelName().toString();
+            if (fLevel != null) {
+                AssemType body = fLevel.getFunctionBody();
+                if (body != null) {
+                    System.out.println("FUNCTION:");
+                    debug.printAssem(body);
+                    Linearizer linearizer = tigerMain.processWithLinearizer(debug, body, fLevel.getLevelName());
+                    // Generate intermediate code
+                    CodeGenerator codeGenerator = new CodeGenerator();
+                    codeGenerator.generateCode(linearizer.getTrace());
+                    // codeGenerator.generateCode(traced);
+                    Vector instList = codeGenerator.getInstructionsList();
+                    intermediateCodeListing.addAll(instList);
+                    writeInstructionsToFile(outFile, intermediateCodeListing);
+                    // Create a control flow graph from the instructions created above
+                    /*
+	        		  System.out.println("CONTROL FLOW GRAPH:");
+	        		  ControlFlowGraph flowGraph = new ControlFlowGraph(instList);
+	        		  flowGraph.show(System.out);
+	        		  System.out.println("Number of temporaries =  " + flowGraph.getNumTemps());
+	        		  flowGraph.showTemps();
+	        		  */
+                    // Optimization phase
+                    ControlFlowGraph flowGraph = new ControlFlowGraph(instList, false);
+                    OptimizationContext optimizationContext = new OptimizationContext(flowGraph);
+                    optimizationContext.setSSAMethod();
+                    flowGraph = optimizationContext.getOptimizedFlowGraph();
+                    System.out.println("%%%%%%%%%%%CONTROL FLOW GRAPH AFTER INSERTION OF PHI FUNCTIONS: ");
+                    flowGraph.displayFlowGraph();
+                    instList = flowGraph.getQuadruples();
+                    // Create a flow graph with one instruction in each node to facilitate
+                    // the construction of an interference graph
+                    flowGraph = new ControlFlowGraph(instList, true);
+                    flowGraph.display();
+                    // Create the interference graph
+                    InterferenceGraph ig = new InterferenceGraph(flowGraph);
+                    System.out.println("LIVENESS INFORMATION:");
+                    ig.showLiveInAndLiveOut();
+                    System.out.println("INTERFERENCE GRAPH:");
+                    ig.showInterferenceGraph();
+                    ig.showMoveRelatedNodes();
+                    // Do register allocation
+                    RegisterAllocator registerAllocator = new RegisterAllocator(ig, instList, ActivationFrame.getColors(ActivationFrame.MIPS));
+                    Vector functionBodyCode = registerAllocator.getOutputInstructionList();
+                    // Create the final code for the function by building the pre-call, post-call,
+                    // prologue and epilogue code
+                    functionBodyCode = registerAllocator.getOutputInstructionList();
+                    if (functionBodyCode != null) {
+                        int numRegistersUsed = registerAllocator.getNumRegistersUsed();
+                        fNameVsNumRegsUsed.put(functionName, "" + numRegistersUsed);
+                        AssemblyConstructor assemblyConstructor = new AssemblyConstructor(numRegistersUsed, fLevel, functionBodyCode, fNameVsNumRegsUsed);
+                        Vector functionCode = assemblyConstructor.createCodeForFunction();
+                        commonData.addAll(fLevel.dataDeclarations());
+                        finalCodeListing.addAll(0, functionCode);
+                    } else {
+                        System.out.println("Warning - Actual spilling not yet implemented");
+                        compiledSuccessfully = false;
+                        break;
+                    }
+                }
+            }
+        }
+        System.out.println("Generating intermediate linear code to file: " + outFile.getAbsolutePath());
+        writeInstructionsToFile(outFile, intermediateCodeListing);
+        if (compiledSuccessfully) {
+            // Add the directives if any
+            AssemblySegments assemblySegments = new AssemblySegments();
+            Vector preTextDirectives = assemblySegments.getPreTextDirectives();
+            Vector postTextDirectives = assemblySegments.getPostTextDirectives();
+            Vector dataDirectives = assemblySegments.getDataDirectives();
+            finalCodeListing.addAll(0, preTextDirectives);
+            finalCodeListing.addAll(postTextDirectives);
+            finalCodeListing.addAll(dataDirectives);
+            finalCodeListing.addAll(commonData);
+            outFile = new File(outFileName);
+            System.out.println("Generating output assembly code to file: " + outFile.getAbsolutePath());
+            writeFinalInstructionStringsToFile(outFile, finalCodeListing);
+            System.out.println("Compilation successfully completed.");
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+}

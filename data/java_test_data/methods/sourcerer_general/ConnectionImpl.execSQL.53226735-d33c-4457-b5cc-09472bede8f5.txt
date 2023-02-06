@@ -1,0 +1,68 @@
+public ResultSetInternalMethods execSQL(StatementImpl callingStatement, String sql, int maxRows, Buffer packet, int resultSetType, int resultSetConcurrency, boolean streamResults, String catalog, Field[] cachedMetadata, boolean isBatch) throws SQLException {
+    // 
+    synchronized (this.mutex) {
+        long queryStartTime = 0;
+        int endOfQueryPacketPosition = 0;
+        if (packet != null) {
+            endOfQueryPacketPosition = packet.getPosition();
+        }
+        if (getGatherPerformanceMetrics()) {
+            queryStartTime = System.currentTimeMillis();
+        }
+        // we're busy!
+        this.lastQueryFinishedTime = 0;
+        if ((getHighAvailability()) && (this.autoCommit || getAutoReconnectForPools()) && this.needsPing && !isBatch) {
+            try {
+                pingInternal(false, 0);
+                this.needsPing = false;
+            } catch (Exception Ex) {
+                createNewIO(true);
+            }
+        }
+        try {
+            if (packet == null) {
+                String encoding = null;
+                if (getUseUnicode()) {
+                    encoding = getEncoding();
+                }
+                return this.io.sqlQueryDirect(callingStatement, sql, encoding, null, maxRows, resultSetType, resultSetConcurrency, streamResults, catalog, cachedMetadata);
+            }
+            return this.io.sqlQueryDirect(callingStatement, null, null, packet, maxRows, resultSetType, resultSetConcurrency, streamResults, catalog, cachedMetadata);
+        } catch (java.sql.SQLException sqlE) {
+            if (getDumpQueriesOnException()) {
+                String extractedSql = extractSqlFromPacket(sql, packet, endOfQueryPacketPosition);
+                StringBuffer messageBuf = new StringBuffer(extractedSql.length() + 32);
+                messageBuf.append("\n\nQuery being executed when exception was thrown:\n");
+                messageBuf.append(extractedSql);
+                messageBuf.append("\n\n");
+                sqlE = appendMessageToException(sqlE, messageBuf.toString(), getExceptionInterceptor());
+            }
+            if ((getHighAvailability())) {
+                this.needsPing = true;
+            } else {
+                String sqlState = sqlE.getSQLState();
+                if ((sqlState != null) && sqlState.equals(SQLError.SQL_STATE_COMMUNICATION_LINK_FAILURE)) {
+                    cleanup(sqlE);
+                }
+            }
+            throw sqlE;
+        } catch (Exception ex) {
+            if (getHighAvailability()) {
+                this.needsPing = true;
+            } else if (ex instanceof IOException) {
+                cleanup(ex);
+            }
+            SQLException sqlEx = SQLError.createSQLException(Messages.getString("Connection.UnexpectedException"), SQLError.SQL_STATE_GENERAL_ERROR, getExceptionInterceptor());
+            sqlEx.initCause(ex);
+            throw sqlEx;
+        } finally {
+            if (getMaintainTimeStats()) {
+                this.lastQueryFinishedTime = System.currentTimeMillis();
+            }
+            if (getGatherPerformanceMetrics()) {
+                long queryTime = System.currentTimeMillis() - queryStartTime;
+                registerQueryExecutionTime(queryTime);
+            }
+        }
+    }
+}

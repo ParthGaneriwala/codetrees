@@ -1,0 +1,104 @@
+public void sendSubscribe(String localURL, String buddyURI, boolean EXPIRED) {
+    try {
+        DebugIM.println();
+        DebugIM.println("Sending SUBSCRIBE in progress to the buddy: " + buddyURI);
+        int proxyPort = imUA.getProxyPort();
+        String proxyAddress = imUA.getProxyAddress();
+        String imProtocol = imUA.getIMProtocol();
+        SipStack sipStack = imUA.getSipStack();
+        SipProvider sipProvider = imUA.getSipProvider();
+        MessageFactory messageFactory = imUA.getMessageFactory();
+        HeaderFactory headerFactory = imUA.getHeaderFactory();
+        AddressFactory addressFactory = imUA.getAddressFactory();
+        // Request-URI:
+        // URI requestURI=addressFactory.createURI(buddyURI);
+        SipURI requestURI = addressFactory.createSipURI(null, proxyAddress);
+        requestURI.setPort(proxyPort);
+        requestURI.setTransportParam(imProtocol);
+        // Call-Id:
+        CallIdHeader callIdHeader = null;
+        // CSeq:
+        CSeqHeader cseqHeader = null;
+        // To header:
+        ToHeader toHeader = null;
+        // From Header:
+        FromHeader fromHeader = null;
+        // Via header
+        String branchId = Utils.generateBranchId();
+        ViaHeader viaHeader = headerFactory.createViaHeader(imUA.getIMAddress(), imUA.getIMPort(), imProtocol, branchId);
+        Vector viaList = new Vector();
+        viaList.addElement(viaHeader);
+        PresenceManager presenceManager = imUA.getPresenceManager();
+        Presentity presentity = presenceManager.getPresentity(buddyURI);
+        Dialog dialog = null;
+        if (presentity != null)
+            dialog = presentity.getDialog();
+        if (dialog != null) {
+            // We have to remove the subscriber and the Presentity related
+            // with this Buddy...
+            presenceManager.removePresentity(buddyURI);
+            Subscriber subscriber = presenceManager.getSubscriber(buddyURI);
+            if (subscriber == null) {
+            // It means that the guy does not have us in his buddy list
+            // nothing to do!!!
+            } else {
+                presenceManager.removeSubscriber(buddyURI);
+            }
+            Address localAddress = dialog.getLocalParty();
+            Address remoteAddress = dialog.getRemoteParty();
+            fromHeader = headerFactory.createFromHeader(localAddress, dialog.getLocalTag());
+            toHeader = headerFactory.createToHeader(remoteAddress, dialog.getRemoteTag());
+            int cseq = dialog.getLocalSequenceNumber();
+            cseqHeader = headerFactory.createCSeqHeader(cseq, "MESSAGE");
+            callIdHeader = dialog.getCallId();
+        } else {
+            System.out.println("�����ڻỰ");
+            String localTag = Utils.generateTag();
+            Address toAddress = addressFactory.createAddress(buddyURI);
+            Address fromAddress = addressFactory.createAddress(localURL);
+            fromHeader = headerFactory.createFromHeader(fromAddress, localTag);
+            toHeader = headerFactory.createToHeader(toAddress, null);
+            // CSeq:
+            cseqHeader = headerFactory.createCSeqHeader(1, "SUBSCRIBE");
+            callIdCounter++;
+            // Call-ID:
+            callIdHeader = (CallIdHeader) headerFactory.createCallIdHeader("nist-sip-im-subscribe-callId" + callIdCounter);
+        }
+        // MaxForwards header:
+        MaxForwardsHeader maxForwardsHeader = headerFactory.createMaxForwardsHeader(70);
+        Request request = messageFactory.createRequest(requestURI, "SUBSCRIBE", callIdHeader, cseqHeader, fromHeader, toHeader, viaList, maxForwardsHeader);
+        // Contact header:
+        SipURI sipURI = addressFactory.createSipURI(null, imUA.getIMAddress());
+        sipURI.setPort(imUA.getIMPort());
+        sipURI.setTransportParam(imUA.getIMProtocol());
+        Address contactAddress = addressFactory.createAddress(sipURI);
+        ContactHeader contactHeader = headerFactory.createContactHeader(contactAddress);
+        request.setHeader(contactHeader);
+        ExpiresHeader expiresHeader = null;
+        if (EXPIRED) {
+            expiresHeader = headerFactory.createExpiresHeader(0);
+        } else {
+            expiresHeader = headerFactory.createExpiresHeader(presenceManager.getExpiresTime());
+        }
+        request.setHeader(expiresHeader);
+        // WE have to add a new Header: "Event"
+        Header eventHeader = headerFactory.createHeader("Event", "presence");
+        request.setHeader(eventHeader);
+        // Add Acceptw Header
+        Header acceptHeader = headerFactory.createHeader("Accept", "application/pidf+xml");
+        request.setHeader(acceptHeader);
+        // ProxyAuthorization header if not null:
+        ProxyAuthorizationHeader proxyAuthHeader = imUA.getProxyAuthorizationHeader();
+        if (proxyAuthHeader != null)
+            request.setHeader(proxyAuthHeader);
+        ClientTransaction clientTransaction = sipProvider.getNewClientTransaction(request);
+        if (dialog != null) {
+            dialog.sendRequest(clientTransaction);
+        } else {
+            clientTransaction.sendRequest();
+        }
+        DebugIM.println("IMSubscribeProcessing, sendSubscribe(), SUBSCRIBE sent:\n" + request);
+    } catch (Exception ex) {
+        ex.printStackTrace();
+    }
+}

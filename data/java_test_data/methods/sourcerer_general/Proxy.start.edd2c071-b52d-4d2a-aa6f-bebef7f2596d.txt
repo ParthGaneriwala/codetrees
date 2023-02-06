@@ -1,0 +1,142 @@
+/**
+ * ************************************************************************
+ * Methods for *************** * starting and stopping the proxy *
+ * ************************************************************************
+ */
+public void start() throws Exception {
+    logger.setLevel(Level.INFO);
+    logger.info("����������");
+    // System.out.println("����������");
+    if (configuration != null && configuration.isValidConfiguration()) {
+        Properties properties = new Properties();
+        // LOGGING property:
+        logger.info("�����ļ���֤�ɹ�");
+        if (configuration.enableDebug) {
+            logger.addAppender(new FileAppender(new SimpleLayout(), configuration.debugLogFile));
+            logger.debug("DEBUG properties set!");
+            // The debug log file.
+            if (configuration.debugLogFile != null) {
+                properties.setProperty("gov.nist.javax.sip.DEBUG_LOG", configuration.debugLogFile);
+            }
+            // The server log file
+            if (configuration.serverLogFile != null)
+                properties.setProperty("gov.nist.javax.sip.SERVER_LOG", configuration.serverLogFile);
+            if (configuration.debugLogFile != null)
+                properties.setProperty("gov.nist.javax.sip.TRACE_LEVEL", "32");
+            else if (configuration.serverLogFile != null)
+                properties.setProperty("gov.nist.javax.sip.TRACE_LEVEL", "16");
+            else
+                properties.setProperty("gov.nist.javax.sip.TRACE_LEVEL", "0");
+        } else {
+            logger.info("DEBUG properties not set!");
+        }
+        registrar.setExpiresTime(configuration.expiresTime);
+        logger.info("���ù���ʱ�䣬������ɹ���");
+        // STOP TIME
+        if (configuration.stopTime != null) {
+            try {
+                long stopTime = Long.parseLong(configuration.stopTime);
+                StopProxy stopProxy = new StopProxy(this);
+                Timer timer = new Timer();
+                timer.schedule(stopProxy, stopTime);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+        // ���÷�����������ip��ַ����Ϣ
+        logger.info("���÷�����������ip��ַ����Ϣ");
+        sipStack = null;
+        SipFactory sipFactory = SipFactory.getInstance();
+        // doamin name
+        sipFactory.setPathName("gov.nist");
+        headerFactory = sipFactory.createHeaderFactory();
+        addressFactory = sipFactory.createAddressFactory();
+        messageFactory = sipFactory.createMessageFactory();
+        // We have to add the IP address of the proxy for the domain:
+        configuration.domainList.addElement(configuration.stackIPAddress);
+        logger.debug("The proxy is responsible for the domain:" + // ����stackipaddress��127.0.0.1
+        configuration.stackIPAddress);
+        properties.setProperty("javax.sip.STACK_NAME", configuration.stackName);
+        properties.setProperty("javax.sip.IP_ADDRESS", configuration.stackIPAddress);
+        // Proxy does not get automatic dialog support.
+        properties.setProperty("javax.sip.AUTOMATIC_DIALOG_SUPPORT", "off");
+        // ���l����
+        if (configuration.check(configuration.maxConnections))
+            properties.setProperty("gov.nist.javax.sip.MAX_CONNECTIONS", configuration.maxConnections);
+        // �̳߳ش�С
+        if (configuration.check(configuration.threadPoolSize))
+            properties.setProperty("gov.nist.javax.sip.THREAD_POOL_SIZE", configuration.threadPoolSize);
+        if (configuration.domainList != null) {
+            for (int j = 0; j < configuration.domainList.size(); j++) {
+                String domain = (String) configuration.domainList.elementAt(j);
+                logger.debug("Here is one domain to take care of:" + domain);
+            }
+        } else
+            logger.debug("No domain to take care of...");
+        // Allows you to acces the proxy log file via RMI
+        if (configuration.accessLogViaRMI) {
+            properties.setProperty("gov.nist.javax.sip.ACCESS_LOG_VIA_RMI", "true");
+            properties.setProperty("gov.nist.javax.sip.RMI_PORT", configuration.logRMIPort);
+            if (configuration.check(configuration.logLifetime))
+                properties.setProperty("gov.nist.javax.sip.LOG_LIFETIME", configuration.logLifetime);
+        }
+        // ����sipЭ��ջ
+        logger.info("����sipЭ��ջ,���properties");
+        sipStack = sipFactory.createSipStack(properties);
+        logger.info(sipStack.getIPAddress());
+        // Authentication part:��֤����
+        if (configuration.enableAuthentication) {
+            authentication = new Authentication(this);
+            try {
+                Class authMethodClass = Class.forName(configuration.classFile);
+                AuthenticationMethod authMethod = (AuthenticationMethod) authMethodClass.newInstance();
+                authMethod.initialize(configuration.passwordsFile);
+                authentication.setAuthenticationMethod(authMethod);
+            } catch (Exception e) {
+                logger.error("ERROR, authentication process stopped, exception raised:", e);
+                e.printStackTrace();
+            }
+        }
+        // We create the Listening points:
+        logger.info("���������");
+        Vector lps = configuration.getListeningPoints();
+        for (int i = 0; lps != null && i < lps.size(); i++) {
+            Association a = (Association) lps.elementAt(i);
+            try {
+                logger.info("transport  " + a.transport);
+                logger.info("port  " + Integer.valueOf(a.port).intValue());
+                ListeningPoint lp = sipStack.createListeningPoint(configuration.stackIPAddress, Integer.valueOf(a.port).intValue(), a.transport);
+                this.listeningPoints.add(lp);
+                SipProvider sipProvider = sipStack.createSipProvider(lp);
+                if (this.defaultProvider == null)
+                    this.defaultProvider = sipProvider;
+                sipProvider.addSipListener(this);
+            } catch (Exception e) {
+                e.printStackTrace();
+                logger.error("ERROR: listening point not created ", e);
+            }
+        }
+        // Export the registry for polling by the responder.
+        if (configuration.exportRegistry) {
+            // initialize the registrar for RMI.
+            this.registrar.initRMIBindings();
+        }
+        // Parse������ static configuration for registrar.
+        if (configuration.enableRegistrations) {
+            String value = configuration.registrationsFile;
+            logger.debug("Parsing the XML registrations file: " + value);
+            if (value == null || value.trim().equals("")) {
+                // ����ļ���Ϊ�ջ���ֻ�ǡ��ո�
+                logger.debug("You have to set the registrations file...");
+            } else {
+                registrar.parseXMLregistrations(value);
+            }
+        } else
+            logger.warn("No registrations to parse...");
+        // Register to proxies(�����������) if any:
+        logger.debug("Register to proxies(�����������) if any:");
+        registrar.registerToProxies();
+    } else {
+        logger.info("ERROR: the configuration file is not correct!" + " Correct the errors first.");
+    }
+}

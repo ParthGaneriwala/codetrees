@@ -1,0 +1,99 @@
+private List<DigestFragment> complexDigestion(Protein inProtein, DigestSettings inSettings) {
+    // Initially disable limits when finding fragments.
+    // We'll apply the desired settings after all the fragments have been linked up.
+    DigestSettings settingsWithoutLimits = inSettings.clone();
+    settingsWithoutLimits.setMinFragmentLength(null);
+    settingsWithoutLimits.setMaxFragmentLength(null);
+    settingsWithoutLimits.setMinFragmentMass(null);
+    settingsWithoutLimits.setMaxFragmentMass(null);
+    List<DigestFragment> rawFrags = simpleDigestion(inProtein, settingsWithoutLimits);
+    // For ea. x-link, bind it to the combinations of raw fragments
+    for (ProteinXLink xlink : inProtein.getXLinks()) {
+        List<DigestFragment> donorFrags = new ArrayList<DigestFragment>();
+        List<DigestFragment> acceptorFrags = new ArrayList<DigestFragment>();
+        Set<DigestFragment> fragsToAdd = new HashSet<DigestFragment>();
+        Set<DigestFragment> fragsToRemove = new HashSet<DigestFragment>();
+        for (DigestFragment frag : rawFrags) {
+            DigestFragment donorChain = null;
+            if (CollectionUtil.hasValues(frag.getChains())) {
+                donorChain = (DigestFragment) frag.getChain(xlink.getDonorChainId());
+            } else if (xlink.getDonorChainId().equals(frag.getID())) {
+                donorChain = frag;
+            }
+            boolean hasDonorSite = false;
+            if (donorChain != null && xlink.getDonorPosition() >= donorChain.getBegin() && xlink.getDonorPosition() <= donorChain.getEnd()) {
+                // Donor site is within this frag.
+                hasDonorSite = true;
+            }
+            DigestFragment acceptorChain = null;
+            if (CollectionUtil.hasValues(frag.getChains())) {
+                acceptorChain = (DigestFragment) frag.getChain(xlink.getAcceptorChainId());
+            } else if (xlink.getAcceptorChainId().equals(frag.getID())) {
+                acceptorChain = frag;
+            }
+            boolean hasAcceptorSite = false;
+            if (acceptorChain != null && xlink.getAcceptorPosition() >= acceptorChain.getBegin() && xlink.getAcceptorPosition() <= acceptorChain.getEnd()) {
+                // Acceptor site is within this frag.
+                hasAcceptorSite = true;
+            }
+            if (hasDonorSite && hasAcceptorSite) {
+                DigestFragment linkedFrag;
+                if (CollectionUtil.hasValues(frag.getChains())) {
+                    linkedFrag = frag;
+                } else {
+                    linkedFrag = new DigestFragment();
+                    linkedFrag.addChain(frag.clone());
+                    // Add it back to the pool
+                    fragsToAdd.add(linkedFrag);
+                    fragsToRemove.add(frag);
+                }
+                linkedFrag.addXLink(xlink);
+            } else {
+                if (hasDonorSite)
+                    donorFrags.add(frag);
+                if (hasAcceptorSite)
+                    acceptorFrags.add(frag);
+            }
+        }
+        // Link the donors & acceptors in all possible combinations
+        for (DigestFragment donorFrag : donorFrags) {
+            for (DigestFragment acceptorFrag : acceptorFrags) {
+                DigestFragment linkedFrag;
+                if (CollectionUtil.hasValues(donorFrag.getChains())) {
+                    linkedFrag = (DigestFragment) donorFrag.clone();
+                } else {
+                    linkedFrag = new DigestFragment();
+                    linkedFrag.addChain(donorFrag.clone());
+                }
+                // Add the acceptor chain (if it isn't already present)
+                Protein acceptorChain = linkedFrag.getChain(xlink.getAcceptorChainId());
+                if (null == acceptorChain) {
+                    linkedFrag.addChain(acceptorFrag.clone());
+                }
+                linkedFrag.addXLink(xlink);
+                // Add it back to the pool
+                rawFrags.add(linkedFrag);
+            }
+        }
+        // Now remove the raw frags that were linked.
+        for (DigestFragment donorFrag : donorFrags) {
+            rawFrags.remove(donorFrag);
+        }
+        for (DigestFragment acceptorFrag : acceptorFrags) {
+            rawFrags.remove(acceptorFrag);
+        }
+        for (DigestFragment frag : fragsToRemove) {
+            rawFrags.remove(frag);
+        }
+        for (DigestFragment frag : fragsToAdd) {
+            rawFrags.add(frag);
+        }
+    }
+    // Apply the DigestSettings limits.
+    for (int i = 0; i < rawFrags.size(); i++) {
+        if (!inSettings.meetsCriteria(rawFrags.get(i))) {
+            rawFrags.remove(i--);
+        }
+    }
+    return rawFrags;
+}

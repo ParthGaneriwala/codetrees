@@ -1,0 +1,57 @@
+public static synchronized boolean delete(Connection db, ProjectRating projectRating) throws SQLException {
+    if (projectRating.getId() == -1) {
+        throw new SQLException("ID was not specified");
+    }
+    int deleteCount = 0;
+    boolean commit = db.getAutoCommit();
+    try {
+        if (commit) {
+            db.setAutoCommit(false);
+        }
+        Rating.delete(db, projectRating.getId(), TABLE, PRIMARY_KEY);
+        // Get the project's rating
+        int ratingCount = Rating.queryObjectRatingCount(db, projectRating.getProjectId(), Project.TABLE, Project.PRIMARY_KEY);
+        // Get the user's rating
+        int thisRating = Rating.queryUserRating(db, projectRating.getEnteredBy(), projectRating.getProjectId(), Project.TABLE, Project.PRIMARY_KEY);
+        // Delete the actual project rating
+        PreparedStatement pst = db.prepareStatement("DELETE FROM projects_rating " + "WHERE rating_id = ? ");
+        pst.setInt(1, projectRating.getId());
+        deleteCount = pst.executeUpdate();
+        pst.close();
+        if (deleteCount > 0) {
+            // Update the parent table's rating information
+            // NOTE: make sure not to divide by 0
+            pst = db.prepareStatement("UPDATE projects " + "SET rating_count = rating_count - ?, rating_value = rating_value - ?, " + (ratingCount > 1 ? "rating_avg = ((rating_value - ?) / (rating_count - ?)) " : "rating_avg = 0 ") + "WHERE project_id = ? ");
+            int i = 0;
+            pst.setInt(++i, 1);
+            pst.setInt(++i, thisRating);
+            if (ratingCount > 1) {
+                pst.setInt(++i, thisRating);
+                pst.setInt(++i, 1);
+            }
+            pst.setInt(++i, projectRating.getProjectId());
+            pst.execute();
+            pst.close();
+        }
+        if (commit) {
+            db.commit();
+        }
+        CacheUtils.invalidateValue(Constants.SYSTEM_PROJECT_CACHE, projectRating.getProjectId());
+    } catch (Exception e) {
+        if (commit) {
+            db.rollback();
+        }
+        e.printStackTrace(System.out);
+        throw new SQLException(e.getMessage());
+    } finally {
+        if (commit) {
+            db.setAutoCommit(true);
+        }
+    }
+    if (deleteCount == 0) {
+        projectRating.getErrors().put("actionError", "Project Rating could not be deleted because it no longer exists.");
+        return false;
+    } else {
+        return true;
+    }
+}

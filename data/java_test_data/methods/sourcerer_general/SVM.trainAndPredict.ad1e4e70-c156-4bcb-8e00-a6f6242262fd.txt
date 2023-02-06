@@ -1,0 +1,74 @@
+// Run mode #2: train and predict, no optimization (use the parameters
+public void trainAndPredict(Properties cfg) {
+    String[] gammas = cfg.getProperty(KEY_GAMMA).split(";");
+    String[] wreqs = cfg.getProperty(KEY_WREQ).split(";");
+    String[] wexcs = cfg.getProperty(KEY_WEXC).split(";");
+    this.gamma = Double.valueOf(gammas[0]);
+    this.reqWeight = Integer.valueOf(wreqs[0]);
+    this.excWeight = Integer.valueOf(wexcs[0]);
+    int numDisplayResult = Integer.valueOf(cfg.getProperty(KEY_TEST_RESULT));
+    int testMode = Integer.valueOf(cfg.getProperty(KEY_TEST_MODE));
+    int again = 0;
+    do {
+        List<Model> trainFMs = getFMs(cfg, KEY_TRAIN_FM);
+        List<Model> testFMs = getFMs(cfg, KEY_TEST_FM);
+        this.dumpTrainingSet(trainFMs, testFMs);
+        List<FeaturePair> testPairs = this.dumpTestSet(testFMs, testMode);
+        this.predict();
+        int pairIndex = 0;
+        try {
+            logger.info("\nPrediction checking begin.");
+            // Open the prediction result file and display results.
+            BufferedReader result = new BufferedReader(new FileReader(SVM.PREDICT_RESULT_FILE));
+            String s;
+            int numCorrect = 0, numPrediction = 0;
+            while (numPrediction < numDisplayResult && (s = result.readLine()) != null) {
+                int label = Float.valueOf(s).intValue();
+                FeaturePair cur = testPairs.get(pairIndex++);
+                if (label != cur.getLabel()) {
+                    // If this label is different from the original one, it is
+                    // a prediction needed checking.
+                    numPrediction++;
+                    // Print the prediction to user
+                    System.out.print("\n" + cur.getPairInfo());
+                    System.out.println("-->Prediction is: " + (label == FeaturePair.EXCLUDE ? "EXCLUDE" : (label == FeaturePair.REQUIRE ? "REQUIRE" : "NOT_CONSTRAINED")));
+                    System.out.print("Input your answer (" + NO_CONSTRAINT + " = Not-constrained, " + REQUIRES + " = Requires, " + REQUIRED_BY + " = Required_by, " + MUTUAL_REQUIRE + " = Mutual_require, " + EXCLUDE + " = Exclude): ");
+                    // Get answer from user
+                    Scanner scanner = new Scanner(System.in);
+                    int answer = scanner.nextInt();
+                    int type = 0;
+                    if (answer == NO_CONSTRAINT) {
+                        type = FeaturePair.NO_CONSTRAINT;
+                    } else if (answer == EXCLUDE) {
+                        type = FeaturePair.EXCLUDE;
+                    } else {
+                        type = FeaturePair.REQUIRE;
+                    }
+                    cur.setLabel(type);
+                    if (type == label) {
+                        numCorrect++;
+                    }
+                    // we need to apply the answer to the test FM
+                    if (type != cur.getLabel()) {
+                        if (type == FeaturePair.EXCLUDE || type == FeaturePair.REQUIRE) {
+                            persistConstraint(cur, answer);
+                            System.out.println("The constraint has been added to the test FM.");
+                        } else if (type == FeaturePair.NO_CONSTRAINT) {
+                            removeConstraint(cur);
+                            System.out.println("The constraint has been removed from the test FM.");
+                        }
+                    }
+                }
+            }
+            logger.info("\nPrediction checking end." + "\nAccuracy = " + (100.0f * numCorrect / numPrediction) + "% (" + numCorrect + "/" + numPrediction + ")");
+            result.close();
+        } catch (FileNotFoundException e) {
+            logger.warn("Cannot open prediction file.", e);
+        } catch (IOException e) {
+            logger.warn("Cannot read prediction file.", e);
+        }
+        System.out.print("\nPrediction end. Do it again? (0 = NO, 1 = YES):");
+        Scanner scanner = new Scanner(System.in);
+        again = scanner.nextInt();
+    } while (again == 1);
+}

@@ -1,0 +1,88 @@
+public static List<Protein> enumVariety(Protein protein, Boolean mode, boolean simple, Double factor) {
+    List<Protein> isoforms = new ArrayList<Protein>();
+    Peptide p = new Peptide();
+    if (factor == null)
+        factor = 25d;
+    // merge the addons
+    copyProperties(p, protein);
+    for (int i = 0; i < protein.getChains().size(); i++) {
+        Peptide chain = protein.getChain(i);
+        p.setName(p.getName() + (i > 0 ? "/" + protein.getName() : ""));
+        for (int j = 0; j < chain.getAddOns().size(); j++) // tempory tags
+        p.addAddon(chain.getAddOn(j).clone()).setLocation(i).setUpTo(j);
+    }
+    Collections.sort(p.getAddOns(), ModifierSet.SORT_SIZE_ASC);
+    int start_2 = -1;
+    String invariants = "";
+    for (int i = 0; i < p.getAddOns().size(); i++) {
+        if (p.getAddOn(i).getModifiers().size() > 1) {
+            start_2 = i;
+            break;
+        }
+        Modifier mod = p.getAddOn(i).getModifiers().get(0);
+        p.increMasses(mod);
+        if (mod.getSymbol() != Util.NULL)
+            invariants += "^" + mod.getSymbol();
+    }
+    // update the protein masses
+    if (start_2 == -1) {
+        protein.increMasses(p);
+        isoforms.add(protein);
+        if (simple == false)
+            calcProperties(protein, simple);
+        protein.setMasses(p);
+        return isoforms;
+    }
+    if (start_2 == p.getAddOns().size() - 1) {
+        // only one modifier set, simple enumeration
+        float tmp = 0f;
+        isoforms.clear();
+        for (Modifier mod : p.getAddOn(start_2).getModifiers()) {
+            Protein cloned = protein.clone();
+            // not pointer, the members will be changed
+            isoforms.add(cloned);
+            // Modifier mod = p.getAddOn(start_2).getModifier(i);
+            cloned.setName(!mod.getSymbol().equals(Util.NULL) ? "^" + mod.getSymbol() : "Invariant");
+            cloned.setAbundance(mod.getOccupancy() - tmp);
+            tmp = mod.getOccupancy();
+            cloned.getChain(p.getAddOn(start_2).getLocation()).getAddOn(p.getAddOn(start_2).getUpTo()).setModifier(mod);
+            enumVariety(cloned, false, simple, factor);
+        // copyProperties(cloned);
+        }
+    } else if (mode != null) {
+        for (ModifierSet mods : p.getAddOns()) {
+            ModifierSet m = protein.getAddOn(mods.getLocation(), mods.getUpTo());
+            if (m != null)
+                mods.setLocation(m.getLocation()).setUpTo(m.getUpTo());
+        }
+        // start the monte-carlo simulation
+        if (mode)
+            return simulatePeptideIsoforms(p, protein, start_2, p.getAddOns().size(), factor);
+        else {
+            protein.setMasses(p);
+            isoforms.add(protein);
+            // calcProperties(protein, false);
+            // TheConsole.print("the most abundance modifier");
+            double _curr, _occ, _max;
+            for (int i = start_2; i < p.getAddOns().size(); i++) {
+                _curr = 0;
+                _max = 0;
+                Modifier pick = null;
+                for (Modifier mod : p.getAddOn(i).getModifiers()) {
+                    _occ = mod.getOccupancy() - _curr;
+                    if (_occ > _max) {
+                        _max = _occ;
+                        pick = mod;
+                    }
+                    _curr = mod.getOccupancy();
+                }
+                protein.increMasses(pick);
+                if (!pick.getSymbol().equals(Util.NULL))
+                    invariants += "^" + pick.getSymbol();
+            // TheConsole.print(p.addons[i].loc + ", " + _pick + ", " + p.addons[i].modifiers[_pick].symbol);
+            }
+            protein.setName(formatIsoformName(p.getName() + invariants, "^"));
+        }
+    }
+    return isoforms;
+}

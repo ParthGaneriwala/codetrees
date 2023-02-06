@@ -1,0 +1,62 @@
+protected void updateInput(float elapsed) {
+    // make sure we have our target
+    ActorSprite targetSprite = _tsview.getControlledSprite();
+    if (targetSprite == null) {
+        return;
+    }
+    // if the mouse is over the input window, update the rotation/direction
+    float rotation = _lastRotation, direction = _lastDirection;
+    Sprite nhsprite = null;
+    // update the direction if hovered
+    if (inputWindowHovered() && targetSprite == _tsview.getTargetSprite()) {
+        // get the pick ray
+        Root root = _tctx.getRoot();
+        _tctx.getCompositor().getCamera().getPickRay(root.getMouseX(), root.getMouseY(), _pick);
+        // see if it intersects anything in the scene
+        nhsprite = (_holdHover && (_hsprite == null || _hsprite.isClickable())) ? _hsprite : findHoverSprite(_pick);
+        // find the camera target plane
+        Vector3f target = _tsview.getCameraHandler().getTarget();
+        _tplane.set(Vector3f.UNIT_Z, -target.z);
+        // determine where they intersect and use that to calculate the requested direction
+        if (_tplane.getIntersection(_pick, _isect) && !_isect.equals(target)) {
+            float dir = FloatMath.atan2(_isect.y - target.y, _isect.x - target.x);
+            rotation = _strafePresses.isEmpty() ? dir : _lastRotation;
+            direction = computeDirection(dir);
+        }
+    } else {
+        direction = computeDirection(_lastRotation);
+    }
+    // clear the input if we don't have focus
+    if (!inputWindowFocused()) {
+        clearInput();
+    }
+    // update the hover sprite
+    if (_hsprite != nhsprite) {
+        setHoverSprite(nhsprite);
+    }
+    // perhaps enqueue an input frame
+    long now = RunAnywhere.currentTimeMillis();
+    if (rotation != _lastRotation || direction != _lastDirection || _flags != _lastFlags || now >= _nextInput) {
+        // create and enqueue the frame
+        InputFrame frame = _lastFrame = createInputFrame(_tsview.getAdvancedTime(), rotation, direction, _flags);
+        _lastRotation = rotation;
+        _lastDirection = direction;
+        _lastFlags = _flags;
+        _nextInput = now + _tsview.getElapsed();
+        _input.add(frame);
+        // apply it immediately to the controller and sprite advancers
+        _advancer.advance(frame);
+        ((PawnAdvancer) targetSprite.getAdvancer()).advance(frame);
+        // include the up-to-date translation in the input frame for use by the server
+        frame.setTranslation(new Vector2f(_advancer.getActor().getTranslation()));
+        // record the state
+        _states.add(new PawnState(frame, (Pawn) _advancer.getActor().clone()));
+    // otherwise, just ensure that the advancers are up-to-date
+    } else {
+        int advancedTime = _tsview.getAdvancedTime();
+        _advancer.advance(advancedTime);
+        targetSprite.getAdvancer().advance(advancedTime);
+    }
+    // have the sprite actor's translation smoothly approach that of the advancer actor
+    targetSprite.getActor().getTranslation().lerpLocal(_advancer.getActor().getTranslation(), 1f - FloatMath.exp(CONVERGENCE_RATE * elapsed));
+}

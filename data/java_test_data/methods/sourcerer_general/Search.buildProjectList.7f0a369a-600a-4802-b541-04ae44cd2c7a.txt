@@ -1,0 +1,220 @@
+private String buildProjectList(SearchBean search, Connection db, int userId, int specificProjectId) throws SQLException {
+    HashMap<Integer, Integer> projectList = new HashMap<Integer, Integer>();
+    if (search.getSection() != SearchBean.WEBSITE) {
+        PreparedStatement pst = null;
+        ResultSet rs = null;
+        if (userId > 0) {
+            // get the projects for the user
+            // get the project permissions for each project
+            // if user has access to the data, then add to query
+            pst = db.prepareStatement("SELECT project_id, userlevel " + "FROM project_team " + "WHERE user_id = ? " + "AND status IS NULL " + (specificProjectId > -1 ? "AND project_id = ? " : ""));
+            int i = 0;
+            pst.setInt(++i, userId);
+            if (specificProjectId > -1) {
+                pst.setInt(++i, specificProjectId);
+            }
+            rs = pst.executeQuery();
+            while (rs.next()) {
+                int projectId = rs.getInt("project_id");
+                int roleId = rs.getInt("userlevel");
+                // these projects override the lower access projects
+                projectList.put(projectId, roleId);
+            }
+            rs.close();
+            pst.close();
+        }
+    }
+    // build query string
+    StringBuffer projectBuffer = new StringBuffer();
+    // scan for permissions
+    for (Integer projectId : projectList.keySet()) {
+        StringBuffer permissionBuffer = new StringBuffer();
+        Integer roleId = projectList.get(projectId);
+        // for each project check the available user permissions
+        Project cachedProject = ProjectUtils.loadProject(projectId);
+        PermissionList permissionList = cachedProject.getPermissions();
+        if (search.getSection() == SearchBean.DETAILS || search.getSection() == SearchBean.UNDEFINED) {
+            // Check for project permissions
+            if (permissionList.getAccessLevel("project-details-view") >= roleId) {
+                if (permissionBuffer.length() > 0) {
+                    permissionBuffer.append(" OR ");
+                }
+                permissionBuffer.append("type:project");
+            }
+        }
+        if (search.getSection() == SearchBean.NEWS || search.getSection() == SearchBean.UNDEFINED) {
+            // Check for news permissions
+            if (permissionList.getAccessLevel("project-news-view") >= roleId) {
+                if (permissionBuffer.length() > 0) {
+                    permissionBuffer.append(" OR ");
+                }
+                // check for status permissions
+                if (permissionList.getAccessLevel("project-news-view-unreleased") >= roleId) {
+                    permissionBuffer.append("type:news");
+                } else {
+                    // take into account a date range  [20030101 TO 20040101]
+                    SimpleDateFormat formatter = new SimpleDateFormat("yyyyMMdd");
+                    permissionBuffer.append("(type:news AND newsStatus:2 AND newsDate:[20030101 TO " + formatter.format(new Date()) + "])");
+                }
+            }
+        }
+        if (search.getSection() == SearchBean.WIKI || search.getSection() == SearchBean.UNDEFINED) {
+            // Check for wiki permissions
+            if (permissionList.getAccessLevel("project-wiki-view") >= roleId) {
+                if (permissionBuffer.length() > 0) {
+                    permissionBuffer.append(" OR ");
+                }
+                permissionBuffer.append("type:wiki");
+            }
+        }
+        if (search.getSection() == SearchBean.DISCUSSION || search.getSection() == SearchBean.UNDEFINED) {
+            // Check for issue category permissions
+            if (permissionList.getAccessLevel("project-discussion-forums-view") >= roleId) {
+                if (permissionBuffer.length() > 0) {
+                    permissionBuffer.append(" OR ");
+                }
+                permissionBuffer.append("type:issuecategory");
+            }
+            // Check for issue permissions and issue reply permissions
+            if (permissionList.getAccessLevel("project-discussion-topics-view") >= roleId) {
+                if (permissionBuffer.length() > 0) {
+                    permissionBuffer.append(" OR ");
+                }
+                permissionBuffer.append("type:issue OR type:issuereply");
+            }
+        }
+        if (search.getSection() == SearchBean.DOCUMENTS || search.getSection() == SearchBean.UNDEFINED) {
+            // Check for file item permissions
+            if (permissionList.getAccessLevel("project-documents-view") >= roleId) {
+                if (permissionBuffer.length() > 0) {
+                    permissionBuffer.append(" OR ");
+                }
+                permissionBuffer.append("type:file");
+            }
+        }
+        if (search.getSection() == SearchBean.LISTS || search.getSection() == SearchBean.UNDEFINED) {
+            // Check for task category permissions and task permissions
+            if (permissionList.getAccessLevel("project-lists-view") >= roleId) {
+                if (permissionBuffer.length() > 0) {
+                    permissionBuffer.append(" OR ");
+                }
+                permissionBuffer.append("type:listcategory OR type:list");
+            }
+        }
+        if (search.getSection() == SearchBean.TICKETS || search.getSection() == SearchBean.UNDEFINED) {
+            // Check for ticket permissions
+            if (permissionList.getAccessLevel("project-tickets-view") >= roleId) {
+                if (permissionList.getAccessLevel("project-tickets-other") >= roleId) {
+                    // Can access all tickets in this project
+                    if (permissionBuffer.length() > 0) {
+                        permissionBuffer.append(" OR ");
+                    }
+                    permissionBuffer.append("type:ticket");
+                } else {
+                    // Can access only tickets that the user created in this project
+                    if (permissionBuffer.length() > 0) {
+                        permissionBuffer.append(" OR ");
+                    }
+                    permissionBuffer.append("(type:ticket AND enteredBy:" + userId + ")");
+                }
+            }
+        }
+        if (search.getSection() == SearchBean.PLAN || search.getSection() == SearchBean.UNDEFINED) {
+            // Check for requirement permissions
+            if (permissionList.getAccessLevel("project-plan-view") >= roleId) {
+                if (permissionBuffer.length() > 0) {
+                    permissionBuffer.append(" OR ");
+                }
+                permissionBuffer.append("type:outline");
+                // Check for assignment folder permissions
+                permissionBuffer.append(" OR ");
+                permissionBuffer.append("type:activityfolder");
+                // Check for assignment permissions
+                permissionBuffer.append(" OR ");
+                permissionBuffer.append("type:activity");
+                // Check for assignment note permissions
+                permissionBuffer.append(" OR ");
+                permissionBuffer.append("type:activitynote");
+            }
+        }
+        if (search.getSection() == SearchBean.ADS || search.getSection() == SearchBean.UNDEFINED) {
+            // Check for ad. permissions
+            if (permissionList.getAccessLevel("project-ads-view") >= roleId) {
+                if (permissionBuffer.length() > 0) {
+                    permissionBuffer.append(" OR ");
+                }
+                permissionBuffer.append("type:ads");
+            }
+        }
+        if (search.getSection() == SearchBean.CLASSIFIEDS || search.getSection() == SearchBean.UNDEFINED) {
+            // Check for classified permissions
+            if (permissionList.getAccessLevel("project-classifieds-view") >= roleId) {
+                if (permissionBuffer.length() > 0) {
+                    permissionBuffer.append(" OR ");
+                }
+                permissionBuffer.append("type:classifieds");
+            }
+        }
+        if (search.getSection() == SearchBean.REVIEWS || search.getSection() == SearchBean.UNDEFINED) {
+            // Check for review permissions
+            if (permissionList.getAccessLevel("project-reviews-view") >= roleId) {
+                if (permissionBuffer.length() > 0) {
+                    permissionBuffer.append(" OR ");
+                }
+                permissionBuffer.append("type:reviews");
+            }
+        }
+        // append this project and the user's permissions to the query string
+        if (permissionBuffer.length() > 0) {
+            if (projectBuffer.length() > 0) {
+                projectBuffer.append(" OR ");
+            }
+            projectBuffer.append("(projectId:" + projectId + " AND (" + permissionBuffer.toString() + ")) ");
+        }
+        // debugging
+        if (System.getProperty("DEBUG") != null) {
+            if (permissionBuffer.length() == 0) {
+                System.out.println("NO PERMISSIONS FOR PROJECT: " + projectId);
+            }
+        }
+    }
+    // If the portal is enabled, then include web page results too.
+    if ((search.getSection() == SearchBean.WEBSITE && specificProjectId == -1) || (search.getSection() == SearchBean.UNDEFINED && specificProjectId == -1)) {
+        StringBuffer portalBuffer = new StringBuffer();
+        PreparedStatement pst = db.prepareStatement("SELECT project_id " + "FROM projects " + "WHERE approvaldate IS NOT NULL " + "AND portal = ? ");
+        int i = 0;
+        pst.setBoolean(++i, true);
+        ResultSet rs = pst.executeQuery();
+        int portalCount = 0;
+        while (rs.next()) {
+            ++portalCount;
+            if (portalCount == 1) {
+                portalBuffer.append("((");
+            }
+            if (portalCount > 1) {
+                portalBuffer.append(" OR ");
+            }
+            int portalProjectId = rs.getInt("project_id");
+            portalBuffer.append("projectId:" + portalProjectId);
+        }
+        rs.close();
+        pst.close();
+        // TODO: Make sure the news is enabled...
+        if (portalBuffer.length() > 0) {
+            // ((projectId:X OR projectId:Y ...
+            portalBuffer.append(") AND ");
+            // ((projectId:X OR projectId:Y) AND ...
+            if (projectBuffer.length() > 0) {
+                projectBuffer.append(" OR ");
+            }
+            SimpleDateFormat formatter = new SimpleDateFormat("yyyyMMdd");
+            projectBuffer.append(portalBuffer.toString() + "type:news AND newsPortal:true AND newsDate:[20030101 TO " + formatter.format(new java.util.Date()) + "])");
+        }
+    }
+    // for security
+    if (projectBuffer.length() == 0) {
+        return "projectId:-1";
+    } else {
+        return projectBuffer.toString();
+    }
+}

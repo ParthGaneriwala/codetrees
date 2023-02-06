@@ -1,0 +1,101 @@
+@Override
+protected Instances determineOutputFormat(Instances inputFormat) {
+    // Set the upper limit of the range
+    m_SelectCols.setUpper(inputFormat.numAttributes() - 1);
+    // Get the selected attributes
+    m_SelectedAttributes = m_SelectCols.getSelection();
+    // Allocate arrays to store frequencies
+    double[][][] freqs = new double[inputFormat.numAttributes()][][];
+    for (int m_SelectedAttribute : m_SelectedAttributes) {
+        int current = m_SelectedAttribute;
+        Attribute att = inputFormat.attribute(current);
+        if ((current != inputFormat.classIndex()) && (att.isNominal())) {
+            freqs[current] = new double[att.numValues()][inputFormat.numClasses()];
+        }
+    }
+    // Go through all the instances and compute frequencies
+    for (Instance inst : inputFormat) {
+        for (int m_SelectedAttribute : m_SelectedAttributes) {
+            int current = m_SelectedAttribute;
+            if ((current != inputFormat.classIndex()) && (inputFormat.attribute(current).isNominal())) {
+                if (!inst.isMissing(current) && !inst.classIsMissing()) {
+                    freqs[current][(int) inst.value(current)][(int) inst.classValue()] += inst.weight();
+                }
+            }
+        }
+    }
+    // For each attribute in turn merge values
+    m_AttToBeModified = new boolean[inputFormat.numAttributes()];
+    m_Indicators = new int[inputFormat.numAttributes()][];
+    for (int m_SelectedAttribute : m_SelectedAttributes) {
+        int current = m_SelectedAttribute;
+        if ((current != inputFormat.classIndex()) && (inputFormat.attribute(current).isNominal())) {
+            if (m_Debug) {
+                System.err.println(inputFormat.attribute(current));
+            }
+            // Compute subset indicators
+            m_Indicators[current] = mergeValues(freqs[current]);
+            if (m_Debug) {
+                for (int j = 0; j < m_Indicators[current].length; j++) {
+                    System.err.print(" - " + m_Indicators[current][j] + " - ");
+                }
+                System.err.println();
+            }
+            // Does attribute need to modified?
+            for (int k = 0; k < m_Indicators[current].length; k++) {
+                if (m_Indicators[current][k] != k) {
+                    m_AttToBeModified[current] = true;
+                }
+            }
+        }
+    }
+    // Create new header
+    ArrayList<Attribute> atts = new ArrayList<Attribute>();
+    for (int i = 0; i < inputFormat.numAttributes(); i++) {
+        int current = i;
+        Attribute att = inputFormat.attribute(current);
+        if (m_AttToBeModified[i]) {
+            // Compute number of new values
+            int numValues = 0;
+            for (int j = 0; j < m_Indicators[current].length; j++) {
+                if (m_Indicators[current][j] + 1 > numValues) {
+                    numValues = m_Indicators[current][j] + 1;
+                }
+            }
+            // Establish new values
+            ArrayList<StringBuilder> vals = new ArrayList<StringBuilder>(numValues);
+            for (int j = 0; j < numValues; j++) {
+                vals.add(null);
+            }
+            for (int j = 0; j < m_Indicators[current].length; j++) {
+                int index = m_Indicators[current][j];
+                // Do we already have a value at the given index?
+                StringBuilder val = vals.get(index);
+                if (val == null) {
+                    if (m_UseShortIdentifiers) {
+                        vals.set(index, new StringBuilder("" + (index + 1)));
+                    } else {
+                        vals.set(index, new StringBuilder(att.value(j)));
+                    }
+                } else {
+                    if (!m_UseShortIdentifiers) {
+                        vals.get(index).append("_or_").append(att.value(j));
+                    }
+                }
+            }
+            ArrayList<String> valsAsStrings = new ArrayList<String>(vals.size());
+            for (StringBuilder val : vals) {
+                valsAsStrings.add(val.toString());
+            }
+            Attribute a = new Attribute(att.name() + "_merged_values", valsAsStrings);
+            a.setWeight(att.weight());
+            atts.add(a);
+        } else {
+            atts.add((Attribute) att.copy());
+        }
+    }
+    // Return modified header
+    Instances data = new Instances(inputFormat.relationName(), atts, 0);
+    data.setClassIndex(inputFormat.classIndex());
+    return data;
+}

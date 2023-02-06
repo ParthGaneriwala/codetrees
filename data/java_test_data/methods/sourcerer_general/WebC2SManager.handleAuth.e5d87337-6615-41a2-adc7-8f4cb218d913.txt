@@ -1,0 +1,45 @@
+private boolean handleAuth(WebClientSession webClientSession, Body body, Auth auth, HttpServletResponse response) throws IOException {
+    String mechanism = auth.getMechanism();
+    String content = auth.getContent();
+    String rid = (String) body.getProperty("rid");
+    try {
+        userAuthenticatorTracker.authenticate(webClientSession, content, mechanism);
+        webClientSession.setStatus(ClientSession.Status.authenticated);
+        ChristyStreamFeature[] features = streamFeatureStracker.getStreamFeatures(SupportedType.afterAuth);
+        StreamFeature streamFeature = new StreamFeature();
+        for (ChristyStreamFeature feature : features) {
+            streamFeature.addFeature(feature.getElementName(), feature.getNamespace(), feature.isRequired());
+        }
+        Success success = new Success();
+        Body responsebody = new Body();
+        responsebody.setProperty("sid", webClientSession.getStreamId());
+        responsebody.setProperty("ack", rid);
+        responsebody.setProperty("xmlns:stream", "http://etherx.jabber.org/streams");
+        responsebody.addStanza(success);
+        responsebody.addStanza(streamFeature);
+        webClientSession.write(responsebody, response, rid);
+    } catch (UnauthorizedException e) {
+        e.printStackTrace();
+        Failure failure = new Failure();
+        failure.setNamespace(Failure.SASL_FAILURE_NS);
+        webClientSession.write(failure, response, rid);
+        // Body responsebody = new Body();
+        // responsebody.setProperty("type", "terminate");
+        // webClientSession.write(responsebody, response, rid);
+        webClientSession.close();
+        return true;
+    } catch (UnsupportedMechanismException e) {
+        e.printStackTrace();
+        Failure failure = new Failure();
+        failure.setError(Failure.Error.invalid_mechanism);
+        failure.setNamespace(Failure.SASL_FAILURE_NS);
+        webClientSession.write(failure, response, rid);
+        Body responsebody = new Body();
+        responsebody.setProperty("type", "terminate");
+        webClientSession.write(responsebody, response, (String) body.getProperty("rid"));
+        webClientSession.write(responsebody, response, rid);
+        webClientSession.close();
+        return true;
+    }
+    return true;
+}

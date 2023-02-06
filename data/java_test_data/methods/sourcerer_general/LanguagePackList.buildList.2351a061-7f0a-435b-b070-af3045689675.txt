@@ -1,0 +1,98 @@
+public void buildList(Connection db) throws SQLException {
+    PreparedStatement pst = null;
+    ResultSet rs = null;
+    int items = -1;
+    StringBuffer sqlSelect = new StringBuffer();
+    StringBuffer sqlCount = new StringBuffer();
+    StringBuffer sqlFilter = new StringBuffer();
+    StringBuffer sqlOrder = new StringBuffer();
+    StringBuffer sqlGroup = new StringBuffer();
+    // Need to build a base SQL statement for counting records
+    sqlCount.append("SELECT COUNT(*) AS recordcount " + "FROM language_pack lp " + "WHERE lp.id > 0 ");
+    createFilter(sqlFilter, db);
+    if (pagedListInfo != null) {
+        // Get the total number of records matching filter
+        pst = db.prepareStatement(sqlCount.toString() + sqlFilter.toString());
+        items = prepareFilter(pst);
+        rs = pst.executeQuery();
+        if (rs.next()) {
+            int maxRecords = rs.getInt("recordcount");
+            pagedListInfo.setMaxRecords(maxRecords);
+        }
+        rs.close();
+        pst.close();
+        // Determine the offset, based on the filter, for the first record to show
+        if (!pagedListInfo.getCurrentLetter().equals("")) {
+            pst = db.prepareStatement(sqlCount.toString() + sqlFilter.toString() + "AND lower(lp.language_name) < ? ");
+            items = prepareFilter(pst);
+            pst.setString(++items, pagedListInfo.getCurrentLetter().toLowerCase());
+            rs = pst.executeQuery();
+            if (rs.next()) {
+                int offsetCount = rs.getInt("recordcount");
+                pagedListInfo.setCurrentOffset(offsetCount);
+            }
+            rs.close();
+            pst.close();
+        }
+        // Determine column to sort by
+        pagedListInfo.setDefaultSort("lp.language_name", null);
+        pagedListInfo.appendSqlTail(db, sqlOrder);
+    } else {
+        if (!orderByComplete) {
+            sqlOrder.append("ORDER BY lp.percent_complete desc, lp.language_name ");
+        } else {
+            sqlOrder.append("ORDER BY ldcount DESC, lp.language_name ");
+        }
+    }
+    // Need to build a base SQL statement for returning records
+    if (pagedListInfo != null) {
+        pagedListInfo.appendSqlSelectHead(db, sqlSelect);
+    } else {
+        sqlSelect.append("SELECT ");
+    }
+    sqlSelect.append("lp.* " + (orderByComplete ? ", COUNT(*) AS ldcount " : "") + "FROM language_pack lp " + (orderByComplete ? ", language_config lc, language_dictionary ld " : "") + "WHERE lp.id > 0 " + (orderByComplete ? "AND lp.id = lc.language_id AND lc.id = ld.config_id " : "") + (orderByComplete ? "AND ld.param_value1 <> '' AND ld.param_value1 IS NOT NULL " : ""));
+    if (orderByComplete) {
+        sqlGroup.append("GROUP BY lp.id, language_name, language_locale, maintainer_id, lp.entered, lp.percent_complete ");
+    }
+    pst = db.prepareStatement(sqlSelect.toString() + sqlFilter.toString() + sqlGroup.toString() + sqlOrder.toString());
+    items = prepareFilter(pst);
+    rs = pst.executeQuery();
+    if (pagedListInfo != null) {
+        pagedListInfo.doManualOffset(db, rs);
+    }
+    int count = 0;
+    while (rs.next()) {
+        if (pagedListInfo != null && pagedListInfo.getItemsPerPage() > 0 && DatabaseUtils.getType(db) == DatabaseUtils.MSSQL && count >= pagedListInfo.getItemsPerPage()) {
+            break;
+        }
+        ++count;
+        LanguagePack thisLanguage = new LanguagePack(rs);
+        if (orderByComplete) {
+            int translatedCount = rs.getInt("ldcount");
+            thisLanguage.setDictionaryTranslatedCount(translatedCount);
+        }
+        this.add(thisLanguage);
+    }
+    rs.close();
+    pst.close();
+    // Build resources
+    int defaultCount = 0;
+    if (buildStatistics) {
+        int languagePackId = LanguagePack.getLanguagePackId(db, LanguagePack.DEFAULT_LOCALE);
+        defaultCount = LanguageDictionaryList.queryTotalCount(db, languagePackId);
+    }
+    Iterator i = this.iterator();
+    while (i.hasNext()) {
+        LanguagePack thisLanguage = (LanguagePack) i.next();
+        if (buildStatistics) {
+            thisLanguage.setDictionaryDefaultCount(defaultCount);
+            thisLanguage.buildStatistics(db);
+        }
+        if (buildTeamMembers) {
+            thisLanguage.buildTeamMembers(db);
+        }
+        if (buildDictionary) {
+            thisLanguage.buildDictionary(db);
+        }
+    }
+}

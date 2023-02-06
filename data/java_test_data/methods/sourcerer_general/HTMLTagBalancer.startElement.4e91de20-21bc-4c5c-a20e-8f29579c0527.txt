@@ -1,0 +1,131 @@
+// processingInstruction(String,XMLString,Augmentations)
+public void startElement(QName elem, XMLAttributes attrs, Augmentations augs) throws XNIException {
+    fSeenAnything = true;
+    // check for end of document
+    if (fSeenRootElementEnd) {
+        return;
+    }
+    // get element information
+    HTMLElements.Element element = getElement(elem.rawname);
+    // ignore multiple html, head, body elements
+    if (fSeenRootElement && element.code == HTMLElements.HTML) {
+        return;
+    }
+    if (element.code == HTMLElements.HEAD) {
+        if (fSeenHeadElement) {
+            return;
+        }
+        fSeenHeadElement = true;
+    }
+    if (element.code == HTMLElements.BODY) {
+        if (fSeenBodyElement) {
+            return;
+        }
+        fSeenBodyElement = true;
+    }
+    // check proper parent
+    if (element.parent != null) {
+        if (!fSeenRootElement && !fDocumentFragment) {
+            String pname = element.parent[0].name;
+            pname = modifyName(pname, fNamesElems);
+            if (fReportErrors) {
+                String ename = elem.rawname;
+                fErrorReporter.reportWarning("HTML2002", new Object[] { ename, pname });
+            }
+            QName qname = new QName(null, pname, pname, null);
+            startElement(qname, null, synthesizedAugs());
+        } else {
+            HTMLElements.Element pelement = element.parent[0];
+            if (pelement.code != HTMLElements.HEAD || (!fSeenBodyElement && !fDocumentFragment)) {
+                int depth = getParentDepth(element.parent, element.bounds);
+                if (depth == -1) {
+                    String pname = pelement.name;
+                    pname = modifyName(pname, fNamesElems);
+                    int pdepth = getParentDepth(pelement.parent, pelement.bounds);
+                    if (pdepth != -1) {
+                        QName qname = new QName(null, pname, pname, null);
+                        if (fReportErrors) {
+                            String ename = elem.rawname;
+                            fErrorReporter.reportWarning("HTML2004", new Object[] { ename, pname });
+                        }
+                        startElement(qname, null, synthesizedAugs());
+                    }
+                }
+            }
+        }
+    }
+    // if block element, save immediate parent inline elements
+    int depth = 0;
+    if (element.flags == 0) {
+        int length = fElementStack.top;
+        fInlineStack.top = 0;
+        for (int i = length - 1; i >= 0; i--) {
+            Info info = fElementStack.data[i];
+            if (!info.element.isInline()) {
+                break;
+            }
+            fInlineStack.push(info);
+            endElement(info.qname, synthesizedAugs());
+        }
+        depth = fInlineStack.top;
+    }
+    // close previous elements
+    if (element.closes != null) {
+        int length = fElementStack.top;
+        for (int i = length - 1; i >= 0; i--) {
+            Info info = fElementStack.data[i];
+            // does it close the element we're looking at?
+            if (element.closes(info.element.code)) {
+                if (fReportErrors) {
+                    String ename = elem.rawname;
+                    String iname = info.qname.rawname;
+                    fErrorReporter.reportWarning("HTML2005", new Object[] { ename, iname });
+                }
+                for (int j = length - 1; j >= i; j--) {
+                    info = fElementStack.pop();
+                    if (fDocumentHandler != null) {
+                        // PATCH: Marc-Andr� Morissette
+                        callEndElement(info.qname, synthesizedAugs());
+                    }
+                }
+                length = i;
+                continue;
+            }
+            // should we stop searching?
+            boolean container = info.element.isContainer();
+            boolean parent = false;
+            if (!container) {
+                for (int j = 0; j < element.parent.length; j++) {
+                    parent = parent || info.element.code == element.parent[j].code;
+                }
+            }
+            if (container || parent) {
+                break;
+            }
+        }
+    }
+    // call handler
+    fSeenRootElement = true;
+    if (element != null && element.isEmpty()) {
+        if (attrs == null) {
+            attrs = emptyAttributes();
+        }
+        if (fDocumentHandler != null) {
+            fDocumentHandler.emptyElement(elem, attrs, augs);
+        }
+    } else {
+        boolean inline = element != null && element.isInline();
+        fElementStack.push(new Info(element, elem, inline ? attrs : null));
+        if (attrs == null) {
+            attrs = emptyAttributes();
+        }
+        if (fDocumentHandler != null) {
+            callStartElement(elem, attrs, augs);
+        }
+    }
+    // re-open inline elements
+    for (int i = 0; i < depth; i++) {
+        Info info = fInlineStack.pop();
+        startElement(info.qname, info.attributes, synthesizedAugs());
+    }
+}

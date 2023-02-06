@@ -1,0 +1,50 @@
+public String executeCommandAttachProjectImageFiles(ActionContext context) {
+    if (getUser(context).getId() < 0) {
+        return "PermissionError";
+    }
+    // Use the parameters from the file attachment panel
+    int projectId = Integer.parseInt((String) context.getRequest().getAttribute("pid"));
+    String itemId = (String) context.getRequest().getAttribute("itemId");
+    Connection db = null;
+    try {
+        db = getConnection(context);
+        // Check for project permissions
+        Project thisProject = retrieveAuthorizedProject(projectId, context);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-profile-images-add")) {
+            return "PermissionError";
+        }
+        context.getRequest().setAttribute("project", thisProject);
+        // Update the project by finding the id of the uploaded image
+        FileItemList files = new FileItemList();
+        files.setLinkModuleId(Constants.PROJECT_IMAGE_FILES);
+        files.setLinkItemId(projectId);
+        files.setEnteredBy(getUserId(context));
+        files.buildList(db);
+        // Convert the uploaded file
+        boolean isFirst = (files.size() == 0);
+        FileItemList.convertTempFiles(db, Constants.PROJECT_IMAGE_FILES, getUserId(context), projectId, itemId, isFirst);
+        // This is a guess for now
+        if (isFirst) {
+            thisProject.setLogoId(itemId);
+            thisProject.updateLogoId(db);
+        }
+        // trigger the workflow
+        FileItemList convertedFiles = new FileItemList();
+        StringTokenizer items = new StringTokenizer(itemId, ",");
+        while (items.hasMoreTokens()) {
+            int convertedId = Integer.parseInt(items.nextToken().trim());
+            FileItem convertedFile = new FileItem(db, convertedId);
+            convertedFiles.add(convertedFile);
+        }
+        if (convertedFiles.size() > 0) {
+            this.processInsertHook(context, convertedFiles);
+        }
+        CacheUtils.invalidateValue(Constants.SYSTEM_PROJECT_CACHE, projectId);
+        return "Attach302OK";
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return ("SystemError");
+    } finally {
+        this.freeConnection(context, db);
+    }
+}

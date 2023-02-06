@@ -1,0 +1,60 @@
+private static void countDb(Environment env, String dbName, final String dumpFilename) throws IOException {
+    KeyBinding kb = new BDBProbTreeStorage.KeyBinding(1);
+    ProbTreeBinding pb = new BDBProbTreeStorage.ProbTreeBinding();
+    FactorTupleDescription desc = Experiment.getInstance().getTupleDescription();
+    final BufferedWriter writer;
+    if (dumpFilename != null) {
+        writer = IO.getWriter(IO.getOutputStream(dumpFilename));
+    } else {
+        writer = null;
+    }
+    try {
+        DatabaseConfig dbConf = new DatabaseConfig();
+        dbConf.setReadOnly(true);
+        dbConf.setTransactional(false);
+        Database db = env.openDatabase(null, dbName, dbConf);
+        long elementCount = 0;
+        long keySize = 0;
+        long dataSize = 0;
+        Cursor cursor = db.openCursor(null, CursorConfig.READ_UNCOMMITTED);
+        DatabaseEntry key = new DatabaseEntry();
+        DatabaseEntry data = new DatabaseEntry();
+        OperationStatus status = cursor.getFirst(key, data, null);
+        while (status == OperationStatus.SUCCESS) {
+            ++elementCount;
+            keySize += key.getSize();
+            dataSize += data.getSize();
+            if (writer != null) {
+                Key theKey = kb.entryToObject(key);
+                OnDiskCompactProbTree probTree = pb.entryToObject(data);
+                int word = desc.packOvertFactorsToInt(theKey.getFactorBits());
+                StringBuilder sb = new StringBuilder();
+                sb.append(word);
+                sb.append(',');
+                sb.append(theKey.getClusterid());
+                sb.append(':');
+                sb.append(probTree.getScale());
+                sb.append('*');
+                int[] tags = probTree.getCompactHiddenFactors();
+                float[] probabilities = probTree.getProbabilities();
+                for (int i = 0; i < tags.length; ++i) {
+                    sb.append(tags[i]);
+                    sb.append(',');
+                    sb.append(probabilities[i]);
+                    sb.append(';');
+                }
+                sb.append('\n');
+                writer.write(sb.toString());
+            }
+            status = cursor.getNext(key, data, null);
+        }
+        cursor.close();
+        db.close();
+        System.out.printf("%s has %d keys, key size = %d, data size = %d\n", dbName, elementCount, keySize, dataSize);
+    } catch (DatabaseException e) {
+        e.printStackTrace();
+    }
+    if (writer != null) {
+        writer.close();
+    }
+}

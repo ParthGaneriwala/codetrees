@@ -1,0 +1,124 @@
+public void postDelta() {
+    // no need to do anything if not yet receiving
+    if (!_receiving) {
+        return;
+    }
+    // if any deltas were sent with reliable transport, we can consider them received
+    for (int ii = _records.size() - 1; ii > 0; ii--) {
+        if (_records.get(ii).event.getActualTransport() == Transport.RELIABLE_ORDERED) {
+            _records.subList(0, ii).clear();
+            break;
+        }
+    }
+    // translate the local interest bounds based on the actor translation
+    Vector2f translation = (_target == null) ? Vector2f.ZERO : _target.getActor().getTranslation();
+    _localInterest.getMinimumExtent().add(translation, _worldInterest.getMinimumExtent());
+    _localInterest.getMaximumExtent().add(translation, _worldInterest.getMaximumExtent());
+    // find all currently visible actors and compare to previous set
+    populateVisibleActors();
+    for (ActorLogic actor : _visibleActors) {
+        if (_previousVisibleActors.remove(actor)) {
+            ActorDelta delta = actor.getSnapshotDelta();
+            if (delta != null) {
+                _actorsUpdated.add(delta);
+            }
+        } else {
+            _actorsAdded.add(actor.getSnapshot());
+        }
+    }
+    for (ActorLogic actor : _previousVisibleActors) {
+        _actorsRemoved.add(actor.getPreviousSnapshot());
+    }
+    _previousVisibleActors.clear();
+    // swap the previous and current visible sets
+    Set<ActorLogic> visibleActors = _visibleActors;
+    _visibleActors = _previousVisibleActors;
+    _previousVisibleActors = visibleActors;
+    // actors; afterwards, just the delta
+    if (_records.get(_records.size() - 1).getTimestamp() == 0) {
+        for (ActorLogic actor : _scenemgr.getStaticActors()) {
+            _actorsAdded.add(actor.getSnapshot());
+        }
+    } else {
+        for (ActorLogic actor : _scenemgr.getStaticActorsAdded()) {
+            _actorsAdded.add(actor.getSnapshot());
+        }
+        for (ActorLogic actor : _scenemgr.getStaticActorsUpdated()) {
+            ActorDelta delta = actor.getSnapshotDelta();
+            if (delta != null) {
+                _actorsUpdated.add(delta);
+            }
+        }
+        for (ActorLogic actor : _scenemgr.getStaticActorsRemoved()) {
+            _actorsRemoved.add(actor.getPreviousSnapshot());
+        }
+    }
+    // record the tick
+    int timestamp = _scenemgr.getTimestamp();
+    TickRecord record = new TickRecord(timestamp, _actorsAdded.toArray(new Actor[_actorsAdded.size()]), _actorsUpdated.toArray(new ActorDelta[_actorsUpdated.size()]), _actorsRemoved.toArray(new Actor[_actorsRemoved.size()]), _scenemgr.getEffectsFired(_target, _worldInterest));
+    _records.add(record);
+    _actorsAdded.clear();
+    _actorsUpdated.clear();
+    _actorsRemoved.clear();
+    // the last acknowledged tick is the reference
+    TickRecord reference = _records.get(0);
+    // merge actor updates and get all effects fired (not expired)
+    for (int ii = 1, nn = _records.size(); ii < nn; ii++) {
+        TickRecord orecord = _records.get(ii);
+        for (Actor actor : orecord.getActorsAdded()) {
+            int id = actor.getId();
+            Actor removed = _removed.remove(id);
+            if (removed == null) {
+                _added.put(id, actor);
+            } else {
+                ActorDelta delta = new ActorDelta(removed, actor);
+                if (!delta.isEmpty()) {
+                    _updated.put(id, delta);
+                }
+            }
+        }
+        for (ActorDelta delta : orecord.getActorsUpdated()) {
+            int id = delta.getId();
+            Actor added = _added.get(id);
+            if (added != null) {
+                _added.put(id, (Actor) delta.apply(added));
+            } else {
+                ActorDelta odelta = _updated.put(id, delta);
+                if (odelta != null) {
+                    _updated.put(id, (ActorDelta) odelta.merge(delta));
+                }
+            }
+        }
+        for (Actor actor : orecord.getActorsRemoved()) {
+            int id = actor.getId();
+            if (_added.remove(id) == null) {
+                _updated.remove(id);
+                _removed.put(id, actor);
+            }
+        }
+        for (Effect effect : orecord.getEffectsFired()) {
+            if (timestamp < effect.getExpiry()) {
+                _fired.add(effect);
+            }
+        }
+    }
+    // if we know that we can't transmit datagrams, we may as well send the delta as reliable
+    // and immediately consider it received
+    Transport transport = Transport.UNRELIABLE_UNORDERED;
+    if (_session == null || !_session.getTransmitDatagrams()) {
+        transport = Transport.RELIABLE_ORDERED;
+        _records.subList(0, _records.size() - 1).clear();
+    }
+    // create and post the event
+    int nadded = _added.size();
+    int nupdated = _updated.size();
+    int nfired = _fired.size();
+    record.event = new SceneDeltaEvent(_bodyobj.getOid(), _tsobj.getOid(), _lastInput, (short) _ping, reference.getTimestamp(), timestamp, (short) (timestamp - _scenemgr.getPreviousTimestamp()), (nadded == 0) ? null : _added.values().toArray(new Actor[nadded]), (nupdated == 0) ? null : _updated.values().toArray(new ActorDelta[nupdated]), _removed.isEmpty() ? null : _removed.intKeySet().toIntArray(), (nfired == 0) ? null : _fired.toArray(new Effect[nfired]));
+    record.event.setTransport(transport);
+    _bodyobj.postEvent(record.event);
+    // clear the arrays
+    _added.clear();
+    _updated.clear();
+    _removed.clear();
+    _fired.clear();
+}

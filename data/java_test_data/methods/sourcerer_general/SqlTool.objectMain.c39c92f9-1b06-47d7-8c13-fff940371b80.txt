@@ -1,0 +1,285 @@
+public static void objectMain(String[] arg) throws SqlToolException {
+    /*
+         * The big picture is, we parse input args; load a RCData;
+         * get a JDBC Connection with the RCData; instantiate and
+         * execute as many SqlFiles as we need to.
+         */
+    String rcFile = null;
+    File tmpFile = null;
+    String sqlText = null;
+    String driver = null;
+    String targetDb = null;
+    String varSettings = null;
+    boolean debug = false;
+    File[] scriptFiles = null;
+    int i = -1;
+    boolean listMode = false;
+    boolean interactive = false;
+    boolean noinput = false;
+    boolean noautoFile = false;
+    boolean autoCommit = false;
+    Boolean coeOverride = null;
+    Boolean stdinputOverride = null;
+    String rcParams = null;
+    String rcUrl = null;
+    String rcUsername = null;
+    String rcPassword = null;
+    String rcCharset = null;
+    String rcTruststore = null;
+    Map rcFields = null;
+    String parameter;
+    try {
+        while ((i + 1 < arg.length) && arg[i + 1].startsWith("--")) {
+            i++;
+            if (arg[i].length() == 2) {
+                // "--"
+                break;
+            }
+            parameter = arg[i].substring(2).toLowerCase();
+            if (parameter.equals("help")) {
+                System.out.println(rb.getString(SqltoolRB.SQLTOOL_SYNTAX, revnum, RCData.DEFAULT_JDBC_DRIVER));
+                return;
+            }
+            if (parameter.equals("abortonerr")) {
+                if (coeOverride != null) {
+                    throw new SqlToolException(SYNTAXERR_EXITVAL, rb.getString(SqltoolRB.SQLTOOL_ABORTCONTINUE_MUTUALLYEXCLUSIVE));
+                }
+                coeOverride = Boolean.FALSE;
+            } else if (parameter.equals("continueonerr")) {
+                if (coeOverride != null) {
+                    throw new SqlToolException(SYNTAXERR_EXITVAL, rb.getString(SqltoolRB.SQLTOOL_ABORTCONTINUE_MUTUALLYEXCLUSIVE));
+                }
+                coeOverride = Boolean.TRUE;
+            } else if (parameter.equals("list")) {
+                listMode = true;
+            } else if (parameter.equals("rcfile")) {
+                if (++i == arg.length) {
+                    throw bcl;
+                }
+                rcFile = arg[i];
+            } else if (parameter.equals("setvar")) {
+                if (++i == arg.length) {
+                    throw bcl;
+                }
+                varSettings = arg[i];
+            } else if (parameter.equals("sql")) {
+                // but turn back on if file "-" specd.
+                noinput = true;
+                if (++i == arg.length) {
+                    throw bcl;
+                }
+                sqlText = arg[i];
+            } else if (parameter.equals("debug")) {
+                debug = true;
+            } else if (parameter.equals("noautofile")) {
+                noautoFile = true;
+            } else if (parameter.equals("autocommit")) {
+                autoCommit = true;
+            } else if (parameter.equals("stdinput")) {
+                noinput = false;
+                stdinputOverride = Boolean.TRUE;
+            } else if (parameter.equals("noinput")) {
+                noinput = true;
+                stdinputOverride = Boolean.FALSE;
+            } else if (parameter.equals("driver")) {
+                if (++i == arg.length) {
+                    throw bcl;
+                }
+                driver = arg[i];
+            } else if (parameter.equals("inlinerc")) {
+                if (++i == arg.length) {
+                    throw bcl;
+                }
+                rcParams = arg[i];
+            } else {
+                throw bcl;
+            }
+        }
+        if (!listMode) {
+            // If an inline RC file was specified, don't worry about the targetDb
+            if (rcParams == null) {
+                if (++i == arg.length) {
+                    throw bcl;
+                }
+                targetDb = arg[i];
+            }
+        }
+        int scriptIndex = 0;
+        if (sqlText != null) {
+            try {
+                tmpFile = File.createTempFile("sqltool-", ".sql");
+                // (new java.io.FileWriter(tmpFile)).write(sqlText);
+                java.io.FileWriter fw = new java.io.FileWriter(tmpFile);
+                try {
+                    fw.write("/* " + (new java.util.Date()) + ".  " + SqlTool.class.getName() + " command-line SQL. */" + LS + LS);
+                    fw.write(sqlText + LS);
+                    fw.flush();
+                } finally {
+                    fw.close();
+                }
+            } catch (IOException ioe) {
+                throw new SqlToolException(IOERR_EXITVAL, rb.getString(SqltoolRB.SQLTEMPFILE_FAIL, ioe.toString()));
+            }
+        }
+        if (stdinputOverride != null) {
+            noinput = !stdinputOverride.booleanValue();
+        }
+        interactive = (!noinput) && (arg.length <= i + 1);
+        if (arg.length == i + 2 && arg[i + 1].equals("-")) {
+            if (stdinputOverride == null) {
+                noinput = false;
+            }
+        } else if (arg.length > i + 1) {
+            // I.e., if there are any SQL files specified.
+            scriptFiles = new File[arg.length - i - 1 + ((stdinputOverride == null || !stdinputOverride.booleanValue()) ? 0 : 1)];
+            if (debug) {
+                System.err.println("scriptFiles has " + scriptFiles.length + " elements");
+            }
+            while (i + 1 < arg.length) {
+                scriptFiles[scriptIndex++] = new File(arg[++i]);
+            }
+            if (stdinputOverride != null && stdinputOverride.booleanValue()) {
+                scriptFiles[scriptIndex++] = null;
+                noinput = true;
+            }
+        }
+    } catch (BadCmdline bcl) {
+        throw new SqlToolException(SYNTAXERR_EXITVAL, rb.getString(SqltoolRB.SQLTOOL_SYNTAX, revnum, RCData.DEFAULT_JDBC_DRIVER));
+    }
+    RCData conData = null;
+    // Use the inline RC file if it was specified
+    if (rcParams != null) {
+        rcFields = new HashMap();
+        try {
+            varParser(rcParams, rcFields, true);
+        } catch (PrivateException e) {
+            throw new SqlToolException(SYNTAXERR_EXITVAL, e.getMessage());
+        }
+        rcUrl = (String) rcFields.remove("url");
+        rcUsername = (String) rcFields.remove("user");
+        rcCharset = (String) rcFields.remove("charset");
+        rcTruststore = (String) rcFields.remove("truststore");
+        rcPassword = (String) rcFields.remove("password");
+        // Don't ask for password if what we have already is invalid!
+        if (rcUrl == null || rcUrl.length() < 1)
+            throw new SqlToolException(RCERR_EXITVAL, rb.getString(SqltoolRB.RCDATA_INLINEURL_MISSING));
+        if (rcUsername == null || rcUsername.length() < 1)
+            throw new SqlToolException(RCERR_EXITVAL, rb.getString(SqltoolRB.RCDATA_INLINEUSERNAME_MISSING));
+        if (rcPassword != null && rcPassword.length() > 0)
+            throw new SqlToolException(RCERR_EXITVAL, rb.getString(SqltoolRB.RCDATA_PASSWORD_VISIBLE));
+        if (rcFields.size() > 0) {
+            throw new SqlToolException(INPUTERR_EXITVAL, rb.getString(SqltoolRB.RCDATA_INLINE_EXTRAVARS, rcFields.keySet().toString()));
+        }
+        if (rcPassword == null)
+            try {
+                rcPassword = promptForPassword(rcUsername);
+            } catch (PrivateException e) {
+                throw new SqlToolException(INPUTERR_EXITVAL, rb.getString(SqltoolRB.PASSWORD_READFAIL, e.getMessage()));
+            }
+        try {
+            conData = new RCData(CMDLINE_ID, rcUrl, rcUsername, rcPassword, driver, rcCharset, rcTruststore);
+        } catch (Exception e) {
+            throw new SqlToolException(RCERR_EXITVAL, rb.getString(SqltoolRB.RCDATA_GENFROMVALUES_FAIL, e.getMessage()));
+        }
+    } else {
+        try {
+            conData = new RCData(new File((rcFile == null) ? DEFAULT_RCFILE : rcFile), targetDb);
+        } catch (Exception e) {
+            throw new SqlToolException(RCERR_EXITVAL, rb.getString(SqltoolRB.CONNDATA_RETRIEVAL_FAIL, targetDb, e.getMessage()));
+        }
+    }
+    if (listMode) {
+        return;
+    }
+    if (debug) {
+        conData.report();
+    }
+    Connection conn = null;
+    try {
+        conn = conData.getConnection(driver, System.getProperty("sqlfile.charset"), System.getProperty("javax.net.ssl.trustStore"));
+        conn.setAutoCommit(autoCommit);
+        DatabaseMetaData md = null;
+        if (interactive && (md = conn.getMetaData()) != null) {
+            System.out.println(rb.getString(SqltoolRB.JDBC_ESTABLISHED, md.getDatabaseProductName(), md.getDatabaseProductVersion(), md.getUserName()));
+        }
+    } catch (Exception e) {
+        // Let's not continue as if nothing is wrong.
+        throw new SqlToolException(CONNECTERR_EXITVAL, rb.getString(SqltoolRB.CONNECTION_FAIL, conData.url, conData.username, e.getMessage()));
+    }
+    File[] emptyFileArray = {};
+    File[] singleNullFileArray = { null };
+    File autoFile = null;
+    if (interactive && !noautoFile) {
+        autoFile = new File(System.getProperty("user.home") + "/auto.sql");
+        if ((!autoFile.isFile()) || !autoFile.canRead()) {
+            autoFile = null;
+        }
+    }
+    if (scriptFiles == null) {
+        // I.e., if no SQL files given on command-line.
+        // Input file list is either nothing or {null} to read stdin.
+        scriptFiles = (noinput ? emptyFileArray : singleNullFileArray);
+    }
+    int numFiles = scriptFiles.length;
+    if (tmpFile != null) {
+        numFiles += 1;
+    }
+    if (autoFile != null) {
+        numFiles += 1;
+    }
+    SqlFile[] sqlFiles = new SqlFile[numFiles];
+    Map userVars = new HashMap();
+    if (varSettings != null)
+        try {
+            varParser(varSettings, userVars, false);
+        } catch (PrivateException pe) {
+            throw new SqlToolException(RCERR_EXITVAL, pe.getMessage());
+        }
+    // We print version before execing this one.
+    int interactiveFileIndex = -1;
+    try {
+        int fileIndex = 0;
+        if (autoFile != null) {
+            sqlFiles[fileIndex++] = new SqlFile(autoFile, false, userVars);
+        }
+        if (tmpFile != null) {
+            sqlFiles[fileIndex++] = new SqlFile(tmpFile, false, userVars);
+        }
+        for (int j = 0; j < scriptFiles.length; j++) {
+            if (interactiveFileIndex < 0 && interactive) {
+                interactiveFileIndex = fileIndex;
+            }
+            sqlFiles[fileIndex++] = new SqlFile(scriptFiles[j], interactive, userVars);
+        }
+    } catch (IOException ioe) {
+        try {
+            conn.close();
+        } catch (Exception e) {
+        }
+        throw new SqlToolException(FILEERR_EXITVAL, ioe.getMessage());
+    }
+    try {
+        for (int j = 0; j < sqlFiles.length; j++) {
+            if (j == interactiveFileIndex) {
+                System.out.print("SqlTool v. " + revnum + ".                        ");
+            }
+            sqlFiles[j].execute(conn, coeOverride);
+        }
+    // Following two Exception types are handled properly inside of
+    // SqlFile.  We just need to return an appropriate error status.
+    } catch (SqlToolError ste) {
+        throw new SqlToolException(SQLTOOLERR_EXITVAL);
+    } catch (SQLException se) {
+        // "\c false" mode.
+        throw new SqlToolException(SQLERR_EXITVAL);
+    } finally {
+        try {
+            conn.close();
+        } catch (Exception e) {
+        }
+    }
+    // info to keep around if the program aborts.
+    if (tmpFile != null && !tmpFile.delete()) {
+        System.err.println(conData.url + rb.getString(SqltoolRB.TEMPFILE_REMOVAL_FAIL, tmpFile.toString()));
+    }
+}

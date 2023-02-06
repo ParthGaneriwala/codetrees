@@ -1,0 +1,56 @@
+public void processSubscribeRequest(SipProvider sipProvider, Request request, ServerTransaction serverTransaction) {
+    if (logger.isDebugEnabled()) {
+        logger.debug("PresenceServer:processSubscribeRequest:received a request\n" + request);
+    }
+    try {
+        int responseCode;
+        // Authenticate user
+        // Examine expires header
+        // Note: no regard is taken to the registration time of the
+        // notifyer, a subscription can last longer than a registration
+        // because the registrar will not supply the expires time.
+        ExpiresHeader expiresHeader = (ExpiresHeader) request.getHeader(ExpiresHeader.NAME);
+        int expires;
+        if (expiresHeader == null) {
+            HeaderFactory headerFactory = proxy.getHeaderFactory();
+            expiresHeader = headerFactory.createExpiresHeader(getExpiresTime());
+            request.setHeader(expiresHeader);
+        } else {
+            expires = expiresHeader.getExpires();
+            if (expires < 0) {
+                expiresHeader.setExpires(0);
+            } else if (expires > getExpiresTime()) {
+                expiresHeader.setExpires(getExpiresTime());
+            }
+        }
+        expires = expiresHeader.getExpires();
+        logger.info("   ExpiresHeader = " + expires);
+        // Hand over the request to PresentityManager
+        // The presentity manager likes to do things dialog statefully
+        // so create a dialog if we dont already have one.
+        Dialog dialog = serverTransaction.getDialog();
+        if (dialog == null) {
+            dialog = sipProvider.getNewDialog(serverTransaction);
+            logger.info("*******dialog" + dialog.toString());
+        }
+        logger.info("*******dialog" + dialog + "\n" + dialog.getDialogId());
+        responseCode = presentityManager.processSubscribe(request, dialog, expires);
+        logger.info("responseCode ****" + responseCode);
+        // Send response, add tag if necessary
+        MessageFactory messageFactory = proxy.getMessageFactory();
+        Response response = messageFactory.createResponse(responseCode, request);
+        ToHeader to = (ToHeader) response.getHeader(ToHeader.NAME);
+        if (to.getTag() == null) {
+            to.setTag(ProxyUtilities.generateTag());
+        }
+        serverTransaction.sendResponse(response);
+        // If a new subscription was created, it should get
+        // a notify straight away, especially if it is a Fetcher
+        // or if the subscription was terminated directly,
+        // otherwise, the subscription is lost.
+        // It must be sent after the response above, of course.
+        presentityManager.sendInitialNotify();
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+}

@@ -1,0 +1,57 @@
+public boolean process(Request req, ResponseGroup rg) throws InvalidOperationException, ItemPersistenceException, StaleDataException {
+    if (!checkRequest(req)) {
+        throw new InvalidOperationException("Invalid vote_or_add_feature operation.");
+    }
+    VoteAddEntityRequest r = (VoteAddEntityRequest) req;
+    DefaultResponse rsp = new DefaultResponse((VoteAddEntityRequest) req);
+    Model m = DaoUtil.getModelDao().getById(r.getModelId(), false);
+    if (m == null) {
+        throw new InvalidOperationException("Invalid model ID: " + r.getModelId());
+    }
+    Entity en = null;
+    if (r.getEntityId() != null && (en = DaoUtil.getEntityDao().getById(r.getEntityId(), false)) != null) {
+        // voting
+        rsp.setExist(new Boolean(true));
+        if (r.getYes().booleanValue() == false) {
+            // Set the inferred vote in response
+            List<Long> targets = new ArrayList<Long>();
+            for (Relation rel : en.getRels()) {
+                targets.add(rel.getId());
+            }
+            if (targets.size() > 0) {
+                rsp.setInferVotes(targets);
+            }
+        }
+        if (en.vote(r.getYes().booleanValue(), r.getRequesterId()) == DataItem.REMOVAL_EXECUTED) {
+            DaoUtil.getEntityDao().delete(en);
+        } else {
+            en = DaoUtil.getEntityDao().save(en);
+            rsp.setExecTime(DataItemUtil.formatDate(en.getLastModifyTime()));
+        }
+    } else {
+        // creating
+        rsp.setExist(false);
+        EntityType entp = DaoUtil.getEntityTypeDao().getById(r.getTypeId(), false);
+        if (entp == null) {
+            throw new InvalidOperationException("Invalid entity type ID: " + r.getTypeId());
+        }
+        en = new Entity();
+        DataItemUtil.setNewDataItemByUserId(en, r.getRequesterId());
+        en.setModel(m);
+        en.setType(entp);
+        // Creation always leads to a YES vote.
+        en.vote(true, r.getRequesterId());
+        m.addEntity(en);
+        en = DaoUtil.getEntityDao().save(en);
+        DaoUtil.getModelDao().save(m);
+        rsp.setExecTime(DataItemUtil.formatDate(en.getLastModifyTime()));
+    }
+    rsp.setEntityId(en.getId());
+    // Write the responses (back and broadcast)
+    rsp.setName(Resources.RSP_SUCCESS);
+    rg.setBack(rsp);
+    DefaultResponse rsp2 = (DefaultResponse) rsp.clone();
+    rsp2.setName(Resources.RSP_FORWARD);
+    rg.setBroadcast(rsp2);
+    return true;
+}

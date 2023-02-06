@@ -1,0 +1,92 @@
+public static void main(String[] args) {
+    OptionParser optParser = new OptionParser(Options.class);
+    final Options opts = (Options) optParser.parse(args, true);
+    Experiment.initialize(opts.config);
+    final Experiment experiment = Experiment.getInstance();
+    JobManager.initialize(opts.jobs);
+    Thread thread = new Thread(JobManager.getInstance(), "Job Manager");
+    thread.setDaemon(true);
+    thread.start();
+    final JobManager manager = JobManager.getInstance();
+    experiment.buildPrefixes();
+    DecoderCompactProbTree emptyTree = DecoderCompactProbTree.constructEmptyTree(Experiment.getInstance().getHFT().getTree());
+    DecoderCompactProbTree.setEmptyTree(emptyTree);
+    final LanguageModel lm = experiment.getLM(opts.lm);
+    lm.getHistoryTree();
+    final DecoderCompactProbTree uniformTree = emptyTree.copy();
+    {
+        DecoderCompactProbTreeFinder finder = new DecoderCompactProbTreeFinder(uniformTree) {
+
+            @Override
+            public boolean apply(short node) {
+                short left = tree.getLeft(node);
+                short right = tree.getRight(node);
+                float prob = 0;
+                if (left != DecoderCompactProbTree.NO_LINK) {
+                    prob += tree.getProb(left);
+                }
+                if (right != DecoderCompactProbTree.NO_LINK) {
+                    prob += tree.getProb(right);
+                }
+                if (prob == 0) {
+                    // a leaf
+                    prob = 1;
+                }
+                tree.setProb(node, prob);
+                return false;
+            }
+        };
+        uniformTree.searchPostorder(finder);
+    // uniformTree.scale(1.0 / uniformTree.getTotalProb());
+    }
+    final NumberFormat nf = new DecimalFormat("#.##");
+    final int numTags = (int) Math.round(uniformTree.getTotalProb());
+    for (byte offset = -1; offset > -lm.getHiddenOrder(); --offset) {
+        final AtomicIntegerArray tagCount = new AtomicIntegerArray(numTags / opts.ballpark + 1);
+        final AtomicInteger leafCount = new AtomicInteger();
+        final byte time = offset;
+        JobGroup group = manager.createJobGroup("tag counts");
+        for (final BinaryTreeIterator<HistoryTreePayload> it = lm.getHistoryTree().getLeafIterator(); it.hasNext(); ) {
+            final BinaryTree<HistoryTreePayload> leaf = it.nextNode();
+            Runnable run = new Runnable() {
+
+                public void run() {
+                    ProbTree probTree = new ProbTree((DecoderCompactProbTree) uniformTree.clone());
+                    BinaryTree<HistoryTreePayload> node = leaf;
+                    BinaryTree<HistoryTreePayload> parent = node.getParent();
+                    while (parent != null) {
+                        Question q = parent.getPayload().question;
+                        if (q.isAboutHidden() && q.getTimeOffset() == time) {
+                            BinaryPrefixQuestion question = (BinaryPrefixQuestion) q;
+                            // System.out.println("cutting " + (parent.getRight() == node ? "" : "not ") + question.getPrefix());
+                            if (probTree.testCut(question.getPrefix()) == null) {
+                                ProbTree trueBranch = probTree.cut(question.getPrefix());
+                                if (parent.getRight() == node) {
+                                    probTree = trueBranch;
+                                }
+                            }
+                        }
+                        node = parent;
+                        parent = node.getParent();
+                    }
+                    int numberOfTags = (int) Math.round(probTree.getTotalProb());
+                    // System.out.printf("done, nrtags = %d\n", numberOfTags);
+                    tagCount.incrementAndGet(numberOfTags / opts.ballpark);
+                    leafCount.incrementAndGet();
+                }
+            };
+            manager.addJob(group, new Job(run, "job"));
+        }
+        group.join();
+        System.out.printf("Model %s, Offset %d:\n", lm.getId(), offset);
+        int total = 0;
+        for (int i = 0; i < tagCount.length(); ++i) {
+            int count = tagCount.get(i);
+            total += count;
+            if (count * 1000 > leafCount.intValue()) {
+                System.out.printf("%d+\t%s%%\t%s%%\n", i * opts.ballpark, nf.format(100 * count / leafCount.floatValue()), nf.format(100 * total / leafCount.floatValue()));
+            }
+        }
+        System.out.println();
+    }
+}

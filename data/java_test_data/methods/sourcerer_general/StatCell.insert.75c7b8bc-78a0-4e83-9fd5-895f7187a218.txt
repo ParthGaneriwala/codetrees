@@ -1,0 +1,100 @@
+private void insert(Map<String, TempCellStat> allcells) throws Exception {
+    java.util.Iterator<TempCellStat> stats = allcells.values().iterator();
+    String day1 = statdatestr;
+    // 上次流量
+    String day2 = df.format(main.util.MainStatUtil.getPrevCountDate(statdate, 1));
+    // 上上次流量
+    String day3 = df.format(main.util.MainStatUtil.getPrevCountDate(statdate, 2));
+    System.out.println(day1 + ",,," + day2 + ",,," + day3);
+    Statement tempstmt = null;
+    List<String> list0cellkey = new ArrayList<String>();
+    List<String> list0cellid = new ArrayList<String>();
+    List<String> sqls = new ArrayList<String>();
+    ResultSet rs = null;
+    try {
+        while (stats.hasNext()) {
+            TempCellStat stat = stats.next();
+            if (Float.parseFloat(stat.all) > 0) {
+                String subsidiaryid = stat.subsidiaryid;
+                String sql = "insert into stat_cellid_day(cellid,lac,bscid,nettype,dayflag,stattime,upvolume,downvolume,allvolume,usercount,subsidiaryid)values('" + stat.cellid + "','" + stat.lac + "','" + stat.bscid + "'," + stat.nettype + ",1," + statdatestr + "," + stat.up + "," + stat.down + "," + stat.all + "," + stat.usercount + ",'" + subsidiaryid + "')";
+                sqls.add(sql);
+                /**
+                 * 更新总流量
+                 */
+                String totalsql = "update allvolume_cellid set upvolume=upvolume+" + stat.up + ",downvolume=downvolume+" + stat.down + ",allvolume=allvolume+" + stat.all + " where cellid='" + stat.cellid + "' and lac='" + stat.lac + "'";
+                sqls.add(totalsql);
+            } else {
+                list0cellkey.add(stat.cellid + "|" + stat.lac);
+                list0cellid.add(stat.cellid);
+                String sql0 = "insert into zero_cellid(cellid,lac,dayflag,stattime,allvolume,historyvolume,prehistoryvolume)values('" + stat.cellid + "','" + stat.lac + "',1," + statdatestr + ",0,0,0)";
+                sqls.add(sql0);
+            }
+        }
+        // stmt.executeBatch();
+        // stmt.clearBatch();
+        main.util.MainStatUtil.executeSql(con, sqls);
+        sqls.clear();
+        LOG.info("CELLID统计数据入库成功");
+        int len = list0cellkey.size();
+        if (len > 0) {
+            tempstmt = con.createStatement();
+            // while (rs.next()) {
+            for (int i = 0; i < len; i++) {
+                String str = list0cellkey.get(i).toString();
+                int idx = str.indexOf("|");
+                String cellid = str.substring(0, idx);
+                String lac = str.substring(idx + 1);
+                String allvolume = allcells.get(str).allall;
+                String zero0sql = "update zero_cellid set allvolume=" + allvolume + " where lac='" + lac + "' and cellid='" + cellid + "' and stattime=" + day1;
+                sqls.add(zero0sql);
+            }
+            int pageSize = 500;
+            int totalCount = len;
+            int mod = totalCount % pageSize;
+            int value = totalCount / pageSize;
+            int count = mod == 0 ? value : value + 1;
+            LOG.info("0流量个数为:" + len + ",要分成" + count + "次处理");
+            // oracle里面,in的数量不能超过1000个
+            for (int i = 0; i < count; i++) {
+                int startIndex = i * pageSize;
+                List<String> list = new ArrayList<String>();
+                // System.out.println("ii < len && ii < startIndex + pageSize==="+(ii < len && ii < startIndex + pageSize));
+                for (int ii = startIndex; ii < len && ii < startIndex + pageSize; ii++) {
+                    list.add(list0cellid.get(ii));
+                }
+                String allsql = "select cellid,lac,sum(allvolume) as allvolume from stat_cellid_day where dayflag=1 and cellid in(" + MainStatUtil.list2str(list) + ") and stattime=" + day2 + " group by cellid,lac";
+                // LOG.info("0流量SQL:"+allsql);
+                // rs.close();
+                // rs = null;
+                rs = tempstmt.executeQuery(allsql);
+                while (rs.next()) {
+                    String cellid = rs.getString("cellid");
+                    String lac = rs.getString("lac");
+                    String allvolume = rs.getString("allvolume");
+                    String zero0sql = "update zero_cellid set historyvolume=" + allvolume + " where lac='" + lac + "' and cellid='" + cellid + "' and stattime=" + day1;
+                    sqls.add(zero0sql);
+                }
+                allsql = "select cellid,lac,sum(allvolume) as allvolume from stat_cellid_day where dayflag=1 and cellid in(" + MainStatUtil.list2str(list) + ") and stattime=" + day3 + " group by cellid,lac";
+                rs.close();
+                rs = null;
+                rs = tempstmt.executeQuery(allsql);
+                while (rs.next()) {
+                    String cellid = rs.getString("cellid");
+                    String lac = rs.getString("lac");
+                    String allvolume = rs.getString("allvolume");
+                    String zero0sql = "update zero_cellid set prehistoryvolume=" + allvolume + " where cellid='" + cellid + "' and lac='" + lac + "' and stattime=" + day1;
+                    sqls.add(zero0sql);
+                }
+            }
+        }
+        main.util.MainStatUtil.executeSql(con, sqls);
+        sqls.clear();
+        LOG.info("流量为0的CELL统计数据入库成功");
+    // 这里还要得到流量为0的那些个数据
+    } finally {
+        if (tempstmt != null)
+            tempstmt.close();
+        if (rs != null)
+            rs.close();
+    }
+}

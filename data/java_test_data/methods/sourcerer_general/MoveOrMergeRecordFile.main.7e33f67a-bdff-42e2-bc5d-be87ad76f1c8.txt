@@ -1,0 +1,64 @@
+public static void main(String[] args) throws Exception {
+    ChukwaConfiguration conf = new ChukwaConfiguration();
+    String fsName = conf.get("writer.hdfs.filesystem");
+    FileSystem fs = FileSystem.get(new URI(fsName), conf);
+    Path srcDir = new Path(args[0]);
+    String destDir = args[1];
+    FileStatus fstat = fs.getFileStatus(srcDir);
+    if (!fstat.isDir()) {
+        throw new IOException(args[0] + " is not a directory!");
+    } else {
+        FileStatus[] datasourceDirectories = fs.listStatus(srcDir);
+        for (FileStatus datasourceDirectory : datasourceDirectories) {
+            System.out.println(datasourceDirectory.getPath() + " isDir?" + datasourceDirectory.isDir());
+            if (!datasourceDirectory.isDir()) {
+                throw new IOException("Top level should just contains directories :" + datasourceDirectory.getPath());
+            }
+            String dirName = datasourceDirectory.getPath().getName();
+            if (dirName.equals("_logs")) {
+                continue;
+            }
+            Path destPath = new Path(destDir + "/" + dirName);
+            System.out.println("dest directory path: " + destPath);
+            if (!fs.exists(destPath)) {
+                System.out.println("create datasource directory [" + destDir + "/" + dirName + "]");
+                fs.mkdirs(destPath);
+            }
+            FileStatus[] evts = fs.listStatus(datasourceDirectory.getPath(), new EventFileFilter());
+            for (FileStatus eventFile : evts) {
+                Path eventFilePath = eventFile.getPath();
+                String filename = eventFilePath.getName();
+                System.out.println("src dir File: [" + filename + "]");
+                Path destFilePath = new Path(destDir + "/" + dirName + "/" + filename);
+                if (!fs.exists(destFilePath)) {
+                    System.out.println("Moving File: [" + destFilePath + "]");
+                    fs.rename(eventFilePath, destFilePath);
+                } else {
+                    System.out.println("Need to merge! : [" + destFilePath + "]");
+                    String strMrPath = datasourceDirectory.getPath().toString() + "/" + "MR_" + System.currentTimeMillis();
+                    Path mrPath = new Path(strMrPath);
+                    System.out.println("\t New MR directory : [" + mrPath + "]");
+                    // Create MR input Dir
+                    fs.mkdirs(mrPath);
+                    // Move Input files
+                    fs.rename(eventFilePath, new Path(strMrPath + "/1.done"));
+                    fs.rename(destFilePath, new Path(strMrPath + "/2.done"));
+                    // Merge
+                    String[] mergeArgs = new String[2];
+                    mergeArgs[0] = strMrPath;
+                    mergeArgs[1] = strMrPath + "/mrOutput";
+                    System.out.println("\t Running Merge! : output [" + mergeArgs[1] + "]");
+                    int res = ToolRunner.run(new ChukwaConfiguration(), new MoveOrMergeRecordFile(), mergeArgs);
+                    System.out.println("MR exit status: " + res);
+                    if (res == 0) {
+                        System.out.println("\t Moving output file : to [" + destFilePath + "]");
+                        fs.rename(new Path(mergeArgs[1] + "/part-00000"), destFilePath);
+                    } else {
+                        throw new RuntimeException("Error in M/R merge operation!");
+                    }
+                }
+            }
+        }
+    }
+    System.out.println("Done with mapred main()");
+}

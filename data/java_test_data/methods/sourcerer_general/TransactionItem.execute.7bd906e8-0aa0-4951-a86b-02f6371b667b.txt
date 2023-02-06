@@ -1,0 +1,137 @@
+public void execute(Connection db) throws Exception {
+    LOG.debug("Executing transaction...");
+    // Query the object from the database if an "UPDATE" or "DELETE" action is requested
+    if (action == TransactionItem.UPDATE || action == TransactionItem.DELETE) {
+        // Might need a shared parameter
+        String nodeText = XMLUtils.getNodeText(XMLUtils.getFirstChild(objectElement, "id"));
+        if (nodeText != null && nodeText.startsWith("$C{")) {
+            nodeText = transactionContext.getPropertyMap().get(nodeText.substring(nodeText.indexOf("$C{") + 3, nodeText.indexOf("}")));
+        }
+        // Construct the object before setting any parameters
+        object = ObjectUtils.constructObject(object.getClass(), db, Integer.parseInt(nodeText));
+    }
+    // Populate the object from XML and store any unset values for later use
+    ignoredProperties = XMLUtils.populateObject(object, objectElement);
+    // Override any values from the object map
+    setAdditionalObjectParameters(packetContext.getObjectMap());
+    // Validate several requirements
+    if ((object == null || name == null) && !"system".equals(name)) {
+        appendErrorMessage("Unsupported object specified");
+        return;
+    }
+    // A record list will be returned to the client
+    recordList.setName(name);
+    // A pagedList will allow a subset of a query to be returned if specified by client
+    if (pagedListInfo != null) {
+        doSetPagedListInfo();
+    }
+    // Populate any items from the TransactionContext
+    setContextParameters();
+    // Begin action specific processing
+    if (action == GET_DATETIME) {
+        Record thisRecord = new Record("info");
+        thisRecord.put("dateTime", String.valueOf(new java.sql.Timestamp(new java.util.Date().getTime())));
+        recordList.add(thisRecord);
+    } else if (action == CUSTOM_ACTION) {
+        LOG.debug("Custom action...");
+        // A CUSTOM_ACTION is when an object has an action other than INSERT/UPDATE/DELETE/SELECT
+        // Instantiate the named custom action for the specified object
+        SyncTable syncMappings = packetContext.getObjectMap().get(actionName);
+        if (syncMappings == null) {
+            LOG.error("Invalid action called: " + actionName);
+        } else {
+            String customClassName = syncMappings.getMappedClassName();
+            Object customAction = Class.forName(customClassName).newInstance();
+            if (customAction instanceof CustomActionHandler) {
+                ignoredProperties = XMLUtils.populateObject(customAction, objectElement);
+                LOG.debug("Processing..." + customAction.getClass().getName());
+                Object result = ((CustomActionHandler) customAction).process(this, db);
+                checkResult(result);
+                if (result instanceof Boolean && !((Boolean) result)) {
+                    appendErrorMessage("There was an error while processing the requested action.");
+                }
+            } else {
+                LOG.error("Object is not an instance of CustomActionHandler: " + customAction.getClass().getName());
+                appendErrorMessage("Object does not implement CustomActionHandler and cannot be processed: " + customAction.getClass().getName());
+            }
+        }
+    } else {
+        // This is a typical insert, update, delete, select record(s) request
+        LOG.debug("Standard action");
+        // Determine the method to execute on the object
+        String executeMethod = null;
+        switch(action) {
+            case -1:
+                appendErrorMessage("Action not specified");
+                break;
+            case INSERT:
+                if (actionMethod != null) {
+                    executeMethod = actionMethod;
+                } else {
+                    executeMethod = "insert";
+                }
+                break;
+            case UPDATE:
+                executeMethod = "update";
+                break;
+            case DELETE:
+                executeMethod = "delete";
+                break;
+            case SELECT:
+                executeMethod = "buildList";
+                break;
+            case VALIDATE:
+                // TODO: Implement object validation whether an insert or update
+                break;
+            default:
+                appendErrorMessage("Unsupported action specified");
+                break;
+        }
+        if (executeMethod != null) {
+            // Execute the action
+            Object result = doExecute(object, db, action, packetContext, executeMethod);
+            checkResult(result);
+            LOG.debug("Executing: " + executeMethod);
+            if (action == INSERT) {
+                // newly inserted id, so set the syncMap before the insert
+                if (ignoredProperties != null && ignoredProperties.containsKey("guid")) {
+                    // Need to log the date/time of the new record for later approval of updates
+                    // Reload the newly inserted object to get its insert/modified date
+                    Object insertedObject = ObjectUtils.constructObject(object.getClass(), db, Integer.parseInt(ObjectUtils.getParam(object, "id")));
+                    if (insertedObject == null) {
+                        // Might be a lookupElement
+                        insertedObject = ObjectUtils.constructObject(object.getClass(), db, Integer.parseInt(ObjectUtils.getParam(object, "id")), ObjectUtils.getParam(object, "tableName"));
+                    }
+                    if (insertedObject == null) {
+                        // Might be a customLookupElement
+                        insertedObject = ObjectUtils.constructObject(object.getClass(), db, Integer.parseInt(ObjectUtils.getParam(object, "id")), ObjectUtils.getParam(object, "tableName"), ObjectUtils.getParam(object, "uniqueField"));
+                    }
+                    if (insertedObject == null) {
+                        LOG.warn("The object was inserted, but could not be reloaded: possible invalid constructor for: " + object.getClass().getName());
+                    }
+                }
+                addRecords(object, "processed");
+            } else if (action == UPDATE) {
+                // since someone else updated it first
+                if ((Integer) result == 1) {
+                    // Update the modified date in client mapping
+                    if (ignoredProperties != null && ignoredProperties.containsKey("guid")) {
+                        Object updatedObject = ObjectUtils.constructObject(object.getClass(), db, Integer.parseInt(ObjectUtils.getParam(object, "id")));
+                    }
+                    addRecords(object, "processed");
+                } else {
+                    appendErrorMessage("Record could not be updated due to criteria/conflict");
+                }
+            } else if (action == DELETE) {
+                addRecords(object, DataRecord.DELETE);
+            } else if (action == SELECT) {
+                // It wasn't an insert, update, or delete...
+                recordList.clear();
+                addRecords(object, null);
+            }
+        }
+    }
+    if (pagedListInfo != null) {
+        recordList.setTotalRecords(pagedListInfo.getMaxRecords());
+    }
+}

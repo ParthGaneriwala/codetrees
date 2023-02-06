@@ -1,0 +1,67 @@
+private void checkSourceConnection() {
+    String sqlSetTable = "SET TABLE \"" + m_products.getName() + "\"";
+    // preconditions for the following tests
+    assertEquals("internal error: retrieving the data source does not work properly at all.", m_products.getDataSourceSpec(), getDataSourceSpec(m_products.getName()));
+    assertFalse("internal error: table should not be read-only, initially", isReadOnly(m_products.getName()));
+    // disconnect, see if the table behaves well afterwards
+    executeStatement(sqlSetTable + " SOURCE OFF");
+    assertEquals("Disconnecting a text table should not reset the table source.", m_products.getDataSourceSpec(), getDataSourceSpec(m_products.getName()));
+    assertTrue("Disconnecting from the table source should put the table into read-only mode.", isReadOnly(m_products.getName()));
+    try {
+        java.sql.ResultSet tableContent = m_statement.executeQuery("SELECT * FROM \"" + m_products.getName() + "\"");
+        assertFalse("A disconnected table should be empty.", tableContent.next());
+    } catch (SQLException ex) {
+        fail("Selecting from a disconnected table should return an empty result set.");
+    }
+    // reconnect, see if the table works as expected then
+    executeStatement(sqlSetTable + " SOURCE ON");
+    verifyTableContent(m_products.getName(), m_products.getData());
+    // check whether dis-/reconnecting a readonly table preserves the readonly-ness
+    executeStatement(sqlSetTable + " READONLY TRUE");
+    assertTrue("Setting the table to read-only failed.", isReadOnly(m_products.getName()));
+    executeStatement(sqlSetTable + " SOURCE OFF");
+    assertTrue("Still, a disconnected table should be read-only.", isReadOnly(m_products.getName()));
+    executeStatement(sqlSetTable + " SOURCE ON");
+    assertTrue("A reconnected readonly table should preserve its readonly-ness.", isReadOnly(m_products.getName()));
+    executeStatement(sqlSetTable + " READONLY FALSE");
+    assertFalse("Unable to reset the readonly-ness.", isReadOnly(m_products.getName()));
+    // preserving the data source
+    try {
+        // create a malformed file
+        String fileName = "malformed.csv";
+        PrintStream textFile = new PrintStream(FileUtil.getDefaultInstance().openOutputStreamElement(fileName));
+        textFile.println("not a number;some text");
+        textFile.close();
+        new java.io.File(fileName).deleteOnExit();
+        // try setting it as source
+        String newDataSourceSpec = fileName + ";encoding=UTF-8;fs=\\semi";
+        try {
+            m_statement.execute(sqlSetTable + " SOURCE \"" + newDataSourceSpec + "\"");
+            fail("a malformed data source was accepted silently.");
+        } catch (java.sql.SQLException es) {
+        /* that's expected here */
+        }
+        assertTrue("A table with an invalid data source should fall back to read-only.", isReadOnly(m_products.getName()));
+        assertEquals("A data source which cannot be set should nonetheless be remembered.", newDataSourceSpec, getDataSourceSpec(m_products.getName()));
+        // the data source spec should even survive a shutdown
+        executeStatement("SHUTDOWN");
+        m_connection = newConnection();
+        m_statement = m_connection.createStatement();
+        assertEquals("A data source pointing to a mailformed file should survive a database shutdown.", newDataSourceSpec, getDataSourceSpec(m_products.getName()));
+        assertTrue("After shutdown and DB-reconnect, the table with a malformed source should be read-only, again.", isReadOnly(m_products.getName()));
+        // reconnect after fixing the file
+        textFile = new PrintStream(FileUtil.getDefaultInstance().openOutputStreamElement(fileName));
+        textFile.println("1;some text");
+        textFile.close();
+        executeStatement(sqlSetTable + " SOURCE ON");
+        assertFalse("The file was fixed, reconnect was successful, so the table shouldn't be read-only.", isReadOnly(m_products.getName()));
+        // finally re-create the proper version of the table for any further tests
+        m_products.createTextFile();
+        m_products.createTable(m_connection);
+        verifyTableContent(m_products.getName(), m_products.getData());
+    } catch (junit.framework.AssertionFailedError e) {
+        throw e;
+    } catch (Throwable t) {
+        fail("checkSourceConnection: unable to check invalid data sources, error: " + t.toString());
+    }
+}

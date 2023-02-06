@@ -1,0 +1,68 @@
+public Object getProperty(Map context, Object target, Object key) throws OgnlException {
+    LOG.debug("Entering getProperty()");
+    // superclass which will determine this.
+    if (!OgnlContextState.isGettingByKeyProperty(context) && !key.equals(KEY_PROPERTY_FOR_CREATION)) {
+        return super.getProperty(context, target, key);
+    } else {
+        // reset context property
+        OgnlContextState.setGettingByKeyProperty(context, false);
+    }
+    Collection c = (Collection) target;
+    // get the bean that this collection is a property of
+    Class lastBeanClass = OgnlContextState.getLastBeanClassAccessed(context);
+    // get the property name that this collection uses
+    String lastPropertyClass = OgnlContextState.getLastBeanPropertyAccessed(context);
+    // superclass would
+    if (lastBeanClass == null || lastPropertyClass == null) {
+        OgnlContextState.updateCurrentPropertyPath(context, key);
+        return super.getProperty(context, target, key);
+    }
+    ObjectTypeDeterminer objTypeDeterminer = XWorkConverter.getInstance().getObjectTypeDeterminer();
+    // get the key property to index the
+    // collection with from the ObjectTypeDeterminer
+    String keyProperty = objTypeDeterminer.getKeyProperty(lastBeanClass, lastPropertyClass);
+    // get the collection class of the
+    Class collClass = XWorkConverter.getInstance().getObjectTypeDeterminer().getElementClass(lastBeanClass, lastPropertyClass, key);
+    Class keyType = null;
+    Class toGetTypeFrom = (collClass != null) ? collClass : c.iterator().next().getClass();
+    try {
+        keyType = OgnlRuntime.getPropertyDescriptor(toGetTypeFrom, keyProperty).getPropertyType();
+    } catch (Exception exc) {
+        throw new OgnlException("Error getting property descriptor: " + exc.getMessage());
+    }
+    if (OgnlContextState.isCreatingNullObjects(context)) {
+        Map collMap = getSetMap(context, c, keyProperty, collClass);
+        if (key.toString().equals(KEY_PROPERTY_FOR_CREATION)) {
+            // to access it in the next sequence
+            return collMap.get(null);
+        }
+        Object realKey = XWorkConverter.getInstance().convertValue(context, key, keyType);
+        Object value = collMap.get(realKey);
+        if (value == null && OgnlContextState.isCreatingNullObjects(context) && objTypeDeterminer.shouldCreateIfNew(lastBeanClass, lastPropertyClass, c, keyProperty, false)) {
+            // to be the given value
+            try {
+                value = ObjectFactory.getObjectFactory().buildBean(collClass, context);
+                // set the value of the keyProperty
+                _accessor.setProperty(context, value, keyProperty, realKey);
+                // add the new object to the collection
+                c.add(value);
+                // add to the Map if accessed later
+                collMap.put(realKey, value);
+            } catch (Exception exc) {
+                throw new OgnlException("Error adding new element to collection", exc);
+            }
+        }
+        return value;
+    } else {
+        if (key.toString().equals(KEY_PROPERTY_FOR_CREATION)) {
+            return null;
+        }
+        // with getting do iteration
+        // don't assume for now it is
+        // optimized to create the Map
+        // and unlike setting, there is
+        // no easy key for the Set
+        Object realKey = XWorkConverter.getInstance().convertValue(context, key, keyType);
+        return getPropertyThroughIteration(context, c, keyProperty, realKey);
+    }
+}

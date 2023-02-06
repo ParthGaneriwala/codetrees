@@ -1,0 +1,159 @@
+int inflate(ZStream z, int f) {
+    int r;
+    int b;
+    if (z == null || z.istate == null || z.next_in == null)
+        return Z_STREAM_ERROR;
+    f = f == Z_FINISH ? Z_BUF_ERROR : Z_OK;
+    r = Z_BUF_ERROR;
+    while (true) {
+        // System.out.println("mode: "+z.istate.mode);
+        switch(z.istate.mode) {
+            case METHOD:
+                if (z.avail_in == 0)
+                    return r;
+                r = f;
+                z.avail_in--;
+                z.total_in++;
+                if (((z.istate.method = z.next_in[z.next_in_index++]) & 0xf) != Z_DEFLATED) {
+                    z.istate.mode = BAD;
+                    z.msg = "unknown compression method";
+                    // can't try inflateSync
+                    z.istate.marker = 5;
+                    break;
+                }
+                if ((z.istate.method >> 4) + 8 > z.istate.wbits) {
+                    z.istate.mode = BAD;
+                    z.msg = "invalid window size";
+                    // can't try inflateSync
+                    z.istate.marker = 5;
+                    break;
+                }
+                z.istate.mode = FLAG;
+            case FLAG:
+                if (z.avail_in == 0)
+                    return r;
+                r = f;
+                z.avail_in--;
+                z.total_in++;
+                b = (z.next_in[z.next_in_index++]) & 0xff;
+                if ((((z.istate.method << 8) + b) % 31) != 0) {
+                    z.istate.mode = BAD;
+                    z.msg = "incorrect header check";
+                    // can't try inflateSync
+                    z.istate.marker = 5;
+                    break;
+                }
+                if ((b & PRESET_DICT) == 0) {
+                    z.istate.mode = BLOCKS;
+                    break;
+                }
+                z.istate.mode = DICT4;
+            case DICT4:
+                if (z.avail_in == 0)
+                    return r;
+                r = f;
+                z.avail_in--;
+                z.total_in++;
+                z.istate.need = ((z.next_in[z.next_in_index++] & 0xff) << 24) & 0xff000000L;
+                z.istate.mode = DICT3;
+            case DICT3:
+                if (z.avail_in == 0)
+                    return r;
+                r = f;
+                z.avail_in--;
+                z.total_in++;
+                z.istate.need += ((z.next_in[z.next_in_index++] & 0xff) << 16) & 0xff0000L;
+                z.istate.mode = DICT2;
+            case DICT2:
+                if (z.avail_in == 0)
+                    return r;
+                r = f;
+                z.avail_in--;
+                z.total_in++;
+                z.istate.need += ((z.next_in[z.next_in_index++] & 0xff) << 8) & 0xff00L;
+                z.istate.mode = DICT1;
+            case DICT1:
+                if (z.avail_in == 0)
+                    return r;
+                r = f;
+                z.avail_in--;
+                z.total_in++;
+                z.istate.need += (z.next_in[z.next_in_index++] & 0xffL);
+                z.adler = z.istate.need;
+                z.istate.mode = DICT0;
+                return Z_NEED_DICT;
+            case DICT0:
+                z.istate.mode = BAD;
+                z.msg = "need dictionary";
+                // can try inflateSync
+                z.istate.marker = 0;
+                return Z_STREAM_ERROR;
+            case BLOCKS:
+                r = z.istate.blocks.proc(z, r);
+                if (r == Z_DATA_ERROR) {
+                    z.istate.mode = BAD;
+                    // can try inflateSync
+                    z.istate.marker = 0;
+                    break;
+                }
+                if (r == Z_OK) {
+                    r = f;
+                }
+                if (r != Z_STREAM_END) {
+                    return r;
+                }
+                r = f;
+                z.istate.blocks.reset(z, z.istate.was);
+                if (z.istate.nowrap != 0) {
+                    z.istate.mode = DONE;
+                    break;
+                }
+                z.istate.mode = CHECK4;
+            case CHECK4:
+                if (z.avail_in == 0)
+                    return r;
+                r = f;
+                z.avail_in--;
+                z.total_in++;
+                z.istate.need = ((z.next_in[z.next_in_index++] & 0xff) << 24) & 0xff000000L;
+                z.istate.mode = CHECK3;
+            case CHECK3:
+                if (z.avail_in == 0)
+                    return r;
+                r = f;
+                z.avail_in--;
+                z.total_in++;
+                z.istate.need += ((z.next_in[z.next_in_index++] & 0xff) << 16) & 0xff0000L;
+                z.istate.mode = CHECK2;
+            case CHECK2:
+                if (z.avail_in == 0)
+                    return r;
+                r = f;
+                z.avail_in--;
+                z.total_in++;
+                z.istate.need += ((z.next_in[z.next_in_index++] & 0xff) << 8) & 0xff00L;
+                z.istate.mode = CHECK1;
+            case CHECK1:
+                if (z.avail_in == 0)
+                    return r;
+                r = f;
+                z.avail_in--;
+                z.total_in++;
+                z.istate.need += (z.next_in[z.next_in_index++] & 0xffL);
+                if (((int) (z.istate.was[0])) != ((int) (z.istate.need))) {
+                    z.istate.mode = BAD;
+                    z.msg = "incorrect data check";
+                    // can't try inflateSync
+                    z.istate.marker = 5;
+                    break;
+                }
+                z.istate.mode = DONE;
+            case DONE:
+                return Z_STREAM_END;
+            case BAD:
+                return Z_DATA_ERROR;
+            default:
+                return Z_STREAM_ERROR;
+        }
+    }
+}

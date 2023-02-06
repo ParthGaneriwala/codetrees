@@ -1,0 +1,76 @@
+public void doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    // Prefs
+    request.setAttribute(TITLE, request.getPreferences().getValue(TITLE, "Lists"));
+    boolean showIfEmpty = Boolean.parseBoolean(request.getPreferences().getValue(PREF_SHOW_IF_EMPTY, "false"));
+    String defaultView = VIEW_PAGE;
+    User thisUser = PortalUtils.getUser(request);
+    String listSizeString = request.getPreferences().getValue(LIMIT, "10");
+    int listSize = Integer.parseInt(listSizeString);
+    Project project = PortalUtils.getProject(request);
+    if (project == null) {
+        throw new PortletException("Project must be specified.");
+    }
+    int projectId = project.getId();
+    if (!ProjectUtils.hasAccess(projectId, thisUser, "project-lists-view")) {
+        throw new PortletException("Unauthorized to view lists for this project");
+    }
+    try {
+        Connection db = PortalUtils.useConnection(request);
+        // First retrieve all the TaskCategories
+        // Then get all the tasks for each task category and store
+        // tasks mapped out to their task category
+        TaskCategoryList taskCategories = new TaskCategoryList();
+        taskCategories.setProjectId(projectId);
+        taskCategories.buildList(db);
+        Map<Integer, TaskCategory> tcMap = new HashMap<Integer, TaskCategory>();
+        for (TaskCategory tc : taskCategories) {
+            tcMap.put(tc.getId(), tc);
+        }
+        // Find all of the items on the list
+        TaskList tasks = new TaskList();
+        tasks.setProjectId(projectId);
+        tasks.buildList(db);
+        // Map the tasks to a category and check the permissions
+        Map<TaskCategory, TaskList> tasksByCategoryMap = new HashMap<TaskCategory, TaskList>();
+        HashMap<Integer, String> taskUrlMap = new HashMap<Integer, String>();
+        for (Task task : tasks) {
+            TaskCategory tc = tcMap.get(task.getCategoryId());
+            TaskList tmpList = tasksByCategoryMap.get(tc);
+            if (tmpList == null) {
+                tmpList = new TaskList();
+            }
+            // Add tasks without a link, anyone can see these list items
+            if (task.getLinkItemId() == -1) {
+                tmpList.add(task);
+                tasksByCategoryMap.put(tc, tmpList);
+            } else {
+                // Check permissions before adding
+                String linkItemUrl = TaskUtils.getLinkItemUrl(thisUser, request.getContextPath(), task);
+                if (linkItemUrl != null) {
+                    tmpList.add(task);
+                    tasksByCategoryMap.put(tc, tmpList);
+                    taskUrlMap.put(task.getId(), linkItemUrl);
+                }
+            }
+        }
+        PagedListInfo pagedListInfo = new PagedListInfo();
+        pagedListInfo.setItemsPerPage(listSize);
+        // Projects to show
+        taskCategories.setPagedListInfo(pagedListInfo);
+        request.setAttribute(LIST_ITEMS_MAP, tasksByCategoryMap);
+        request.setAttribute(TASK_URL_MAP, taskUrlMap);
+        request.setAttribute(LIMIT, listSize);
+        if (!showIfEmpty && tasksByCategoryMap.isEmpty()) {
+            defaultView = null;
+        }
+        if (defaultView != null) {
+            // JSP view
+            PortletContext context = getPortletContext();
+            PortletRequestDispatcher requestDispatcher = context.getRequestDispatcher(defaultView);
+            requestDispatcher.include(request, response);
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+        throw new PortletException(e);
+    }
+}

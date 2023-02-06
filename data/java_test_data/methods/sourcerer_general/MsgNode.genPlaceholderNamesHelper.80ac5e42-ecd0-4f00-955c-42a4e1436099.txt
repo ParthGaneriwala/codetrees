@@ -1,0 +1,85 @@
+private void genPlaceholderNamesHelper() {
+    // ------ Step 1: Determine representative nodes and build preliminary map ------
+    // 
+    // Sepcifically, we are building basePhNameToRepNodeMap and nonRepNodeToRepNodeMap.
+    // 
+    // If there are multiple MsgPlaceholderNodes in the message that are exactly the same, then the
+    // first such node encountered becomes the "representative node" for the group ("RepNode" in
+    // variable names). The rest of the same nodes are non-representative ("nonRepNode").
+    // 
+    // The basePhNameToRepNodeMap is a map from base placeholder name to the list of
+    // representative nodes (not exactly same) that all generate the same placeholder name. If we
+    // encounter a non-representative node, then we insert it into nonRepNodeToRepNodeMap, mapping
+    // it to its corresponding representative node.
+    // 
+    // The basePhNameToRepNodeMap is preliminary because some of the final placeholder names will
+    // be the base placeholder names plus some unique suffix.
+    Map<String, List<MsgPlaceholderNode>> basePhNameToRepNodeMap = Maps.newHashMap();
+    Map<MsgPlaceholderNode, MsgPlaceholderNode> nonRepNodeToRepNodeMap = Maps.newHashMap();
+    for (SoyNode child : getChildren()) {
+        if (!(child instanceof MsgPlaceholderNode)) {
+            continue;
+        }
+        MsgPlaceholderNode phNode = (MsgPlaceholderNode) child;
+        String basePhName = phNode.genBasePlaceholderName();
+        if (!basePhNameToRepNodeMap.containsKey(basePhName)) {
+            // Case 1: First occurrence of this base placeholder name.
+            basePhNameToRepNodeMap.put(basePhName, Lists.newArrayList(phNode));
+        } else {
+            List<MsgPlaceholderNode> nodesWithSameBasePhName = basePhNameToRepNodeMap.get(basePhName);
+            boolean isNewPlaceholder = true;
+            for (MsgPlaceholderNode other : nodesWithSameBasePhName) {
+                if (phNode.isSamePlaceholderAs(other)) {
+                    // Case 2: Exactly same as another node we've seen.
+                    nonRepNodeToRepNodeMap.put(phNode, other);
+                    isNewPlaceholder = false;
+                    break;
+                }
+            }
+            if (isNewPlaceholder) {
+                // Case 3: New representative node that has the same base placeholder name as another
+                // node we've seen, but is not the same placeholder.
+                nodesWithSameBasePhName.add(phNode);
+            }
+        }
+    }
+    // ------ Step 2: Build final map of placeholder name to representative node ------
+    // 
+    // The final map of phNameToRepNodeMap must be a one-to-one mapping. If a base placeholder name
+    // only maps to one representative node, then we simply put that same mapping into the final
+    // map. But if a base placeholder name maps to multiple nodes, we must append number suffixes
+    // ("_1", "_2", etc) to make the placeholder names unique.
+    // 
+    // Note: We must be careful that, while appending number suffixes, we don't generate a new
+    // placeholder name that is the same as an existing base placeholder name.
+    phNameToRepNodeMap = Maps.newHashMap();
+    for (Map.Entry<String, List<MsgPlaceholderNode>> entry : basePhNameToRepNodeMap.entrySet()) {
+        String basePhName = entry.getKey();
+        List<MsgPlaceholderNode> nodesWithSameBasePhName = entry.getValue();
+        if (nodesWithSameBasePhName.size() == 1) {
+            // Case 1: Only one node generates this base placeholder name. Simple.
+            phNameToRepNodeMap.put(basePhName, nodesWithSameBasePhName.get(0));
+        } else {
+            // Case 2: Multiple nodes generate this base placeholder name. Need number suffixes.
+            int nextSuffix = 1;
+            for (MsgPlaceholderNode repNode : nodesWithSameBasePhName) {
+                String newPhName;
+                do {
+                    newPhName = basePhName + "_" + nextSuffix;
+                    ++nextSuffix;
+                } while (basePhNameToRepNodeMap.containsKey(newPhName));
+                phNameToRepNodeMap.put(newPhName, repNode);
+            }
+        }
+    }
+    // ------ Step 3: Build map of every node to its placeholder name ------
+    phNodeToNameMap = Maps.newHashMap();
+    // Reverse the map of placeholders to representative nodes.
+    for (Map.Entry<String, MsgPlaceholderNode> entry : phNameToRepNodeMap.entrySet()) {
+        phNodeToNameMap.put(entry.getValue(), entry.getKey());
+    }
+    // Add mappings for the non-representative nodes.
+    for (Map.Entry<MsgPlaceholderNode, MsgPlaceholderNode> entry : nonRepNodeToRepNodeMap.entrySet()) {
+        phNodeToNameMap.put(entry.getKey(), phNodeToNameMap.get(entry.getValue()));
+    }
+}

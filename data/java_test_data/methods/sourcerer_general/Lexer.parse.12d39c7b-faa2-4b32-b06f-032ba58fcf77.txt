@@ -1,0 +1,111 @@
+public void parse() {
+    LexerDoc lexer = m_doc.getLexer();
+    if (lexer == null)
+        return;
+    if (lexer.getLexerState(LexerDoc.INITIAL_STATE) == null)
+        throw new NoInitialStateException();
+    LexerStateDoc[] lexerStates = lexer.getLexerStates();
+    for (LexerStateDoc lexerState : lexerStates) {
+        lexerState.addRule(m_defaultRule);
+        RuleDoc[] rules = lexerState.getRules();
+        if (rules.length == 0)
+            warn(WARN_NO_RULES.format(new Object[] { lexerState.getName() }));
+        ESet startSet = new ESet();
+        ESet bolSet = new ESet();
+        for (RuleDoc rule : rules) {
+            for (PatternDoc pattern : rule.getPatterns()) {
+                NFA nfa;
+                if (pattern.getCaseValue() < 0) {
+                    RuleParser parser = new RuleParser(this, m_nfaFactory, pattern.isNocase());
+                    nfa = parser.parse(pattern.getLineNumber(), pattern.getPattern());
+                    pattern.setCaseValue(nfa.last().caseValue);
+                    if (parser.isBOL())
+                        pattern.setBOL(true);
+                    if (nfa.anchor != 0)
+                        pattern.setTrailContext(nfa.anchor);
+                    pattern.setProperty(PROP_NFA, nfa);
+                } else
+                    nfa = (NFA) pattern.getProperty(PROP_NFA);
+                if (pattern.isBOL()) {
+                    m_bolStates = true;
+                    bolSet.add(nfa);
+                } else {
+                    // NFA that do not have BOL status can start in normal
+                    // or BOL cases.
+                    bolSet.add(nfa);
+                    startSet.add(nfa);
+                }
+            // System.out.println ("case " + pattern.getCaseValue () + ": " + pattern.getPattern ());
+            // System.out.println ("NFA:");
+            // System.out.println (nfa);
+            }
+        }
+        lexerState.setProperty(PROP_START_SET, startSet);
+        lexerState.setProperty(PROP_BOL_SET, bolSet);
+    }
+    // swap INITIAL state to the front if possible
+    LexerStateDoc lexerState = lexer.getLexerState(LexerDoc.INITIAL_STATE);
+    for (int i = 0; i < lexerStates.length; ++i) {
+        if (lexerStates[i] == lexerState) {
+            LexerStateDoc tmp = lexerStates[0];
+            lexerStates[0] = lexerState;
+            lexerStates[i] = tmp;
+            break;
+        }
+    }
+    m_lexerStates = lexerStates;
+    m_beginLocations = new int[lexerStates.length];
+    m_backupCases = new boolean[m_caseCount + 1];
+    for (int i = 0; i < lexerStates.length; ++i) {
+        lexerState = lexerStates[i];
+        ESet startSet = (ESet) lexerState.getProperty(PROP_START_SET);
+        ESet bolSet = (ESet) lexerState.getProperty(PROP_BOL_SET);
+        m_beginLocations[i] = m_dfaStates.size();
+        buildDFA(startSet, bolSet);
+        // check shadowed patterns for each state
+        // we do it here because some rules may be used in multiple states
+        int[] accepts = m_dfa.getAccepts();
+        for (RuleDoc rule : lexerStates[i].getRules()) {
+            for (PatternDoc pattern : rule.getPatterns()) {
+                // check if the pattern is shadowed
+                int caseValue = pattern.getCaseValue();
+                int a;
+                for (a = m_beginLocations[i]; a < accepts.length; ++a) if (accepts[a] == caseValue)
+                    break;
+                if (pattern.isInternal()) {
+                    if (a < accepts.length) {
+                        if (m_incompleteStates == null)
+                            m_incompleteStates = new HashSet<LexerStateDoc>();
+                        m_incompleteStates.add(lexerStates[i]);
+                    }
+                } else if (a >= accepts.length) {
+                    if (m_unusedPatterns == null)
+                        m_unusedPatterns = new HashMap<LexerStateDoc, Collection<PatternDoc>>();
+                    Collection<PatternDoc> list = m_unusedPatterns.get(lexerStates[i]);
+                    if (list == null) {
+                        list = new LinkedList<PatternDoc>();
+                        m_unusedPatterns.put(lexerStates[i], list);
+                    }
+                    list.add(pattern);
+                }
+            }
+        }
+    }
+    if (m_backup) {
+        m_backupPatterns = new HashMap<LexerStateDoc, Collection<PatternDoc>>();
+        for (int i = 0; i < lexerStates.length; ++i) {
+            for (RuleDoc rule : lexerStates[i].getRules()) {
+                for (PatternDoc pattern : rule.getPatterns()) {
+                    if (m_backupCases[pattern.getCaseValue()]) {
+                        Collection<PatternDoc> list = m_backupPatterns.get(lexerStates[i]);
+                        if (list == null) {
+                            list = new LinkedList<PatternDoc>();
+                            m_backupPatterns.put(lexerStates[i], list);
+                        }
+                        list.add(pattern);
+                    }
+                }
+            }
+        }
+    }
+}

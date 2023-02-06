@@ -1,0 +1,108 @@
+public static void logSubmitted(JobID jobId, JobConf jobConf, String jobConfPath, long submitTime) throws IOException {
+    FileSystem fs = null;
+    String userLogDir = null;
+    String jobUniqueString = JOBTRACKER_UNIQUE_STRING + jobId;
+    if (!disableHistory) {
+        // Get the username and job name to be used in the actual log filename;
+        // sanity check them too
+        String jobName = getJobName(jobConf);
+        String user = getUserName(jobConf);
+        // get the history filename
+        String logFileName = getJobHistoryFileName(jobConf, jobId);
+        // setup the history log file for this job
+        Path logFile = getJobHistoryLogLocation(logFileName);
+        // find user log directory
+        Path userLogFile = getJobHistoryLogLocationForUser(logFileName, jobConf);
+        try {
+            ArrayList<PrintWriter> writers = new ArrayList<PrintWriter>();
+            FSDataOutputStream out = null;
+            PrintWriter writer = null;
+            if (LOG_DIR != null) {
+                // create output stream for logging in org.fit.hiai.hadoop.job.history.location
+                fs = new Path(LOG_DIR).getFileSystem(jobConf);
+                logFile = recoverJobHistoryFile(jobConf, logFile);
+                int defaultBufferSize = fs.getConf().getInt("io.file.buffer.size", 4096);
+                out = fs.create(logFile, FsPermission.getDefault(), true, defaultBufferSize, fs.getDefaultReplication(), jobHistoryBlockSize, null);
+                writer = new PrintWriter(out);
+                writers.add(writer);
+            }
+            if (userLogFile != null) {
+                userLogDir = userLogFile.getParent().toString();
+                // create output stream for logging
+                // in org.fit.hiai.hadoop.job.history.user.location
+                fs = userLogFile.getFileSystem(jobConf);
+                userLogFile = recoverJobHistoryFile(jobConf, userLogFile);
+                out = fs.create(userLogFile, true, 4096);
+                writer = new PrintWriter(out);
+                writers.add(writer);
+            }
+            openJobs.put(jobUniqueString, writers);
+            // Log the history meta info
+            JobHistory.MetaInfoManager.logMetaInfo(writers);
+            // add to writer as well
+            JobHistory.log(writers, RecordTypes.Job, new Keys[] { Keys.JOBID, Keys.JOBNAME, Keys.USER, Keys.SUBMIT_TIME, Keys.JOBCONF }, new String[] { jobId.toString(), jobName, user, String.valueOf(submitTime), jobConfPath });
+        } catch (IOException e) {
+            LOG.error("Failed creating job history log file, disabling history", e);
+            disableHistory = true;
+        }
+    }
+    // Always store job conf on local file system
+    String localJobFilePath = JobInfo.getLocalJobFilePath(jobId);
+    File localJobFile = new File(localJobFilePath);
+    FileOutputStream jobOut = null;
+    try {
+        jobOut = new FileOutputStream(localJobFile);
+        jobConf.writeXml(jobOut);
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("Job conf for " + jobId + " stored at " + localJobFile.getAbsolutePath());
+        }
+    } catch (IOException ioe) {
+        LOG.error("Failed to store job conf on the local filesystem ", ioe);
+    } finally {
+        if (jobOut != null) {
+            try {
+                jobOut.close();
+            } catch (IOException ie) {
+                LOG.info("Failed to close the job configuration file " + StringUtils.stringifyException(ie));
+            }
+        }
+    }
+    /* Storing the job conf on the log dir */
+    Path jobFilePath = null;
+    if (LOG_DIR != null) {
+        jobFilePath = new Path(LOG_DIR + File.separator + jobUniqueString + "_conf.xml");
+    }
+    Path userJobFilePath = null;
+    if (userLogDir != null) {
+        userJobFilePath = new Path(userLogDir + File.separator + jobUniqueString + "_conf.xml");
+    }
+    FSDataOutputStream jobFileOut = null;
+    try {
+        if (LOG_DIR != null) {
+            fs = new Path(LOG_DIR).getFileSystem(jobConf);
+            if (!fs.exists(jobFilePath)) {
+                jobFileOut = fs.create(jobFilePath);
+                jobConf.writeXml(jobFileOut);
+                jobFileOut.close();
+            }
+        }
+        if (userLogDir != null) {
+            fs = new Path(userLogDir).getFileSystem(jobConf);
+            jobFileOut = fs.create(userJobFilePath);
+            jobConf.writeXml(jobFileOut);
+        }
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("Job conf for " + jobId + " stored at " + jobFilePath + "and" + userJobFilePath);
+        }
+    } catch (IOException ioe) {
+        LOG.error("Failed to store job conf on the local filesystem ", ioe);
+    } finally {
+        if (jobFileOut != null) {
+            try {
+                jobFileOut.close();
+            } catch (IOException ie) {
+                LOG.info("Failed to close the job configuration file " + StringUtils.stringifyException(ie));
+            }
+        }
+    }
+}

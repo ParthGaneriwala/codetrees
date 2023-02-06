@@ -1,0 +1,77 @@
+@SuppressWarnings("unchecked")
+public List<Event> doSearch(String mapKey, HttpServletRequest request, Map model, EventSearchForm eventSearchForm) {
+    /*
+         * 1. Get the lat-long bounding box of whatever zoom
+         * level we are at. 2. Parse the time field to extract a time range 3.
+         * Do a search to find the count of all events within that text filter,
+         * time range and bounding box
+         * TODO cache the total results if nothing has changed (e.g. pagination)
+         */
+    List<Event> events;
+    Long totalResults;
+    Integer firstRecord;
+    if (eventSearchForm.getDisplayEventId() != null) {
+        Event event = eventSearchService.findById(eventSearchForm.getDisplayEventId());
+        events = new ArrayList<Event>();
+        events.add(event);
+        eventSearchForm.setMapCenter(event.getTsGeometry().getGeometry().getCentroid());
+        // near the border in which case you won't see the line at all.
+        if (event.getTsGeometry().getGeometry() instanceof Point) {
+            eventSearchForm.setMapCenterOverride(true);
+            eventSearchForm.setZoomOverride(true);
+        } else {
+            eventSearchForm.setMapCenterOverride(false);
+            eventSearchForm.setZoomOverride(false);
+        }
+        eventSearchForm.setMapZoom(event.getZoomLevel());
+        eventSearchForm.setMapType(event.getMapType());
+        totalResults = 1L;
+        firstRecord = 0;
+        // now remove the id from the form - we don't want to get stuck forever showing this event
+        // the browser javascript still needs the event id so it can crate a linkHere url, so we make
+        // a copy of the id
+        eventSearchForm.setLinkHereEventId(eventSearchForm.getDisplayEventId());
+        eventSearchForm.setDisplayEventId(null);
+    } else {
+        eventSearchForm.setLinkHereEventId(null);
+        eventSearchForm.setDisplayEventId(null);
+        if (eventSearchForm.getMapCenter() == null) {
+            // geocode
+            try {
+                geocode(mapKey, request, eventSearchForm);
+            } catch (IOException e) {
+                // TODO, perhaps some better error handling here??
+                log.info("Exception geocoding location " + eventSearchForm.getWhere() + e);
+            }
+        }
+        // we are ok to go if IsGeocodeSuccess is null or True
+        if (!BooleanUtils.isFalse(eventSearchForm.getIsGeocodeSuccess())) {
+            firstRecord = DisplayTagHelper.getFirstRecord(request, DISPLAYTAG_TABLE_ID, DISPLAYTAG_PAGESIZE);
+            LatLngBounds bounds = getBounds(eventSearchForm);
+            SearchParams params = new SearchParams();
+            params.setTextFilter(eventSearchForm.getWhat());
+            params.setUserTag(eventSearchForm.getUserTag());
+            params.setTimeRange(eventSearchForm.getWhen());
+            params.setVisibility(getVisibility(eventSearchForm));
+            params.setCatalog(CatalogUtil.getCatalog(request));
+            // note these are opposites.. a value of null or false = false, true=true
+            params.setIncludeTimeRangeOverlaps(!BooleanUtils.isTrue(eventSearchForm.getExcludeTimeRangeOverlaps()));
+            events = eventSearchService.search(DISPLAYTAG_PAGESIZE, firstRecord, bounds, params);
+            // for debugging
+            // addDebugBoundingBox(events, bounds);
+            totalResults = eventSearchService.getCount(bounds, params);
+        } else {
+            // failed geocode, no points
+            events = new ArrayList<Event>();
+            totalResults = 0L;
+            firstRecord = 0;
+        }
+    }
+    prepareModel(model, events, totalResults, firstRecord);
+    // NOTE: we are putting the events into the command so that the page javascript
+    // functions can properly display them using google's mapping API
+    List<Event> renderedEvents = renderWiki(events, request);
+    eventSearchForm.setSearchResults(JSONFormat.toJSON(renderedEvents));
+    setupPageTitle(request, eventSearchForm, model, events);
+    return events;
+}

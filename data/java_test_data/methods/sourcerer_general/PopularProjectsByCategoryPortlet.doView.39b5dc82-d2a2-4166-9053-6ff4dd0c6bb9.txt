@@ -1,0 +1,66 @@
+public void doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    try {
+        String defaultView = VIEW_PAGE;
+        // Get preferences
+        String categoryValue = request.getPreferences().getValue(PREF_CATEGORY_NAME, null);
+        request.setAttribute(TITLE, request.getPreferences().getValue(PREF_TITLE, null));
+        request.setAttribute(SHOW_RATING, request.getPreferences().getValue(PREF_SHOW_RATING, null));
+        request.setAttribute(SHOW_POINTS, request.getPreferences().getValue(PREF_SHOW_POINTS, null));
+        Connection db = PortalUtils.useConnection(request);
+        ProjectCategoryList categories = new ProjectCategoryList();
+        categories.setCategoryDescription(categoryValue);
+        categories.setEnabled(true);
+        categories.setTopLevelOnly(true);
+        categories.buildList(db);
+        ProjectCategory category = (categories.size() > 0 ? categories.get(0) : null);
+        if (category != null) {
+            LOG.debug("Found category: " + category.getDescription());
+            PopularityCriteria popularityCriteria = new PopularityCriteria();
+            popularityCriteria.setInstanceId(PortalUtils.getInstance(request).getId());
+            popularityCriteria.setLimit(request.getPreferences().getValue(PREF_RECORD_LIMIT, "-1"));
+            popularityCriteria.setOrder(request.getPreferences().getValue(PREF_ORDER, "desc"));
+            int daysLimit = Integer.parseInt(request.getPreferences().getValue(PREF_DAYS_LIMIT, "0")) * -1;
+            if (daysLimit < 0) {
+                Calendar startCal = Calendar.getInstance();
+                startCal.add(Calendar.DATE, daysLimit);
+                popularityCriteria.setStartDate(new Timestamp(startCal.getTimeInMillis()));
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("daysLimit: " + daysLimit + " " + startCal.getTime());
+                }
+            }
+            popularityCriteria.setEndDate(new Timestamp(System.currentTimeMillis()));
+            if (PortalUtils.getDashboardPortlet(request).isCached()) {
+                if (PortalUtils.canShowSensitiveData(request)) {
+                    // Use the most generic settings since this portlet is cached
+                    LOG.debug("setForParticipant");
+                    popularityCriteria.setForParticipant(Constants.TRUE);
+                } else {
+                    // Use the most generic settings since this portlet is cached
+                    LOG.debug("setForPublic");
+                    popularityCriteria.setForPublic(Constants.TRUE);
+                }
+            } else {
+                // Use the current user's setting
+                User thisUser = PortalUtils.getUser(request);
+                if (thisUser.isLoggedIn()) {
+                    // Show what's popular out of all the projects the user has access to
+                    popularityCriteria.setForParticipant(Constants.TRUE);
+                } else {
+                    // Just show the public ones
+                    popularityCriteria.setForPublic(Constants.TRUE);
+                }
+            }
+            // Query the projects based on the popularity criteria
+            ProjectList projectList = ProjectPopularity.retrieveProjects(db, popularityCriteria, category.getId());
+            request.setAttribute(PROJECT_LIST, projectList);
+            LOG.debug("Projects found: " + projectList.size());
+            if (projectList.size() > 0) {
+                PortletContext context = getPortletContext();
+                PortletRequestDispatcher requestDispatcher = context.getRequestDispatcher(defaultView);
+                requestDispatcher.include(request, response);
+            }
+        }
+    } catch (Exception e) {
+        throw new PortletException(e.getMessage());
+    }
+}

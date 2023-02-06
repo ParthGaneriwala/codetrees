@@ -1,0 +1,73 @@
+@Test
+public void test() throws UIMAException {
+    AnalysisEngineDescription desc = CleartkAnnotatorDescriptionFactory.createCleartkAnnotator(VerbClauseTemporalAnnotator.class, typeSystemDescription, PublicFieldDataWriter.StringFactory.class, ".");
+    AnalysisEngine engine = AnalysisEngineFactory.createPrimitive(desc);
+    tokenBuilder.buildTokens(jCas, "He said she bought milk.", "He said she bought milk .", "PRP VBD PRP VBD NN .", "he say she buy milk .");
+    List<Token> tokens = new ArrayList<Token>(JCasUtil.select(jCas, Token.class));
+    // create the Event and TemporalLink annotations
+    Event source = new Event(jCas, tokens.get(1).getBegin(), tokens.get(1).getEnd());
+    Event target = new Event(jCas, tokens.get(3).getBegin(), tokens.get(3).getEnd());
+    TemporalLink tlink = new TemporalLink(jCas);
+    tlink.setSource(source);
+    tlink.setTarget(target);
+    tlink.setRelationType("AFTER");
+    Annotation[] timemlAnnotations = new Annotation[] { source, target, tlink };
+    for (Annotation annotation : timemlAnnotations) {
+        annotation.addToIndexes();
+    }
+    // create the TreebankNode annotations
+    TreebankNode root = TreebankNodeUtility.newNode(jCas, "S", TreebankNodeUtility.newNode(jCas, "NP", this.newNode(jCas, tokens.get(0))), TreebankNodeUtility.newNode(jCas, "VP", this.newNode(jCas, tokens.get(1)), TreebankNodeUtility.newNode(jCas, "SBAR", TreebankNodeUtility.newNode(jCas, "NP", this.newNode(jCas, tokens.get(2))), TreebankNodeUtility.newNode(jCas, "VP", this.newNode(jCas, tokens.get(3)), TreebankNodeUtility.newNode(jCas, "NP", this.newNode(jCas, tokens.get(4)))))));
+    Sentence sentence = JCasUtil.selectSingle(jCas, Sentence.class);
+    // set the Sentence's constitutentParse feature
+    TopTreebankNode tree = new TopTreebankNode(jCas, sentence.getBegin(), sentence.getEnd());
+    tree.setNodeType("TOP");
+    tree.setChildren(new FSArray(jCas, 1));
+    tree.setChildren(0, root);
+    tree.addToIndexes();
+    // collect the single instance from the annotator
+    List<Instance<String>> instances;
+    instances = PublicFieldDataWriter.StringFactory.collectInstances(engine, jCas);
+    Assert.assertEquals(1, instances.size());
+    // check the outcome
+    Assert.assertEquals("AFTER", instances.get(0).getOutcome());
+    // now remove all TimeML annotations
+    Collection<Event> events;
+    Collection<TemporalLink> tlinks;
+    for (Annotation annotation : timemlAnnotations) {
+        annotation.removeFromIndexes();
+    }
+    events = JCasUtil.select(jCas, Event.class);
+    tlinks = JCasUtil.select(jCas, TemporalLink.class);
+    Assert.assertEquals(0, events.size());
+    Assert.assertEquals(0, tlinks.size());
+    // and run the annotator again, asking it to annotate this time
+    // but don't let it add any events
+    desc = AnalysisEngineFactory.createPrimitiveDescription(VerbClauseTemporalAnnotator.class, typeSystemDescription, CleartkAnnotator.PARAM_CLASSIFIER_FACTORY_CLASS_NAME, AfterNewClassifier.class.getName());
+    engine = AnalysisEngineFactory.createPrimitive(desc);
+    engine.process(jCas);
+    engine.collectionProcessComplete();
+    // check that no TimeML annotations were created
+    events = JCasUtil.select(jCas, Event.class);
+    tlinks = JCasUtil.select(jCas, TemporalLink.class);
+    Assert.assertEquals(0, events.size());
+    Assert.assertEquals(0, tlinks.size());
+    // run the annotator again, but let it add events this time
+    desc = AnalysisEngineFactory.createPrimitiveDescription(VerbClauseTemporalAnnotator.class, typeSystemDescription, CleartkAnnotator.PARAM_CLASSIFIER_FACTORY_CLASS_NAME, AfterNewClassifier.class.getName(), VerbClauseTemporalAnnotator.PARAM_CREATE_EVENTS, true);
+    engine = AnalysisEngineFactory.createPrimitive(desc);
+    engine.process(jCas);
+    engine.collectionProcessComplete();
+    // check the resulting TimeML annotations
+    events = JCasUtil.select(jCas, Event.class);
+    tlinks = JCasUtil.select(jCas, TemporalLink.class);
+    Iterator<Event> eventsIter = events.iterator();
+    Event event0 = eventsIter.next();
+    Event event1 = eventsIter.next();
+    TemporalLink tlink0 = tlinks.iterator().next();
+    Assert.assertEquals(2, events.size());
+    Assert.assertEquals(1, tlinks.size());
+    Assert.assertEquals("said", event0.getCoveredText());
+    Assert.assertEquals("bought", event1.getCoveredText());
+    Assert.assertEquals(event0, tlink0.getSource());
+    Assert.assertEquals(event1, tlink0.getTarget());
+    Assert.assertEquals("AFTER-NEW", tlink0.getRelationType());
+}

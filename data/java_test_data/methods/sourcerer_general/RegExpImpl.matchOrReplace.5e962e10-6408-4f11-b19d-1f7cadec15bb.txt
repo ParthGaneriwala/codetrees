@@ -1,0 +1,60 @@
+private static Object matchOrReplace(Context cx, Scriptable scope, Scriptable thisObj, Object[] args, RegExpImpl reImpl, GlobData data, boolean forceFlat) {
+    NativeRegExp re;
+    String str = ScriptRuntime.toString(thisObj);
+    data.str = str;
+    Scriptable topScope = ScriptableObject.getTopLevelScope(scope);
+    if (args.length == 0) {
+        Object compiled = NativeRegExp.compileRE(cx, "", "", false);
+        re = new NativeRegExp(topScope, compiled);
+    } else if (args[0] instanceof NativeRegExp) {
+        re = (NativeRegExp) args[0];
+    } else {
+        String src = ScriptRuntime.toString(args[0]);
+        String opt;
+        if (data.optarg < args.length) {
+            args[0] = src;
+            opt = ScriptRuntime.toString(args[data.optarg]);
+        } else {
+            opt = null;
+        }
+        Object compiled = NativeRegExp.compileRE(cx, src, opt, forceFlat);
+        re = new NativeRegExp(topScope, compiled);
+    }
+    data.regexp = re;
+    data.global = (re.getFlags() & NativeRegExp.JSREG_GLOB) != 0;
+    int[] indexp = { 0 };
+    Object result = null;
+    if (data.mode == RA_SEARCH) {
+        result = re.executeRegExp(cx, scope, reImpl, str, indexp, NativeRegExp.TEST);
+        if (result != null && result.equals(Boolean.TRUE))
+            result = Integer.valueOf(reImpl.leftContext.length);
+        else
+            result = Integer.valueOf(-1);
+    } else if (data.global) {
+        re.lastIndex = 0;
+        for (int count = 0; indexp[0] <= str.length(); count++) {
+            result = re.executeRegExp(cx, scope, reImpl, str, indexp, NativeRegExp.TEST);
+            if (result == null || !result.equals(Boolean.TRUE))
+                break;
+            if (data.mode == RA_MATCH) {
+                match_glob(data, cx, scope, count, reImpl);
+            } else {
+                if (data.mode != RA_REPLACE)
+                    Kit.codeBug();
+                SubString lastMatch = reImpl.lastMatch;
+                int leftIndex = data.leftIndex;
+                int leftlen = lastMatch.index - leftIndex;
+                data.leftIndex = lastMatch.index + lastMatch.length;
+                replace_glob(data, cx, scope, reImpl, leftIndex, leftlen);
+            }
+            if (reImpl.lastMatch.length == 0) {
+                if (indexp[0] == str.length())
+                    break;
+                indexp[0]++;
+            }
+        }
+    } else {
+        result = re.executeRegExp(cx, scope, reImpl, str, indexp, ((data.mode == RA_REPLACE) ? NativeRegExp.TEST : NativeRegExp.MATCH));
+    }
+    return result;
+}

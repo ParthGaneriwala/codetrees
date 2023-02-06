@@ -1,0 +1,118 @@
+public static List<Protein> assign(Peptide chain, OrganicMatter mass, MatchSettings setting) {
+    List<Protein> assignments = new ArrayList<Protein>();
+    Protein test = (Protein) new Protein(1).setName("test");
+    IsoformPool pool = new IsoformPool(), s_pool = new IsoformPool(), l_pool = new IsoformPool(), tmp_pool = null;
+    // List<String> peptide = new ArrayList<String>();
+    // match the mass to the sequence
+    String _seq = chain.getSequence().toUpperCase();
+    Molecule _mass = new Molecule(Molecule.H2O);
+    double tol = setting.getMassTolerance(mass);
+    int m_start = 0, _start = 0, _end = -1, k = 0;
+    pool.clear();
+    s_pool.clear();
+    l_pool.clear();
+    while (_start < _seq.length()) {
+        for (k = _end + 1; k < _seq.length(); k++) {
+            // create the pool of alternatives
+            if ((m_start < chain.getAddOns().size()) && (chain.getAddOn(m_start).getLocation() == k + 1)) {
+                // add the new modifier_set to the end
+                test.getChain(0).addAddon(chain.getAddOn(++m_start));
+                List<ModifierSet> addons = test.getChain(0).getAddOns();
+                if (Ms_Query.isMatched(s_pool, m_start, test.getChain(0).getAddOns().size())) {
+                    tmp_pool = s_pool;
+                    s_pool = pool;
+                    pool = tmp_pool;
+                } else if (Ms_Query.isMatched(l_pool, m_start, test.getChain(0).getAddOns().size())) {
+                    tmp_pool = l_pool;
+                    l_pool = pool;
+                    pool = tmp_pool;
+                } else
+                    pickPool(pool, m_start, test, s_pool, l_pool);
+            }
+            _mass.add(KBase_Factory.sResidueDictionary.get(_seq.charAt(k)));
+            // System.out.print(".");
+            if (// too long
+            Ms_Query.compare(_mass, mass, tol) > 0) {
+                // System.out.println(Util.toString(peptide, ""));
+                break;
+            }
+            if (!Util.isSet(pool.getIsoforms())) {
+                // no modifiers
+                int outcome = Ms_Query.compare(_mass, mass, tol);
+                // its over
+                if (outcome > 0)
+                    break;
+                // not yet
+                if (outcome < 0)
+                    continue;
+                // create the assignment for the match
+                assignments.add(Ms_Factory.newMonoAssignment(chain, new Range<Integer>(_start + 1, k + 1), _mass, null, setting.getSeqFilter()));
+            // System.out.print("**" + Util.d2s(_mass.getMonoisotopicMass(), 4) + ", ");
+            // System.out.print((_start+1) + "-" + (k+1) + ", ");
+            // System.out.println(Util.toString(peptide, ""));
+            } else {
+                // parent.assert("before check: " + pool.length + ", " + (_mass + pool.begin().mono_mass));
+                int outcome = Ms_Query.compare(Ms_Factory.sum(_mass, Util.front(pool.getIsoforms())), mass, tol);
+                if (outcome > 0)
+                    break;
+                if (outcome < 0)
+                    continue;
+                for (Protein isoform : pool.getIsoforms()) if (Ms_Query.isMatched(Ms_Factory.sum(isoform, _mass), mass, tol)) {
+                    assignments.add(Ms_Factory.newMonoAssignment(chain, new Range<Integer>(_start + 1, k + 1), _mass, isoform, setting.getSeqFilter()));
+                }
+            }
+        }
+        // move the starting point
+        _mass.remove(KBase_Factory.sResidueDictionary.get(_seq.charAt(_start)));
+        // if (peptide.get(0).charAt(0) == _seq.charAt(_start)) peptide.remove(0);
+        // else        System.out.println("Invalid first char!");
+        boolean flag = false;
+        _start++;
+        if ((Util.isSet(test.getChain(0).getAddOns()) && Util.front(test.getChain(0).getAddOns()).getUpTo() < _start + 1)) {
+            test.getChain(0).getAddOns().remove(0);
+            flag = true;
+        }
+        // move the end point
+        _end = k;
+        if (_end == _seq.length())
+            _end--;
+        while (_end >= _start) {
+            // n : the new end point
+            if (m_start == 0 || !Util.isSet(test.getChain(0).getAddOns())) {
+                if (!Util.isSet(s_pool.getIsoforms()))
+                    s_pool = pool.clone();
+                else if (!Util.isSet(l_pool.getIsoforms()) || l_pool.equals(s_pool))
+                    l_pool = pool.clone();
+                pool.clear();
+            } else if (flag) {
+                if (Ms_Query.isMatched(s_pool, m_start, test.getChain(0).getAddOns().size())) {
+                    tmp_pool = s_pool;
+                    s_pool = pool;
+                    pool = tmp_pool;
+                } else if (Ms_Query.isMatched(l_pool, m_start, test.getChain(0).getAddOns().size())) {
+                    tmp_pool = l_pool;
+                    l_pool = pool;
+                    pool = tmp_pool;
+                } else
+                    pickPool(pool, m_start, test, s_pool, l_pool);
+            }
+            Molecule _max = Util.isSet(pool.getIsoforms()) ? Ms_Factory.sum(_mass, Util.back(pool.getIsoforms())) : _mass;
+            if (Ms_Query.compare(_max, mass, tol) < 0)
+                break;
+            // create the new end point
+            // parent.TheConsole.print(_start + ", " + _end);
+            _mass.remove(KBase_Factory.sResidueDictionary.get(_seq.charAt(_end)));
+            // if (Util.back(peptide).charAt(0) == _seq.charAt(_end)) peptide.remove(peptide.size()-1);
+            // else        System.out.println("Invalid last char!");
+            flag = false;
+            _end--;
+            if (Util.isSet(test.getChain(0).getAddOns()) && Util.back(test.getChain(0).getAddOns()).getLocation() > _end + 1) {
+                m_start--;
+                flag = true;
+                test.getChain(0).getAddOns().remove(test.getChain(0).getAddOns().size() - 1);
+            }
+        }
+    }
+    // alert("Num of hits: " + this.assignment.length);
+    return assignments;
+}

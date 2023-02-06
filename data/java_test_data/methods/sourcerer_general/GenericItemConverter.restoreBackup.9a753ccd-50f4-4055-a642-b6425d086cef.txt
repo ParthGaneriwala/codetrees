@@ -1,0 +1,52 @@
+public void restoreBackup(BackupEntry backupEntry) throws NoSuchItemTypeException {
+    actionService.pause(true);
+    serverEnergyService.pauseService(true);
+    Map<DbUserState, UserState> userStates = new HashMap<DbUserState, UserState>();
+    for (DbUserState dbUserState : backupEntry.getUserStates()) {
+        UserState userState = dbUserState.createUserState(userGuidanceService);
+        userStates.put(dbUserState, userState);
+    }
+    Collection<GenericItem> genericItems = backupEntry.getItems();
+    Collection<UserState> userStateAbandoned = new ArrayList<UserState>();
+    Map<DbBase, Base> dbBases = new HashMap<DbBase, Base>();
+    for (GenericItem genericItem : genericItems) {
+        try {
+            if (genericItem instanceof GenericBaseItem) {
+                DbBase dBbase = ((GenericBaseItem) genericItem).getBase();
+                Base base = getBase(userStates, dbBases, dBbase);
+                SyncBaseItem syncItem = addSyncBaseItem((GenericBaseItem) genericItem, base);
+                base.addItemNoCreateCount(syncItem);
+            } else if (genericItem instanceof GenericResourceItem) {
+                addSyncItem((GenericResourceItem) genericItem);
+            } else if (genericItem instanceof GenericProjectileItem) {
+                DbBase dBbase = ((GenericProjectileItem) genericItem).getBase();
+                Base base = getBase(userStates, dbBases, dBbase);
+                addSyncItem((GenericProjectileItem) genericItem, base);
+            } else {
+                log.error("restoreBackup: unknown type: " + genericItem);
+            }
+        } catch (Throwable t) {
+            log.error("Error restoring GenericItem: " + genericItem.getItemId(), t);
+        }
+    }
+    backupEntry.getUserStates().removeAll(userStateAbandoned);
+    // post process
+    for (Iterator<GenericItem> iterator = genericItems.iterator(); iterator.hasNext(); ) {
+        GenericItem genericItem = iterator.next();
+        try {
+            if (genericItem instanceof GenericBaseItem) {
+                postProcessRestore((GenericBaseItem) genericItem);
+            }
+        } catch (Throwable t) {
+            log.error("Error post process restore GenericItem: " + genericItem.getItemId(), t);
+            iterator.remove();
+        }
+    }
+    userService.restore(userStates.values());
+    baseService.restoreBases(dbBases.values());
+    itemService.restoreItems(syncItems.values());
+    serverConditionService.restoreBackup(userStates, itemService);
+    serverEnergyService.pauseService(false);
+    serverEnergyService.restoreItems(syncItems.values());
+    actionService.pause(false);
+}

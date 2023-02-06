@@ -1,0 +1,107 @@
+@Override
+public void trainOnInstanceImpl(Instance inst) {
+    // System.out.print("Dstream.trainOnInstanceImpl (");
+    int[] g;
+    DensityGrid dg;
+    CharacteristicVector cv;
+    // flag indicating whether N needs to be recalculated after this instance
+    boolean recalculateN = false;
+    // Passed Instance inst
+    if (!this.initialized) {
+        // System.out.println("Not yet initialized");
+        this.d = inst.numAttributes();
+        // System.out.println("d = "+this.d);
+        this.minVals = new int[this.d];
+        this.maxVals = new int[this.d];
+        for (int i = 0; i < this.d; i++) {
+            // System.out.print(i+" ");
+            if (inst.attribute(i).isNumeric()) {
+                maxVals[i] = (int) inst.value(i);
+                minVals[i] = (int) inst.value(i);
+            }
+        }
+        // System.out.println("...arrays initialized");
+        recalculateN = true;
+        this.initialized = true;
+    // System.out.println("...boolean values initialized");
+    // System.out.print("Grid list is: ");
+    // printGridList();
+    }
+    // 2. Determine the density grid g that contains x
+    // System.out.print(" & Step 2 ");
+    g = new int[this.d];
+    for (int i = 0; i < this.d; i++) {
+        if (inst.attribute(i).isNumeric()) {
+            g[i] = (int) inst.value(i);
+            if (g[i] > maxVals[i]) {
+                maxVals[i] = g[i];
+                recalculateN = true;
+            } else if (g[i] < minVals[i]) {
+                minVals[i] = g[i];
+                recalculateN = true;
+            }
+        } else {
+            g[i] = (int) inst.value(i);
+        }
+    }
+    if (recalculateN) {
+        // System.out.print(" recalculateN:");
+        int n = 1;
+        for (int i = 0; i < this.d; i++) {
+            // System.out.print(" "+n);
+            if (inst.attribute(i).isNominal())
+                n = n * inst.attribute(i).numValues();
+            else
+                n = n * (3 + maxVals[i] - minVals[i]);
+        }
+        // System.out.print(" "+n);
+        this.N = n;
+        this.dl = this.cl / (this.N * (1.0 - this.decayFactor));
+        this.dm = this.cm / (this.N * (1.0 - this.decayFactor));
+        // System.out.print(" dl = " + this.dl + ", dm = " + this.dm);
+        // Calculate the value for gap using the method defined in eq 26 of Chen and Tu 2007
+        double optionA = this.cl / this.cm;
+        double optionB = ((double) this.N - this.cm) / ((double) this.N - this.cl);
+        gap = (int) Math.floor(Math.log(Math.max(optionA, optionB)) / Math.log(this.getDecayFactor()));
+        // Ensure that gap is not zero (i.e. if the procedure to calculate gap rounds down to zero, then set gap to 1 and adjust clustering every instance)
+        if (gap == 0) {
+            gap = 1;
+        }
+    // System.out.println(" A is "+optionA+", B is "+optionB+" and gap = "+gap);
+    }
+    dg = new DensityGrid(g);
+    if (!this.grid_list.containsKey(dg)) {
+        // System.out.print("3 - dg wasn't in grid_list!");
+        if (this.deleted_grids.containsKey(dg)) {
+            // System.out.print(" but it was in deleted_grids!");
+            cv = new CharacteristicVector(this.getCurrTime(), this.deleted_grids.get(dg).intValue(), 1.0, -1, false, this.getDL(), this.getDM());
+            this.deleted_grids.remove(dg);
+        } else
+            cv = new CharacteristicVector(this.getCurrTime(), -1, 1.0, -1, false, this.getDL(), this.getDM());
+        this.grid_list.put(dg, cv);
+    // System.out.print(" "+dg.toString()+" "+cv.toString());
+    // System.out.println(" The size of grid_list is now "+grid_list.size());
+    } else // 4. Update the characteristic vector of dg
+    {
+        // System.out.print("4 - dg was in grid_list!");
+        cv = this.grid_list.get(dg);
+        cv.densityWithNew(this.getCurrTime(), this.getDecayFactor());
+        cv.setUpdateTime(this.getCurrTime());
+        // System.out.println(" "+dg.toString()+" "+cv.toString());
+        grid_list.put(dg, cv);
+    }
+    // System.out.println("\nCurrent Time is " + this.getCurrTime() + " and gap is " + this.gap);
+    if (this.getCurrTime() != 0 && this.getCurrTime() % gap == 0) {
+        if (this.getCurrTime() == gap) {
+            // System.out.print(" & Step 5 x6x");
+            this.initialClustering();
+        } else {
+            // System.out.print(" & Step x5x 6");
+            this.removeSporadic();
+            this.adjustClustering();
+        }
+    }
+    // 7. Increment tc
+    // System.out.println(" & Step 7");
+    this.incCurrTime();
+}

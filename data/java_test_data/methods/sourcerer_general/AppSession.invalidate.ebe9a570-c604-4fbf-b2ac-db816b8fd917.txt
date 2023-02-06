@@ -1,0 +1,57 @@
+public void invalidate() {
+    checkValid();
+    if (Log.isDebugEnabled())
+        Log.debug("invalidating SipApplicationSession: " + this);
+    try {
+        if (_expiryTimer != null) {
+            _callSession.cancel(_expiryTimer);
+            _expiryTimer = null;
+        }
+        synchronized (this) {
+            for (int i = _sessions.size(); i-- > 0; ) {
+                _sessions.get(i).invalidate();
+            }
+            _sessions.clear();
+            for (int i = LazyList.size(_otherSessions); i-- > 0; ) {
+                Object session = LazyList.get(_otherSessions, i);
+                if (session instanceof HttpSession)
+                    ((HttpSession) session).invalidate();
+            }
+            _otherSessions = null;
+            if (_timers != null) {
+                Iterator<ServletTimer> it2 = getTimers().iterator();
+                while (it2.hasNext()) {
+                    it2.next().cancel();
+                }
+            }
+        }
+        getCallSession().removeSession(this);
+        if (getContext() != null)
+            getContext().decrementSessions(System.currentTimeMillis() - _created);
+        SipApplicationSessionListener[] listeners = getContext().getSipApplicationSessionListeners();
+        if (listeners.length > 0)
+            getContext().fire(listeners, __appSessionDestroyed, new SipApplicationSessionEvent(this));
+        SipApplicationSessionAttributeListener[] attrListeners = getContext().getSipApplicationSessionAttributeListeners();
+        while (_attributes != null && _attributes.size() > 0) {
+            ArrayList<String> keys;
+            synchronized (this) {
+                keys = new ArrayList<String>(_attributes.keySet());
+            }
+            Iterator<String> iter = keys.iterator();
+            while (iter.hasNext()) {
+                String key = iter.next();
+                Object value;
+                synchronized (this) {
+                    value = _attributes.remove(key);
+                }
+                unbindValue(key, value);
+                if (attrListeners != null) {
+                    SipApplicationSessionBindingEvent event = new SipApplicationSessionBindingEvent(this, key);
+                    for (int i = 0; i < attrListeners.length; i++) attrListeners[i].attributeRemoved(event);
+                }
+            }
+        }
+    } finally {
+        _state = State.INVALID;
+    }
+}

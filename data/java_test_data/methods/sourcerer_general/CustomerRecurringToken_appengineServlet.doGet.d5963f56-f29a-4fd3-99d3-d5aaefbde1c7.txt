@@ -1,0 +1,158 @@
+public void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+    /*
+        UserService userService = UserServiceFactory.getUserService();
+        User user = userService.getCurrentUser();
+
+        String tokenID = req.getParameter("tokenID");
+        String refundTokenID = req.getParameter("refundTokenID");
+        String status = req.getParameter("status");
+        */
+    String signature = req.getParameter("signature");
+    // The following generates a page showing all the request parameters
+    PrintWriter out = resp.getWriter();
+    // resp.setContentType("text/plain");
+    resp.setContentType("text/html");
+    out.println("<html><head><link type=\"text/css\" rel=\"stylesheet\" href=\"/stylesheets/main.css\" /></head><body><p>");
+    String accessKeyId = PropertyBundle.getProperty(PropertyKeys.AWS_ACCESS_KEY);
+    String secretAccessKey = PropertyBundle.getProperty(PropertyKeys.AWS_SECRET_KEY);
+    // out.println("accessKeyId: " + accessKeyId);
+    // out.println("secretAccessKey: " + secretAccessKey);
+    boolean valid = false;
+    try {
+        // out.println("url: " + req.getRequestURL() + "?" + req.getQueryString());
+        // out.println("signature: " + signature);
+        AmazonFPSCBUIUtils obj = new AmazonFPSCBUIUtils(accessKeyId, secretAccessKey);
+        valid = obj.validateQueryString(req.getQueryString(), signature);
+    // out.println("valid: " + valid);
+    } catch (Exception e) {
+        out.println("validate: error: " + e.getMessage());
+        e.printStackTrace();
+    }
+    if (valid) {
+        // Get the values of all request parameters
+        Enumeration enum1 = req.getParameterNames();
+        String name = null;
+        // String value = null;
+        String id = null;
+        String reference = null;
+        String token = null;
+        for (; enum1.hasMoreElements(); ) {
+            // Get the name of the request parameter
+            name = (String) enum1.nextElement();
+            // out.println(name);
+            // Get the value of the request parameter
+            // value = req.getParameter(name);
+            // If the request parameter can appear more than once in the query string, get all values
+            String[] values = req.getParameterValues(name);
+            for (int i = 0; i < values.length; i++) {
+                // out.println("    "+values[i]);
+                if (name.equals("callerReference")) {
+                    id = values[i];
+                    reference = values[i];
+                }
+                if (name.equals("tokenID")) {
+                    token = values[i];
+                }
+            }
+        }
+        PersistenceManager pm = PMF.get().getPersistenceManager();
+        Customer c = null;
+        try {
+            id = id.replaceAll(GET_CustomerRecurringToken_appengineServlet.NAME, "");
+            id = id.replaceAll(NAME, "");
+            c = pm.getObjectById(Customer.class, Long.parseLong(id));
+        } finally {
+            pm.close();
+        }
+        int times = 0;
+        if (c.getTimes() != null)
+            times = Integer.parseInt(c.getTimes());
+        Date now = new Date();
+        Calendar calendar = Calendar.getInstance();
+        calendar.setTime(now);
+        calendar.add(Calendar.MINUTE, +5);
+        for (int i = 0; i < times; i++) {
+            pm = PMF.get().getPersistenceManager();
+            EnqueuePayQueue enqueuepayqueue = new EnqueuePayQueue();
+            enqueuepayqueue.setUrl(req.getQueryString());
+            enqueuepayqueue.setFullurl(req.getRequestURL().toString());
+            enqueuepayqueue.setCreated(now);
+            enqueuepayqueue.setModified(now);
+            // now.setTime(now.getTime()+ (1 * 60 * 60 *1000));
+            if ("HOURLY".equals(c.getPeriod()))
+                calendar.add(Calendar.HOUR_OF_DAY, +1);
+            else if ("DAILY".equals(c.getPeriod()))
+                calendar.add(Calendar.DATE, +1);
+            else if ("MONTHLY".equals(c.getPeriod()))
+                calendar.add(Calendar.MONTH, +1);
+            enqueuepayqueue.setDate_to_send(calendar.getTime());
+            try {
+                pm.makePersistent(enqueuepayqueue);
+            } finally {
+                pm.close();
+            }
+        }
+        // out.println("customer: " + c );
+        out.println("Order Submitted.  <br/>Tracking Number: " + c.getCallerReference() + "<br/>Return to <a href=\"" + c.getWebsite() + "\">" + c.getWebsite() + "</a><br/>");
+        if (c.getReturn_link() != null && !"".equals(c.getReturn_link()) && !"None".equals(c.getReturn_link()))
+            out.println("Event Details: <a href=\"" + c.getReturn_link() + "\">" + c.getReturn_link() + "</a><br/>");
+        out.println("Order Details:<br/>");
+        out.println("<table class=\"sample\">");
+        out.println("<tr class=\"d0\"><td>Name</td><td>" + c.getName() + "</td></tr>");
+        out.println("<tr class=\"d0\"><td>Reason</td><td>" + c.getReason() + "</td></tr>");
+        out.println("<tr class=\"d0\"><td>Location</td><td>" + c.getLocation() + "</td></tr>");
+        out.println("</table>");
+        /**
+         * *********************************************************************
+         * Instantiate Http Client Implementation of Amazon FPS
+         * *********************************************************************
+         */
+        /**/
+        AmazonFPS service = new AmazonFPSClient(accessKeyId, secretAccessKey);
+        PayRequest fpsRequest = new PayRequest();
+        fpsRequest.setCallerReference(reference);
+        fpsRequest.setSenderTokenId(token);
+        fpsRequest.setRecipientTokenId(c.getRec_token());
+        // use to fund your account in the sandbox
+        // fpsRequest.setChargeFeeTo( ChargeFeeTo.RECIPIENT );
+        fpsRequest.setChargeFeeTo(ChargeFeeTo.CALLER);
+        Amount amount = new Amount();
+        amount.setCurrencyCode(CurrencyCode.USD);
+        amount.setValue(c.getAmount());
+        fpsRequest.setTransactionAmount(amount);
+        // PayResponse fpsResponse = invokePay(service, fpsRequest, out);
+        // String fpsResponse = invokePayString(service, fpsRequest, out);
+        Document fpsResponse = invokePayDocument(service, fpsRequest, out);
+        // out.println("fpsResponse: " + fpsResponse);
+        NodeList nodelist = fpsResponse.getElementsByTagName("TransactionId");
+        for (int i = 0; i < nodelist.getLength(); i++) {
+            Node childNode = nodelist.item(i);
+            // out.println("node: " + childNode);
+            // out.println("textcontent: " + childNode.getTextContent());
+            c.setTransactionId(childNode.getTextContent());
+        }
+        /*   
+	        for(Node childNode = node.getFirstChild();
+	        childNode!=null;){
+	      Node nextChild = childNode.getNextSibling();
+	      // Do something with childNode,
+	      //   including move or delete...
+	      childNode = nextChild;
+	    }
+	    */
+        /**/
+        pm = PMF.get().getPersistenceManager();
+        try {
+            // c.setXmlResponse(fpsResponse);
+            c.setXmlResponse(fpsResponse.getTextContent());
+            // c.setXmlResponse(fpsResponse.toString());
+            pm.makePersistent(c);
+        } finally {
+            pm.close();
+        }
+    } else {
+        out.println("Error: parameters have been modified and therefore are invalid.");
+    }
+    out.println("</p></body></html>");
+    out.close();
+}

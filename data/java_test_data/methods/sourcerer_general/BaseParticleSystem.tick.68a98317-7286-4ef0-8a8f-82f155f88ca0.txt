@@ -1,0 +1,85 @@
+public boolean tick(float elapsed) {
+    if (!_config.visible || _completed) {
+        return true;
+    } else if ((_total += elapsed) <= _config.startTime) {
+        return false;
+    }
+    elapsed *= _config.timeScale;
+    // update the world transform and its inverse
+    _parentWorldTransform.compose(_config.transform, _worldTransform).invert(_worldTransformInv);
+    // tick the influences
+    for (Influence influence : _influences) {
+        influence.tick(elapsed);
+    }
+    // update the living particles and the bounds
+    _bounds.setToEmpty();
+    float msize = 0f;
+    float scale = 1f;
+    if (!_config.moveParticlesWithEmitter) {
+        scale = _worldTransform.approximateUniformScale();
+    }
+    for (int ii = 0; ii < _living.value; ii++) {
+        Particle particle = _particles[ii];
+        if (particle.tick(elapsed)) {
+            // apply the influences
+            for (Influence influence : _influences) {
+                influence.apply(particle);
+            }
+            // modulate by the inherited color, if any
+            if (_colorState != null) {
+                particle.getColor().multLocal(_colorState.getColor());
+            }
+            // multiply by the inherited scale, if any
+            if (!_config.moveParticlesWithEmitter) {
+                particle.setSize(particle.getSize() * scale);
+            }
+            // add to bounds
+            _bounds.addLocal(particle.getPosition());
+            msize = Math.max(msize, particle.getSize());
+        } else {
+            // move this particle to the end of the list
+            if (ii != --_living.value) {
+                swapParticles(ii, _living.value);
+                // update the swapped particle on the next iteration
+                ii--;
+            }
+            // then to the end of the preliving list
+            if (_preliving != 0) {
+                swapParticles(_living.value, _living.value + _preliving);
+            }
+        }
+    }
+    // check for completion
+    if (_living.value == 0 && _preliving == 0 && !_config.respawnDeadParticles) {
+        return (_completed = true);
+    }
+    // find out how many particles the counter thinks we should emit
+    int count = _counter.count(elapsed, _config.respawnDeadParticles ? (_particles.length - _living.value) : _preliving);
+    // spawn those particles
+    for (int ii = _living.value, nn = _living.value + count; ii < nn; ii++) {
+        Particle particle = _particles[ii];
+        _placer.place(particle);
+        _config.orientation.getValue(particle.getOrientation());
+        vectorToLayer(_shooter.shoot(particle).multLocal(_config.speed.getValue()), _config.rotateVelocitiesWithEmitter);
+        _config.angularVelocity.getValue(particle.getAngularVelocity());
+        if (_config.shouldRotateOrientations()) {
+            boolean emitter = _config.rotateOrientationsWithEmitter;
+            rotationToLayer(particle.getOrientation(), emitter);
+            vectorToLayer(particle.getAngularVelocity(), emitter);
+        }
+        initParticle(ii);
+        _living.value++;
+        _preliving = Math.max(_preliving - 1, 0);
+        _bounds.addLocal(particle.getPosition());
+        msize = Math.max(msize, particle.getSize());
+    }
+    // expand the bounds (TODO: account for tails)
+    if (_bounds.isEmpty()) {
+        return false;
+    }
+    float amount = _geometryRadius * msize;
+    _bounds.expandLocal(amount, amount, amount);
+    // add bounds to parent
+    addBounds();
+    return false;
+}

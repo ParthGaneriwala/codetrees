@@ -1,0 +1,185 @@
+private Node primaryExpr() throws IOException, ParserException {
+    Node pn;
+    int ttFlagged = nextFlaggedToken();
+    int tt = ttFlagged & CLEAR_TI_MASK;
+    switch(tt) {
+        case Token.FUNCTION:
+            return function(FunctionNode.FUNCTION_EXPRESSION);
+        case Token.LB:
+            {
+                ObjArray elems = new ObjArray();
+                int skipCount = 0;
+                decompiler.addToken(Token.LB);
+                boolean after_lb_or_comma = true;
+                for (; ; ) {
+                    tt = peekToken();
+                    if (tt == Token.COMMA) {
+                        consumeToken();
+                        decompiler.addToken(Token.COMMA);
+                        if (!after_lb_or_comma) {
+                            after_lb_or_comma = true;
+                        } else {
+                            elems.add(null);
+                            ++skipCount;
+                        }
+                    } else if (tt == Token.RB) {
+                        consumeToken();
+                        decompiler.addToken(Token.RB);
+                        break;
+                    } else {
+                        if (!after_lb_or_comma) {
+                            reportError("msg.no.bracket.arg");
+                        }
+                        elems.add(assignExpr(false));
+                        after_lb_or_comma = false;
+                    }
+                }
+                return nf.createArrayLiteral(elems, skipCount);
+            }
+        case Token.LC:
+            {
+                ObjArray elems = new ObjArray();
+                decompiler.addToken(Token.LC);
+                if (!matchToken(Token.RC)) {
+                    boolean first = true;
+                    commaloop: do {
+                        Object property;
+                        if (!first)
+                            decompiler.addToken(Token.COMMA);
+                        else
+                            first = false;
+                        tt = peekToken();
+                        switch(tt) {
+                            case Token.NAME:
+                            case Token.STRING:
+                                consumeToken();
+                                // map NAMEs to STRINGs in object literal context
+                                // but tell the decompiler the proper type
+                                String s = ts.getString();
+                                if (tt == Token.NAME) {
+                                    if (s.equals("get") && peekToken() == Token.NAME) {
+                                        decompiler.addToken(Token.GET);
+                                        consumeToken();
+                                        s = ts.getString();
+                                        decompiler.addName(s);
+                                        property = ScriptRuntime.getIndexObject(s);
+                                        if (!getterSetterProperty(elems, property, true))
+                                            break commaloop;
+                                        break;
+                                    } else if (s.equals("set") && peekToken() == Token.NAME) {
+                                        decompiler.addToken(Token.SET);
+                                        consumeToken();
+                                        s = ts.getString();
+                                        decompiler.addName(s);
+                                        property = ScriptRuntime.getIndexObject(s);
+                                        if (!getterSetterProperty(elems, property, false))
+                                            break commaloop;
+                                        break;
+                                    }
+                                    decompiler.addName(s);
+                                } else {
+                                    decompiler.addString(s);
+                                }
+                                property = ScriptRuntime.getIndexObject(s);
+                                plainProperty(elems, property);
+                                break;
+                            case Token.NUMBER:
+                                consumeToken();
+                                double n = ts.getNumber();
+                                decompiler.addNumber(n);
+                                property = ScriptRuntime.getIndexObject(n);
+                                plainProperty(elems, property);
+                                break;
+                            case Token.RC:
+                                // trailing comma is OK.
+                                break commaloop;
+                            default:
+                                reportError("msg.bad.prop");
+                                break commaloop;
+                        }
+                    } while (matchToken(Token.COMMA));
+                    mustMatchToken(Token.RC, "msg.no.brace.prop");
+                }
+                decompiler.addToken(Token.RC);
+                return nf.createObjectLiteral(elems);
+            }
+        case Token.LP:
+            /* Brendan's IR-jsparse.c makes a new node tagged with
+             * TOK_LP here... I'm not sure I understand why.  Isn't
+             * the grouping already implicit in the structure of the
+             * parse tree?  also TOK_LP is already overloaded (I
+             * think) in the C IR as 'function call.'  */
+            decompiler.addToken(Token.LP);
+            pn = expr(false);
+            pn.putProp(Node.PARENTHESIZED_PROP, Boolean.TRUE);
+            decompiler.addToken(Token.RP);
+            mustMatchToken(Token.RP, "msg.no.paren");
+            return pn;
+        case Token.XMLATTR:
+            mustHaveXML();
+            decompiler.addToken(Token.XMLATTR);
+            pn = attributeAccess(null, 0);
+            return pn;
+        case Token.NAME:
+            {
+                String name = ts.getString();
+                if ((ttFlagged & TI_CHECK_LABEL) != 0) {
+                    if (peekToken() == Token.COLON) {
+                        // XXX Better way?
+                        return nf.createLabel(ts.getLineno());
+                    }
+                }
+                decompiler.addName(name);
+                if (compilerEnv.isXmlAvailable()) {
+                    pn = propertyName(null, name, 0);
+                } else {
+                    pn = nf.createName(name);
+                }
+                return pn;
+            }
+        case Token.NUMBER:
+            {
+                double n = ts.getNumber();
+                decompiler.addNumber(n);
+                return nf.createNumber(n);
+            }
+        case Token.STRING:
+            {
+                String s = ts.getString();
+                decompiler.addString(s);
+                return nf.createString(s);
+            }
+        case Token.DIV:
+        case Token.ASSIGN_DIV:
+            {
+                // Got / or /= which should be treated as regexp in fact
+                ts.readRegExp(tt);
+                String flags = ts.regExpFlags;
+                ts.regExpFlags = null;
+                String re = ts.getString();
+                decompiler.addRegexp(re, flags);
+                int index = currentScriptOrFn.addRegexp(re, flags);
+                return nf.createRegExp(index);
+            }
+        case Token.NULL:
+        case Token.THIS:
+        case Token.FALSE:
+        case Token.TRUE:
+            decompiler.addToken(tt);
+            return nf.createLeaf(tt);
+        case Token.RESERVED:
+            reportError("msg.reserved.id");
+            break;
+        case Token.ERROR:
+            /* the scanner or one of its subroutines reported the error. */
+            break;
+        case Token.EOF:
+            reportError("msg.unexpected.eof");
+            break;
+        default:
+            reportError("msg.syntax");
+            break;
+    }
+    // should never reach here
+    return null;
+}

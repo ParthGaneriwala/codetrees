@@ -1,0 +1,85 @@
+@Override
+protected void prepareForUseImpl(TaskMonitor monitor, ObjectRepository repository) {
+    super.prepareForUseImpl(monitor, repository);
+    // get varied parameter name
+    String variedParamName = this.variedParamNameOption.getValueAsCLIString();
+    // get prequential evaluation task
+    ALPrequentialEvaluationTask evalTask = (ALPrequentialEvaluationTask) this.prequentialEvaluationTaskOption.getPreMaterializedObject();
+    // get learner
+    ALClassifier learner = (ALClassifier) evalTask.learnerOption.getPreMaterializedObject();
+    // get the learner's varied parameter option
+    Option learnerVariedParamOption = DependentOptionsUpdater.getVariedOption(learner, variedParamName);
+    // get values for the varied parameter
+    Option[] paramValues;
+    if (learnerVariedParamOption != null) {
+        paramValues = this.variedParamValuesOption.getList();
+    } else {
+        paramValues = new Option[] { null };
+    }
+    // append partition index to task result file if necessary
+    if (this.partitionIdx >= 0) {
+        File ownTaskResultFile = this.outputFileOption.getFile();
+        if (ownTaskResultFile != null) {
+            this.outputFileOption.setValue(this.insertFileNameExtension(ownTaskResultFile.getAbsolutePath(), "_p" + this.partitionIdx));
+        }
+    }
+    // get base dump file name of subtasks
+    File baseDumpFile = evalTask.dumpFileOption.getFile();
+    String baseDumpFileName = baseDumpFile != null ? baseDumpFile.getAbsolutePath() : null;
+    // get task result name of subtask
+    File baseTaskResultFile = evalTask.outputFileOption.getFile();
+    String baseTaskResultName = baseTaskResultFile != null ? baseTaskResultFile.getAbsolutePath() : null;
+    // create color coding
+    colorCoding = Color.WHITE;
+    if (subTaskColorCoding == null) {
+        subTaskColorCoding = new HSVColorGenerator().generateColors(paramValues.length);
+    }
+    // setup task for each parameter value
+    for (int i = 0; i < paramValues.length; i++) {
+        // create subtask
+        ALPrequentialEvaluationTask paramValueTask = (ALPrequentialEvaluationTask) evalTask.copy();
+        paramValueTask.setColorCoding(subTaskColorCoding[i]);
+        paramValueTask.setIsLastSubtaskOnLevel(this.isLastSubtaskOnLevel, i == paramValues.length - 1);
+        // set the learner's varied parameter option
+        if (learnerVariedParamOption != null) {
+            String paramValue = paramValues[i].getValueAsCLIString().trim();
+            paramValueTask.setNameSuffix(paramValue);
+            // parse to integer if necessary
+            if (learnerVariedParamOption instanceof IntOption) {
+                int intParamValue = (int) Double.parseDouble(paramValue);
+                paramValue = Integer.toString(intParamValue);
+            }
+            learnerVariedParamOption.setValueViaCLIString(paramValue);
+            String outputFileExtension = "";
+            if (this.partitionIdx >= 0) {
+                // append partition index
+                outputFileExtension += "_p" + this.partitionIdx;
+            }
+            if (paramValues.length > 1) {
+                // append varied parameter value
+                outputFileExtension += "_v" + paramValue;
+            }
+            // adapt the dump file name
+            if (baseDumpFileName != null) {
+                paramValueTask.dumpFileOption.setValue(this.insertFileNameExtension(baseDumpFileName, outputFileExtension));
+            }
+            // adapt the task result file name
+            if (baseTaskResultName != null) {
+                paramValueTask.outputFileOption.setValue(this.insertFileNameExtension(baseTaskResultName, outputFileExtension));
+            }
+        }
+        paramValueTask.learnerOption.setValueViaCLIString(ClassOption.objectToCLIString(learner, ALClassifier.class));
+        paramValueTask.prepareForUse();
+        List<ALTaskThread> childSubtasks = paramValueTask.getSubtaskThreads();
+        // add new subtask and its thread to lists
+        this.subtasks.add(paramValueTask);
+        ALTaskThread subtaskThread = new ALTaskThread(paramValueTask);
+        this.subtaskThreads.add(subtaskThread);
+        this.flattenedSubtaskThreads.add(subtaskThread);
+        this.flattenedSubtaskThreads.addAll(childSubtasks);
+    }
+    // reset learner varied parameter option
+    if (learnerVariedParamOption != null) {
+        learnerVariedParamOption.resetToDefault();
+    }
+}

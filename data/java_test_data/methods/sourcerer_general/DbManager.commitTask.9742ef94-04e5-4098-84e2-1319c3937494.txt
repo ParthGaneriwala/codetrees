@@ -1,0 +1,40 @@
+public void commitTask(String jobID, String taskID, int id, Global.STAGE stage) {
+    Boolean retry;
+    String domainName;
+    if (taskID.hashCode() < 0)
+        domainName = dbManagerDomain + (-taskID.hashCode()) % Global.numSDBDomain;
+    else
+        domainName = dbManagerDomain + (taskID.hashCode()) % Global.numSDBDomain;
+    long commitTaskTime = perf.getStartTime();
+    ReplaceableAttribute[] attributes = new ReplaceableAttribute[3];
+    if (stage == Global.STAGE.MAP)
+        attributes[0] = new ReplaceableAttribute("MapCompletedBy", taskID + "_map" + id, true);
+    else
+        attributes[0] = new ReplaceableAttribute("ReduceCompletedBy", taskID + "_reduce" + id, true);
+    attributes[1] = new ReplaceableAttribute("jobid", jobID, true);
+    attributes[2] = new ReplaceableAttribute("writtenby", jobID + "_" + taskID, true);
+    do {
+        // assume success
+        retry = false;
+        try {
+            PutAttributesRequest request;
+            if (stage == Global.STAGE.MAP)
+                request = new PutAttributesRequest().withItemName(jobID + "_map" + id).withAttribute(attributes);
+            else
+                request = new PutAttributesRequest().withItemName(jobID + "_reduce" + id).withAttribute(attributes);
+            PutAttributesResponse response = service.putAttributes(request.withDomainName(domainName));
+        } catch (AmazonSimpleDBException ex) {
+            if (stage == Global.STAGE.MAP)
+                logger.warn("Fail to commit map task " + id + ". Will retry " + ex.getMessage());
+            else
+                logger.warn("Fail to commit reduce task " + id + ". Will retry " + ex.getMessage());
+            // signal need to retry
+            retry = true;
+            try {
+                Thread.sleep(1000 + (new Random()).nextInt(2000));
+            } catch (Exception ex2) {
+            }
+        }
+    } while (retry);
+    perf.stopTimer("commitTask", commitTaskTime);
+}

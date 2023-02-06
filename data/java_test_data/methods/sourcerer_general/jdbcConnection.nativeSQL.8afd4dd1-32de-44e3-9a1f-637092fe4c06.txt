@@ -1,0 +1,87 @@
+public synchronized String nativeSQL(final String sql) throws SQLException {
+    // boucherb@users 20030405
+    // FIXME: does not work properly for nested escapes
+    // e.g.  {call ...(...,{ts '...'},....)} does not work
+    // boucherb@users 20030817
+    // TESTME: First kick at the FIXME cat done.  Now lots of testing
+    // and refinment
+    checkClosed();
+    // CHECKME:  Thow or return null if input is null?
+    if (sql == null || sql.length() == 0 || sql.indexOf('{') == -1) {
+        return sql;
+    }
+    // boolean   changed = false;
+    int state = 0;
+    int len = sql.length();
+    int nest = 0;
+    // avoid 16 extra
+    StringBuffer sb = new StringBuffer(sql.length());
+    String msg;
+    // --
+    final int outside_all = 0;
+    final int outside_escape_inside_single_quotes = 1;
+    final int outside_escape_inside_double_quotes = 2;
+    // --
+    final int inside_escape = 3;
+    final int inside_escape_inside_single_quotes = 4;
+    final int inside_escape_inside_double_quotes = 5;
+    // TODO:
+    // final int inside_single_line_comment          = 6;
+    // final int inside_multi_line_comment           = 7;
+    // Better than old way for large inputs and for avoiding GC overhead;
+    // toString() reuses internal char[], reducing memory requirment
+    // and garbage items 3:2
+    sb.append(sql);
+    for (int i = 0; i < len; i++) {
+        char c = sb.charAt(i);
+        switch(state) {
+            case // Not inside an escape or quotes
+            outside_all:
+                if (c == '\'') {
+                    state = outside_escape_inside_single_quotes;
+                } else if (c == '"') {
+                    state = outside_escape_inside_double_quotes;
+                } else if (c == '{') {
+                    i = onStartEscapeSequence(sql, sb, i);
+                    // changed = true;
+                    nest++;
+                    state = inside_escape;
+                }
+                break;
+            // inside ' ' only
+            case outside_escape_inside_single_quotes:
+            case // inside { } and ' '
+            inside_escape_inside_single_quotes:
+                if (c == '\'') {
+                    state -= 1;
+                }
+                break;
+            // inside " " only
+            case outside_escape_inside_double_quotes:
+            case // inside { } and " "
+            inside_escape_inside_double_quotes:
+                if (c == '"') {
+                    state -= 2;
+                }
+                break;
+            case // inside { }
+            inside_escape:
+                if (c == '\'') {
+                    state = inside_escape_inside_single_quotes;
+                } else if (c == '"') {
+                    state = inside_escape_inside_double_quotes;
+                } else if (c == '}') {
+                    sb.setCharAt(i, ' ');
+                    // changed = true;
+                    nest--;
+                    state = (nest == 0) ? outside_all : inside_escape;
+                } else if (c == '{') {
+                    i = onStartEscapeSequence(sql, sb, i);
+                    // changed = true;
+                    nest++;
+                    state = inside_escape;
+                }
+        }
+    }
+    return sb.toString();
+}

@@ -1,0 +1,41 @@
+@SuppressWarnings("nls")
+private OperatorInfoList genReduceSinkPlan(String dest, QB qb, OperatorInfoList input) throws SemanticException {
+    // We can assert here that the input list is of size one
+    if (input.size() != 1) {
+        throw new SemanticException("Select has more than one inputs");
+    }
+    // First generate the expression for the key
+    // The cluster by clause has the aliases for the keys
+    CommonTree clby = qb.getParseInfo().getClusterByForClause(dest);
+    ArrayList<exprNodeDesc> keyCols = new ArrayList<exprNodeDesc>();
+    int ccount = clby.getChildCount();
+    for (int i = 0; i < ccount; ++i) {
+        CommonTree cl = (CommonTree) clby.getChild(i);
+        ColumnInfo colInfo = input.get(0).getRowResolver().get(qb.getParseInfo().getAlias(), cl.getText());
+        if (colInfo == null) {
+            throw new SemanticException(ErrorMsg.INVALID_COLUMN.getMsg(cl));
+        }
+        keyCols.add(new exprNodeColumnDesc(colInfo.getType(), colInfo.getInternalName()));
+    }
+    ArrayList<exprNodeDesc> valueCols = new ArrayList<exprNodeDesc>();
+    // signature and generate field expressions for those
+    for (ColumnInfo colInfo : input.get(0).getRowResolver().getColumnInfos()) {
+        valueCols.add(new exprNodeColumnDesc(colInfo.getType(), colInfo.getInternalName()));
+    }
+    OperatorInfoList interim = (OperatorInfoList) input.clone();
+    interim.get(0).setOp(OperatorFactory.getAndMakeChild(PlanUtils.getReduceSinkDesc(keyCols, valueCols, keyCols.size()), new RowSchema(interim.get(0).getRowResolver().getColumnInfos()), input.get(0).getOp()));
+    // Add the extract operator to get the value fields
+    RowResolver out_rwsch = new RowResolver();
+    RowResolver interim_rwsch = interim.get(0).getRowResolver();
+    Integer pos = Integer.valueOf(0);
+    for (ColumnInfo colInfo : interim_rwsch.getColumnInfos()) {
+        String[] info = interim_rwsch.reverseLookup(colInfo.getInternalName());
+        out_rwsch.put(info[0], info[1], new ColumnInfo(pos.toString(), colInfo.getType(), colInfo.getIsVirtual()));
+        pos = Integer.valueOf(pos.intValue() + 1);
+    }
+    OperatorInfoList output = (OperatorInfoList) interim.clone();
+    output.get(0).setOp(OperatorFactory.getAndMakeChild(new extractDesc(new exprNodeColumnDesc(String.class, Utilities.ReduceField.VALUE.toString())), new RowSchema(out_rwsch.getColumnInfos()), interim.get(0).getOp()));
+    output.get(0).setRowResolver(out_rwsch);
+    LOG.debug("Created ReduceSink Plan for clause: " + dest + " row schema: " + output.get(0).getRowResolver().toString());
+    return output;
+}

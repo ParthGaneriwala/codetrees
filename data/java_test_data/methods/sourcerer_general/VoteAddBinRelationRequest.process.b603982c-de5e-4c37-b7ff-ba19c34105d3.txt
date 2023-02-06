@@ -1,0 +1,70 @@
+public boolean process(Request req, ResponseGroup rg) throws EntityPersistenceException, StaleDataException, InvalidOperationException {
+    if (!checkRequest(req)) {
+        throw new InvalidOperationException("Invalid vote_or_add_bin_relation operation.");
+    }
+    VoteAddBinRelationRequest r = (VoteAddBinRelationRequest) req;
+    DefaultResponse rsp = new DefaultResponse(r);
+    // If it is a creating operation
+    if (r.getRelationshipId() == null) {
+        // Get the model
+        Model model = DaoUtil.getModelDao().getById(r.getModelId(), false);
+        if (model == null) {
+            throw new InvalidOperationException("Invalid feature model ID: " + r.getModelId());
+        }
+        // See if the relationship has already existed.
+        rsp.setExist(false);
+        BinaryRelationship relation = new BinaryRelationship(r.getRequesterId());
+        relation.setType(r.getType());
+        relation.setLeftFeatureId(r.getLeftFeatureId());
+        relation.setRightFeatureId(r.getRightFeatureId());
+        List sameRelations = DaoUtil.getRelationshipDao().getByExample(r.getModelId(), relation);
+        if (sameRelations != null) {
+            rsp.setExist(true);
+            relation = (BinaryRelationship) sameRelations.get(0);
+        } else {
+            // CREATE THE (ACTUAL) RELATIONSHIP HERE (USING Feature OBJECTS.)
+            relation.setFeatures(DaoUtil.getFeatureDao().getById(r.getLeftFeatureId(), false), DaoUtil.getFeatureDao().getById(r.getRightFeatureId(), false));
+            // After creation, add it to the model.
+            model.addRelationship(relation);
+        }
+        relation.vote(true, r.getRequesterId());
+        // Save and set relationshipId in the response
+        relation = (BinaryRelationship) DaoUtil.getRelationshipDao().save(relation);
+        rsp.setRelationshipId(relation.getId());
+        // Save the model
+        if (rsp.getExist().booleanValue() == false) {
+            DaoUtil.getModelDao().save(model);
+        }
+        // Set the inferred votes (because the "vote" always is "YES" here.)
+        rsp.setInferVotes(generateInferVotes(relation));
+    } else {
+        // A voting operation
+        Relationship relation = DaoUtil.getRelationshipDao().getById(r.getRelationshipId(), false);
+        if (relation == null) {
+            throw new InvalidOperationException("Invalid relationship ID: " + r.getRelationshipId());
+        }
+        // Set the inferred votes
+        if (r.getYes().booleanValue() == true) {
+            rsp.setInferVotes(generateInferVotes(relation));
+        }
+        // Handle the vote and possible removals.
+        if (relation.vote(r.getYes(), r.getRequesterId())) {
+            DaoUtil.getRelationshipDao().save(relation);
+        } else {
+            // removal
+            DaoUtil.getRelationshipDao().delete(relation);
+        }
+        // Set the fields to proper values in the response
+        rsp.setExist(true);
+        rsp.setLeftFeatureId(null);
+        // left & right feature ID is unnecessary for voting operations
+        rsp.setRightFeatureId(null);
+    }
+    // Add "back" and "broadcast" responses to the response group
+    rsp.setName(Resources.RSP_SUCCESS);
+    rg.setBack(rsp);
+    DefaultResponse rsp2 = (DefaultResponse) rsp.clone();
+    rsp2.setName(Resources.RSP_FORWARD);
+    rg.setBroadcast(rsp2);
+    return true;
+}

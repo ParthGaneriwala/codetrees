@@ -1,0 +1,56 @@
+public IAeWebServiceResponse handleInvoke(IAeInvoke aInvokeQueueObject, String aQueryData) {
+    // doMuseInvoke();
+    AeAddressHandlingType addressHandling = AeAddressHandlingType.getByName(aQueryData);
+    Operation operation = null;
+    AeInvokeResponse response = new AeInvokeResponse();
+    try {
+        IAeWebServiceEndpointReference endpointReference = getEndpointReference(aInvokeQueueObject);
+        AeBPELExtendedWSDLDef wsdlDef = getWsdlDef(aInvokeQueueObject, endpointReference);
+        Service wsdlService = getServiceObject(wsdlDef, endpointReference);
+        // as opposed to the soap:address in the service.
+        if (wsdlService == null && addressHandling == AeAddressHandlingType.SERVICE)
+            // $NON-NLS-1$
+            throw new AeBusinessProcessException(AeMessages.getString("AeInvokeHandler.ERROR_0"));
+        PortType portType = getPortType(wsdlService, endpointReference, aInvokeQueueObject);
+        operation = portType.getOperation(aInvokeQueueObject.getOperation(), null, null);
+        if (operation == null)
+            // $NON-NLS-1$
+            throw new AeBusinessProcessException(AeMessages.format("AeInvokeHandler.ERROR_MISSING_OPERATION", aInvokeQueueObject.getOperation()));
+        // get the implicit replyTo
+        IAeWebServiceEndpointReference replyTo = updateReplyToEndpoint(aInvokeQueueObject);
+        // Resolve endpoint and wsdl policies
+        List wsdlPolicy = getWsdlPolicies(wsdlDef, aInvokeQueueObject, endpointReference);
+        Call call = createCall(wsdlService, operation, endpointReference, addressHandling, replyTo, wsdlPolicy);
+        // Set the transmission id property on call
+        call.setProperty(RM_TRANS_ID, new Long(aInvokeQueueObject.getTransmissionId()));
+        if (aInvokeQueueObject.isOneWay())
+            call.getOperation().setMep(OperationType.ONE_WAY);
+        AeInvokeContext invokeCtx = createInvokeContext(aInvokeQueueObject, operation, response, call);
+        if (wsdlService != null) {
+            // list of input parts to add as headers
+            // TODO (MF) get list of faults to look for in response soap headers
+            BindingOperation bop = getBindingOperation(wsdlService, operation.getName(), endpointReference);
+            invokeCtx.setBindingOperation(bop);
+            BindingInput input = bop.getBindingInput();
+            Message inputMessage = operation.getInput().getMessage();
+            Collection inputHeaderParts = AeBindingUtils.getPartsForHeader(input, inputMessage.getQName());
+            invokeCtx.setInputHeaderParts(inputHeaderParts);
+            if (operation.getOutput() != null) {
+                Collection outputHeaderParts = AeBindingUtils.getPartsForHeader(bop.getBindingOutput(), operation.getOutput().getMessage().getQName());
+                invokeCtx.setOutputHeaderParts(outputHeaderParts);
+            }
+        }
+        IAeInvoker invoker = AeInvokerFactory.getInvoker(invokeCtx);
+        invoker.invoke(invokeCtx);
+        extractMappedProperties(aInvokeQueueObject, call.getMessageContext());
+    } catch (AxisFault e) {
+        setFaultOnResponse(aInvokeQueueObject.getPortType(), operation, e, response);
+    } catch (Throwable t) {
+        AeException.logError(t, t.getMessage());
+        IAeFault fault = AeFaultFactory.getSystemErrorFault(t);
+        response.setFaultData(fault.getFaultName(), null);
+        response.setErrorString(t.getMessage());
+        response.setErrorDetail(AeUtil.getStacktrace(t));
+    }
+    return response;
+}

@@ -1,0 +1,73 @@
+protected void attemptToSplit(LeafNode node, SplitNode parent, int parentIndex) {
+    // System.out.println("Evaluating splits");
+    // System.out.println(examplesSeen);
+    // Set the split criterion to use to the SDR split criterion as described by Ikonomovska et al.
+    MultiLabelSplitCriterion splitCriterion = new ICVarianceReduction();
+    // Using this criterion, find the best split per attribute and rank the results
+    // TODO update with split criterion option
+    AttributeExpansionSuggestion[] bestSplitSuggestions = node.getBestSplitSuggestions(splitCriterion);
+    Arrays.sort(bestSplitSuggestions);
+    // Declare a variable to determine if any of the splits should be performed
+    boolean shouldSplit = false;
+    // If only one split was returned, use it
+    if (bestSplitSuggestions.length < 2) {
+        shouldSplit = bestSplitSuggestions.length > 0;
+    } else {
+        // Otherwise, consider which of the splits proposed may be worth trying
+        // Determine the Hoeffding bound value, used to select how many instances should be used to make a test decision
+        // to feel reasonably confident that the test chosen by this sample is the same as what would be chosen using infinite examples
+        double hoeffdingBound = computeHoeffdingBound(1, splitConfidenceOption.getValue(), node.examplesSeen);
+        // Determine the top two ranked splitting suggestions
+        AttributeExpansionSuggestion bestSuggestion = bestSplitSuggestions[bestSplitSuggestions.length - 1];
+        AttributeExpansionSuggestion secondBestSuggestion = bestSplitSuggestions[bestSplitSuggestions.length - 2];
+        // /System.out.println(secondBestSuggestion.merit / bestSuggestion.merit);
+        if ((secondBestSuggestion.merit / bestSuggestion.merit < 1 - hoeffdingBound) || (hoeffdingBound < this.tieThresholdOption.getValue())) {
+            shouldSplit = true;
+        } else // If the splitting criterion was not met, initiate pruning of the E-BST structures in each attribute observer
+        {
+            // TODO pruning is currently disabled
+            for (int i = 0; i < node.attributeObservers.size(); i++) {
+                AttributeStatisticsObserver obs = node.attributeObservers.get(i);
+                if (obs != null) {
+                    if (getModelContext().attribute(i).isNumeric())
+                        ;
+                    // TODO obs.removeBadSplits(null, secondBestSuggestion.merit / bestSuggestion.merit, bestSuggestion.merit, hoeffdingBound, getModelContext().numOutputAttributes());
+                    if (getModelContext().attribute(i).isNominal())
+                        ;
+                // TODO nominal class observers
+                }
+            }
+        }
+    }
+    // make two new branches leading to (empty) leaves
+    if (shouldSplit) {
+        AttributeExpansionSuggestion splitDecision = bestSplitSuggestions[bestSplitSuggestions.length - 1];
+        SplitNode newSplit = newSplitNode(splitDecision.predicate);
+        newSplit.copyStatistics(node);
+        newSplit.changeDetection = node.changeDetection;
+        newSplit.ID = node.ID;
+        leafNodeCount--;
+        // System.out.println(examplesSeen);
+        for (int i = 0; i < 2; i++) {
+            // Hardcoded for 2 values (due to the use of the Predicate class)
+            LeafNode newChild = newLeafNode();
+            if (buildingModelTree()) {
+                // Copy the splitting node's perceptron to it's children
+                newChild.learningModel = new MultitargetPerceptron(this, (MultitargetPerceptron) node.learningModel);
+            }
+            newChild.changeDetection = node.changeDetection;
+            newChild.setParent(newSplit);
+            newSplit.setChild(i, newChild);
+            leafNodeCount++;
+        }
+        if (parent == null && node.originalNode == null) {
+            treeRoot = newSplit;
+        } else if (parent == null && node.originalNode != null) {
+            node.originalNode.alternateTree = newSplit;
+        } else {
+            parent.setChild(parentIndex, newSplit);
+            newSplit.setParent(parent);
+        }
+        splitNodeCount++;
+    }
+}

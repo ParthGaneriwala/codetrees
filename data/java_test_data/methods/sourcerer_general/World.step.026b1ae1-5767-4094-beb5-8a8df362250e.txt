@@ -1,0 +1,93 @@
+public void step(float dt) {
+    for (int i = 0; i < bodies.size(); ++i) {
+        for (int j = 0; j < sources.size(); j++) {
+            ((ForceSource) sources.get(j)).apply(bodies.get(i), dt);
+        }
+    }
+    BodyList bodies = getActiveBodies();
+    JointList joints = getActiveJoints();
+    float invDT = dt > 0.0f ? 1.0f / dt : 0.0f;
+    if (restingBodyDetection) {
+        for (int i = 0; i < bodies.size(); ++i) {
+            Body b = bodies.get(i);
+            b.startFrame();
+        }
+        for (int i = 0; i < joints.size(); ++i) {
+            Joint j = joints.get(i);
+            j.getBody1().setIsResting(false);
+            j.getBody2().setIsResting(false);
+        }
+    }
+    broadPhase(dt);
+    for (int i = 0; i < bodies.size(); ++i) {
+        Body b = bodies.get(i);
+        if (b.getInvMass() == 0.0f) {
+            continue;
+        }
+        if (b.isResting() && restingBodyDetection) {
+            continue;
+        }
+        Vector2f temp = new Vector2f(b.getForce());
+        temp.scale(b.getInvMass());
+        if (b.getGravityEffected()) {
+            temp.add(gravity);
+        }
+        temp.scale(dt);
+        b.adjustVelocity(temp);
+        Vector2f damping = new Vector2f(b.getVelocity());
+        damping.scale(-b.getDamping() * b.getInvMass());
+        b.adjustVelocity(damping);
+        b.adjustAngularVelocity(dt * b.getInvI() * b.getTorque());
+        b.adjustAngularVelocity(-b.getAngularVelocity() * b.getInvI() * b.getRotDamping());
+    }
+    for (int i = 0; i < arbiters.size(); i++) {
+        Arbiter arb = arbiters.get(i);
+        if (!restingBodyDetection || !arb.hasRestingPair()) {
+            arb.preStep(invDT, dt, damping);
+        }
+    }
+    for (int i = 0; i < joints.size(); ++i) {
+        Joint j = joints.get(i);
+        j.preStep(invDT);
+    }
+    for (int i = 0; i < iterations; ++i) {
+        for (int k = 0; k < arbiters.size(); k++) {
+            Arbiter arb = arbiters.get(k);
+            if (!restingBodyDetection || !arb.hasRestingPair()) {
+                arb.applyImpulse();
+            } else {
+                arb.getBody1().collided(arb.getBody2());
+                arb.getBody2().collided(arb.getBody1());
+            }
+        }
+        for (int k = 0; k < joints.size(); ++k) {
+            Joint j = joints.get(k);
+            j.applyImpulse();
+        }
+    }
+    for (int i = 0; i < bodies.size(); ++i) {
+        Body b = bodies.get(i);
+        if (b.getInvMass() == 0.0f) {
+            continue;
+        }
+        if (restingBodyDetection) {
+            if (b.isResting()) {
+                continue;
+            }
+        }
+        b.adjustPosition(b.getVelocity(), dt);
+        b.adjustPosition(b.getBiasedVelocity(), dt);
+        b.adjustRotation(dt * b.getAngularVelocity());
+        b.adjustRotation(dt * b.getBiasedAngularVelocity());
+        b.resetBias();
+        b.setForce(0, 0);
+        b.setTorque(0);
+    }
+    if (restingBodyDetection) {
+        for (int i = 0; i < bodies.size(); ++i) {
+            Body b = bodies.get(i);
+            b.endFrame();
+        }
+    }
+    cleanUpArbiters();
+}

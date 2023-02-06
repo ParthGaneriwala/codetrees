@@ -1,0 +1,259 @@
+public synchronized void execute(Connection conn, PrintStream stdIn, PrintStream errIn, Boolean coeOverride) throws SqlToolError, SQLException {
+    psStd = stdIn;
+    psErr = errIn;
+    curConn = conn;
+    curLinenum = -1;
+    String inputLine;
+    String trimmedInput;
+    String deTerminated;
+    // Gobbling up a comment
+    boolean inComment = false;
+    int postCommentIndex;
+    boolean rollbackUncoms = true;
+    continueOnError = (coeOverride == null) ? interactive : coeOverride.booleanValue();
+    if (userVars.size() > 0) {
+        plMode = true;
+    }
+    String specifiedCharSet = System.getProperty("sqlfile.charset");
+    charset = ((specifiedCharSet == null) ? DEFAULT_CHARSET : specifiedCharSet);
+    try {
+        br = new BufferedReader((charset == null) ? (new InputStreamReader((file == null) ? System.in : (new FileInputStream(file)))) : (new InputStreamReader(((file == null) ? System.in : (new FileInputStream(file))), charset)));
+        // Replace with just "(new FileInputStream(file), charset)"
+        // once use defaultCharset from Java 1.5 in charset init. above.
+        curLinenum = 0;
+        if (interactive) {
+            stdprintln(rb.getString(SqltoolRB.SQLFILE_BANNER, revnum));
+        }
+        while (true) {
+            if (interactive && magicPrefix == null) {
+                psStd.print((immCmdSB.length() > 0 || rawMode == RAW_DATA) ? contPrompt : ((rawMode == RAW_FALSE) ? primaryPrompt : rawPrompt));
+            }
+            inputLine = br.readLine();
+            if (magicPrefix != null) {
+                inputLine = magicPrefix + inputLine;
+                magicPrefix = null;
+            }
+            if (inputLine == null) {
+                /*
+                     * This is because interactive EOD on some OSes doesn't
+                     * send a line-break, resulting in no linebreak at all
+                     * after the SqlFile prompt or whatever happens to be
+                     * on their screen.
+                     */
+                if (interactive) {
+                    psStd.println();
+                }
+                break;
+            }
+            curLinenum++;
+            if (inComment) {
+                postCommentIndex = inputLine.indexOf("*/") + 2;
+                if (postCommentIndex > 1) {
+                    // I see no reason to leave comments in history.
+                    inputLine = inputLine.substring(postCommentIndex);
+                    // Empty the buffer.  The non-comment remainder of
+                    // this line is either the beginning of a new SQL
+                    // or Special command, or an empty line.
+                    immCmdSB.setLength(0);
+                    inComment = false;
+                } else {
+                    // Just completely ignore the input line.
+                    continue;
+                }
+            }
+            trimmedInput = inputLine.trim();
+            try {
+                if (rawMode != RAW_FALSE) {
+                    boolean rawExecute = inputLine.equals(".;");
+                    if (rawExecute || inputLine.equals(":.")) {
+                        if (rawMode == RAW_EMPTY) {
+                            rawMode = RAW_FALSE;
+                            throw new SqlToolError(rb.getString(SqltoolRB.RAW_EMPTY));
+                        }
+                        rawMode = RAW_FALSE;
+                        setBuf(immCmdSB.toString());
+                        immCmdSB.setLength(0);
+                        if (rawExecute) {
+                            historize();
+                            processSQL();
+                        } else if (interactive) {
+                            stdprintln(rb.getString(SqltoolRB.RAW_MOVEDTOBUFFER));
+                        }
+                    } else {
+                        if (rawMode == RAW_DATA) {
+                            immCmdSB.append('\n');
+                        }
+                        rawMode = RAW_DATA;
+                        if (inputLine.length() > 0) {
+                            immCmdSB.append(inputLine);
+                        }
+                    }
+                    continue;
+                }
+                if (immCmdSB.length() == 0) {
+                    // NEW Immediate Command (i.e., not appending).
+                    if (trimmedInput.startsWith("/*")) {
+                        postCommentIndex = trimmedInput.indexOf("*/", 2) + 2;
+                        if (postCommentIndex > 1) {
+                            // I see no reason to leave comments in
+                            // history.
+                            inputLine = inputLine.substring(postCommentIndex + inputLine.length() - trimmedInput.length());
+                            trimmedInput = inputLine.trim();
+                        } else {
+                            // Just so we get continuation lines:
+                            immCmdSB.append("COMMENT");
+                            inComment = true;
+                            continue;
+                        }
+                    }
+                    if (trimmedInput.length() == 0) {
+                        // beginning of commands.
+                        continue;
+                    }
+                    if ((trimmedInput.charAt(0) == '*' && (trimmedInput.length() < 2 || trimmedInput.charAt(1) != '{')) || trimmedInput.charAt(0) == '\\') {
+                        setBuf(trimmedInput);
+                        processFromBuffer();
+                        continue;
+                    }
+                    if (trimmedInput.charAt(0) == ':' && interactive) {
+                        processBuffHist(trimmedInput.substring(1));
+                        continue;
+                    }
+                    String ucased = trimmedInput.toUpperCase();
+                    if (ucased.startsWith("DECLARE") || ucased.startsWith("BEGIN")) {
+                        rawMode = RAW_EMPTY;
+                        immCmdSB.append(inputLine);
+                        if (interactive) {
+                            stdprintln(RAW_LEADIN_MSG);
+                        }
+                        continue;
+                    }
+                }
+                if (trimmedInput.length() == 0 && interactive && !inComment) {
+                    // Blank lines delimit commands ONLY IN INTERACTIVE
+                    // MODE!
+                    setBuf(immCmdSB.toString());
+                    immCmdSB.setLength(0);
+                    stdprintln(rb.getString(SqltoolRB.INPUT_MOVEDTOBUFFER));
+                    continue;
+                }
+                deTerminated = SqlFile.deTerminated(inputLine);
+                // A null terminal line (i.e., /\s*;\s*$/) is never useful.
+                if (!trimmedInput.equals(";")) {
+                    if (immCmdSB.length() > 0) {
+                        immCmdSB.append('\n');
+                    }
+                    immCmdSB.append((deTerminated == null) ? inputLine : deTerminated);
+                }
+                if (deTerminated == null) {
+                    continue;
+                }
+                if (immCmdSB.toString().trim().length() == 0) {
+                    immCmdSB.setLength(0);
+                    throw new SqlToolError(rb.getString(SqltoolRB.SQLSTATEMENT_EMPTY));
+                // There is nothing inherently wrong with issuing
+                // an empty command, like to test DB server health.
+                // But, this check effectively catches many syntax
+                // errors early, and the DB check can be done by
+                // sending a comment like "// comment".
+                }
+                setBuf(immCmdSB.toString());
+                immCmdSB.setLength(0);
+                historize();
+                processSQL();
+            } catch (BadSpecial bs) {
+                // BadSpecials ALWAYS have non-null getMessage().
+                errprintln(rb.getString(SqltoolRB.ERRORAT, new String[] { ((file == null) ? "stdin" : file.toString()), Integer.toString(curLinenum), inputLine, bs.getMessage() }));
+                Throwable cause = bs.getCause();
+                if (cause != null) {
+                    errprintln(rb.getString(SqltoolRB.CAUSEREPORT, cause.toString()));
+                }
+                if (!continueOnError) {
+                    throw new SqlToolError(bs);
+                }
+            } catch (SQLException se) {
+                errprintln("SQL " + rb.getString(SqltoolRB.ERRORAT, new String[] { ((file == null) ? "stdin" : file.toString()), Integer.toString(curLinenum), lastSqlStatement, se.getMessage() }));
+                if (!continueOnError) {
+                    throw se;
+                }
+            } catch (BreakException be) {
+                String msg = be.getMessage();
+                if (recursed) {
+                    rollbackUncoms = false;
+                // Recursion level will exit by rethrowing the BE.
+                // We set rollbackUncoms to false because only the
+                // top level should detect break errors and
+                // possibly roll back.
+                } else if (msg == null || msg.equals("file")) {
+                    break;
+                } else {
+                    errprintln(rb.getString(SqltoolRB.BREAK_UNSATISFIED, msg));
+                }
+                if (recursed || !continueOnError) {
+                    throw be;
+                }
+            } catch (ContinueException ce) {
+                String msg = ce.getMessage();
+                if (recursed) {
+                    rollbackUncoms = false;
+                } else {
+                    errprintln(rb.getString(SqltoolRB.CONTINUE_UNSATISFIED, msg));
+                }
+                if (recursed || !continueOnError) {
+                    throw ce;
+                }
+            } catch (QuitNow qn) {
+                throw qn;
+            } catch (SqlToolError ste) {
+                errprint(rb.getString(SqltoolRB.ERRORAT, new String[] { ((file == null) ? "stdin" : file.toString()), Integer.toString(curLinenum), inputLine, ((ste.getMessage() == null) ? "" : ste.getMessage()) }));
+                if (ste.getMessage() != null)
+                    errprintln("");
+                Throwable cause = ste.getCause();
+                if (cause != null) {
+                    errprintln(rb.getString(SqltoolRB.CAUSEREPORT, cause.toString()));
+                }
+                if (!continueOnError) {
+                    throw ste;
+                }
+            }
+            immCmdSB.setLength(0);
+        }
+        if (inComment || immCmdSB.length() != 0) {
+            errprintln(rb.getString(SqltoolRB.INPUT_UNTERMINATED, immCmdSB.toString()));
+            throw new SqlToolError(rb.getString(SqltoolRB.INPUT_UNTERMINATED, immCmdSB.toString()));
+        }
+        rollbackUncoms = false;
+    // Exiting gracefully, so don't roll back.
+    } catch (IOException ioe) {
+        throw new SqlToolError(rb.getString(SqltoolRB.PRIMARYINPUT_ACCESSFAIL), ioe);
+    } catch (QuitNow qn) {
+        if (recursed) {
+            throw qn;
+        // Will rollback if conditions otherwise require.
+        // Otherwise top level will decide based upon qn.getMessage().
+        }
+        rollbackUncoms = (qn.getMessage() != null);
+        if (rollbackUncoms) {
+            errprintln(rb.getString(SqltoolRB.ABORTING, qn.getMessage()));
+            throw new SqlToolError(qn.getMessage());
+        }
+        return;
+    } finally {
+        closeQueryOutputStream();
+        if (fetchingVar != null) {
+            errprintln(rb.getString(SqltoolRB.PLVAR_SET_INCOMPLETE, fetchingVar));
+            rollbackUncoms = true;
+        }
+        if (br != null)
+            try {
+                br.close();
+            } catch (IOException ioe) {
+                throw new SqlToolError(rb.getString(SqltoolRB.INPUTREADER_CLOSEFAIL), ioe);
+            }
+        if (rollbackUncoms && possiblyUncommitteds.get()) {
+            errprintln(rb.getString(SqltoolRB.ROLLINGBACK));
+            curConn.rollback();
+            possiblyUncommitteds.set(false);
+        }
+    }
+}

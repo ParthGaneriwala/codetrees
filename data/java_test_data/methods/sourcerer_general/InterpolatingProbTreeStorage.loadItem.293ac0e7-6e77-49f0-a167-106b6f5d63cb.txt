@@ -1,0 +1,78 @@
+@Override
+protected InterpolatedProbTreeValue loadItem(Key key) {
+    int clusterid = key.getClusterid();
+    int modelId = key.getModelid();
+    LanguageModel lm = lmsById[modelId];
+    BinaryTree<HistoryTreePayload> node = lm.getNodes()[clusterid];
+    double lambda = node.getPayload().lambda;
+    if (node.getPayload().top) {
+        // no interpolation with the parent
+        long start = Timing.nanoTime();
+        OnDiskCompactProbTree tree = storage.getProbTree(key);
+        long end = Timing.nanoTime();
+        if (Timing.TIMING)
+            totalStorageTime.addAndGet(end - start);
+        InterpolatedProbTreeValue result = new InterpolatedProbTreeValue(tree);
+        // System.out.printf("NEW[%d]: lambda=%e, prob=%e\n", clusterid, lambda, result.getFirst().getTotalProb());
+        return result;
+    }
+    BinaryTree<HistoryTreePayload> parent = node.getParent();
+    Key parentKey = new Key(modelId, parent.getPayload().clusterid, key.getFactorBits());
+    InterpolatedProbTreeValue parentValue = getCachedProbTree(parentKey);
+    OnDiskCompactProbTree parentProbTree = parentValue.probTree;
+    double parentScale = parentValue.scale * (1.0 - lambda);
+    OnDiskCompactProbTree probTree = null;
+    // TODO: this may collide with some possible optimizations
+    if (!parentValue.lastIsNull) {
+        long start = Timing.nanoTime();
+        probTree = storage.getProbTree(modelId, clusterid, key.getFactorBits());
+        long end = Timing.nanoTime();
+        if (Timing.TIMING)
+            totalStorageTime.addAndGet(end - start);
+    }
+    // double backoffWeight = parentPair.backoff * (1.0 - lambda);
+    // double totalScale = parentPair.totalScale * (1.0 - lambda);
+    InterpolatedProbTreeValue result = null;
+    if (probTree == null || lambda < 1e-20) {
+        if (parentProbTree == null) {
+            result = new InterpolatedProbTreeValue(null, 1.0, probTree == null);
+            if (debug > 2) {
+                System.out.printf("[%s] skipping interpolation (null parent) lambda=%e, result=%e, clusterid=%d\n", lm.getId(), lambda, result.probTree.getTotalProb(), clusterid);
+            }
+            return result;
+        }
+        // parentProbTree = (OnDiskCompactProbTree) parentProbTree.clone();
+        // parentProbTree.scale(1.0 - lambda);
+        result = new InterpolatedProbTreeValue(parentProbTree, parentScale, probTree == null);
+        if (debug > 2) {
+            System.out.printf("[%s] skipping interpolation with lambda=%e, result=%e, clusterid=%d\n", lm.getId(), lambda, result.probTree.getTotalProb(), clusterid);
+        }
+        // System.out.printf("NEW[%d]: lambda=%e, prob=%e\n", clusterid, lambda, result.getFirst().getTotalProb());
+        return result;
+    }
+    if (parentProbTree == null) {
+        // probTree = (OnDiskCompactProbTree) probTree.clone();
+        // probTree.scale(lambda);
+        result = new InterpolatedProbTreeValue(probTree, lambda);
+        if (debug > 2) {
+            System.out.printf("[%s] skipping interpolation (null parent) lambda=%e, result=%e, clusterid=%d\n", lm.getId(), lambda, result.probTree.getTotalProb(), clusterid);
+        }
+        // System.out.printf("NEW[%d]: lambda=%e, prob=%e\n", clusterid, lambda, result.getFirst().getTotalProb());
+        return result;
+    }
+    // merge both trees
+    {
+        OnDiskCompactProbTree[] trees = new OnDiskCompactProbTree[] { parentProbTree, probTree };
+        double[] weights = new double[] { parentScale, lambda };
+        OnDiskCompactProbTree intTree = OnDiskCompactProbTree.merge(trees, weights);
+        // OnDiskCompactProbTree intTree = (OnDiskCompactProbTree) parentProbTree.clone();
+        // intTree.scale(1.0 - lambda);
+        // probTree = (OnDiskCompactProbTree) probTree.clone();
+        // probTree.scale(lambda);
+        // 
+        // intTree = OnDiskCompactProbTree.merge(intTree, probTree);
+        // intTree.normalize(); // TODO: check if this is necessary
+        result = new InterpolatedProbTreeValue(intTree);
+    }
+    return result;
+}

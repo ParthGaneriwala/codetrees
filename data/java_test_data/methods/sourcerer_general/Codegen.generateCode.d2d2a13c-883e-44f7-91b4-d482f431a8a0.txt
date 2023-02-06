@@ -1,0 +1,55 @@
+private byte[] generateCode(String encodedSource) {
+    boolean hasScript = (scriptOrFnNodes[0].getType() == Token.SCRIPT);
+    boolean hasFunctions = (scriptOrFnNodes.length > 1 || !hasScript);
+    String sourceFile = null;
+    if (compilerEnv.isGenerateDebugInfo()) {
+        sourceFile = scriptOrFnNodes[0].getSourceName();
+    }
+    ClassFileWriter cfw = new ClassFileWriter(mainClassName, SUPER_CLASS_NAME, sourceFile);
+    cfw.addField(ID_FIELD_NAME, "I", ClassFileWriter.ACC_PRIVATE);
+    cfw.addField(DIRECT_CALL_PARENT_FIELD, mainClassSignature, ClassFileWriter.ACC_PRIVATE);
+    cfw.addField(REGEXP_ARRAY_FIELD_NAME, REGEXP_ARRAY_FIELD_TYPE, ClassFileWriter.ACC_PRIVATE);
+    if (hasFunctions) {
+        generateFunctionConstructor(cfw);
+    }
+    if (hasScript) {
+        cfw.addInterface("org/mozilla/javascript/Script");
+        generateScriptCtor(cfw);
+        generateMain(cfw);
+        generateExecute(cfw);
+    }
+    generateCallMethod(cfw);
+    generateResumeGenerator(cfw);
+    generateNativeFunctionOverrides(cfw, encodedSource);
+    int count = scriptOrFnNodes.length;
+    for (int i = 0; i != count; ++i) {
+        ScriptNode n = scriptOrFnNodes[i];
+        BodyCodegen bodygen = new BodyCodegen();
+        bodygen.cfw = cfw;
+        bodygen.codegen = this;
+        bodygen.compilerEnv = compilerEnv;
+        bodygen.scriptOrFn = n;
+        bodygen.scriptOrFnIndex = i;
+        try {
+            bodygen.generateBodyCode();
+        } catch (ClassFileWriter.ClassFileFormatException e) {
+            throw reportClassFileFormatException(n, e.getMessage());
+        }
+        if (n.getType() == Token.FUNCTION) {
+            OptFunctionNode ofn = OptFunctionNode.get(n);
+            generateFunctionInit(cfw, ofn);
+            if (ofn.isTargetOfDirectCall()) {
+                emitDirectConstructor(cfw, ofn);
+            }
+        }
+    }
+    if (directCallTargets != null) {
+        int N = directCallTargets.size();
+        for (int j = 0; j != N; ++j) {
+            cfw.addField(getDirectTargetFieldName(j), mainClassSignature, ClassFileWriter.ACC_PRIVATE);
+        }
+    }
+    emitRegExpInit(cfw);
+    emitConstantDudeInitializers(cfw);
+    return cfw.toByteArray();
+}

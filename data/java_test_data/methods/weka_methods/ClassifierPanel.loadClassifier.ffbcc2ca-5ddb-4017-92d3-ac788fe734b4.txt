@@ -1,0 +1,106 @@
+protected void loadClassifier() {
+    m_FileChooser.addChoosableFileFilter(m_PMMLModelFilter);
+    m_FileChooser.setFileFilter(m_ModelFilter);
+    int returnVal = m_FileChooser.showOpenDialog(this);
+    if (returnVal == JFileChooser.APPROVE_OPTION) {
+        File selected = m_FileChooser.getSelectedFile();
+        Classifier classifier = null;
+        Instances trainHeader = null;
+        m_Log.statusMessage("Loading model from file...");
+        try {
+            InputStream is = new FileInputStream(selected);
+            if (selected.getName().endsWith(PMML_FILE_EXTENSION)) {
+                PMMLModel model = PMMLFactory.getPMMLModel(is, m_Log);
+                if (model instanceof PMMLClassifier) {
+                    classifier = (PMMLClassifier) model;
+                /*
+             * trainHeader = ((PMMLClassifier)classifier).getMiningSchema().
+             * getMiningSchemaAsInstances();
+             */
+                } else {
+                    throw new Exception("PMML model is not a classification/regression model!");
+                }
+            } else {
+                if (selected.getName().endsWith(".gz")) {
+                    is = new GZIPInputStream(is);
+                }
+                // ObjectInputStream objectInputStream = new ObjectInputStream(is);
+                ObjectInputStream objectInputStream = SerializationHelper.getObjectInputStream(is);
+                classifier = (Classifier) objectInputStream.readObject();
+                try {
+                    // see if we can load the header
+                    trainHeader = (Instances) objectInputStream.readObject();
+                } catch (Exception e) {
+                }
+                // don't fuss if we can't
+                objectInputStream.close();
+            }
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(null, e, "Load Failed", JOptionPane.ERROR_MESSAGE);
+        }
+        m_Log.statusMessage("OK");
+        if (classifier != null) {
+            m_Log.logMessage("Loaded model from file '" + selected.getName() + "'");
+            String name = (new SimpleDateFormat("HH:mm:ss - ")).format(new Date());
+            String cname = classifier.getClass().getName();
+            if (cname.startsWith("weka.classifiers.")) {
+                cname = cname.substring("weka.classifiers.".length());
+            }
+            name += cname + " from file '" + selected.getName() + "'";
+            StringBuffer outBuff = new StringBuffer();
+            outBuff.append("=== Model information ===\n\n");
+            outBuff.append("Filename:     " + selected.getName() + "\n");
+            outBuff.append("Scheme:       " + classifier.getClass().getName());
+            if (classifier instanceof OptionHandler) {
+                String[] o = ((OptionHandler) classifier).getOptions();
+                outBuff.append(" " + Utils.joinOptions(o));
+            }
+            outBuff.append("\n");
+            if (trainHeader != null) {
+                outBuff.append("Relation:     " + trainHeader.relationName() + '\n');
+                outBuff.append("Attributes:   " + trainHeader.numAttributes() + '\n');
+                if (trainHeader.numAttributes() < 100) {
+                    for (int i = 0; i < trainHeader.numAttributes(); i++) {
+                        outBuff.append("              " + trainHeader.attribute(i).name() + '\n');
+                    }
+                } else {
+                    outBuff.append("              [list of attributes omitted]\n");
+                }
+            } else {
+                outBuff.append("\nTraining data unknown\n");
+            }
+            outBuff.append("\n=== Classifier model ===\n\n");
+            outBuff.append(classifier.toString() + "\n");
+            m_History.addResult(name, outBuff);
+            m_History.setSingle(name);
+            ArrayList<Object> vv = new ArrayList<Object>();
+            vv.add(classifier);
+            if (trainHeader != null) {
+                vv.add(trainHeader);
+            }
+            // allow visualization of graphable classifiers
+            String grph = null;
+            if (classifier instanceof Drawable) {
+                try {
+                    grph = ((Drawable) classifier).graph();
+                } catch (Exception ex) {
+                }
+            }
+            if (grph != null) {
+                vv.add(grph);
+            }
+            m_History.addObject(name, vv);
+            // set config in GOE
+            try {
+                Classifier copied = classifier.getClass().newInstance();
+                if (classifier instanceof OptionHandler) {
+                    String[] options = ((OptionHandler) classifier).getOptions();
+                    ((OptionHandler) copied).setOptions(options);
+                }
+                m_ClassifierEditor.setValue(copied);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    }
+}

@@ -1,0 +1,74 @@
+void process() {
+    boolean complete = false;
+    Error.printSystemOut("Defrag process begins");
+    transactionRowLookup = database.txManager.getTransactionIDList();
+    Error.printSystemOut("transaction count: " + transactionRowLookup.size());
+    HsqlArrayList allTables = database.schemaManager.getAllTables();
+    rootsList = new int[allTables.size()][];
+    Storage dest = null;
+    try {
+        OutputStream fos = database.logger.getFileAccess().openOutputStreamElement(dataFileName + ".new");
+        fileStreamOut = new BufferedOutputStream(fos, 1 << 12);
+        for (int i = 0; i < cache.initialFreePos; i++) {
+            fileStreamOut.write(0);
+        }
+        fileOffset = cache.initialFreePos;
+        for (int i = 0, tSize = allTables.size(); i < tSize; i++) {
+            Table t = (Table) allTables.get(i);
+            if (t.getTableType() == TableBase.CACHED_TABLE) {
+                int[] rootsArray = writeTableToDataFile(t);
+                rootsList[i] = rootsArray;
+            } else {
+                rootsList[i] = null;
+            }
+            Error.printSystemOut("table: " + t.getName().name + " complete");
+        }
+        fileStreamOut.flush();
+        fileStreamOut.close();
+        fileStreamOut = null;
+        // write out the end of file position
+        int type = database.logger.isStoredFileAccess() ? ScaledRAFile.DATA_FILE_STORED : ScaledRAFile.DATA_FILE_RAF;
+        dest = ScaledRAFile.newScaledRAFile(database, dataFileName + ".new", false, type);
+        dest.seek(DataFileCache.LONG_FREE_POS_POS);
+        dest.writeLong(fileOffset);
+        // set shadowed flag;
+        int flags = 0;
+        if (database.logger.propIncrementBackup) {
+            flags = BitMap.set(flags, DataFileCache.FLAG_ISSHADOWED);
+        }
+        flags = BitMap.set(flags, DataFileCache.FLAG_190);
+        flags = BitMap.set(flags, DataFileCache.FLAG_ISSAVED);
+        dest.seek(DataFileCache.FLAGS_POS);
+        dest.writeInt(flags);
+        dest.close();
+        dest = null;
+        for (int i = 0, size = rootsList.length; i < size; i++) {
+            int[] roots = rootsList[i];
+            if (roots != null) {
+                Error.printSystemOut("roots: " + org.hsqldb.lib.StringUtil.getList(roots, ",", ""));
+            }
+        }
+        complete = true;
+    } catch (IOException e) {
+        throw Error.error(ErrorCode.FILE_IO_ERROR, e);
+    } catch (OutOfMemoryError e) {
+        throw Error.error(ErrorCode.OUT_OF_MEMORY, e);
+    } catch (Throwable t) {
+        throw Error.error(ErrorCode.GENERAL_ERROR, t);
+    } finally {
+        try {
+            if (fileStreamOut != null) {
+                fileStreamOut.close();
+            }
+            if (dest != null) {
+                dest.close();
+            }
+        } catch (Throwable t) {
+            database.logger.logSevereEvent("backupFile failed", t);
+        }
+        if (!complete) {
+            database.logger.getFileAccess().removeElement(dataFileName + ".new");
+        }
+    }
+    Error.printSystemOut("Defrag transfer complete: " + stopw.elapsedTime());
+}

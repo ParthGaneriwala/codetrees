@@ -1,0 +1,120 @@
+boolean loadFSImage(File curFile) throws IOException {
+    assert this.getLayoutVersion() < 0 : "Negative layout version is expected.";
+    assert curFile != null : "curFile is null";
+    FSNamesystem fsNamesys = FSNamesystem.getFSNamesystem();
+    FSDirectory fsDir = fsNamesys.dir;
+    // 
+    // Load in bits
+    // 
+    boolean needToSave = true;
+    DataInputStream in = new DataInputStream(new BufferedInputStream(new FileInputStream(curFile)));
+    try {
+        /*
+       * Note: Remove any checks for version earlier than 
+       * Storage.LAST_UPGRADABLE_LAYOUT_VERSION since we should never get 
+       * to here with older images.
+       */
+        /*
+       * TODO we need to change format of the image file
+       * it should not contain version and namespace fields
+       */
+        // read image version: first appeared in version -1
+        int imgVersion = in.readInt();
+        // read namespaceID: first appeared in version -2
+        this.namespaceID = in.readInt();
+        // read number of files
+        long numFiles;
+        if (imgVersion <= -16) {
+            numFiles = in.readLong();
+        } else {
+            numFiles = in.readInt();
+        }
+        this.layoutVersion = imgVersion;
+        // read in the last generation stamp.
+        if (imgVersion <= -12) {
+            long genstamp = in.readLong();
+            fsNamesys.setGenerationStamp(genstamp);
+        }
+        needToSave = (imgVersion != FSConstants.LAYOUT_VERSION);
+        // read file info
+        short replication = FSNamesystem.getFSNamesystem().getDefaultReplication();
+        LOG.info("Number of files = " + numFiles);
+        String path;
+        String parentPath = "";
+        INodeDirectory parentINode = fsDir.rootDir;
+        for (long i = 0; i < numFiles; i++) {
+            long modificationTime = 0;
+            long atime = 0;
+            long blockSize = 0;
+            path = readString(in);
+            replication = in.readShort();
+            replication = FSEditLog.adjustReplication(replication);
+            modificationTime = in.readLong();
+            if (imgVersion <= -17) {
+                atime = in.readLong();
+            }
+            if (imgVersion <= -8) {
+                blockSize = in.readLong();
+            }
+            int numBlocks = in.readInt();
+            Block[] blocks = null;
+            // indicates a directory.
+            if ((-9 <= imgVersion && numBlocks > 0) || (imgVersion < -9 && numBlocks >= 0)) {
+                blocks = new Block[numBlocks];
+                for (int j = 0; j < numBlocks; j++) {
+                    blocks[j] = new Block();
+                    if (-14 < imgVersion) {
+                        blocks[j].set(in.readLong(), in.readLong(), Block.GRANDFATHER_GENERATION_STAMP);
+                    } else {
+                        blocks[j].readFields(in);
+                    }
+                }
+            }
+            // 
+            if (-8 <= imgVersion && blockSize == 0) {
+                if (numBlocks > 1) {
+                    blockSize = blocks[0].getNumBytes();
+                } else {
+                    long first = ((numBlocks == 1) ? blocks[0].getNumBytes() : 0);
+                    blockSize = Math.max(fsNamesys.getDefaultBlockSize(), first);
+                }
+            }
+            // get quota only when the node is a directory
+            long nsQuota = -1L;
+            if (imgVersion <= -16 && blocks == null) {
+                nsQuota = in.readLong();
+            }
+            long dsQuota = -1L;
+            if (imgVersion <= -18 && blocks == null) {
+                dsQuota = in.readLong();
+            }
+            PermissionStatus permissions = fsNamesys.getUpgradePermission();
+            if (imgVersion <= -11) {
+                permissions = PermissionStatus.read(in);
+            }
+            if (path.length() == 0) {
+                // update the root's attributes
+                if (nsQuota != -1 || dsQuota != -1) {
+                    fsDir.rootDir.setQuota(nsQuota, dsQuota);
+                }
+                fsDir.rootDir.setModificationTime(modificationTime);
+                fsDir.rootDir.setPermissionStatus(permissions);
+                continue;
+            }
+            // check if the new inode belongs to the same parent
+            if (!isParent(path, parentPath)) {
+                parentINode = null;
+                parentPath = getParent(path);
+            }
+            // add new inode
+            parentINode = fsDir.addToParent(path, parentINode, permissions, blocks, replication, modificationTime, atime, nsQuota, dsQuota, blockSize);
+        }
+        // load datanode info
+        this.loadDatanodes(imgVersion, in);
+        // load Files Under Construction
+        this.loadFilesUnderConstruction(imgVersion, in, fsNamesys);
+    } finally {
+        in.close();
+    }
+    return needToSave;
+}

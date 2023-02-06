@@ -1,0 +1,85 @@
+private void traverseNode(Node n, Node parent, Scope scope) {
+    int type = n.getType();
+    Var var = null;
+    switch(type) {
+        case Token.FUNCTION:
+            // for it instead of traversing immediately.
+            if (NodeUtil.isFunctionDeclaration(n)) {
+                var = scope.getVar(n.getFirstChild().getString());
+            }
+            if (var != null && isRemovableVar(var)) {
+                continuations.put(var, new Continuation(n, scope));
+            } else {
+                traverseFunction(n, scope);
+            }
+            return;
+        case Token.ASSIGN:
+            Assign maybeAssign = Assign.maybeCreateAssign(n);
+            if (maybeAssign != null) {
+                // Put this in the assign map. It might count as a reference,
+                // but we won't know that until we have an index of all assigns.
+                var = scope.getVar(maybeAssign.nameNode.getString());
+                if (var != null) {
+                    assignsByVar.put(var, maybeAssign);
+                    assignsByNode.put(maybeAssign.nameNode, maybeAssign);
+                    if (isRemovableVar(var) && !maybeAssign.mayHaveSecondarySideEffects) {
+                        // If the var is unreferenced and performing this assign has
+                        // no secondary side effects, then we can create a continuation
+                        // for it instead of traversing immediately.
+                        continuations.put(var, new Continuation(n, scope));
+                        return;
+                    }
+                }
+            }
+            break;
+        case Token.CALL:
+            // Look for calls to inheritance-defining calls (such as goog.inherits).
+            SubclassRelationship subclassRelationship = codingConvention.getClassesDefinedByCall(n);
+            if (subclassRelationship != null) {
+                Var subclassVar = scope.getVar(subclassRelationship.subclassName);
+                // easier and mostly the same.
+                if (subclassVar != null && subclassVar.isGlobal() && !referenced.contains(subclassVar)) {
+                    // Save a reference to the EXPR node.
+                    inheritsCalls.put(subclassVar, parent);
+                    continuations.put(subclassVar, new Continuation(n, scope));
+                    return;
+                }
+            }
+            break;
+        case Token.NAME:
+            var = scope.getVar(n.getString());
+            if (parent.getType() == Token.VAR) {
+                Node value = n.getFirstChild();
+                if (value != null && var != null && isRemovableVar(var) && !NodeUtil.mayHaveSideEffects(value)) {
+                    // If the var is unreferenced and creating its value has no side
+                    // effects, then we can create a continuation for it instead
+                    // of traversing immediately.
+                    continuations.put(var, new Continuation(n, scope));
+                    return;
+                }
+            } else {
+                // on all the parameters.
+                if ("arguments".equals(n.getString()) && scope.isLocal()) {
+                    Node lp = scope.getRootNode().getFirstChild().getNext();
+                    for (Node a = lp.getFirstChild(); a != null; a = a.getNext()) {
+                        markReferencedVar(scope.getVar(a.getString()));
+                    }
+                }
+                // are references to other vars.
+                if (var != null) {
+                    // for now.
+                    if (isRemovableVar(var)) {
+                        if (!assignsByNode.containsKey(n)) {
+                            markReferencedVar(var);
+                        }
+                    } else {
+                        markReferencedVar(var);
+                    }
+                }
+            }
+            break;
+    }
+    for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
+        traverseNode(c, n, scope);
+    }
+}

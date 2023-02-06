@@ -1,0 +1,55 @@
+public JavaExpr genObjToPass(CallNode callNode, Deque<Map<String, JavaExpr>> localVarTranslations) {
+    TranslateToJavaExprVisitor ttjev = translateToJavaExprVisitorFactory.create(localVarTranslations);
+    // ------ Generate the expression for the original data to pass ------
+    JavaExpr dataToPass;
+    if (callNode.isPassingAllData()) {
+        dataToPass = new JavaExpr("data", SoyMapData.class, Integer.MAX_VALUE);
+    } else if (callNode.isPassingData()) {
+        dataToPass = new JavaExpr(genMaybeCast(ttjev.exec(callNode.getDataRef()), SoyMapData.class), SoyMapData.class, Integer.MAX_VALUE);
+    } else {
+        dataToPass = new JavaExpr("null", SoyMapData.class, Integer.MAX_VALUE);
+    }
+    // ------ Case 1: No additional params ------
+    if (callNode.numChildren() == 0) {
+        return dataToPass;
+    }
+    // ------ Build an object literal containing the additional params ------
+    StringBuilder paramsObjSb = new StringBuilder();
+    paramsObjSb.append("new com.google.template.soy.data.SoyMapData(");
+    boolean isFirst = true;
+    for (CallParamNode child : callNode.getChildren()) {
+        if (isFirst) {
+            isFirst = false;
+        } else {
+            paramsObjSb.append(", ");
+        }
+        String key = child.getKey();
+        paramsObjSb.append("\"").append(key).append("\", ");
+        if (child instanceof CallParamValueNode) {
+            CallParamValueNode cpvn = (CallParamValueNode) child;
+            JavaExpr valueJavaExpr = ttjev.exec(cpvn.getValueExpr());
+            paramsObjSb.append(valueJavaExpr.getText());
+        } else {
+            CallParamContentNode cpcn = (CallParamContentNode) child;
+            if (isComputableAsJavaExprsVisitor.exec(cpcn)) {
+                List<JavaExpr> cpcnJavaExprs = genJavaExprsVisitorFactory.create(localVarTranslations).exec(cpcn);
+                JavaExpr valueJavaExpr = JavaExprUtils.concatJavaExprs(cpcnJavaExprs);
+                paramsObjSb.append(valueJavaExpr.getText());
+            } else {
+                // assume that code has been generated to define the temporary variable 'param<n>'.
+                if (javaSrcOptions.getCodeStyle() == SoyJavaSrcOptions.CodeStyle.STRINGBUILDER) {
+                    paramsObjSb.append("param").append(cpcn.getId()).append(".toString()");
+                } else {
+                    paramsObjSb.append("param").append(cpcn.getId());
+                }
+            }
+        }
+    }
+    paramsObjSb.append(")");
+    // ------ Cases 2 and 3: Additional params with and without original data to pass ------
+    if (callNode.isPassingData()) {
+        return new JavaExpr(genFunctionCall(UTILS_LIB + ".$$augmentData", dataToPass.getText(), paramsObjSb.toString()), SoyMapData.class, Integer.MAX_VALUE);
+    } else {
+        return new JavaExpr(paramsObjSb.toString(), SoyMapData.class, Integer.MAX_VALUE);
+    }
+}

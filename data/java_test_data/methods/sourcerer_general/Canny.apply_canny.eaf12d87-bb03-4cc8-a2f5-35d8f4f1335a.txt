@@ -1,0 +1,104 @@
+/**
+ * Applies the canny edge detector to the input image
+ * @param src_1d The source image as a pixel array
+ * @param width width of the destination image in pixels
+ * @param height height of the destination image in pixels
+ * @param size The size of the kernel used in the smoothing
+ * @param theta The gaussian smoothing standard deviation
+ * @param lowthresh The low threshold for the tracking
+ * @param highthresh The high threshold for the tracking
+ * @param scale The amount of scaling to be applied to the image
+ * @param offset The amount to be added to each result pixel
+ * @return A pixel array containing edges in the image
+ */
+// Tim's Canny Edge Detection Algorithm
+// Based on algorithm in Machine Vision (pg 169)
+public int[] apply_canny(byte[] src_1d, int width, int height, int size, float theta, int lowthresh, int highthresh, float scale, int offset) {
+    d_w = width;
+    d_h = height;
+    // Setup local variables
+    dest_1d = new int[d_w * d_h];
+    int[] tmp_1d = new int[d_w * d_h];
+    int[][] tmp_2d = new int[d_w][d_h];
+    int[][] p_2d = new int[d_w][d_h];
+    int[][] q_2d = new int[d_w][d_h];
+    int[][] m_2d = new int[d_w][d_h];
+    double[][] theta_2d = new double[d_w][d_h];
+    int[][] nms = new int[d_w][d_h];
+    int[][] delta = new int[d_w][d_h];
+    int[][] tracked = new int[d_w][d_h];
+    int result;
+    int tmp = 0;
+    int[] tmp2_1d;
+    // Set up the output array
+    for (int i = 0; i < dest_1d.length; i++) {
+        dest_1d[i] = 0xff000000;
+    }
+    // Smooth the initial image
+    tmp_1d = gaussiansmooth.smooth_image(src_1d, width, height, size, theta);
+    // Mask off so that we work with values between 0 and 255
+    for (int i = 0; i < tmp_1d.length; i++) {
+        tmp_1d[i] = tmp_1d[i] & 0x000000ff;
+    }
+    // Convert 1_d to 2_d for ease of processing in next stages
+    for (int i = 0; i < d_w; i++) {
+        for (int j = 0; j < d_h; j++) {
+            tmp_2d[i][j] = tmp_1d[i + (j * d_w)];
+        }
+    }
+    // Apply the gradient detection
+    for (int i = 0; i < (d_w - 1); i++) {
+        for (int j = 0; j < (d_h - 1); j++) {
+            p_2d[i][j] = (tmp_2d[i][j + 1] - tmp_2d[i][j] + tmp_2d[i + 1][j + 1] - tmp_2d[i + 1][j]) / 2;
+            q_2d[i][j] = (tmp_2d[i][j] - tmp_2d[i + 1][j] + tmp_2d[i][j + 1] - tmp_2d[i + 1][j + 1]) / 2;
+            m_2d[i][j] = (int) Math.sqrt(Math.pow((double) p_2d[i][j], 2) + Math.pow((double) q_2d[i][j], 2));
+            theta_2d[i][j] = Math.atan2((double) (q_2d[i][j]), (double) (p_2d[i][j]));
+        }
+    }
+    // Resize image
+    d_w--;
+    d_h--;
+    for (int i = 0; i < d_w; i++) {
+        for (int j = 0; j < d_h; j++) {
+            delta[i][j] = sector(theta_2d[i][j]);
+        }
+    }
+    // Then apply non maximal suppression
+    for (int i = 0; i < (d_w - 1); i++) {
+        nms[i][0] = 0;
+        nms[i][d_h - 1] = 0;
+    }
+    for (int j = 0; j < (d_h - 1); j++) {
+        nms[0][j] = 0;
+        nms[d_w - 1][j] = 0;
+    }
+    for (int i = 1; i < (d_w - 1); i++) {
+        for (int j = 1; j < (d_h - 1); j++) {
+            nms[i][j] = suppress(m_2d, delta[i][j], i, j, lowthresh);
+        }
+    }
+    // Resize again!
+    d_w = d_w - 2;
+    d_h = d_h - 2;
+    // Track the image
+    tracked = apply_track(nms, d_w, d_h, lowthresh, highthresh);
+    // Calculate the output array
+    for (int i = 0; i < d_w; i++) {
+        for (int j = 0; j < d_h; j++) {
+            result = tracked[i][j];
+            result = (int) (result * scale);
+            result = result + offset;
+            if (result > 255) {
+                result = 255;
+            }
+            if (result < 0) {
+                result = 0;
+            }
+            dest_1d[(i + (j * (d_w + 3)))] = 0xff000000 | result << 16 | result << 8 | result;
+        }
+    }
+    // Change the sizes back
+    d_w = d_w + 3;
+    d_h = d_h + 3;
+    return dest_1d;
+}

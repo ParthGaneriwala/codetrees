@@ -1,0 +1,146 @@
+public boolean validateRequest(SipProvider sipProvider, Request request, ServerTransaction st) {
+    try {
+        MessageFactory messageFactory = proxy.getMessageFactory();
+        PresenceServer presenceServer = proxy.getPresenceServer();
+        // Important check: the server transaction can be null! So, in this
+        // case,
+        // we have to reply an eventual error code statelessly
+        ServerTransaction serverTransaction = st;
+        if (!checkURIScheme(request)) {
+            // Let's return a 416 Unsupported URI scheme
+            Response response = messageFactory.createResponse(Response.UNSUPPORTED_URI_SCHEME, request);
+            if (serverTransaction != null)
+                serverTransaction.sendResponse(response);
+            else
+                sipProvider.sendResponse(response);
+            if (logger.isDebugEnabled())
+                logger.debug("RequestValidation: 416 UNSUPPORTED_URI_SCHEME replied:\n" + response.toString());
+            return false;
+        }
+        if (!checkMaxForwards(request)) {
+            // Let's return a 483 too many hops
+            Response response = messageFactory.createResponse(Response.TOO_MANY_HOPS, request);
+            if (serverTransaction != null)
+                serverTransaction.sendResponse(response);
+            else
+                sipProvider.sendResponse(response);
+            if (logger.isDebugEnabled())
+                logger.debug("RequestValidation: 483 TOO_MANY_HOPS replied:\n" + response.toString());
+            return false;
+        }
+        if (!checkLoopDetection(request)) {
+            // Let's return a 482 Loop detection
+            Response response = messageFactory.createResponse(Response.LOOP_DETECTED, request);
+            if (serverTransaction != null)
+                serverTransaction.sendResponse(response);
+            else
+                sipProvider.sendResponse(response);
+            if (logger.isDebugEnabled())
+                logger.debug("RequestValidation: 482 LOOP_DETECTED replied:\n" + response.toString());
+            return false;
+        }
+        if (!checkProxyRequire(request)) {
+            // Let's return a 420 Bad Extension
+            Response response = messageFactory.createResponse(Response.BAD_EXTENSION, request);
+            // We have to add a Unsupported header listing the Option tags
+            // that we don't support:
+            HeaderFactory headerFactory = proxy.getHeaderFactory();
+            ProxyRequireHeader prh = (ProxyRequireHeader) request.getHeader(ProxyRequireHeader.NAME);
+            if (prh != null) {
+                UnsupportedHeader unsupportedHeader = headerFactory.createUnsupportedHeader(prh.getOptionTag());
+                response.setHeader(unsupportedHeader);
+            }
+            if (serverTransaction != null)
+                serverTransaction.sendResponse(response);
+            else
+                sipProvider.sendResponse(response);
+            if (logger.isDebugEnabled())
+                logger.debug("RequestValidation: 420 BAD_EXTENSION replied:\n" + response.toString());
+            return false;
+        }
+        if (!checkProxyAuthorization(request)) {
+            Authentication authentication = proxy.getAuthentication();
+            Response response = authentication.getResponse(request);
+            if (response != null) {
+                if (serverTransaction != null)
+                    serverTransaction.sendResponse(response);
+                else
+                    sipProvider.sendResponse(response);
+                logger.debug("RequestValidation: 407 PROXY_AUTHENTICATION_REQUIRED replied:\n" + response.toString());
+            } else {
+                // This is an internal error:
+                // Let's return a 500 SERVER_INTERNAL_ERROR
+                response = messageFactory.createResponse(Response.SERVER_INTERNAL_ERROR, request);
+                if (serverTransaction != null)
+                    serverTransaction.sendResponse(response);
+                else
+                    sipProvider.sendResponse(response);
+                if (logger.isDebugEnabled())
+                    logger.debug("RequestValidation: 500 SERVER_INTERNAL_ERROR replied:\n" + response.toString());
+            }
+            return false;
+        }
+        if (!checkFromTag(request)) {
+            // Let's return a 400 BAD_REQUEST
+            Response response = messageFactory.createResponse(Response.BAD_REQUEST, request);
+            if (serverTransaction != null)
+                serverTransaction.sendResponse(response);
+            else
+                sipProvider.sendResponse(response);
+            if (logger.isDebugEnabled())
+                logger.debug("RequestValidation: 400 BAD_REQUEST replied:\n" + response.toString());
+            return false;
+        }
+        // For Event notifications:
+        if (proxy.isPresenceServer()) {
+            String method = request.getMethod();
+            if (method.equals("SUBSCRIBE")) {
+                /*
+					 * Subscribers MUST include exactly one "Event" header in
+					 * SUBSCRIBE requests, indicating to which event or class of
+					 * events they are subscribing.
+					 */
+                if (!checkEventHeader(request)) {
+                    // Let's return a 400 BAD_REQUEST
+                    Response response = messageFactory.createResponse(Response.BAD_REQUEST, request);
+                    if (serverTransaction != null)
+                        serverTransaction.sendResponse(response);
+                    else
+                        sipProvider.sendResponse(response);
+                    if (logger.isDebugEnabled())
+                        logger.debug("RequestValidation: the event" + " header is mandatory, 400 BAD_REQUEST replied:\n" + response.toString());
+                    return false;
+                }
+                if (!presenceServer.hasAuthorization(request)) {
+                    // We have to check what kind of 2xx response to send
+                    // back!!!
+                    /*
+						 * RFC 3265 3.1.4.1: This SUBSCRIBE request will be
+						 * confirmed with a final response. 200-class responses
+						 * indicate that the subscription has been accepted, and
+						 * that a NOTIFY will be sent immediately. A 200
+						 * response indicates that the subscription has been
+						 * accepted and that the user is authorized to subscribe
+						 * to the requested resource. A 202 response merely
+						 * indicates that the subscription has been understood,
+						 * and that authorization may or may not have been
+						 * granted.
+						 */
+                    Response response = messageFactory.createResponse(Response.ACCEPTED, request);
+                    if (serverTransaction != null)
+                        serverTransaction.sendResponse(response);
+                    else
+                        sipProvider.sendResponse(response);
+                    if (logger.isDebugEnabled())
+                        logger.debug("RequestValidation: validateRequest()," + " 202 ACCEPTED replied:\n" + response.toString());
+                    return false;
+                }
+            }
+        }
+        // All the checks are passed:
+        return true;
+    } catch (Exception e) {
+        logger.error("RequestValidation: validateRequest(), exception raised:", e);
+        return false;
+    }
+}

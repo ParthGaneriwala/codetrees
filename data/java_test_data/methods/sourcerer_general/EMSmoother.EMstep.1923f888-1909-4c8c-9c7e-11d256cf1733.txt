@@ -1,0 +1,241 @@
+private double[] EMstep() {
+    final double[] pr1 = new double[lambdas.length];
+    final double[] pr2 = new double[lambdas.length];
+    Arrays.fill(pr1, 0.0);
+    Arrays.fill(pr2, 0.0);
+    JobManager manager = JobManager.getInstance();
+    JobGroup group = manager.createJobGroup("EM step");
+    final Lock prLock = new ReentrantLock();
+    final double uniformProb = 1.0 / allOvertFactors.size();
+    for (BinaryTreeIterator<HistoryTreePayload> iter = theTree.getLeafIterator(); iter.hasNext(); ) {
+        final BinaryTree<HistoryTreePayload> leaf = iter.nextNode();
+        if (leaf.getPayload().isBackoff)
+            continue;
+        final int id = leaf.getPayload().clusterid;
+        Runnable run = new Runnable() {
+
+            public void run() {
+                ConstCountDistribution devDist = distStorage.getDistribution(id, devDataIds[0]);
+                if (devDist == null || devDist.getTotalCount() == 0) {
+                    return;
+                }
+                // long startTime = System.currentTimeMillis();
+                // Long2IntMap devData = devDist.getCounts();
+                BinaryTree<HistoryTreePayload> node = leaf;
+                // load all needed distributions into a local hash
+                HashMap<Integer, ConstCountDistribution> distributions = new HashMap<Integer, ConstCountDistribution>(100);
+                {
+                    ArrayList<Integer> nodeIds = new ArrayList<Integer>(100);
+                    while (node != null) {
+                        Integer i = node.getPayload().clusterid;
+                        nodeIds.add(i);
+                        node = node.getParent();
+                    }
+                    // request items in descending order to avoid a deadlock in distCache
+                    // TODO: fix it (fixed ?)
+                    // request items is random order to improve concurrency
+                    RandomizedQueue<Integer> rndQueue = new RandomizedQueue<Integer>(new ArrayList<Integer>(nodeIds));
+                    while (true) {
+                        Integer nodeId = rndQueue.poll();
+                        if (nodeId == null)
+                            break;
+                        distributions.put(nodeId, distCache.getItem(nodeId));
+                    }
+                }
+                node = leaf;
+                Long2DoubleMap pr1hash = new Long2DoubleMap(50);
+                Long2DoubleMap pr2hash = new Long2DoubleMap(50);
+                /*
+						double alpha = 1.0;
+						
+						while(node != null) {
+							HistoryTreePayload payload = node.getPayload();
+							int cid = payload.clusterid;
+							//pr1hash.put(cid, new MutableDouble(0));
+							//pr2hash.put(cid, new MutableDouble(0));
+							
+							Long2IntMap.Iterator iterator = devData.iterator();
+							
+							for(; iterator.hasNext();) {
+								iterator.next();
+								
+								long tupleBits = iterator.getKey();
+								
+								int count = iterator.getValue();
+								
+								double parentBeta = 0;
+								double leafBeta = 0;
+								{
+									boolean reachedParent = false;
+									BinaryTree<HistoryTreePayload> n = leaf;
+									double currLeafScale = 1.0;
+									double currParentScale = 1.0;
+									while(n != null) {
+										int clusterid = n.getPayload().clusterid;
+										double lambda = lambdas[clusterid];
+										double prob = 0;
+										Long2DoubleMap probs = distributions.get(clusterid);
+										if (probs != null) {
+											prob = probs.get(tupleBits) * lambda;
+										}
+
+										if (n == node.getParent()) {
+											reachedParent = true;
+										}
+										
+										if (reachedParent) {
+											parentBeta += prob * currParentScale;
+											currParentScale *= 1 - lambda;
+										}
+										leafBeta += prob * currLeafScale;
+
+										currLeafScale *= 1 - lambda;
+										n = n.getParent();
+									}
+
+									leafBeta += currLeafScale * uniformProb;
+									parentBeta += currParentScale * uniformProb;
+								}
+								
+								
+								double prob = distributions.get(cid).get(tupleBits);
+								
+								double pr1add = alpha * lambdas[cid] * prob / leafBeta;
+								
+								double pr2add = alpha * (1 - lambdas[cid]) * parentBeta / leafBeta;
+								
+								pr1hash.addAndGet(cid, count * pr1add);
+								pr2hash.addAndGet(cid, count * pr2add);
+							}
+							
+							alpha *= 1.0 - lambdas[cid];
+							node = node.getParent();
+						}
+						*/
+                // new version
+                long[] devDataKeys = devDist.keys();
+                long[] devDataValues = devDist.values();
+                for (int k = 0; k < devDataKeys.length; ++k) {
+                    long tupleBits = devDataKeys[k];
+                    long devCount = devDataValues[k];
+                    double leafBeta = 0;
+                    double[] parentBetas;
+                    {
+                        GrowingDoubleArray betaProbs = new GrowingDoubleArray(50);
+                        GrowingDoubleArray nodeLambdas = new GrowingDoubleArray(50);
+                        BinaryTree<HistoryTreePayload> n = leaf;
+                        double currLeafScale = 1.0;
+                        while (n != null) {
+                            int clusterid = n.getPayload().clusterid;
+                            double lambda = lambdas[clusterid];
+                            double prob = 0;
+                            ConstCountDistribution clusterDist = distributions.get(clusterid);
+                            if (clusterDist != null) {
+                                prob = clusterDist.getProb(tupleBits);
+                            }
+                            betaProbs.add(prob);
+                            nodeLambdas.add(lambda);
+                            leafBeta += prob * lambda * currLeafScale;
+                            currLeafScale *= 1 - lambda;
+                            n = n.getParent();
+                        }
+                        // betaProbs.add(uniformProb);
+                        // nodeLambdas.add(1.0);
+                        parentBetas = new double[betaProbs.size() + 1];
+                        parentBetas[parentBetas.length - 1] = uniformProb;
+                        for (int i = betaProbs.size() - 1; i >= 0; --i) {
+                            double lambda = nodeLambdas.array()[i];
+                            parentBetas[i] = lambda * betaProbs.array()[i] + (1 - lambda) * parentBetas[i + 1];
+                        }
+                        leafBeta += currLeafScale * uniformProb;
+                    }
+                    if (leafBeta == 0) {
+                        System.err.printf("leafBeta in zero for %s in cluster #%d\n", FactorTuple.toStringNoNull(tupleBits), leaf.getPayload().clusterid);
+                        continue;
+                    }
+                    node = leaf;
+                    double alpha = 1.0;
+                    int nodeIndex = 0;
+                    while (node != null) {
+                        double parentBeta = parentBetas[nodeIndex++];
+                        HistoryTreePayload payload = node.getPayload();
+                        int cid = payload.clusterid;
+                        ConstCountDistribution clusterDist = distributions.get(cid);
+                        double prob = clusterDist.getProb(tupleBits);
+                        double pr1add = alpha * lambdas[cid] * prob / leafBeta;
+                        double pr2add = alpha * (1 - lambdas[cid]) * parentBeta / leafBeta;
+                        pr1hash.addAndGet(cid, devCount * pr1add);
+                        pr2hash.addAndGet(cid, devCount * pr2add);
+                        alpha *= 1.0 - lambdas[cid];
+                        node = node.getParent();
+                    }
+                }
+                prLock.lock();
+                for (Long2DoubleMap.Iterator i = pr1hash.iterator(); i.hasNext(); ) {
+                    Long2DoubleMap.Entry entry = i.next();
+                    pr1[(int) entry.getKey()] += entry.getValue();
+                }
+                for (Long2DoubleMap.Iterator i = pr2hash.iterator(); i.hasNext(); ) {
+                    Long2DoubleMap.Entry entry = i.next();
+                    pr2[(int) entry.getKey()] += entry.getValue();
+                }
+                prLock.unlock();
+            // long endTime = System.currentTimeMillis();
+            // System.err.printf("Leaf #%d took %g seconds\n", id, 0.001 * (endTime - startTime));
+            }
+        };
+        Job job = new Job(run, group, "cluster #" + Integer.toString(id));
+        manager.addJob(job);
+    }
+    group.join();
+    /*
+			if (buckets != null) {
+				for(int[] bucket : buckets) {
+					if (bucket.length == 1) continue;
+					
+					double pr1sum = 0.0;
+					double pr2sum = 0.0;
+					for(int clusterid : bucket) {
+						pr1sum += pr1[clusterid];
+						pr2sum += pr2[clusterid];
+					}
+					pr1sum /= bucket.length;
+					pr2sum /= bucket.length;
+					for(int clusterid : bucket) {
+						pr1[clusterid] = pr1sum;
+						pr2[clusterid] = pr2sum;
+					}
+				}
+			}
+			*/
+    double[] newLambdas = new double[lambdas.length];
+    final double minLambda = MIN_LAMBDA * 0.1;
+    for (int i = 0; i < lambdas.length; ++i) {
+        newLambdas[i] = (pr1[i] + pr2[i] == 0.0) ? 0.0 : pr1[i] / (pr1[i] + pr2[i]);
+        if (Double.isNaN(newLambdas[i])) {
+            newLambdas[i] = minLambda;
+        } else {
+            double maxLambda = maxLambda(i);
+            if (newLambdas[i] > maxLambda) {
+                newLambdas[i] = maxLambda;
+            } else if (newLambdas[i] < minLambda) {
+                newLambdas[i] = minLambda;
+            }
+        }
+    }
+    if (buckets != null) {
+        for (int[] bucket : buckets) {
+            if (bucket.length == 1)
+                continue;
+            double sum = 0.0;
+            for (int clusterid : bucket) {
+                sum += newLambdas[clusterid];
+            }
+            sum /= bucket.length;
+            for (int clusterid : bucket) {
+                newLambdas[clusterid] = sum;
+            }
+        }
+    }
+    return newLambdas;
+}

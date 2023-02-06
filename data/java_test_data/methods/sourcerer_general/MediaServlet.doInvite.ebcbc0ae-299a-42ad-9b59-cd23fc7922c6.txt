@@ -1,0 +1,63 @@
+@Override
+protected void doInvite(SipServletRequest invite) throws ServletException, IOException {
+    log("doInvite");
+    invite.createResponse(SipServletResponse.SC_RINGING).send();
+    ServletContext servletContext = getServletContext();
+    SdpParser sdpParser = (SdpParser) servletContext.getAttribute(SdpParser.class.getName());
+    Charset charset = Charset.forName("UTF-8");
+    Object contentObject = invite.getContent();
+    String sdp;
+    if (contentObject instanceof String)
+        sdp = (String) contentObject;
+    else {
+        byte[] content = (byte[]) contentObject;
+        sdp = new String(content, charset);
+    }
+    RtpConnection rtpConnection = sdpParser.getRtpConnection(sdp);
+    if (rtpConnection == null) {
+        invite.createResponse(SipServletResponse.SC_NOT_ACCEPTABLE).send();
+        return;
+    }
+    int payloadType;
+    String filename;
+    List<Integer> payloadTypes = rtpConnection.getPayloadTypes();
+    if (payloadTypes.contains(0))
+        payloadType = 0;
+    else if (payloadTypes.contains(8))
+        payloadType = 8;
+    else {
+        invite.createResponse(SipServletResponse.SC_NOT_ACCEPTABLE).send();
+        return;
+    }
+    if (payloadType == 0)
+        filename = "AnsweringMachine.pcmu.wav";
+    else
+        filename = "AnsweringMachine.pcma.wav";
+    URL url = getClass().getClassLoader().getResource(filename);
+    File file;
+    try {
+        file = new File(url.toURI());
+    } catch (URISyntaxException e) {
+        SipServletResponse resp = invite.createResponse(SipServletResponse.SC_SERVER_INTERNAL_ERROR);
+        resp.send();
+        return;
+    }
+    Player player = new Player(file.getAbsolutePath(), rtpConnection.getHost(), rtpConnection.getPort(), payloadType);
+    player.addEventListener(this);
+    try {
+        player.init();
+    } catch (Exception e) {
+        SipServletResponse resp = invite.createResponse(SipServletResponse.SC_SERVER_INTERNAL_ERROR);
+        resp.send();
+        return;
+    }
+    int localPort = player.getLocalPort();
+    Recorder recorder = new Recorder(localPort);
+    Map<Integer, Recorder> recorders = (Map<Integer, Recorder>) servletContext.getAttribute(Recorder.class.getName());
+    recorders.put(localPort, recorder);
+    invite.getApplicationSession(true).setAttribute(Player.class.getName(), player);
+    SipServletResponse resp = invite.createResponse(SipServletResponse.SC_OK);
+    String sdpAnswer = "v=0\r\n" + "o=user1 123 456 IN IP4 127.0.0.1\r\n" + "s=-\r\n" + "c=IN IP4 127.0.0.1\r\n" + "t=0 0\r\n" + "m=audio " + player.getLocalPort() + " RTP/AVP " + payloadType + "\r\n" + "a=rtpmap:0 PCMU/8000\r\n";
+    resp.setContent(sdpAnswer.getBytes(charset), "application/sdp");
+    resp.send();
+}

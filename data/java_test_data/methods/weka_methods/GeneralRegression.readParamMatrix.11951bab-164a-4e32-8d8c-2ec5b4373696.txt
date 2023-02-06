@@ -1,0 +1,91 @@
+private void readParamMatrix(Element model) throws Exception {
+    Instances miningSchemaI = m_miningSchema.getFieldsAsInstances();
+    Attribute classAtt = miningSchemaI.classAttribute();
+    // used when function type is classification but class attribute is numeric
+    // in the mining schema. We will assume that there is a Target specified in
+    // the pmml that defines the legal values for this class.
+    ArrayList<String> targetVals = null;
+    NodeList matrixL = model.getElementsByTagName("ParamMatrix");
+    if (matrixL.getLength() != 1) {
+        throw new Exception("[GeneralRegression] more than one ParamMatrix!");
+    }
+    Element matrix = (Element) matrixL.item(0);
+    // but this attribute is treated as discrete
+    if (m_functionType == Regression.RegressionTable.CLASSIFICATION && classAtt.isNumeric()) {
+        // there has to be a Target element defined in the PMML.
+        if (!m_miningSchema.hasTargetMetaData()) {
+            throw new Exception("[GeneralRegression] function type is classification and " + "class attribute in mining schema is numeric, however, " + "there is no Target element " + "specifying legal discrete values for the target!");
+        }
+        if (m_miningSchema.getTargetMetaData().getOptype() != TargetMetaInfo.Optype.CATEGORICAL) {
+            throw new Exception("[GeneralRegression] function type is classification and " + "class attribute in mining schema is numeric, however " + "Target element in PMML does not have optype categorical!");
+        }
+        // OK now get legal values
+        targetVals = m_miningSchema.getTargetMetaData().getValues();
+        if (targetVals.size() == 0) {
+            throw new Exception("[GeneralRegression] function type is classification and " + "class attribute in mining schema is numeric, however " + "Target element in PMML does not have any discrete values " + "defined!");
+        }
+        // Finally, convert the class in the mining schema to nominal
+        m_miningSchema.convertNumericAttToNominal(miningSchemaI.classIndex(), targetVals);
+    }
+    // allocate space for the matrix
+    m_paramMatrix = new PCell[(classAtt.isNumeric()) ? 1 : classAtt.numValues()][m_parameterList.size()];
+    NodeList pcellL = matrix.getElementsByTagName("PCell");
+    for (int i = 0; i < pcellL.getLength(); i++) {
+        // indicates that that this beta applies to all target categories
+        // or target is numeric
+        int targetCategoryIndex = -1;
+        int parameterIndex = -1;
+        Node pcell = pcellL.item(i);
+        if (pcell.getNodeType() == Node.ELEMENT_NODE) {
+            String paramName = ((Element) pcell).getAttribute("parameterName");
+            String targetCatName = ((Element) pcell).getAttribute("targetCategory");
+            String coefficient = ((Element) pcell).getAttribute("beta");
+            String df = ((Element) pcell).getAttribute("df");
+            for (int j = 0; j < m_parameterList.size(); j++) {
+                if (m_parameterList.get(j).m_name.equals(paramName)) {
+                    parameterIndex = j;
+                    // use the label if defined
+                    if (m_parameterList.get(j).m_label != null) {
+                        paramName = m_parameterList.get(j).m_label;
+                    }
+                    break;
+                }
+            }
+            if (parameterIndex == -1) {
+                throw new Exception("[GeneralRegression] unable to find parameter name " + paramName + " in parameter list");
+            }
+            if (targetCatName != null && targetCatName.length() > 0) {
+                if (classAtt.isNominal() || classAtt.isString()) {
+                    targetCategoryIndex = classAtt.indexOfValue(targetCatName);
+                } else {
+                    throw new Exception("[GeneralRegression] found a PCell with a named " + "target category: " + targetCatName + " but class attribute is numeric in " + "mining schema");
+                }
+            }
+            PCell p = new PCell();
+            if (targetCategoryIndex != -1) {
+                p.m_targetCategory = targetCatName;
+            }
+            p.m_parameterName = paramName;
+            try {
+                p.m_beta = Double.parseDouble(coefficient);
+            } catch (IllegalArgumentException ex) {
+                throw new Exception("[GeneralRegression] unable to parse beta value " + coefficient + " as a double from PCell");
+            }
+            if (df != null && df.length() > 0) {
+                try {
+                    p.m_df = Integer.parseInt(df);
+                } catch (IllegalArgumentException ex) {
+                    throw new Exception("[GeneralRegression] unable to parse df value " + df + " as an int from PCell");
+                }
+            }
+            if (targetCategoryIndex != -1) {
+                m_paramMatrix[targetCategoryIndex][parameterIndex] = p;
+            } else {
+                // which case there will be only one row in the matrix anyway)
+                for (int j = 0; j < m_paramMatrix.length; j++) {
+                    m_paramMatrix[j][parameterIndex] = p;
+                }
+            }
+        }
+    }
+}

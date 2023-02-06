@@ -1,0 +1,115 @@
+public static String createLinkFailureMessageBasedOnHeuristics(MySQLConnection conn, long lastPacketSentTimeMs, long lastPacketReceivedTimeMs, Exception underlyingException, boolean streamingResultSetInPlay) {
+    long serverTimeoutSeconds = 0;
+    boolean isInteractiveClient = false;
+    if (conn != null) {
+        isInteractiveClient = conn.getInteractiveClient();
+        String serverTimeoutSecondsStr = null;
+        if (isInteractiveClient) {
+            serverTimeoutSecondsStr = conn.getServerVariable(// $NON-NLS-1$
+            "interactive_timeout");
+        } else {
+            serverTimeoutSecondsStr = conn.getServerVariable(// $NON-NLS-1$
+            "wait_timeout");
+        }
+        if (serverTimeoutSecondsStr != null) {
+            try {
+                serverTimeoutSeconds = Long.parseLong(serverTimeoutSecondsStr);
+            } catch (NumberFormatException nfe) {
+                serverTimeoutSeconds = 0;
+            }
+        }
+    }
+    StringBuffer exceptionMessageBuf = new StringBuffer();
+    if (lastPacketSentTimeMs == 0) {
+        lastPacketSentTimeMs = System.currentTimeMillis();
+    }
+    long timeSinceLastPacket = (System.currentTimeMillis() - lastPacketSentTimeMs) / 1000;
+    long timeSinceLastPacketMs = (System.currentTimeMillis() - lastPacketSentTimeMs);
+    long timeSinceLastPacketReceivedMs = (System.currentTimeMillis() - lastPacketReceivedTimeMs);
+    int dueToTimeout = DUE_TO_TIMEOUT_FALSE;
+    StringBuffer timeoutMessageBuf = null;
+    if (streamingResultSetInPlay) {
+        exceptionMessageBuf.append(Messages.getString(// $NON-NLS-1$
+        "CommunicationsException.ClientWasStreaming"));
+    } else {
+        if (serverTimeoutSeconds != 0) {
+            if (timeSinceLastPacket > serverTimeoutSeconds) {
+                dueToTimeout = DUE_TO_TIMEOUT_TRUE;
+                timeoutMessageBuf = new StringBuffer();
+                timeoutMessageBuf.append(Messages.getString(// $NON-NLS-1$
+                "CommunicationsException.2"));
+                if (!isInteractiveClient) {
+                    timeoutMessageBuf.append(Messages.getString(// $NON-NLS-1$
+                    "CommunicationsException.3"));
+                } else {
+                    timeoutMessageBuf.append(Messages.getString(// $NON-NLS-1$
+                    "CommunicationsException.4"));
+                }
+            }
+        } else if (timeSinceLastPacket > DEFAULT_WAIT_TIMEOUT_SECONDS) {
+            dueToTimeout = DUE_TO_TIMEOUT_MAYBE;
+            timeoutMessageBuf = new StringBuffer();
+            timeoutMessageBuf.append(Messages.getString(// $NON-NLS-1$
+            "CommunicationsException.5"));
+            timeoutMessageBuf.append(Messages.getString(// $NON-NLS-1$
+            "CommunicationsException.6"));
+            timeoutMessageBuf.append(Messages.getString(// $NON-NLS-1$
+            "CommunicationsException.7"));
+            timeoutMessageBuf.append(Messages.getString(// $NON-NLS-1$
+            "CommunicationsException.8"));
+        }
+        if (dueToTimeout == DUE_TO_TIMEOUT_TRUE || dueToTimeout == DUE_TO_TIMEOUT_MAYBE) {
+            if (lastPacketReceivedTimeMs != 0) {
+                Object[] timingInfo = { new Long(timeSinceLastPacketReceivedMs), new Long(timeSinceLastPacketMs) };
+                exceptionMessageBuf.append(Messages.getString(// $NON-NLS-1$
+                "CommunicationsException.ServerPacketTimingInfo", timingInfo));
+            } else {
+                exceptionMessageBuf.append(Messages.getString(// $NON-NLS-1$
+                "CommunicationsException.ServerPacketTimingInfoNoRecv", new Object[] { new Long(timeSinceLastPacketMs) }));
+            }
+            if (timeoutMessageBuf != null) {
+                exceptionMessageBuf.append(timeoutMessageBuf);
+            }
+            exceptionMessageBuf.append(Messages.getString(// $NON-NLS-1$
+            "CommunicationsException.11"));
+            exceptionMessageBuf.append(Messages.getString(// $NON-NLS-1$
+            "CommunicationsException.12"));
+            exceptionMessageBuf.append(Messages.getString(// $NON-NLS-1$
+            "CommunicationsException.13"));
+        } else {
+            if (underlyingException instanceof BindException) {
+                if (conn.getLocalSocketAddress() != null && !Util.interfaceExists(conn.getLocalSocketAddress())) {
+                    exceptionMessageBuf.append(Messages.getString(// $NON-NLS-1$
+                    "CommunicationsException.LocalSocketAddressNotAvailable"));
+                } else {
+                    // too many client connections???
+                    exceptionMessageBuf.append(Messages.getString(// $NON-NLS-1$
+                    "CommunicationsException.TooManyClientConnections"));
+                }
+            }
+        }
+    }
+    if (exceptionMessageBuf.length() == 0) {
+        // We haven't figured out a good reason, so copy it.
+        exceptionMessageBuf.append(Messages.getString(// $NON-NLS-1$
+        "CommunicationsException.20"));
+        if (THROWABLE_INIT_CAUSE_METHOD == null && underlyingException != null) {
+            exceptionMessageBuf.append(Messages.getString(// $NON-NLS-1$
+            "CommunicationsException.21"));
+            exceptionMessageBuf.append(Util.stackTraceToString(underlyingException));
+        }
+        if (conn != null && conn.getMaintainTimeStats() && !conn.getParanoid()) {
+            // $NON-NLS-1$
+            exceptionMessageBuf.append("\n\n");
+            if (lastPacketReceivedTimeMs != 0) {
+                Object[] timingInfo = { new Long(timeSinceLastPacketReceivedMs), new Long(timeSinceLastPacketMs) };
+                exceptionMessageBuf.append(Messages.getString(// $NON-NLS-1$
+                "CommunicationsException.ServerPacketTimingInfo", timingInfo));
+            } else {
+                exceptionMessageBuf.append(Messages.getString(// $NON-NLS-1$
+                "CommunicationsException.ServerPacketTimingInfoNoRecv", new Object[] { new Long(timeSinceLastPacketMs) }));
+            }
+        }
+    }
+    return exceptionMessageBuf.toString();
+}

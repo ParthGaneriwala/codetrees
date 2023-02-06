@@ -1,0 +1,98 @@
+@Override
+public void onCreate(Bundle savedInstanceState) {
+    super.onCreate(savedInstanceState);
+    final SortedSet<String> hosts = new TreeSet<String>();
+    String packageName = DEFAULT_BROWSER_PACKAGE;
+    String className = DEFAULT_BROWSER_CLASS;
+    boolean enabled = true;
+    final Intent intent = getIntent();
+    SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
+    if (sharedPreferences.contains("configured")) {
+        Map<String, ?> all = sharedPreferences.getAll();
+        for (String key : all.keySet()) {
+            if (key.startsWith("host_")) {
+                String host = (String) all.get(key);
+                hosts.add(host);
+            }
+        }
+        String[] browser = sharedPreferences.getString("browser", DEFAULT_BROWSER_PACKAGE + "," + DEFAULT_BROWSER_CLASS).split(",");
+        packageName = browser[0];
+        className = browser[1];
+        boolean found = false;
+        PackageManager pm = getPackageManager();
+        intent.setComponent(null);
+        List<ResolveInfo> list = pm.queryIntentActivities(intent, 0);
+        for (ResolveInfo info : list) {
+            if (info.activityInfo.name.equals(className) && info.activityInfo.packageName.equals(packageName)) {
+                found = true;
+            }
+            Log.d(TAG, info.activityInfo.packageName + " " + info.activityInfo.targetActivity + " " + info.activityInfo.name + " " + info.activityInfo.processName);
+        }
+        if (!found) {
+            Log.d(TAG, "Configured browser doesn't exist - use default");
+            packageName = DEFAULT_BROWSER_PACKAGE;
+            className = DEFAULT_BROWSER_CLASS;
+        }
+        enabled = sharedPreferences.getBoolean("enabled", true);
+    } else {
+        for (String host : DEFAULT_HOSTS.split(",")) {
+            hosts.add(host);
+        }
+    }
+    Log.d(TAG, "Handling redirection");
+    Log.d(TAG, "Action: " + intent.getAction());
+    getWindow().requestFeature(Window.FEATURE_NO_TITLE);
+    setContentView(R.layout.redirect);
+    final String finalPackageName = packageName;
+    final String finalClassName = className;
+    Uri data = intent.getData();
+    if (data != null) {
+        Log.d(TAG, "Data isn't null");
+        String host = data.getHost();
+        if (enabled && hosts.contains(host)) {
+            Log.d(TAG, "Host is in redirect list");
+            final Uri finaldata = data;
+            final CheckRedirect finalthis = this;
+            Handler handler = new Handler() {
+
+                @Override
+                public void handleMessage(Message msg) {
+                    switch(msg.what) {
+                        case Messages.MSG_REQUEST_CHECKED:
+                            {
+                                Log.d(TAG, "handling MSG_REQUEST_CHECKED");
+                                Uri uri = (Uri) msg.obj;
+                                new AlertDialog.Builder(finalthis).setMessage(finaldata.toString() + " redirects to " + uri.toString()).setCancelable(true).setPositiveButton("Follow Link", new DialogInterface.OnClickListener() {
+
+                                    @Override
+                                    public void onClick(DialogInterface dialog, int which) {
+                                        startActivity(intent.setComponent(new ComponentName(finalPackageName, finalClassName)));
+                                        finish();
+                                    }
+                                }).setNegativeButton("Cancel", new DialogInterface.OnClickListener() {
+
+                                    @Override
+                                    public void onClick(DialogInterface dialog, int which) {
+                                        finish();
+                                    }
+                                }).setOnCancelListener(new DialogInterface.OnCancelListener() {
+
+                                    @Override
+                                    public void onCancel(DialogInterface dialog) {
+                                        finish();
+                                    }
+                                }).setTitle("Check Redirect").show();
+                                break;
+                            }
+                    }
+                }
+            };
+            Thread thread = new Thread(new RequestChecker(handler, data));
+            thread.start();
+        } else {
+            startActivity(intent.setComponent(new ComponentName(packageName, className)));
+            finish();
+            return;
+        }
+    }
+}

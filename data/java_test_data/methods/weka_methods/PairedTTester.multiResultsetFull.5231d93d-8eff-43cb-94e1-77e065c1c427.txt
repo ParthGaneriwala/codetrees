@@ -1,0 +1,107 @@
+@Override
+public String multiResultsetFull(int baseResultset, int comparisonColumn) throws Exception {
+    int maxWidthMean = 2;
+    int maxWidthStdDev = 2;
+    double[] sortValues = new double[getNumDatasets()];
+    // determine max field width
+    for (int i = 0; i < getNumDatasets(); i++) {
+        // sorts skipped cols to end
+        sortValues[i] = Double.POSITIVE_INFINITY;
+        for (int j = 0; j < getNumResultsets(); j++) {
+            if (!displayResultset(j)) {
+                continue;
+            }
+            try {
+                PairedStats pairedStats = calculateStatistics(m_DatasetSpecifiers.specifier(i), baseResultset, j, comparisonColumn);
+                if (!Double.isInfinite(pairedStats.yStats.mean) && !Double.isNaN(pairedStats.yStats.mean)) {
+                    double width = ((Math.log(Math.abs(pairedStats.yStats.mean)) / Math.log(10)) + 1);
+                    if (width > maxWidthMean) {
+                        maxWidthMean = (int) width;
+                    }
+                }
+                if (j == baseResultset) {
+                    if (getSortColumn() != -1) {
+                        sortValues[i] = calculateStatistics(m_DatasetSpecifiers.specifier(i), baseResultset, j, getSortColumn()).xStats.mean;
+                    } else {
+                        sortValues[i] = i;
+                    }
+                }
+                if (m_ShowStdDevs && !Double.isInfinite(pairedStats.yStats.stdDev) && !Double.isNaN(pairedStats.yStats.stdDev)) {
+                    double width = ((Math.log(Math.abs(pairedStats.yStats.stdDev)) / Math.log(10)) + 1);
+                    if (width > maxWidthStdDev) {
+                        maxWidthStdDev = (int) width;
+                    }
+                }
+            } catch (Exception ex) {
+                // ex.printStackTrace();
+                System.err.println(ex);
+            }
+        }
+    }
+    // sort rows according to sort column
+    m_SortOrder = Utils.sort(sortValues);
+    // determine column order
+    m_ColOrder = new int[getNumResultsets()];
+    m_ColOrder[0] = baseResultset;
+    int index = 1;
+    for (int i = 0; i < getNumResultsets(); i++) {
+        if (i == baseResultset) {
+            continue;
+        }
+        m_ColOrder[index] = i;
+        index++;
+    }
+    // setup matrix
+    initResultMatrix();
+    m_ResultMatrix.setRowOrder(m_SortOrder);
+    m_ResultMatrix.setColOrder(m_ColOrder);
+    m_ResultMatrix.setMeanWidth(maxWidthMean);
+    m_ResultMatrix.setStdDevWidth(maxWidthStdDev);
+    m_ResultMatrix.setSignificanceWidth(1);
+    // selected
+    for (int i = 0; i < m_ResultMatrix.getColCount(); i++) {
+        if ((i == baseResultset) && (m_ResultMatrix.getColHidden(i))) {
+            m_ResultMatrix.setColHidden(i, false);
+            System.err.println("Note: test base was hidden - set visible!");
+        }
+    }
+    // the data
+    for (int i = 0; i < getNumDatasets(); i++) {
+        m_ResultMatrix.setRowName(i, templateString(m_DatasetSpecifiers.specifier(i)));
+        for (int j = 0; j < getNumResultsets(); j++) {
+            try {
+                // calc stats
+                PairedStats pairedStats = calculateStatistics(m_DatasetSpecifiers.specifier(i), baseResultset, j, comparisonColumn);
+                // count
+                m_ResultMatrix.setCount(i, pairedStats.count);
+                // mean
+                m_ResultMatrix.setMean(j, i, pairedStats.yStats.mean);
+                // std dev
+                m_ResultMatrix.setStdDev(j, i, pairedStats.yStats.stdDev);
+                // significance
+                if (pairedStats.differencesSignificance < 0) {
+                    m_ResultMatrix.setSignificance(j, i, ResultMatrix.SIGNIFICANCE_WIN);
+                } else if (pairedStats.differencesSignificance > 0) {
+                    m_ResultMatrix.setSignificance(j, i, ResultMatrix.SIGNIFICANCE_LOSS);
+                } else {
+                    m_ResultMatrix.setSignificance(j, i, ResultMatrix.SIGNIFICANCE_TIE);
+                }
+            } catch (Exception e) {
+                // e.printStackTrace();
+                System.err.println(e);
+            }
+        }
+    }
+    // generate output
+    StringBuffer result = new StringBuffer(1000);
+    try {
+        result.append(m_ResultMatrix.toStringMatrix());
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+    // scheme+option names
+    if (m_ResultMatrix.getEnumerateColNames()) {
+        result.append("\n\n" + m_ResultMatrix.toStringKey());
+    }
+    return result.toString();
+}

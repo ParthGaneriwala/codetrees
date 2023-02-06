@@ -1,0 +1,60 @@
+protected void doProcessElements() throws IOException {
+    JarInputStream jis;
+    try {
+        jis = new JarInputStream(jarUrl.openStream());
+    } catch (Exception ze) {
+        // really should catch IOException but Eclipse is buggy and raise NPE...
+        log.warn("Unable to find file (ignored): " + jarUrl, ze);
+        return;
+    }
+    // no entry
+    if (entry != null && entry.length() == 1)
+        entry = null;
+    // remove '/' header
+    if (entry != null && entry.startsWith("/"))
+        entry = entry.substring(1);
+    JarEntry jarEntry;
+    while ((jarEntry = jis.getNextJarEntry()) != null) {
+        String name = jarEntry.getName();
+        // filter it out
+        if (entry != null && !name.startsWith(entry))
+            continue;
+        if (!jarEntry.isDirectory()) {
+            if (name.equals(entry)) {
+                // exact match, might be a nested jar entry (ie from jar:file:..../foo.ear!/bar.jar)
+                /*
+					 * This algorithm assumes that the zipped file is only the URL root (including entry), not just any random entry
+					 */
+                JarInputStream subJis = null;
+                try {
+                    subJis = new JarInputStream(jis);
+                    ZipEntry subZipEntry = jis.getNextEntry();
+                    while (subZipEntry != null) {
+                        if (!subZipEntry.isDirectory()) {
+                            // FIXME copy sucks
+                            byte[] entryBytes = JarVisitorFactory.getBytesFromInputStream(jis);
+                            String subname = subZipEntry.getName();
+                            if (subname.startsWith("/"))
+                                subname = subname.substring(1);
+                            addElement(subname, new ByteArrayInputStream(entryBytes), new ByteArrayInputStream(entryBytes));
+                        }
+                        subZipEntry = jis.getNextJarEntry();
+                    }
+                } finally {
+                    if (subJis != null)
+                        subJis.close();
+                }
+            } else {
+                byte[] entryBytes = JarVisitorFactory.getBytesFromInputStream(jis);
+                // build relative name
+                if (entry != null)
+                    name = name.substring(entry.length());
+                if (name.startsWith("/"))
+                    name = name.substring(1);
+                // this is bad cause we actually read everything instead of walking it lazily
+                addElement(name, new ByteArrayInputStream(entryBytes), new ByteArrayInputStream(entryBytes));
+            }
+        }
+    }
+    jis.close();
+}

@@ -1,0 +1,46 @@
+public ObjectId save(Object obj, Class<?> ownerClass, DBRef dbRef) throws PersistenceException {
+    DBObject dbObject = (DBObject) mObjectConvertor.toObject(obj, ownerClass, dbRef);
+    DBCollection collection = getCollection(ReflectionUtils.getCollectionNameByObject(obj));
+    Map<String, Object> refMap = (Map<String, Object>) dbObject.get("$refMap$");
+    Map<String, Object> copyMap = new HashMap<String, Object>();
+    if (refMap != null && refMap.size() > 0) {
+        for (String key : refMap.keySet()) {
+            copyMap.put(key, refMap.get(key));
+        }
+    }
+    dbObject.removeField("$refMap$");
+    // this should be thread safe
+    mLock.lock();
+    try {
+        mDataBase.requestStart();
+        if (collection != null)
+            collection.save(dbObject);
+        Map<String, ObjectId> idMap = new HashMap<String, ObjectId>();
+        if (copyMap != null && copyMap.size() > 0) {
+            for (String key : copyMap.keySet()) {
+                ObjectId id = save(copyMap.get(key), obj.getClass(), new DBRef(mDataBase, ReflectionUtils.getCollectionNameByObject(obj), dbObject.get("_id")));
+                if (id != null)
+                    idMap.put(key, id);
+            }
+            for (String key : copyMap.keySet()) {
+                ObjectId id = idMap.get(key);
+                if (id != null) {
+                    DBObject updateObj = collection.findOne(ReflectionUtils.getObjectId(dbObject));
+                    if (updateObj != null) {
+                        updateObj.put(key, new DBRef(mDataBase, ReflectionUtils.getCollectionNameByObject(copyMap.get(key)), id));
+                        collection.update(new BasicDBObject("_id", ReflectionUtils.getObjectId(updateObj)), updateObj, false, false);
+                    }
+                }
+            }
+        }
+        // if the index doesnot exist, create it.
+        MongoIndexer.ensureIndex(collection);
+        mDataBase.requestDone();
+    } catch (MongoException e) {
+        mTrace.error("save object error: " + e.getMessage());
+        throw new PersistenceException(e);
+    } finally {
+        mLock.unlock();
+    }
+    return ReflectionUtils.getObjectId(dbObject);
+}

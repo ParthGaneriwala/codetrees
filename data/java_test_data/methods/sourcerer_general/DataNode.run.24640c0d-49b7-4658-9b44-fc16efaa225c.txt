@@ -1,0 +1,50 @@
+public void run() {
+    xmitsInProgress++;
+    Socket sock = null;
+    DataOutputStream out = null;
+    BlockSender blockSender = null;
+    try {
+        InetSocketAddress curTarget = NetUtils.createSocketAddr(targets[0].getName());
+        sock = newSocket();
+        sock.connect(curTarget, socketTimeout);
+        sock.setSoTimeout(targets.length * socketTimeout);
+        long writeTimeout = socketWriteTimeout + HdfsConstants.WRITE_TIMEOUT_EXTENSION * (targets.length - 1);
+        OutputStream baseStream = NetUtils.getOutputStream(sock, writeTimeout);
+        out = new DataOutputStream(new BufferedOutputStream(baseStream, SMALL_BUFFER_SIZE));
+        blockSender = new BlockSender(b, 0, -1, false, false, false, datanode);
+        DatanodeInfo srcNode = new DatanodeInfo(dnRegistration);
+        // 
+        // Header info
+        // 
+        out.writeShort(DataTransferProtocol.DATA_TRANSFER_VERSION);
+        out.writeByte(DataTransferProtocol.OP_WRITE_BLOCK);
+        out.writeLong(b.getBlockId());
+        out.writeLong(b.getGenerationStamp());
+        // no pipelining
+        out.writeInt(0);
+        // not part of recovery
+        out.writeBoolean(false);
+        // client
+        Text.writeString(out, "");
+        // sending src node information
+        out.writeBoolean(true);
+        // Write src node DatanodeInfo
+        srcNode.write(out);
+        // write targets
+        out.writeInt(targets.length - 1);
+        for (int i = 1; i < targets.length; i++) {
+            targets[i].write(out);
+        }
+        // send data & checksum
+        blockSender.sendBlock(out, baseStream, null);
+        // no response necessary
+        LOG.info(dnRegistration + ":Transmitted block " + b + " to " + curTarget);
+    } catch (IOException ie) {
+        LOG.warn(dnRegistration + ":Failed to transfer " + b + " to " + targets[0].getName() + " got " + StringUtils.stringifyException(ie));
+    } finally {
+        IOUtils.closeStream(blockSender);
+        IOUtils.closeStream(out);
+        IOUtils.closeSocket(sock);
+        xmitsInProgress--;
+    }
+}

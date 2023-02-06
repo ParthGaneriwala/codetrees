@@ -1,0 +1,103 @@
+public void run() {
+    // read in the moment data
+    File f2;
+    String[][] momentValues;
+    int allIndex = 0;
+    System.out.println(method + ": " + useSimpleKNN + ": " + type);
+    for (int run = 200; run < 1000; run++) {
+        try {
+            f2 = new File("D:/synthLandscan/randomStarts/" + type + "/run" + run + "/" + method + "Moments.csv");
+            if (f2.exists()) {
+                FileReader reader = new FileReader(f2);
+                CSVParser csvp = new CSVParser(reader);
+                momentValues = csvp.getAllValues();
+            } else {
+                momentValues = new String[40][];
+                for (int x = 0; x < 40; x++) {
+                    File next = new File("D:/synthLandscan/randomStarts/" + type + "/run" + run + "/" + method + "Moments" + x + ".csv");
+                    FileReader reader = new FileReader(next);
+                    CSVParser csvp = new CSVParser(reader);
+                    String[][] localValues = csvp.getAllValues();
+                    momentValues[x] = localValues[0];
+                }
+            }
+        } catch (FileNotFoundException fnfe) {
+            throw new RuntimeException("No file!  " + fnfe.getMessage());
+        } catch (IOException ioe) {
+            throw new RuntimeException("IO Exception!  " + ioe.getMessage());
+        }
+        int len = momentValues[0].length;
+        double[][] moments = new double[momentValues.length][len];
+        for (int i = 0; i < momentValues.length; i++) {
+            for (int j = 0; j < len; j++) {
+                moments[i][j] = Double.parseDouble(momentValues[i][j]);
+                if (moments[i][j] == Double.NaN) {
+                    moments[i][j] = Math.pow(2, -200);
+                }
+            }
+        }
+        // classify the set using each of the set classification methods
+        double[][] zMoments = new double[moments.length][];
+        String[][] neighborClasses = new String[moments.length][maxK];
+        double[][] neighborDists = new double[moments.length][maxK];
+        for (int i = 0; i < moments.length; i++) {
+            // standardize all the moment sets in this track
+            zMoments[i] = standardizeMe(moments[i], means, stdevs);
+            // find the maxK neighbors for each of the moment sets of this track
+            neighborClasses[i] = neighborClasses(zMoments[i], z, maxK);
+            // find the maxK distances for each of the moments sets of this track
+            neighborDists[i] = neighborDistances(zMoments[i], z, maxK);
+        }
+        for (int kForKNN = 2; kForKNN < maxK + 1; kForKNN++) {
+            // allClassifications[kForKNN-2][allIndex] = new double[modes.length][];
+            double[][] timeStepClassProbs = new double[zMoments.length][];
+            String[] timeStepClassWinners = new String[zMoments.length];
+            // classify each of the moment sets individually
+            for (int step = 0; step < zMoments.length; step++) {
+                if (useSimpleKNN) {
+                    timeStepClassProbs[step] = classifyProbSimple(zMoments[step], neighborClasses[step], classNames, kForKNN);
+                } else {
+                    timeStepClassProbs[step] = classifyProbDW(zMoments[step], neighborClasses[step], neighborDists[step], medianDistances, classNames, kForKNN);
+                }
+                timeStepClassWinners[step] = classify(timeStepClassProbs[step], classNames);
+            }
+            // combine for a track classification using each mode
+            double[][] thisTrackClassifications = new double[modes.length][];
+            for (int modeIndex = 0; modeIndex < modes.length; modeIndex++) {
+                int mode = modes[modeIndex];
+                // store the track classifications for each mode in the appropriate slot in allClassifications
+                thisTrackClassifications[modeIndex] = StaticEvidenceCombiner.combineEvidence(timeStepClassProbs, timeStepClassWinners, classNames, mode);
+            }
+            try {
+                String kn;
+                if (useSimpleKNN) {
+                    kn = "simple";
+                } else {
+                    kn = "DW";
+                }
+                String newDirectory = "D:/synthLandscan/randomStarts/momentData/" + method + "/miniFiles/" + kn + "/" + type + "/" + kForKNN;
+                File newDir = new File(newDirectory);
+                if (!(newDir.exists())) {
+                    newDir.mkdirs();
+                }
+                FileWriter outFile = new FileWriter(newDirectory + "/" + method + "ClassificationsRun" + run + ".csv");
+                outFile.write("mode, SIR, river, road, wind, airport, THETA" + '\n');
+                for (int j = 0; j < thisTrackClassifications.length; j++) {
+                    outFile.write("" + modeStrings[j]);
+                    for (int k = 0; k < thisTrackClassifications[j].length; k++) {
+                        outFile.write("," + thisTrackClassifications[j][k]);
+                    }
+                    outFile.write('\n');
+                }
+                outFile.close();
+            } catch (IOException ioe) {
+                System.out.println("IOException when saving summary file: " + ioe.getMessage());
+            }
+        // System.out.println("finished " + method + " simple=" + useSimpleKNN + " k=" + kForKNN + " track#" + run + " allIndex=" + allIndex);
+        }
+        // end for kForKNN
+        allIndex++;
+        System.out.println("finished " + method + " simple=" + useSimpleKNN + " track#" + run + " allIndex=" + allIndex);
+    }
+// end for run
+}

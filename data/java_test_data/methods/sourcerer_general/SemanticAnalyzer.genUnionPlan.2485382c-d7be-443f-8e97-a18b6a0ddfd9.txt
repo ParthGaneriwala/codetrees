@@ -1,0 +1,44 @@
+@SuppressWarnings("nls")
+private OperatorInfoList genUnionPlan(String unionalias, String leftalias, OperatorInfoList left, String rightalias, OperatorInfoList right) throws SemanticException {
+    if (left.size() != 1) {
+        throw new SemanticException("Select has more than one inputs");
+    }
+    OperatorInfo leftOp = left.get(0);
+    RowResolver leftRR = leftOp.getRowResolver();
+    OperatorInfo rightOp = right.get(0);
+    RowResolver rightRR = rightOp.getRowResolver();
+    HashMap<String, ColumnInfo> leftmap = leftRR.getFieldMap(leftalias);
+    HashMap<String, ColumnInfo> rightmap = rightRR.getFieldMap(rightalias);
+    // make sure the schemas of both sides are the same
+    for (Map.Entry<String, ColumnInfo> lEntry : leftmap.entrySet()) {
+        String field = lEntry.getKey();
+        ColumnInfo lInfo = lEntry.getValue();
+        ColumnInfo rInfo = rightmap.get(field);
+        if (rInfo == null) {
+            throw new SemanticException("Schema of both sides of union should match. " + rightalias + " does not have the field " + field);
+        }
+        if (lInfo == null) {
+            throw new SemanticException("Schema of both sides of union should match. " + leftalias + " does not have the field " + field);
+        }
+        if (!lInfo.getInternalName().equals(rInfo.getInternalName())) {
+            throw new SemanticException("Schema of both sides of union should match: " + field + ":" + lInfo.getInternalName() + " " + rInfo.getInternalName());
+        }
+    }
+    // construct the forward operator
+    RowResolver unionoutRR = new RowResolver();
+    for (Map.Entry<String, ColumnInfo> lEntry : leftmap.entrySet()) {
+        String field = lEntry.getKey();
+        ColumnInfo lInfo = lEntry.getValue();
+        unionoutRR.put(unionalias, field, lInfo);
+    }
+    Operator<? extends Serializable> unionforward = OperatorFactory.get(forwardDesc.class, new RowSchema(unionoutRR.getColumnInfos()));
+    // set forward operator as child of each of leftOp and rightOp
+    List<Operator<? extends Serializable>> child = new ArrayList<Operator<? extends Serializable>>();
+    child.add(unionforward);
+    rightOp.getOp().setChildOperators(child);
+    leftOp.getOp().setChildOperators(child);
+    // create operator info list to return
+    OperatorInfoList unionout = new OperatorInfoList();
+    unionout.add(new OperatorInfo(unionforward, unionoutRR));
+    return unionout;
+}

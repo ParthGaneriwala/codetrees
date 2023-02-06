@@ -1,0 +1,140 @@
+public void processInput() {
+    if (hasInput()) {
+        inPacket = new donkeyScannedPacket(getNextPacket());
+        /*			try {
+								System.out.println(convert.BytesToHexString(inPacket.getBytes()));
+							}
+							catch (Exception e) {
+							}
+				*/
+        int command = convert.byteToInt(inPacket.getCommandId());
+        switch(command) {
+            case 0x38:
+                {
+                    System.out.println(rnd + " " + (System.currentTimeMillis() - transferStart) + " Message: \"" + inPacket.getMessage() + "\"");
+                    break;
+                }
+            case 0x46:
+                {
+                    try {
+                        long[] receivedWindow = inPacket.getFileBlock(source.getDownload().getPartFile());
+                        int nbytes = (int) (receivedWindow[1] - receivedWindow[0]);
+                        blockBytes += nbytes;
+                        fileBytesReceived += nbytes;
+                        taggedGaps.removeGap(receivedWindow);
+                        // System.out.println(rnd + " " + (System.currentTimeMillis() - transferStart) + "Received file block " + receivedWindow[0] + "-" + receivedWindow[1] + ".");
+                        state = STATE_TRANSFERING;
+                    } catch (Exception e) {
+                        System.out.println(rnd + " " + (System.currentTimeMillis() - transferStart) + " Exception: " + e.toString());
+                    }
+                    break;
+                }
+            case 0x4c:
+                {
+                    donkeyClientInfo dci = inPacket.getClientInfoPacket();
+                    System.out.print(rnd + " " + (System.currentTimeMillis() - transferStart) + " Connection established to ");
+                    System.out.print(Long.toString(dci.getUserId()) + ", port " + Integer.toString(dci.getPort()));
+                    System.out.println(" Username: " + dci.getUsername());
+                    // System.out.println(rnd + " " + (System.currentTimeMillis() - transferStart) + " Requesting file...");
+                    addOutPacket(CreateDonkeyPacket.fileRequest(fileHash));
+                    if (source.getDownload().getFileSize() > 9728000) {
+                        addOutPacket(CreateDonkeyPacket.partRequest(fileHash));
+                    } else {
+                        BitSet parts = new BitSet(1);
+                        parts.set(0);
+                        source.setPartList(parts);
+                        source.getDownload().addPartSources(parts);
+                        gotPartRequest = true;
+                    }
+                    break;
+                }
+            case 0x50:
+                {
+                    int numChunks = PartFile.getNumChunks(source.getDownload().getFileSize());
+                    BitSet parts = inPacket.getPartList(numChunks);
+                    source.setPartList(parts);
+                    source.getDownload().addPartSources(parts);
+                    gotPartRequest = true;
+                    change = true;
+                    break;
+                }
+            case 0x52:
+                {
+                    System.out.println("Received hash set.");
+                    byte[][] hashes = inPacket.getHashSet();
+                    boolean matches = true;
+                    byte[] fileHash = source.getDownload().getHash();
+                    for (int i = 0; i < 16; i++) {
+                        if (hashes[0][i] != fileHash[i]) {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if (matches) {
+                        source.getDownload().getPartFile().setHashes(hashes);
+                    } else
+                        System.out.println("Wrong hashset.");
+                    break;
+                }
+            case 0x55:
+                {
+                    System.out.println(rnd + " " + (System.currentTimeMillis() - transferStart) + " 0x55 recv, commencing download...");
+                    if (!transfering) {
+                        enqueue = false;
+                        doDownload(false);
+                        blockBytes = 0;
+                        blockSize = newBlockSize;
+                        nextBlockRequested = false;
+                        state = STATE_TRANSFERING;
+                    }
+                    break;
+                }
+            case 0x56:
+                {
+                    System.out.println(rnd + " " + (System.currentTimeMillis() - transferStart) + " Received 0x56: transfer end.");
+                    close();
+                    break;
+                }
+            case 0x57:
+                {
+                    System.out.println(rnd + " " + (System.currentTimeMillis() - transferStart) + " Received 0x57.");
+                    num57++;
+                    if (num57 > 0) {
+                        System.out.println(rnd + " " + (System.currentTimeMillis() - transferStart) + " Received 2nd. 0x57.");
+                        num57 = 0;
+                        // remove tags from tagged if not downloaded
+                        LinkedList taggedGapList = taggedGaps.getGapList();
+                        Iterator it = taggedGapList.iterator();
+                        while (it.hasNext()) {
+                            long[] gap = (long[]) it.next();
+                            source.getDownload().getUntaggedGaps().addGap(gap);
+                            it.remove();
+                        }
+                        newStream = true;
+                        doDownload(true);
+                    }
+                    break;
+                }
+            case 0x58:
+                {
+                    sendSession = DonkeySendFileSession.checkSendFile(this, inPacket, dInfo);
+                    break;
+                }
+            case 0x59:
+                {
+                    System.out.println(rnd + " " + (System.currentTimeMillis() - transferStart) + " Peer knows file as " + inPacket.getFileName());
+                    peerFilename = inPacket.getFileName();
+                    change = true;
+                    gotFileName = true;
+                    break;
+                }
+            default:
+                {
+                    if (sendSession != null)
+                        if (sendSession.checkPacket(inPacket))
+                            break;
+                    System.out.println(rnd + " " + (System.currentTimeMillis() - transferStart) + " got unknown packet: \"" + inPacket.toString() + "\"");
+                }
+        }
+    }
+}

@@ -1,0 +1,88 @@
+private void executeProxyRequest(HttpMethod httpMethodProxyRequest, HttpServletRequest httpServletRequest, HttpServletResponse httpServletResponse) throws IOException, ServletException {
+    // Create a default HttpClient
+    HttpClient httpClient = new HttpClient();
+    getCredential(httpServletRequest.getParameter("servername"));
+    if (credentials != null) {
+        httpClient.getParams().setAuthenticationPreemptive(true);
+        httpClient.getState().setCredentials(AuthScope.ANY, credentials);
+    }
+    httpMethodProxyRequest.setFollowRedirects(true);
+    // Execute the request
+    int intProxyResponseCode = httpClient.executeMethod(httpMethodProxyRequest);
+    String response = httpMethodProxyRequest.getResponseBodyAsString();
+    // Hooray for open source software
+    if (intProxyResponseCode >= HttpServletResponse.SC_MULTIPLE_CHOICES && /* 300 */
+    intProxyResponseCode < HttpServletResponse.SC_NOT_MODIFIED) /* 304 */
+    {
+        String stringStatusCode = Integer.toString(intProxyResponseCode);
+        String stringLocation = httpMethodProxyRequest.getResponseHeader(STRING_LOCATION_HEADER).getValue();
+        if (stringLocation == null) {
+            throw new ServletException("Received status code: " + stringStatusCode + " but no " + STRING_LOCATION_HEADER + " header was found in the response");
+        }
+        // Modify the redirect to go to this proxy servlet rather that the proxied host
+        String stringMyHostName = httpServletRequest.getServerName();
+        if (httpServletRequest.getServerPort() != 80) {
+            stringMyHostName += ":" + httpServletRequest.getServerPort();
+        }
+        stringMyHostName += httpServletRequest.getContextPath();
+        if (followRedirects) {
+            if (stringLocation.contains("jsessionid")) {
+                Cookie cookie = new Cookie("JSESSIONID", stringLocation.substring(stringLocation.indexOf("jsessionid=") + 11));
+                cookie.setPath("/");
+                httpServletResponse.addCookie(cookie);
+            // debug("redirecting: set jessionid (" + cookie.getValue() + ") cookie from URL");
+            } else if (httpMethodProxyRequest.getResponseHeader("Set-Cookie") != null) {
+                Header header = httpMethodProxyRequest.getResponseHeader("Set-Cookie");
+                String[] cookieDetails = header.getValue().split(";");
+                String[] nameValue = cookieDetails[0].split("=");
+                Cookie cookie = new Cookie(nameValue[0], nameValue[1]);
+                cookie.setPath("/");
+                // debug("redirecting: setting cookie: " + cookie.getName() + ":" + cookie.getValue() + " on " + cookie.getPath());
+                httpServletResponse.addCookie(cookie);
+            }
+            httpServletResponse.sendRedirect(stringLocation.replace(getProxyHostAndPort(httpServletRequest) + this.getProxyPath(), stringMyHostName));
+            return;
+        }
+    } else if (intProxyResponseCode == HttpServletResponse.SC_NOT_MODIFIED) {
+        // 304 needs special handling.  See:
+        // http://www.ics.uci.edu/pub/ietf/http/rfc1945.html#Code304
+        // We get a 304 whenever passed an 'If-Modified-Since'
+        // header and the data on disk has not changed; server
+        // responds w/ a 304 saying I'm not going to send the
+        // body because the file has not changed.
+        httpServletResponse.setIntHeader(STRING_CONTENT_LENGTH_HEADER_NAME, 0);
+        httpServletResponse.setStatus(HttpServletResponse.SC_NOT_MODIFIED);
+        return;
+    }
+    // Pass the response code back to the client
+    httpServletResponse.setStatus(intProxyResponseCode);
+    // Pass response headers back to the client
+    Header[] headerArrayResponse = httpMethodProxyRequest.getResponseHeaders();
+    for (Header header : headerArrayResponse) {
+        if (header.getName().equals("Transfer-Encoding") && header.getValue().equals("chunked") || header.getName().equals("Content-Encoding") && // don't copy gzip header
+        header.getValue().equals("gzip") || header.getName().equals("WWW-Authenticate")) {
+        // don't copy WWW-Authenticate header so browser doesn't prompt on failed basic auth
+        // proxy servlet does not support chunked encoding
+        } else {
+            httpServletResponse.setHeader(header.getName(), header.getValue());
+        }
+    }
+    List<Header> responseHeaders = Arrays.asList(headerArrayResponse);
+    if (isBodyParameterGzipped(responseHeaders)) {
+        debug("GZipped: true");
+        if (!followRedirects && intProxyResponseCode == HttpServletResponse.SC_MOVED_TEMPORARILY) {
+            response = httpMethodProxyRequest.getResponseHeader(STRING_LOCATION_HEADER).getValue();
+            httpServletResponse.setStatus(HttpServletResponse.SC_OK);
+            intProxyResponseCode = HttpServletResponse.SC_OK;
+            httpServletResponse.setHeader(STRING_LOCATION_HEADER, response);
+        } else {
+            response = new String(ungzip(httpMethodProxyRequest.getResponseBody()));
+        }
+        httpServletResponse.setContentLength(response.length());
+    }
+    // Send the content to the client
+    if (intProxyResponseCode == 200)
+        httpServletResponse.getWriter().write(response);
+    else
+        httpServletResponse.getWriter().write(intProxyResponseCode);
+}

@@ -1,0 +1,56 @@
+public void process(Object row, ObjectInspector rowInspector) throws HiveException {
+    // TODO: use DynamicSerDe when that is ready
+    try {
+        // Generate hashCode for the tuple
+        int keyHashCode = 0;
+        if (numPartitionFields == -1) {
+            keyHashCode = (int) (Math.random() * Integer.MAX_VALUE);
+        }
+        ArrayList<Object> keys = new ArrayList<Object>(keyEval.length);
+        for (ExprNodeEvaluator e : keyEval) {
+            e.evaluate(row, rowInspector, tempInspectableObject);
+            keys.add(tempInspectableObject.o);
+            if (numPartitionFields == keys.size()) {
+                keyHashCode = keys.hashCode();
+            }
+            if (keyObjectInspector == null) {
+                keyFieldsObjectInspectors.add(tempInspectableObject.oi);
+            }
+        }
+        if (numPartitionFields > keys.size()) {
+            keyHashCode = keys.hashCode();
+        }
+        if (keyObjectInspector == null) {
+            keyObjectInspector = ObjectInspectorFactory.getStandardStructObjectInspector(ObjectInspectorUtils.getIntegerArray(keyFieldsObjectInspectors.size()), keyFieldsObjectInspectors);
+        }
+        Text key = (Text) keySerializer.serialize(keys, keyObjectInspector);
+        if (tag == -1) {
+            keyWritable.set(key.getBytes(), 0, key.getLength());
+        } else {
+            int keyLength = key.getLength();
+            keyWritable.setSize(keyLength + 1);
+            System.arraycopy(key.getBytes(), 0, keyWritable.get(), 0, keyLength);
+            keyWritable.get()[keyLength] = tagByte[0];
+        }
+        keyWritable.setHashCode(keyHashCode);
+        ArrayList<String> values = new ArrayList<String>(valueEval.length);
+        for (ExprNodeEvaluator e : valueEval) {
+            e.evaluate(row, rowInspector, tempInspectableObject);
+            values.add(tempInspectableObject.o == null ? null : tempInspectableObject.o.toString());
+            if (valueObjectInspector == null) {
+                valueFieldsObjectInspectors.add(tempInspectableObject.oi);
+            }
+        }
+        if (valueObjectInspector == null) {
+            valueObjectInspector = ObjectInspectorFactory.getStandardStructObjectInspector(ObjectInspectorUtils.getIntegerArray(valueFieldsObjectInspectors.size()), valueFieldsObjectInspectors);
+        }
+        valueText = (Text) valueSerializer.serialize(values, valueObjectInspector);
+    } catch (SerDeException e) {
+        throw new HiveException(e);
+    }
+    try {
+        out.collect(keyWritable, valueText);
+    } catch (IOException e) {
+        throw new HiveException(e);
+    }
+}

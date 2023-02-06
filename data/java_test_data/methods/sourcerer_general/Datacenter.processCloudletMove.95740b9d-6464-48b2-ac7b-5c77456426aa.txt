@@ -1,0 +1,56 @@
+protected void processCloudletMove(int[] receivedData, int type) {
+    updateCloudletProcessing();
+    int[] array = receivedData;
+    int cloudletId = array[0];
+    int userId = array[1];
+    int vmId = array[2];
+    int vmDestId = array[3];
+    int destId = array[4];
+    // get the cloudlet
+    Cloudlet cl = getVmAllocationPolicy().getHost(vmId, userId).getVm(userId, vmId).getCloudletScheduler().cloudletCancel(cloudletId);
+    boolean failed = false;
+    if (cl == null) {
+        // cloudlet doesn't exist
+        failed = true;
+    } else {
+        // has the cloudlet already finished?
+        if (cl.getCloudletStatus() == Cloudlet.SUCCESS) {
+            // if yes, send it back to user
+            int[] data = new int[3];
+            data[0] = this.getId();
+            data[1] = cloudletId;
+            data[2] = 0;
+            sendNow(cl.getUserId(), CloudSimTags.CLOUDLET_SUBMIT_ACK, data);
+            sendNow(cl.getUserId(), CloudSimTags.CLOUDLET_RETURN, cl);
+        }
+        // prepare cloudlet for migration
+        cl.setVmId(vmDestId);
+        // the cloudlet will migrate from one vm to another does the destination VM exist?
+        if (destId == this.getId()) {
+            Vm vm = getVmAllocationPolicy().getHost(vmDestId, userId).getVm(userId, vmDestId);
+            if (vm == null) {
+                failed = true;
+            } else {
+                // time to transfer the files
+                double fileTransferTime = predictFileTransferTime(cl.getRequiredFiles());
+                vm.getCloudletScheduler().cloudletSubmit(cl, fileTransferTime);
+            }
+        } else {
+            // the cloudlet will migrate from one resource to another
+            int tag = ((type == CloudSimTags.CLOUDLET_MOVE_ACK) ? CloudSimTags.CLOUDLET_SUBMIT_ACK : CloudSimTags.CLOUDLET_SUBMIT);
+            sendNow(destId, tag, cl);
+        }
+    }
+    if (type == CloudSimTags.CLOUDLET_MOVE_ACK) {
+        // send ACK if requested
+        int[] data = new int[3];
+        data[0] = this.getId();
+        data[1] = cloudletId;
+        if (failed) {
+            data[2] = 0;
+        } else {
+            data[2] = 1;
+        }
+        sendNow(cl.getUserId(), CloudSimTags.CLOUDLET_SUBMIT_ACK, data);
+    }
+}

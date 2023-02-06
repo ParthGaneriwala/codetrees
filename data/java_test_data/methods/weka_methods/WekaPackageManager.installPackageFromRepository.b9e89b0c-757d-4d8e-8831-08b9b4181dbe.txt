@@ -1,0 +1,40 @@
+public static boolean installPackageFromRepository(String packageName, String version, PrintStream... progress) throws Exception {
+    useCacheOrOnlineRepository();
+    Package toLoad = getRepositoryPackageInfo(packageName);
+    // check to see if a version is already installed. If so, we
+    // wont load the updated version into the classpath immediately in
+    // order to avoid conflicts, class not found exceptions etc. The
+    // user is told to restart Weka for the changes to come into affect
+    // anyway, so there is no point in loading the updated package now.
+    boolean isAnUpgrade = toLoad.isInstalled();
+    Object specialInstallMessage = toLoad.getPackageMetaDataElement(MESSAGE_TO_DISPLAY_ON_INSTALLATION_KEY);
+    if (specialInstallMessage != null && specialInstallMessage.toString().length() > 0) {
+        String siM = specialInstallMessage.toString();
+        try {
+            siM = Environment.getSystemWide().substitute(siM);
+        } catch (Exception ex) {
+        // quietly ignore
+        }
+        String message = "**** Special installation message ****\n" + siM + "\n**** Special installation message ****";
+        for (PrintStream p : progress) {
+            p.println(message);
+        }
+    }
+    PACKAGE_MANAGER.installPackageFromRepository(packageName, version, progress);
+    File packageDir = new File(PACKAGE_MANAGER.getPackageHome().toString() + File.separator + packageName);
+    if (loadCheck(getInstalledPackageInfo(packageName), packageDir, progress)) {
+        WekaPackageClassLoaderManager.getWekaPackageClassLoaderManager().addPackageToClassLoader(packageDir);
+    }
+    Map<String, List<String>> injectDependencies = new HashMap<>();
+    checkForInjectDependencies(toLoad, injectDependencies);
+    // inject dependencies before triggering any class discovery
+    injectPackageDependencies(injectDependencies);
+    // check that all dependencies are available, there are no missing classes
+    // and files etc.
+    WekaPackageClassLoaderManager.getWekaPackageClassLoaderManager().performIntegrityCheck();
+    // process all props files
+    if (WekaPackageClassLoaderManager.getWekaPackageClassLoaderManager().getPackageClassLoader(packageName) != null) {
+        processPackageDirectory(packageDir, false, null, false);
+    }
+    return isAnUpgrade;
+}

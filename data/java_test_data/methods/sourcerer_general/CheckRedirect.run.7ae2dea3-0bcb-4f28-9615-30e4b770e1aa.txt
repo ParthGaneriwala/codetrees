@@ -1,0 +1,79 @@
+@Override
+public void run() {
+    HttpParams params = new BasicHttpParams();
+    HttpProtocolParams.setVersion(params, HttpVersion.HTTP_1_1);
+    HttpProtocolParams.setContentCharset(params, "UTF-8");
+    HttpProtocolParams.setUserAgent(params, "HttpComponents/1.1");
+    HttpProtocolParams.setUseExpectContinue(params, true);
+    BasicHttpProcessor httpproc = new BasicHttpProcessor();
+    // Required protocol interceptors
+    httpproc.addInterceptor(new RequestContent());
+    httpproc.addInterceptor(new RequestTargetHost());
+    // Recommended protocol interceptors
+    httpproc.addInterceptor(new RequestConnControl());
+    httpproc.addInterceptor(new RequestUserAgent());
+    httpproc.addInterceptor(new RequestExpectContinue());
+    HttpRequestExecutor httpexecutor = new HttpRequestExecutor();
+    HttpContext context = new BasicHttpContext(null);
+    Log.d(TAG, "host: " + uri.getHost() + ", port: " + uri.getPort());
+    HttpHost host = new HttpHost(uri.getHost(), uri.getPort() == -1 ? 80 : uri.getPort());
+    DefaultHttpClientConnection conn = new DefaultHttpClientConnection();
+    ConnectionReuseStrategy connStrategy = new DefaultConnectionReuseStrategy();
+    context.setAttribute(ExecutionContext.HTTP_CONNECTION, conn);
+    context.setAttribute(ExecutionContext.HTTP_TARGET_HOST, host);
+    int count = 0;
+    try {
+        try {
+            while (count++ < 10) {
+                if (!conn.isOpen()) {
+                    Socket socket = new Socket(host.getHostName(), host.getPort());
+                    conn.bind(socket, params);
+                }
+                BasicHttpRequest request = new BasicHttpRequest("GET", uri.getPath());
+                Log.d(TAG, ">> Request URI: " + request.getRequestLine().getUri());
+                request.setParams(params);
+                httpexecutor.preProcess(request, httpproc, context);
+                HttpResponse response = httpexecutor.execute(request, conn, context);
+                response.setParams(params);
+                httpexecutor.postProcess(response, httpproc, context);
+                Log.d(TAG, "<< Response: " + response.getStatusLine());
+                int code = response.getStatusLine().getStatusCode();
+                if (code > 299 && code < 399) {
+                    Header[] header = response.getHeaders("Location");
+                    if (header.length > 0) {
+                        Log.d(TAG, header[0].toString());
+                        Uri newuri = Uri.parse(header[0].getValue());
+                        if (!newuri.getHost().equals(uri.getHost())) {
+                            handler.sendMessage(Message.obtain(handler, Messages.MSG_REQUEST_CHECKED, newuri));
+                            Log.d(TAG, "returning");
+                            return;
+                        }
+                        uri = newuri;
+                    } else {
+                        handler.sendMessage(Message.obtain(handler, Messages.MSG_REQUEST_CHECKED, null));
+                        Log.d(TAG, "returning");
+                        return;
+                    }
+                } else {
+                    handler.sendMessage(Message.obtain(handler, Messages.MSG_REQUEST_CHECKED, uri));
+                    Log.d(TAG, "returning");
+                    return;
+                }
+                if (!connStrategy.keepAlive(response, context)) {
+                    conn.close();
+                } else {
+                    Log.d(TAG, "Connection kept alive...");
+                }
+            }
+        } finally {
+            conn.close();
+        }
+    } catch (Exception e) {
+        Log.d(TAG, e.toString());
+    }
+    if (count >= 10) {
+        Log.d(TAG, "More than 10 redirects, stopping (" + count + ")");
+        handler.sendMessage(Message.obtain(handler, Messages.MSG_REQUEST_CHECKED, uri));
+        return;
+    }
+}

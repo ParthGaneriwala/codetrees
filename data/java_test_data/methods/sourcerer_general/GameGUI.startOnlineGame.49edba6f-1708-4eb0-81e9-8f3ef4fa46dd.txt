@@ -1,0 +1,121 @@
+public UnhandeledReport startOnlineGame(int clientPort, String opponentHost, int opponentPort, int opponentTransmitWaiterPort, boolean startsGame, TheClient theClient) {
+    startedGame = startsGame;
+    serverSocket = null;
+    opponentSocket = null;
+    opponentIn = null;
+    clientToOpponent = null;
+    this.clientGamePort = clientPort;
+    this.opponentHost = opponentHost;
+    this.opponentPort = opponentPort;
+    this.opponentTransmitWaiterPort = opponentTransmitWaiterPort;
+    this.theClient = theClient;
+    try {
+        this.setupConnection();
+    } catch (IOException e) {
+        if (!closing) {
+            errorMessage = "Problem initializing the game connection: " + e.getMessage();
+        }
+        return null;
+    }
+    plays = red;
+    // String playerStr;
+    state = GameState.PROCEED;
+    // init timers for players
+    this.initTimers();
+    plays.getTimer().resume();
+    setGameEnabled();
+    ClientServerProtocol prot = new ClientServerProtocol(ClientServerProtocol.msgType.CLIENT);
+    while (state.equals(GameState.PROCEED)) {
+        this.updatePlayerTimer(plays.getTimer(), 3);
+        int colnum = -1;
+        String inLine = null;
+        try {
+            if (plays.equals(clientPlayer)) {
+                writeToScreen("Please Click Your Move: ", MsgType.info);
+                while (colnum == -1) {
+                    synchronized (pending) {
+                        try {
+                            pending.setPending(true);
+                            // wait for a user input from the mouse
+                            pending.wait();
+                        } catch (InterruptedException e) {
+                        // 
+                        }
+                        pending.setPending(false);
+                    }
+                    inLine = clickedByPlayer;
+                    clickedByPlayer = null;
+                    if (inLine != null && inLine.equals(ClientServerProtocol.ISURRENDER)) {
+                        state = GameState.I_SURRENDED;
+                        break;
+                    }
+                    if (!state.equals(GameState.PROCEED)) {
+                        break;
+                    }
+                    if (inLine == null) {
+                        // timeout occured
+                        break;
+                    }
+                    if (inLine.equals("")) {
+                        writeToScreen("Empty move, try again...", MsgType.error);
+                    } else {
+                        colnum = Integer.parseInt(inLine);
+                    }
+                }
+                if (state.equals(GameState.PROCEED)) {
+                    // send the move to the opponent
+                    this.sendMoveToOpponent(colnum);
+                }
+            } else {
+                writeToScreen("Waiting For Opponent Move: ", MsgType.info);
+                try {
+                    String move = this.getOpponentMove();
+                    if (move == null) {
+                        writeToScreen("No opponent move", MsgType.error);
+                        break;
+                    }
+                    if (move.equals(ClientServerProtocol.ISURRENDER)) {
+                        state = GameState.OPPONENT_SURRENDED;
+                    } else {
+                        colnum = Integer.parseInt(move);
+                    }
+                } catch (NumberFormatException e) {
+                // cannot happen
+                }
+            }
+            // the clients not surrended
+            if (state.equals(GameState.PROCEED)) {
+                state = gameBoard.playColumn(colnum, plays.getColor());
+                try {
+                    SwingUtilities.invokeAndWait(new BoardGUI.Painter(((BoardGUI) gameBoard).getColumnsFil(), colnum, plays.getColor(), slots));
+                } catch (Exception e) {
+                    theClient.logger.print_error("Problem processing the move: " + e.getMessage());
+                }
+            }
+        } catch (IllegalMove e) {
+            writeToScreen("Illegal Move!!! Please Retry!", MsgType.error);
+            continue;
+        }
+        if (state.equals(GameState.PROCEED)) {
+            String move = String.valueOf(colnum);
+            // sent the move to viewers
+            this.sendMoveToViewers(move);
+            // go to the next player
+            nextPlayer();
+        }
+    }
+    if (state.equals(GameState.I_SURRENDED) && !closing) {
+        boolean res = AsynchroniousISurrender();
+        if (!res) {
+            errorMessage = "Problem sending surrender message to opponent";
+        }
+    }
+    theClient.logger.print_info("DECIDING WINNER");
+    String winner = null;
+    winner = decideWinner();
+    Boolean gameRes = (state.equals(GameState.TIE)) ? Game.gameRes.NO_WINNER : Game.gameRes.WINNER;
+    this.closeConnection();
+    this.stopTimers();
+    setGameDisabled();
+    return new UnhandeledReport(this.getId(), theClient.getClientName(), gameRes.toString(), winner);
+}

@@ -1,0 +1,94 @@
+private Node tryFoldIf(Node n) {
+    Preconditions.checkState(n.getType() == Token.IF);
+    Node parent = n.getParent();
+    Preconditions.checkNotNull(parent);
+    int type = n.getType();
+    Node cond = n.getFirstChild();
+    Node thenBody = cond.getNext();
+    Node elseBody = thenBody.getNext();
+    // if (x) { .. } else { } --> if (x) { ... }
+    if (elseBody != null && !mayHaveSideEffects(elseBody)) {
+        n.removeChild(elseBody);
+        elseBody = null;
+        reportCodeChange();
+    }
+    // if (x) { } else { ... } --> if (!x) { ... }
+    if (!mayHaveSideEffects(thenBody) && elseBody != null) {
+        n.removeChild(elseBody);
+        n.replaceChild(thenBody, elseBody);
+        Node notCond = new Node(Token.NOT);
+        n.replaceChild(cond, notCond);
+        notCond.addChildToFront(cond);
+        cond = notCond;
+        thenBody = cond.getNext();
+        elseBody = null;
+        reportCodeChange();
+    }
+    // if (x()) { }
+    if (!mayHaveSideEffects(thenBody) && elseBody == null) {
+        if (mayHaveSideEffects(cond)) {
+            // x() has side effects, just leave the condition on its own.
+            n.removeChild(cond);
+            Node replacement = NodeUtil.newExpr(cond);
+            parent.replaceChild(n, replacement);
+            reportCodeChange();
+            return replacement;
+        } else {
+            // x() has no side effects, the whole tree is useless now.
+            NodeUtil.removeChild(parent, n);
+            reportCodeChange();
+            return null;
+        }
+    }
+    // Try transforms that apply to both IF and HOOK.
+    TernaryValue condValue = NodeUtil.getImpureBooleanValue(cond);
+    if (condValue == TernaryValue.UNKNOWN) {
+        // We can't remove branches otherwise!
+        return n;
+    }
+    if (mayHaveSideEffects(cond)) {
+        // Transform "if (a = 2) {x =2}" into "if (true) {a=2;x=2}"
+        boolean newConditionValue = condValue == TernaryValue.TRUE;
+        // Add an elseBody if it is needed.
+        if (!newConditionValue && elseBody == null) {
+            elseBody = new Node(Token.BLOCK).copyInformationFrom(n);
+            n.addChildToBack(elseBody);
+        }
+        Node newCond = new Node(newConditionValue ? Token.TRUE : Token.FALSE);
+        n.replaceChild(cond, newCond);
+        Node branchToKeep = newConditionValue ? thenBody : elseBody;
+        branchToKeep.addChildToFront(new Node(Token.EXPR_RESULT, cond).copyInformationFrom(cond));
+        reportCodeChange();
+        cond = newCond;
+    }
+    boolean condTrue = condValue.toBoolean(true);
+    if (n.getChildCount() == 2) {
+        Preconditions.checkState(type == Token.IF);
+        if (condTrue) {
+            // Replace "if (true) { X }" with "X".
+            Node thenStmt = n.getFirstChild().getNext();
+            n.removeChild(thenStmt);
+            parent.replaceChild(n, thenStmt);
+            reportCodeChange();
+            return thenStmt;
+        } else {
+            // Remove "if (false) { X }" completely.
+            NodeUtil.redeclareVarsInsideBranch(n);
+            NodeUtil.removeChild(parent, n);
+            reportCodeChange();
+            return null;
+        }
+    } else {
+        // Replace "if (true) { X } else { Y }" with X, or
+        // replace "if (false) { X } else { Y }" with Y.
+        Node trueBranch = n.getFirstChild().getNext();
+        Node falseBranch = trueBranch.getNext();
+        Node branchToKeep = condTrue ? trueBranch : falseBranch;
+        Node branchToRemove = condTrue ? falseBranch : trueBranch;
+        NodeUtil.redeclareVarsInsideBranch(branchToRemove);
+        n.removeChild(branchToKeep);
+        parent.replaceChild(n, branchToKeep);
+        reportCodeChange();
+        return branchToKeep;
+    }
+}

@@ -1,0 +1,61 @@
+private void splitObject(Var v, Reference declaration, Reference init, ReferenceCollection referenceInfo) {
+    // First figure out the FULL set of possible keys, so that they
+    // can all be properly set as necessary.
+    Map<String, String> varmap = computeVarList(v, referenceInfo);
+    Map<String, Node> initvals = Maps.newHashMap();
+    // Figure out the top-level of the var assign node. If it's a plain
+    // ASSIGN, then there's an EXPR_STATEMENT above it, if it's a
+    // VAR then it should be directly replaced.
+    Node vnode;
+    boolean defined = referenceInfo.isWellDefined() && init.getParent().getType() == Token.VAR;
+    if (defined) {
+        vnode = init.getParent();
+        fillInitialValues(init, initvals);
+    } else {
+        // TODO(user): More test / rewrite this part.
+        // Find the beginning of the function / script.
+        vnode = v.getScope().getRootNode().getLastChild().getFirstChild();
+    }
+    for (Map.Entry<String, String> entry : varmap.entrySet()) {
+        Node val = initvals.get(entry.getKey());
+        Node varnode = NodeUtil.newVarNode(entry.getValue(), val);
+        if (val == null) {
+            // is this right?
+            varnode.copyInformationFromForTree(vnode);
+        } else {
+            blacklistVarReferencesInTree(val, v.scope);
+        }
+        vnode.getParent().addChildBefore(varnode, vnode);
+    }
+    if (defined) {
+        vnode.getParent().removeChild(vnode);
+    }
+    for (Reference ref : referenceInfo.references) {
+        // The init/decl have already been converted.
+        if (defined && ref == init)
+            continue;
+        if (ref.isLvalue()) {
+            // Assignments have to be handled specially, since they
+            // expand out into multiple assignments.
+            replaceAssignmentExpression(v, ref, varmap);
+        } else if (ref.getParent().getType() == Token.VAR) {
+            // The old variable declaration. It didn't have a
+            // value. Remove it entirely as it should now be unused.
+            ref.getGrandparent().removeChild(ref.getParent());
+        } else {
+            // Make sure that the reference is a GETPROP as we expect it to be.
+            Node getprop = ref.getParent();
+            Preconditions.checkState(getprop.getType() == Token.GETPROP);
+            // The key being looked up in the original map.
+            String var = getprop.getChildAtIndex(1).getString();
+            // If the variable hasn't already been declared, add an empty
+            // declaration near all the other declarations.
+            Preconditions.checkState(varmap.containsKey(var));
+            // Replace the GETPROP node with a NAME.
+            Node replacement = Node.newString(Token.NAME, varmap.get(var));
+            replacement.copyInformationFrom(getprop);
+            ref.getGrandparent().replaceChild(ref.getParent(), replacement);
+        }
+    }
+    compiler.reportCodeChange();
+}

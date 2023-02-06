@@ -1,0 +1,69 @@
+private void munchMoveMemBinOpDstStm(AssemBinOpExp opExp, AssemExp srcExp) {
+    AssemExp opLeftChild = opExp.getLeft();
+    AssemExp opRightChild = opExp.getRight();
+    int leftChildType = opLeftChild.getExpType();
+    int rightChildType = opRightChild.getType();
+    int op = opExp.getOperator();
+    if (op == AssemBinOpExp.PLUS || op == AssemBinOpExp.MINUS) {
+        if (leftChildType == AssemExp.TEMP) {
+            AssemTemp assemTemp = (AssemTemp) opLeftChild;
+            Temp temp = assemTemp.getTemp();
+            if (opRightChild.getExpType() == AssemExp.CONST) {
+                // Found a  tile -> Move(Mem(BinOp(Plus/Minus, TEMP, i)), e1)
+                AssemConst assemConst = (AssemConst) opRightChild;
+                emitMoveMemOpTempConst(srcExp, opExp.getOperator(), assemConst.getValue(), temp);
+            } else {
+                // The right child is not a const
+                Temp rhsTemp = null;
+                if (leftChildType == AssemExp.CALL)
+                    rhsTemp = munchCallExp((AssemCallExp) opRightChild);
+                else if (leftChildType == AssemExp.BIN_OP)
+                    rhsTemp = munchBinOpExp((AssemBinOpExp) opRightChild);
+                else if (leftChildType == AssemExp.MEM)
+                    rhsTemp = munchMemoryExp((AssemMemory) opRightChild);
+                else if (leftChildType == AssemExp.TEMP)
+                    rhsTemp = munchTempExp((AssemTemp) opRightChild);
+                Temp newTemp = addOrSubtractTemps(op, assemTemp.getTemp(), rhsTemp);
+                munchMoveMemTempDstStm(newTemp, srcExp);
+            }
+        } else if (leftChildType == AssemExp.CONST) {
+            AssemConst assemConst = (AssemConst) opLeftChild;
+            int num = assemConst.getValue();
+            if (rightChildType == AssemExp.TEMP) {
+                AssemTemp assemTemp = (AssemTemp) opRightChild;
+                Temp temp = assemTemp.getTemp();
+                if (op == AssemBinOpExp.PLUS) {
+                    // Found a  tile -> Move(Mem(BinOp(Plus, i, TEMP)), e1)
+                    emitMoveMemOpTempConst(srcExp, opExp.getOperator(), assemConst.getValue(), temp);
+                } else {
+                    // The Binop is of the form const - Temp (Minus does not commute)
+                    // Translate to $t0 = const - $t1, ($t0)
+                    Temp newTemp = emitOpConstTemp(op, num, temp);
+                    munchMoveMemTempDstStm(newTemp, srcExp);
+                }
+            } else {
+                Temp rhsTemp = munchExp(opRightChild);
+                Temp newTemp = emitOpConstTemp(op, num, rhsTemp);
+                munchMoveMemTempDstStm(newTemp, srcExp);
+            }
+        } else {
+            // The left child is neither a const nor a temp
+            Temp lhsTemp = null;
+            if (leftChildType == AssemExp.CALL)
+                lhsTemp = munchCallExp((AssemCallExp) opLeftChild);
+            else if (leftChildType == AssemExp.BIN_OP)
+                lhsTemp = munchBinOpExp((AssemBinOpExp) opLeftChild);
+            else if (leftChildType == AssemExp.MEM)
+                lhsTemp = munchMemoryExp((AssemMemory) opLeftChild);
+            Temp rhsTemp = munchExp(opRightChild);
+            Temp newTemp = addOrSubtractTemps(op, lhsTemp, rhsTemp);
+            munchMoveMemTempDstStm(newTemp, srcExp);
+        }
+    } else {
+        // The operator is neither plus nor minus
+        Temp lhsTemp = munchExp(opLeftChild);
+        Temp rhsTemp = munchExp(opRightChild);
+        Temp newTemp = opTemps(op, lhsTemp, rhsTemp, null);
+        munchMoveMemTempDstStm(newTemp, srcExp);
+    }
+}

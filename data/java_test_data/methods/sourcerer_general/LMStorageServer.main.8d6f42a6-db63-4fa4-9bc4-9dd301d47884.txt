@@ -1,0 +1,49 @@
+public static void main(String[] args) throws DatabaseException, IOException {
+    final MemoryMXBean memoryBean = ManagementFactory.getMemoryMXBean();
+    MemoryUsage memuse;
+    OptionParser optParser = new OptionParser(Options.class);
+    final Options opts = (Options) optParser.parse(args, true);
+    SocketAddress address = new InetSocketAddress(opts.port);
+    final ServerStorageConnection connection = new ServerStorageConnection(address);
+    Experiment.initialize(opts.config);
+    final Experiment experiment = Experiment.getInstance();
+    if (opts.meminfo) {
+        memuse = memoryBean.getHeapMemoryUsage();
+        System.out.printf("MEMUSE: after Experiment.initialize(): %dM/%dM\n", memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+    }
+    experiment.buildPrefixes();
+    experiment.buildWordPrefixes();
+    DecoderCompactProbTree emptyTree = DecoderCompactProbTree.constructEmptyTree(Experiment.getInstance().getHFT().getTree());
+    DecoderCompactProbTree.setEmptyTree(emptyTree);
+    Experiment.Files files = experiment.getFiles();
+    Environment env = BDBProbTreeStorage.createEnvironment(files.getDb(), false);
+    env.getConfig().setCachePercent(50);
+    final ServerStorageResponder responder;
+    {
+        BDBProbTreeStorage dbStorage = new BDBProbTreeStorage(env);
+        InterpolatingProbTreeStorage interpolatingStorage = new InterpolatingProbTreeStorage(dbStorage);
+        interpolatingStorage.setCacheSize(300000);
+        responder = new ServerStorageResponder(interpolatingStorage, connection);
+        // load the chain of LMs
+        for (LanguageModel lm : experiment.getLMsById()) {
+            System.err.printf("loading %s history tree\n", lm.getId());
+            lm.getHistoryTree();
+            System.err.printf("loading %s db\n", lm.getId());
+            dbStorage.open(lm.getId(), lm.getIdNum(), false);
+        }
+    }
+    for (int i = 0; i < opts.jobs; ++i) {
+        new Worker(connection, responder).start();
+    }
+    Timer timer = new Timer(true);
+    timer.scheduleAtFixedRate(new ServerStorageConnection.ServerMonitor(connection), 0, ServerStorageConnection.ServerMonitor.INTERVAL);
+    System.err.println("Ready to serve...");
+    // connection.serverLoop();
+    try {
+        while (true) {
+            Thread.sleep(1000000);
+        }
+    } catch (InterruptedException e) {
+        e.printStackTrace();
+    }
+}

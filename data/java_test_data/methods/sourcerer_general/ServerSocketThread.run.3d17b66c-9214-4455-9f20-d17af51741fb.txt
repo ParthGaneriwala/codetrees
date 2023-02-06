@@ -1,0 +1,190 @@
+public void run() {
+    /* loop forever */
+    while (true) {
+        /* wait for client (if necessary) */
+        synchronized (this.runLock) {
+            while (this.client == null) {
+                try {
+                    this.runLock.wait();
+                } catch (InterruptedException ie) {
+                }
+            }
+        }
+        /* reset byte counts */
+        this.readByteCount = 0L;
+        this.writeByteCount = 0L;
+        /* remote client IP address */
+        InetAddress inetAddr = this.client.getInetAddress();
+        Print.logInfo("Remote client port: " + inetAddr + ":" + this.client.getPort() + "[" + this.client.getLocalPort() + "]");
+        /* session timeout */
+        long sessionStartTime = DateTime.getCurrentTimeMillis();
+        long sessionTimeoutMS = ServerSocketThread.this.getSessionTimeout();
+        long sessionTimeoutAt = (sessionTimeoutMS > 0L) ? (sessionStartTime + sessionTimeoutMS) : -1L;
+        /* client session handler */
+        ClientPacketHandler clientHandler = ServerSocketThread.this.getClientPacketHandler();
+        if (clientHandler != null) {
+            if (clientHandler instanceof AbstractClientPacketHandler) {
+                // set a handle to this session thread
+                ((AbstractClientPacketHandler) clientHandler).setSessionInfo(this);
+            }
+            clientHandler.sessionStarted(inetAddr, this.client.isTCP(), ServerSocketThread.this.isTextPackets());
+        }
+        /* process client requests */
+        OutputStream output = null;
+        Throwable termError = null;
+        try {
+            /* get output stream */
+            // null for UDP
+            output = this.client.getOutputStream();
+            /* write initial packet from server */
+            if (clientHandler != null) {
+                // may be null
+                byte[] initialPacket = clientHandler.getInitialPacket();
+                this.writeBytes(output, initialPacket);
+            }
+            /* loop until timeout, error, client terminate */
+            for (int i = 0; ; i++) {
+                /* session timeout? */
+                if (sessionTimeoutAt > 0L) {
+                    long currentTimeMS = DateTime.getCurrentTimeMillis();
+                    if (currentTimeMS >= sessionTimeoutAt) {
+                        throw new SSSessionTimeoutException("Session timeout");
+                    }
+                }
+                /* display prompt */
+                // may be null
+                byte[] prompt = ServerSocketThread.this.getPrompt(i);
+                this.writeBytes(output, prompt);
+                /* read packet */
+                byte[] line = null;
+                if (ServerSocketThread.this.isTextPackets()) {
+                    // ASCII: read until packet EOL
+                    line = this.readLine(this.client, clientHandler);
+                } else {
+                    // Binary: read until packet length or timeout
+                    line = this.readPacket(this.client, clientHandler);
+                }
+                /* send packet to listeners */
+                if ((line != null) && ServerSocketThread.this.hasListeners()) {
+                    try {
+                        ServerSocketThread.this.invokeListeners(line);
+                    } catch (Throwable t) {
+                        // a listener can terminate this session
+                        break;
+                    }
+                }
+                /* get response */
+                if ((line != null) && (clientHandler != null)) {
+                    try {
+                        byte[] response = clientHandler.getHandlePacket(line);
+                        if ((response != null) && (response.length > 0)) {
+                            if (this.client.isTCP()) {
+                                // TCP: Send response over socket connection
+                                this.writeBytes(output, response);
+                            } else {
+                                // UDP: Send response via datagram
+                                int rPort = ServerSocketThread.this.getRemotePort();
+                                if (rPort == 0) {
+                                    rPort = this.client.getLocalPort();
+                                }
+                                if (rPort > 0) {
+                                    int retry = 1;
+                                    // this.datagramSocket
+                                    DatagramSocket dgSocket = new DatagramSocket();
+                                    DatagramPacket respPkt = new DatagramPacket(response, response.length, inetAddr, rPort);
+                                    for (; retry > 0; retry--) {
+                                        Print.logInfo("Sending Datagram [%s:%d]: %s", inetAddr.toString(), rPort, StringTools.toHexString(response));
+                                        dgSocket.send(respPkt);
+                                    }
+                                }
+                            }
+                        }
+                        if (clientHandler.terminateSession()) {
+                            break;
+                        }
+                    } catch (Throwable t) {
+                        // the ClientPacketHandler can terminate this session
+                        Print.logException("Unexpected exception: ", t);
+                        break;
+                    }
+                }
+                /* terminate now if we're reading a Datagram and we're out of data */
+                if (this.client.isUDP()) {
+                    int avail = this.client.available();
+                    if (avail <= 0) {
+                        // Normal end of UDP connection
+                        break;
+                    } else {
+                        // Still have more UDP packet data
+                        Print.logInfo("UDP: bytes remaining - %d", avail);
+                    }
+                }
+            }
+        // socket read loop
+        } catch (SSSessionTimeoutException ste) {
+            Print.logError(ste.getMessage());
+            termError = ste;
+        } catch (SSReadTimeoutException rte) {
+            Print.logError(rte.getMessage());
+            termError = rte;
+        } catch (SSEndOfStreamException eos) {
+            if (this.client.isTCP()) {
+                // run
+                Print.logError(eos.getMessage());
+                termError = eos;
+            } else {
+            // We're at the end of the UDP datastream
+            }
+        } catch (SocketException se) {
+            Print.logError("Connection closed");
+            termError = se;
+        } catch (Throwable t) {
+            Print.logException("?", t);
+            termError = t;
+        }
+        /* client session terminated */
+        if (clientHandler != null) {
+            try {
+                byte[] finalPacket = clientHandler.getFinalPacket(termError != null);
+                this.writeBytes(output, finalPacket);
+            } catch (Throwable t) {
+                Print.logException("Final packet transmission", t);
+            }
+            clientHandler.sessionTerminated(termError, this.readByteCount, this.writeByteCount);
+            if (clientHandler instanceof AbstractClientPacketHandler) {
+                // clear the session so that it doesn't hold on to an instance of this class
+                ((AbstractClientPacketHandler) clientHandler).setSessionInfo(null);
+            }
+        }
+        /* flush output before closing */
+        if (output != null) {
+            try {
+                output.flush();
+            } catch (IOException ioe) {
+                Print.logException("Flush", ioe);
+            } catch (Throwable t) {
+                Print.logException("?", t);
+            }
+        }
+        /* linger on close */
+        try {
+            // (seconds)
+            this.client.setSoLinger(ServerSocketThread.this.getLingerTimeoutSec());
+        } catch (SocketException se) {
+            Print.logException("setSoLinger", se);
+        } catch (Throwable t) {
+            Print.logException("?", t);
+        }
+        /* close socket */
+        try {
+            this.client.close();
+        } catch (IOException ioe) {
+        /* unable to close? */
+        }
+        /* clear for next requestor */
+        synchronized (this.runLock) {
+            this.client = null;
+        }
+    }
+// while (true)
+}

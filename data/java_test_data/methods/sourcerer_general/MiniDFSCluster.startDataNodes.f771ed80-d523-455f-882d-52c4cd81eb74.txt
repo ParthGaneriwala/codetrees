@@ -1,0 +1,83 @@
+public synchronized void startDataNodes(Configuration conf, int numDataNodes, boolean manageDfsDirs, StartupOption operation, String[] racks, String[] hosts, long[] simulatedCapacities) throws IOException {
+    int curDatanodesNum = dataNodes.size();
+    // for mincluster's the default initialDelay for BRs is 0
+    if (conf.get("dfs.blockreport.initialDelay") == null) {
+        conf.setLong("dfs.blockreport.initialDelay", 0);
+    }
+    // 
+    if (nameNode != null) {
+        // set conf from the name node
+        InetSocketAddress nnAddr = nameNode.getNameNodeAddress();
+        int nameNodePort = nnAddr.getPort();
+        FileSystem.setDefaultUri(conf, "hdfs://" + nnAddr.getHostName() + ":" + Integer.toString(nameNodePort));
+    }
+    if (racks != null && numDataNodes > racks.length) {
+        throw new IllegalArgumentException("The length of racks [" + racks.length + "] is less than the number of datanodes [" + numDataNodes + "].");
+    }
+    if (hosts != null && numDataNodes > hosts.length) {
+        throw new IllegalArgumentException("The length of hosts [" + hosts.length + "] is less than the number of datanodes [" + numDataNodes + "].");
+    }
+    // Generate some hostnames if required
+    if (racks != null && hosts == null) {
+        System.out.println("Generating host names for datanodes");
+        hosts = new String[numDataNodes];
+        for (int i = curDatanodesNum; i < curDatanodesNum + numDataNodes; i++) {
+            hosts[i - curDatanodesNum] = "host" + i + ".foo.com";
+        }
+    }
+    if (simulatedCapacities != null && numDataNodes > simulatedCapacities.length) {
+        throw new IllegalArgumentException("The length of simulatedCapacities [" + simulatedCapacities.length + "] is less than the number of datanodes [" + numDataNodes + "].");
+    }
+    // Set up the right ports for the datanodes
+    conf.set("dfs.datanode.address", "127.0.0.1:0");
+    conf.set("dfs.datanode.http.address", "127.0.0.1:0");
+    conf.set("dfs.datanode.ipc.address", "127.0.0.1:0");
+    String[] args = (operation == null || operation == StartupOption.FORMAT || operation == StartupOption.REGULAR) ? null : new String[] { "-" + operation.toString() };
+    String[] dnArgs = (operation == StartupOption.UPGRADE) ? null : args;
+    for (int i = curDatanodesNum; i < curDatanodesNum + numDataNodes; i++) {
+        Configuration dnConf = new Configuration(conf);
+        if (manageDfsDirs) {
+            File dir1 = new File(data_dir, "data" + (2 * i + 1));
+            File dir2 = new File(data_dir, "data" + (2 * i + 2));
+            dir1.mkdirs();
+            dir2.mkdirs();
+            if (!dir1.isDirectory() || !dir2.isDirectory()) {
+                throw new IOException("Mkdirs failed to create directory for DataNode " + i + ": " + dir1 + " or " + dir2);
+            }
+            dnConf.set("dfs.data.dir", dir1.getPath() + "," + dir2.getPath());
+        }
+        if (simulatedCapacities != null) {
+            dnConf.setBoolean("dfs.datanode.simulateddatastorage", true);
+            dnConf.setLong(SimulatedFSDataset.CONFIG_PROPERTY_CAPACITY, simulatedCapacities[i - curDatanodesNum]);
+        }
+        System.out.println("Starting DataNode " + i + " with dfs.data.dir: " + dnConf.get("dfs.data.dir"));
+        if (hosts != null) {
+            dnConf.set("slave.host.name", hosts[i - curDatanodesNum]);
+            System.out.println("Starting DataNode " + i + " with hostname set to: " + dnConf.get("slave.host.name"));
+        }
+        if (racks != null) {
+            String name = hosts[i - curDatanodesNum];
+            System.out.println("Adding node with hostname : " + name + " to rack " + racks[i - curDatanodesNum]);
+            StaticMapping.addNodeToRack(name, racks[i - curDatanodesNum]);
+        }
+        // save config
+        Configuration newconf = new Configuration(dnConf);
+        if (hosts != null) {
+            NetUtils.addStaticResolution(hosts[i - curDatanodesNum], "localhost");
+        }
+        DataNode dn = DataNode.instantiateDataNode(dnArgs, dnConf);
+        // since the HDFS does things based on IP:port, we need to add the mapping
+        // for IP:port to rackId
+        String ipAddr = dn.getSelfAddr().getAddress().getHostAddress();
+        if (racks != null) {
+            int port = dn.getSelfAddr().getPort();
+            System.out.println("Adding node with IP:port : " + ipAddr + ":" + port + " to rack " + racks[i - curDatanodesNum]);
+            StaticMapping.addNodeToRack(ipAddr + ":" + port, racks[i - curDatanodesNum]);
+        }
+        DataNode.runDatanodeDaemon(dn);
+        dataNodes.add(new DataNodeProperties(dn, newconf, dnArgs));
+    }
+    curDatanodesNum += numDataNodes;
+    this.numDataNodes += numDataNodes;
+    waitActive();
+}

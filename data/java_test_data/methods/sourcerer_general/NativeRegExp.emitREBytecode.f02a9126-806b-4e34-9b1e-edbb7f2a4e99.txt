@@ -1,0 +1,117 @@
+private static int emitREBytecode(CompilerState state, RECompiled re, int pc, RENode t) {
+    RENode nextAlt;
+    int nextAltFixup, nextTermFixup;
+    byte[] program = re.program;
+    while (t != null) {
+        program[pc++] = t.op;
+        switch(t.op) {
+            case REOP_EMPTY:
+                --pc;
+                break;
+            case REOP_ALT:
+                nextAlt = t.kid2;
+                nextAltFixup = pc;
+                /* address of next alternate */
+                pc += OFFSET_LEN;
+                pc = emitREBytecode(state, re, pc, t.kid);
+                program[pc++] = REOP_JUMP;
+                nextTermFixup = pc;
+                /* address of following term */
+                pc += OFFSET_LEN;
+                resolveForwardJump(program, nextAltFixup, pc);
+                pc = emitREBytecode(state, re, pc, nextAlt);
+                program[pc++] = REOP_JUMP;
+                nextAltFixup = pc;
+                pc += OFFSET_LEN;
+                resolveForwardJump(program, nextTermFixup, pc);
+                resolveForwardJump(program, nextAltFixup, pc);
+                break;
+            case REOP_FLAT:
+                /*
+                 * Consecutize FLAT's if possible.
+                 */
+                if (t.flatIndex != -1) {
+                    while ((t.next != null) && (t.next.op == REOP_FLAT) && ((t.flatIndex + t.length) == t.next.flatIndex)) {
+                        t.length += t.next.length;
+                        t.next = t.next.next;
+                    }
+                }
+                if ((t.flatIndex != -1) && (t.length > 1)) {
+                    if ((state.flags & JSREG_FOLD) != 0)
+                        program[pc - 1] = REOP_FLATi;
+                    else
+                        program[pc - 1] = REOP_FLAT;
+                    pc = addIndex(program, pc, t.flatIndex);
+                    pc = addIndex(program, pc, t.length);
+                } else {
+                    if (t.chr < 256) {
+                        if ((state.flags & JSREG_FOLD) != 0)
+                            program[pc - 1] = REOP_FLAT1i;
+                        else
+                            program[pc - 1] = REOP_FLAT1;
+                        program[pc++] = (byte) (t.chr);
+                    } else {
+                        if ((state.flags & JSREG_FOLD) != 0)
+                            program[pc - 1] = REOP_UCFLAT1i;
+                        else
+                            program[pc - 1] = REOP_UCFLAT1;
+                        pc = addIndex(program, pc, t.chr);
+                    }
+                }
+                break;
+            case REOP_LPAREN:
+                pc = addIndex(program, pc, t.parenIndex);
+                pc = emitREBytecode(state, re, pc, t.kid);
+                program[pc++] = REOP_RPAREN;
+                pc = addIndex(program, pc, t.parenIndex);
+                break;
+            case REOP_BACKREF:
+                pc = addIndex(program, pc, t.parenIndex);
+                break;
+            case REOP_ASSERT:
+                nextTermFixup = pc;
+                pc += OFFSET_LEN;
+                pc = emitREBytecode(state, re, pc, t.kid);
+                program[pc++] = REOP_ASSERTTEST;
+                resolveForwardJump(program, nextTermFixup, pc);
+                break;
+            case REOP_ASSERT_NOT:
+                nextTermFixup = pc;
+                pc += OFFSET_LEN;
+                pc = emitREBytecode(state, re, pc, t.kid);
+                program[pc++] = REOP_ASSERTNOTTEST;
+                resolveForwardJump(program, nextTermFixup, pc);
+                break;
+            case REOP_QUANT:
+                if ((t.min == 0) && (t.max == -1))
+                    program[pc - 1] = (t.greedy) ? REOP_STAR : REOP_MINIMALSTAR;
+                else if ((t.min == 0) && (t.max == 1))
+                    program[pc - 1] = (t.greedy) ? REOP_OPT : REOP_MINIMALOPT;
+                else if ((t.min == 1) && (t.max == -1))
+                    program[pc - 1] = (t.greedy) ? REOP_PLUS : REOP_MINIMALPLUS;
+                else {
+                    if (!t.greedy)
+                        program[pc - 1] = REOP_MINIMALQUANT;
+                    pc = addIndex(program, pc, t.min);
+                    // max can be -1 which addIndex does not accept
+                    pc = addIndex(program, pc, t.max + 1);
+                }
+                pc = addIndex(program, pc, t.parenCount);
+                pc = addIndex(program, pc, t.parenIndex);
+                nextTermFixup = pc;
+                pc += OFFSET_LEN;
+                pc = emitREBytecode(state, re, pc, t.kid);
+                program[pc++] = REOP_ENDCHILD;
+                resolveForwardJump(program, nextTermFixup, pc);
+                break;
+            case REOP_CLASS:
+                pc = addIndex(program, pc, t.index);
+                re.classList[t.index] = new RECharSet(t.bmsize, t.startIndex, t.kidlen);
+                break;
+            default:
+                break;
+        }
+        t = t.next;
+    }
+    return pc;
+}

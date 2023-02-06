@@ -1,0 +1,79 @@
+// Compute the optimal bit lengths for a tree and update the total bit length
+// for the current block.
+// IN assertion: the fields freq and dad are set, heap[heap_max] and
+// above are the tree nodes sorted by increasing frequency.
+// OUT assertions: the field len is set to the optimal bit length, the
+// array bl_count contains the frequencies for each bit length.
+// The length opt_len is updated; static_len is also updated if stree is
+void gen_bitlen(Deflate s) {
+    short[] tree = dyn_tree;
+    short[] stree = stat_desc.static_tree;
+    int[] extra = stat_desc.extra_bits;
+    int base = stat_desc.extra_base;
+    int max_length = stat_desc.max_length;
+    // heap index
+    int h;
+    // iterate over the tree elements
+    int n, m;
+    // bit length
+    int bits;
+    // extra bits
+    int xbits;
+    // frequency
+    short f;
+    // number of elements with bit length too large
+    int overflow = 0;
+    for (bits = 0; bits <= MAX_BITS; bits++) s.bl_count[bits] = 0;
+    // In a first pass, compute the optimal bit lengths (which may
+    // overflow in the case of the bit length tree).
+    // root of the heap
+    tree[s.heap[s.heap_max] * 2 + 1] = 0;
+    for (h = s.heap_max + 1; h < HEAP_SIZE; h++) {
+        n = s.heap[h];
+        bits = tree[tree[n * 2 + 1] * 2 + 1] + 1;
+        if (bits > max_length) {
+            bits = max_length;
+            overflow++;
+        }
+        tree[n * 2 + 1] = (short) bits;
+        // not a leaf node
+        if (n > max_code)
+            continue;
+        s.bl_count[bits]++;
+        xbits = 0;
+        if (n >= base)
+            xbits = extra[n - base];
+        f = tree[n * 2];
+        s.opt_len += f * (bits + xbits);
+        if (stree != null)
+            s.static_len += f * (stree[n * 2 + 1] + xbits);
+    }
+    if (overflow == 0)
+        return;
+    // Find the first bit length which could increase:
+    do {
+        bits = max_length - 1;
+        while (s.bl_count[bits] == 0) bits--;
+        // move one leaf down the tree
+        s.bl_count[bits]--;
+        // move one overflow item as its brother
+        s.bl_count[bits + 1] += 2;
+        s.bl_count[max_length]--;
+        // The brother of the overflow item also moves one step up,
+        // but this does not affect bl_count[max_length]
+        overflow -= 2;
+    } while (overflow > 0);
+    for (bits = max_length; bits != 0; bits--) {
+        n = s.bl_count[bits];
+        while (n != 0) {
+            m = s.heap[--h];
+            if (m > max_code)
+                continue;
+            if (tree[m * 2 + 1] != bits) {
+                s.opt_len += ((long) bits - (long) tree[m * 2 + 1]) * (long) tree[m * 2];
+                tree[m * 2 + 1] = (short) bits;
+            }
+            n--;
+        }
+    }
+}

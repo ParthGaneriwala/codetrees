@@ -1,0 +1,117 @@
+public void testInsertAndExpireUser() throws Exception {
+    String username = "user2disable@concursive.com";
+    {
+        /* Insert the user */
+        ArrayList<String> meta = new ArrayList<String>();
+        meta.add("id");
+        api.setTransactionMeta(meta);
+        DataRecord record = new DataRecord();
+        record.setName("user");
+        record.setAction(DataRecord.INSERT);
+        record.addField("firstName", "John");
+        record.addField("lastName", "Smith");
+        record.addField("username", username);
+        record.addField("password", PasswordHash.encrypt("password"));
+        record.addField("groupId", GROUP_ID);
+        record.addField("departmentId", "1");
+        record.addField("enabled", true);
+        api.save(record);
+        processTheTransactions(api, packetContext);
+    }
+    int userId = api.getResponseValueAsInt("id");
+    assertFalse("API reported a transaction error: " + api.getLastResponse(), api.hasError());
+    assertTrue("UserId didn't get set in insert", userId > -1);
+    {
+        /* Disable the user */
+        // Use yesterday as the expiration date
+        Calendar cal = Calendar.getInstance();
+        cal.setTime(new Date());
+        cal.add(Calendar.DATE, -1);
+        // Update the record
+        DataRecord record = new DataRecord();
+        record.setName("user");
+        record.setAction(DataRecord.UPDATE);
+        record.addField("id", userId);
+        record.addField("expiration", cal.getTime());
+        api.save(record);
+        processTheTransactions(api, packetContext);
+        assertTrue("An updated record must get an action of 'processed' returned", api.getRecords().get(0).getAction().equals("processed"));
+        assertTrue("The record name was not set correctly: " + api.getRecords().get(0).getName(), api.getRecords().get(0).getName().equals("user"));
+        assertFalse("API reported a transaction error: " + api.getLastResponse(), api.hasError());
+        User thisUser = new User(db, userId);
+        assertTrue("API didn't set the expiration date", thisUser.getExpiration() != null);
+    }
+    {
+        /* Verify the user cannot be found when querying validUsers */
+        ArrayList<String> meta = new ArrayList<String>();
+        meta.add("id");
+        meta.add("expiration");
+        api.setTransactionMeta(meta);
+        DataRecord record = new DataRecord();
+        record.setName("userList");
+        record.setAction(DataRecord.SELECT);
+        record.addField("userId", userId);
+        record.addField("validUser", "true");
+        api.save(record);
+        processTheTransactions(api, packetContext);
+        assertTrue("Enabled user was incorrectly found", api.getRecordCount() == 0);
+    }
+    int userProfileProjectId = -1;
+    {
+        /* Verify the user can be found when querying invalidUsers */
+        ArrayList<String> meta = new ArrayList<String>();
+        meta.add("id");
+        meta.add("expiration");
+        meta.add("profileProjectId");
+        api.setTransactionMeta(meta);
+        DataRecord record = new DataRecord();
+        record.setName("userList");
+        record.setAction(DataRecord.SELECT);
+        record.addField("userId", userId);
+        record.addField("validUser", "false");
+        api.save(record);
+        processTheTransactions(api, packetContext);
+        assertTrue("Disabled user was not found", api.getRecordCount() == 1);
+        User thisUser = new User(db, api.getResponseValueAsInt("id"));
+        assertTrue(UserUtils.isUserDisabled(thisUser));
+        userProfileProjectId = api.getResponseValueAsInt("profileProjectId");
+        assertTrue("profileProjectId was not retrieved", userProfileProjectId > -1);
+    }
+    {
+        /* Re-enable the user */
+        DataRecord record = new DataRecord();
+        record.setName("user");
+        record.setAction(DataRecord.UPDATE);
+        record.addField("id", userId);
+        record.addField("expiration", DataRecord.NULL);
+        api.save(record);
+        processTheTransactions(api, packetContext);
+        assertTrue("An updated record must get an action of 'processed' returned", api.getRecords().get(0).getAction().equals("processed"));
+        assertTrue("The record name was not set correctly: " + api.getRecords().get(0).getName(), api.getRecords().get(0).getName().equals("user"));
+        assertFalse("API reported a transaction error: " + api.getLastResponse(), api.hasError());
+        User thisUser = new User(db, userId);
+        assertTrue("API didn't set the value to null", thisUser.getExpiration() == null);
+    }
+    {
+        // Delete the user's profile
+        DataRecord record = new DataRecord();
+        record.setName("project");
+        record.setAction(DataRecord.DELETE);
+        record.addField("id", userProfileProjectId);
+        api.save(record);
+        processTheTransactions(api, packetContext);
+        assertFalse("API reported a transaction error: " + api.getLastResponse(), api.hasError());
+    }
+    {
+        // Delete the user
+        DataRecord record = new DataRecord();
+        record.setName("user");
+        record.setAction(DataRecord.DELETE);
+        record.addField("id", userId);
+        api.save(record);
+        processTheTransactions(api, packetContext);
+        assertFalse("API reported a transaction error: " + api.getLastResponse(), api.hasError());
+    }
+    User thisUser = new User(db, userId);
+    assertTrue("Shouldn't have found the deleted user", thisUser.getId() == -1);
+}

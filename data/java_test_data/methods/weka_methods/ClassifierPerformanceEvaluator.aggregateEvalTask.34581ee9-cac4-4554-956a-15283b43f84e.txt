@@ -1,0 +1,101 @@
+protected synchronized void aggregateEvalTask(Evaluation eval, weka.classifiers.Classifier classifier, Instances testData, ClassifierErrorsPlotInstances plotInstances, int setNum, String evalLabel) throws Exception {
+    m_eval.aggregate(eval);
+    if (m_aggregatedPlotInstances == null) {
+        // get these first so that the post-processing does not scale the sizes!!
+        m_aggregatedPlotShapes = (ArrayList<Integer>) plotInstances.getPlotShapes().clone();
+        m_aggregatedPlotSizes = (ArrayList<Object>) plotInstances.getPlotSizes().clone();
+        // this calls the post-processing, so do this last
+        m_aggregatedPlotInstances = new Instances(plotInstances.getPlotInstances());
+    } else {
+        // get these first so that post-processing does not scale sizes
+        ArrayList<Object> tmpSizes = (ArrayList<Object>) plotInstances.getPlotSizes().clone();
+        ArrayList<Integer> tmpShapes = (ArrayList<Integer>) plotInstances.getPlotShapes().clone();
+        Instances temp = plotInstances.getPlotInstances();
+        for (int i = 0; i < temp.numInstances(); i++) {
+            m_aggregatedPlotInstances.add(temp.get(i));
+            m_aggregatedPlotShapes.add(tmpShapes.get(i));
+            m_aggregatedPlotSizes.add(tmpSizes.get(i));
+        }
+    }
+    getStepManager().statusMessage("Completed folds/sets " + m_setsToGo.incrementAndGet());
+    if (m_setsToGo.get() == m_maxSetNum) {
+        AggregateableClassifierErrorsPlotInstances aggPlot = new AggregateableClassifierErrorsPlotInstances();
+        aggPlot.setInstances(testData);
+        aggPlot.setPlotInstances(m_aggregatedPlotInstances);
+        aggPlot.setPlotShapes(m_aggregatedPlotShapes);
+        aggPlot.setPlotSizes(m_aggregatedPlotSizes);
+        aggPlot.setPointSizeProportionalToMargin(m_errorPlotPointSizeProportionalToMargin);
+        // triggers scaling of shape sizes
+        aggPlot.getPlotInstances();
+        String textTitle = "";
+        textTitle += classifier.getClass().getName();
+        String textOptions = "";
+        if (classifier instanceof OptionHandler) {
+            textOptions = Utils.joinOptions(((OptionHandler) classifier).getOptions());
+        }
+        textTitle = textTitle.substring(textTitle.lastIndexOf('.') + 1, textTitle.length());
+        if (evalLabel != null && evalLabel.length() > 0) {
+            if (!textTitle.toLowerCase().startsWith(evalLabel.toLowerCase())) {
+                textTitle = evalLabel + " : " + textTitle;
+            }
+        }
+        CostMatrix cm = m_costSensitiveEval ? CostMatrix.parseMatlab(getCostMatrixString()) : null;
+        String resultT = "=== Evaluation result ===\n\n" + "Scheme: " + textTitle + "\n" + ((textOptions.length() > 0) ? "Options: " + textOptions + "\n" : "") + "Relation: " + testData.relationName() + "\n\n" + (cm != null ? "Cost matrix:\n" + cm.toString() + "\n" : "") + m_eval.toSummaryString();
+        if (testData.classAttribute().isNominal()) {
+            resultT += "\n" + m_eval.toClassDetailsString() + "\n" + m_eval.toMatrixString();
+        }
+        Data text = new Data(StepManager.CON_TEXT);
+        text.setPayloadElement(StepManager.CON_TEXT, resultT);
+        text.setPayloadElement(StepManager.CON_AUX_DATA_TEXT_TITLE, textTitle);
+        getStepManager().outputData(text);
+        // set up visualizable errors
+        if (getStepManager().numOutgoingConnectionsOfType(StepManager.CON_VISUALIZABLE_ERROR) > 0) {
+            PlotData2D errorD = new PlotData2D(m_aggregatedPlotInstances);
+            errorD.setShapeSize(m_aggregatedPlotSizes);
+            errorD.setShapeType(m_aggregatedPlotShapes);
+            errorD.setPlotName(textTitle + " " + textOptions);
+            Data visErr = new Data(StepManager.CON_VISUALIZABLE_ERROR);
+            visErr.setPayloadElement(StepManager.CON_VISUALIZABLE_ERROR, errorD);
+            getStepManager().outputData(visErr);
+        }
+        // threshold data
+        if (testData.classAttribute().isNominal() && getStepManager().numOutgoingConnectionsOfType(StepManager.CON_THRESHOLD_DATA) > 0) {
+            ThresholdCurve tc = new ThresholdCurve();
+            Instances result = tc.getCurve(m_eval.predictions(), 0);
+            result.setRelationName(testData.relationName());
+            PlotData2D pd = new PlotData2D(result);
+            String htmlTitle = "<html><font size=-2>" + textTitle;
+            String newOptions = "";
+            if (classifier instanceof OptionHandler) {
+                String[] options = ((OptionHandler) classifier).getOptions();
+                if (options.length > 0) {
+                    for (int ii = 0; ii < options.length; ii++) {
+                        if (options[ii].length() == 0) {
+                            continue;
+                        }
+                        if (options[ii].charAt(0) == '-' && !(options[ii].charAt(1) >= '0' && options[ii].charAt(1) <= '9')) {
+                            newOptions += "<br>";
+                        }
+                        newOptions += options[ii];
+                    }
+                }
+            }
+            htmlTitle += " " + newOptions + "<br>" + " (class: " + testData.classAttribute().value(0) + ")" + "</font></html>";
+            pd.setPlotName(textTitle + " (class: " + testData.classAttribute().value(0) + ")");
+            pd.setPlotNameHTML(htmlTitle);
+            boolean[] connectPoints = new boolean[result.numInstances()];
+            for (int jj = 1; jj < connectPoints.length; jj++) {
+                connectPoints[jj] = true;
+            }
+            pd.setConnectPoints(connectPoints);
+            Data threshData = new Data(StepManager.CON_THRESHOLD_DATA);
+            threshData.setPayloadElement(StepManager.CON_THRESHOLD_DATA, pd);
+            threshData.setPayloadElement(StepManager.CON_AUX_DATA_CLASS_ATTRIBUTE, testData.classAttribute());
+            getStepManager().outputData(threshData);
+        }
+        getStepManager().finished();
+    }
+    if (isStopRequested()) {
+        getStepManager().interrupted();
+    }
+}

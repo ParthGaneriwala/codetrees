@@ -1,0 +1,72 @@
+public void testLimits() throws Exception {
+    Configuration conf = new Configuration();
+    MiniDFSCluster cluster = null;
+    try {
+        cluster = new MiniDFSCluster(conf, 2, true, null);
+        final String nnUri = FileSystem.getDefaultUri(conf).toString();
+        final FileSystem fs = FileSystem.get(URI.create(nnUri), conf);
+        final DistCp distcp = new DistCp(conf);
+        final String srcrootdir = "/src_root";
+        final Path srcrootpath = new Path(srcrootdir);
+        final String dstrootdir = "/dst_root";
+        final Path dstrootpath = new Path(dstrootdir);
+        {
+            // test -filelimit
+            MyFile[] files = createFiles(URI.create(nnUri), srcrootdir);
+            int filelimit = files.length / 2;
+            System.out.println("filelimit=" + filelimit);
+            ToolRunner.run(distcp, new String[] { "-filelimit", "" + filelimit, nnUri + srcrootdir, nnUri + dstrootdir });
+            FileStatus[] dststat = getFileStatus(fs, dstrootdir, files, true);
+            assertEquals(filelimit, dststat.length);
+            deldir(fs, dstrootdir);
+            deldir(fs, srcrootdir);
+        }
+        {
+            // test -sizelimit
+            createFiles(URI.create(nnUri), srcrootdir);
+            long sizelimit = fs.getContentSummary(srcrootpath).getLength() / 2;
+            System.out.println("sizelimit=" + sizelimit);
+            ToolRunner.run(distcp, new String[] { "-sizelimit", "" + sizelimit, nnUri + srcrootdir, nnUri + dstrootdir });
+            ContentSummary summary = fs.getContentSummary(dstrootpath);
+            System.out.println("summary=" + summary);
+            assertTrue(summary.getLength() <= sizelimit);
+            deldir(fs, dstrootdir);
+            deldir(fs, srcrootdir);
+        }
+        {
+            // test update
+            final MyFile[] srcs = createFiles(URI.create(nnUri), srcrootdir);
+            final long totalsize = fs.getContentSummary(srcrootpath).getLength();
+            System.out.println("src.length=" + srcs.length);
+            System.out.println("totalsize =" + totalsize);
+            fs.mkdirs(dstrootpath);
+            final int parts = RAN.nextInt(NFILES / 3 - 1) + 2;
+            final int filelimit = srcs.length / parts;
+            final long sizelimit = totalsize / parts;
+            System.out.println("filelimit=" + filelimit);
+            System.out.println("sizelimit=" + sizelimit);
+            System.out.println("parts    =" + parts);
+            final String[] args = { "-filelimit", "" + filelimit, "-sizelimit", "" + sizelimit, "-update", nnUri + srcrootdir, nnUri + dstrootdir };
+            int dstfilecount = 0;
+            long dstsize = 0;
+            for (int i = 0; i <= parts; i++) {
+                ToolRunner.run(distcp, args);
+                FileStatus[] dststat = getFileStatus(fs, dstrootdir, srcs, true);
+                System.out.println(i + ") dststat.length=" + dststat.length);
+                assertTrue(dststat.length - dstfilecount <= filelimit);
+                ContentSummary summary = fs.getContentSummary(dstrootpath);
+                System.out.println(i + ") summary.getLength()=" + summary.getLength());
+                assertTrue(summary.getLength() - dstsize <= sizelimit);
+                assertTrue(checkFiles(fs, dstrootdir, srcs, true));
+                dstfilecount = dststat.length;
+                dstsize = summary.getLength();
+            }
+            deldir(fs, dstrootdir);
+            deldir(fs, srcrootdir);
+        }
+    } finally {
+        if (cluster != null) {
+            cluster.shutdown();
+        }
+    }
+}

@@ -1,0 +1,80 @@
+private void sortAndSpill() throws IOException {
+    // approximate the length of the output file to be the length of the
+    // buffer + header lengths for the partitions
+    long size = (bufend >= bufstart ? bufend - bufstart : (bufvoid - bufend) + bufstart) + partitions * APPROX_HEADER_LENGTH;
+    FSDataOutputStream out = null;
+    FSDataOutputStream indexOut = null;
+    IFileOutputStream indexChecksumOut = null;
+    IndexRecord[] irArray = null;
+    try {
+        // create spill file
+        Path filename = mapOutputFile.getSpillFileForWrite(getTaskID(), numSpills, size);
+        out = rfs.create(filename);
+        // the same destination (memory or file).
+        if (totalIndexCacheMemory >= INDEX_CACHE_MEMORY_LIMIT) {
+            // create spill index file
+            Path indexFilename = mapOutputFile.getSpillIndexFileForWrite(getTaskID(), numSpills, partitions * MAP_OUTPUT_INDEX_RECORD_LENGTH);
+            indexOut = rfs.create(indexFilename);
+            indexChecksumOut = new IFileOutputStream(indexOut);
+        } else {
+            irArray = new IndexRecord[partitions];
+            indexCacheList.add(numSpills, irArray);
+            totalIndexCacheMemory += partitions * MAP_OUTPUT_INDEX_RECORD_LENGTH;
+        }
+        final int endPosition = (kvend > kvstart) ? kvend : kvoffsets.length + kvend;
+        sorter.sort(MapOutputBuffer.this, kvstart, endPosition, reporter);
+        int spindex = kvstart;
+        InMemValBytes value = new InMemValBytes();
+        for (int i = 0; i < partitions; ++i) {
+            IFile.Writer<K, V> writer = null;
+            try {
+                long segmentStart = out.getPos();
+                writer = new Writer<K, V>(job, out, keyClass, valClass, codec);
+                if (null == combinerClass) {
+                    // spill directly
+                    DataInputBuffer key = new DataInputBuffer();
+                    while (spindex < endPosition && kvindices[kvoffsets[spindex % kvoffsets.length] + PARTITION] == i) {
+                        final int kvoff = kvoffsets[spindex % kvoffsets.length];
+                        getVBytesForOffset(kvoff, value);
+                        key.reset(kvbuffer, kvindices[kvoff + KEYSTART], (kvindices[kvoff + VALSTART] - kvindices[kvoff + KEYSTART]));
+                        writer.append(key, value);
+                        ++spindex;
+                    }
+                } else {
+                    int spstart = spindex;
+                    while (spindex < endPosition && kvindices[kvoffsets[spindex % kvoffsets.length] + PARTITION] == i) {
+                        ++spindex;
+                    }
+                    // than some threshold of records for a partition
+                    if (spstart != spindex) {
+                        combineCollector.setWriter(writer);
+                        RawKeyValueIterator kvIter = new MRResultIterator(spstart, spindex);
+                        combineAndSpill(kvIter, combineInputCounter);
+                    }
+                }
+                // close the writer
+                writer.close();
+                if (indexChecksumOut != null) {
+                    // write the index as <offset, raw-length, compressed-length>
+                    writeIndexRecord(indexChecksumOut, segmentStart, writer);
+                } else {
+                    irArray[i] = new IndexRecord(segmentStart, writer.getRawLength(), writer.getCompressedLength());
+                }
+                writer = null;
+            } finally {
+                if (null != writer)
+                    writer.close();
+            }
+        }
+        LOG.info("Finished spill " + numSpills);
+        ++numSpills;
+    } finally {
+        if (out != null)
+            out.close();
+        if (indexChecksumOut != null) {
+            indexChecksumOut.close();
+        }
+        if (indexOut != null)
+            indexOut.close();
+    }
+}

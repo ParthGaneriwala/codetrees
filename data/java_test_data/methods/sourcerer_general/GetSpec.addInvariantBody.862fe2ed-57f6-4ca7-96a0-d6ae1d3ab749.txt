@@ -1,0 +1,125 @@
+/**
+ * Extend <code>spec</code>, in a way appropriate for checking the body of
+ * a method or constructor, to account for invariant <code>ii.J</code>
+ * declared in class <code>ii.U</code>. The body to be checked has
+ * syntactic targets <code>synTargs</code>.
+ */
+private static void addInvariantBody(/* @ non_null */
+InvariantInfo ii, /* @ non_null */
+Spec spec, /* @ non_null */
+Set synTargs) {
+    Set invFV = Substitute.freeVars(ii.J);
+    /*
+     * Include invariant in post only if intersection of vars of invariant and
+     * vars modified in the method body is nonempty.
+     */
+    // Also include it if we are dealing with a constructor, since then
+    // the invariant might never have been established.
+    spec.dmd.isConstructor();
+    boolean includeInPre = true;
+    boolean includeInPostOrig = true;
+    boolean includeInPost = includeInPostOrig && (Main.options().useAllInvPostBody || invFV.containsAny(synTargs));
+    if (ii.isStatic) {
+        // static invariant
+        Condition cond = GC.freeCondition(ii.J, ii.prag.getStartLoc());
+        if (includeInPre)
+            spec.pre.addElement(cond);
+        if (includeInPost) {
+            cond = GC.condition(TagConstants.CHKOBJECTINVARIANT, ii.J, ii.prag.getStartLoc());
+            spec.post.addElement(cond);
+        }
+    } else {
+        // instance invariant
+        // Do the precondition
+        {
+            // Method, or constructor not declared below:
+            // (FORALL s :: TypeCorrectNoallocAs[[ s, U ]] && s != null ==> J)
+            // 
+            // Constructor of a class T, where either
+            // * U is a subtype of T, and
+            // either U is not T or the constructor does not call a sibling
+            // or
+            // * U is an interface, and
+            // + m calls sibling constructor and U is not a
+            // superinterface of T
+            // or
+            // + m does not call sibling constructor and U is not a
+            // superinterface of a proper superclass of T
+            // (FORALL s :: TypeCorrectNoallocAs[[ s, U ]] && s != null &&
+            // s != objectToBeConstructed
+            // ==> J)
+            // 
+            // In either case, NOPATS is the same as the antecedent.
+            ExprVec ante = TrAnExpr.typeAndNonNullAllocCorrectAs(ii.sdecl, ii.U, null, true, null, false);
+            if (spec.dmd.isConstructor()) {
+                TypeSig tU = ii.U;
+                TypeSig tT = TypeSig.getSig(spec.dmd.getContainingClass());
+                boolean includeAntecedent = false;
+                if (Types.isSubclassOf(tU, tT)) {
+                    if (!Types.isSameType(tU, tT) || !spec.dmd.isConstructorThatCallsSibling()) {
+                        includeAntecedent = true;
+                    }
+                } else if (ii.prag.parent instanceof InterfaceDecl) {
+                    if (spec.dmd.isConstructorThatCallsSibling()) {
+                        if (!Types.isSubclassOf(tT, tU)) {
+                            includeAntecedent = true;
+                        }
+                    } else {
+                        ClassDecl cd = (ClassDecl) spec.dmd.getContainingClass();
+                        if (!Types.isSubclassOf(TypeSig.getSig(cd.superClass), tU)) {
+                            includeAntecedent = true;
+                        }
+                    }
+                }
+                if (includeAntecedent) {
+                    Expr p = GC.nary(TagConstants.REFNE, ii.s, GC.objectTBCvar);
+                    ante.addElement(p);
+                }
+            }
+            Expr body = GC.implies(GC.and(ante), ii.J);
+            Expr quant = GC.forall(ii.sdecl, body, ante);
+            Condition cond = GC.freeCondition(quant, ii.prag.getStartLoc());
+            if (includeInPre)
+                spec.pre.addElement(cond);
+        }
+        // declared in "T" or in one of "T"'s first-inherited interfaces.
+        if (!includeInPost && spec.dmd.isConstructor() && !spec.dmd.isConstructorThatCallsSibling()) {
+            TypeSig tU = ii.U;
+            ClassDecl cd = (ClassDecl) spec.dmd.getContainingClass();
+            TypeSig tT = TypeSig.getSig(cd);
+            if (Types.isSubclassOf(tT, tU) && (cd.superClass == null || !Types.isSubclassOf(TypeSig.getSig(cd.superClass), tU))) {
+                // "U" is "T" or a first-inherited interface of "T"
+                includeInPost = true;
+            }
+        }
+        if (includeInPost && includeInPostOrig) {
+            // TypeCorrectAs[[ s, U ]] && s != null
+            ExprVec ante = TrAnExpr.typeAndNonNullAllocCorrectAs(ii.sdecl, ii.U, null, true, null, true);
+            if (spec.dmd.isConstructor()) {
+                TypeSig tU = ii.U;
+                TypeSig tT = TypeSig.getSig(spec.dmd.getContainingClass());
+                if (!Types.isSubclassOf(tT, tU)) {
+                    // "m" is a constructor, and "U" is not a superclass or
+                    // superinterface of "T"
+                    // Add to antecedent the conjunct: s != this
+                    ante.addElement(GC.nary(TagConstants.REFNE, ii.s, GC.thisvar));
+                } else if (Types.isSameType(tU, tT) && spec.dmd.throwsSet.size() != 0) {
+                    // "m" is a constructor, and "U" is "T", and throws set is nonempty
+                    // Add to antecedent the conjunct: (EC == ecReturn || s != this)
+                    ante.addElement(GC.or(GC.nary(TagConstants.ANYEQ, GC.ecvar, GC.ec_return), GC.nary(TagConstants.REFNE, ii.s, GC.thisvar)));
+                }
+            }
+            Expr body = GC.implies(GC.and(ante), ii.J);
+            Expr quant = GC.forall(ii.sdecl, body);
+            Condition cond = GC.condition(TagConstants.CHKOBJECTINVARIANT, quant, ii.prag.getStartLoc());
+            spec.post.addElement(cond);
+            if (Info.on) {
+                Info.out("[addInvariantBody: Including body-post-invariant at " + Location.toString(ii.prag.getStartLoc()) + "]");
+            }
+        } else {
+            if (Info.on) {
+                Info.out("[addInvariantBody: Skipping body-post-invariant at " + Location.toString(ii.prag.getStartLoc()) + "]");
+            }
+        }
+    }
+}

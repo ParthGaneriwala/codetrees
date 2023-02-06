@@ -1,0 +1,62 @@
+private void applyGroupingToVar(Node firstVar, Node groupVar) {
+    Node child = groupVar.getFirstChild();
+    // if some variable is initialized, then the corresponding NAME node will be
+    // stored here
+    Node initializedName = null;
+    while (child != null) {
+        if (child.hasChildren()) {
+            // check that no more than one var is initialized
+            if (initializedName != null) {
+                return;
+            }
+            initializedName = child;
+        }
+        child = child.getNext();
+    }
+    // we will be modifying the groupVar subtree so get its parent
+    Node groupVarParent = groupVar.getParent();
+    if (initializedName != null) {
+        if (NodeUtil.isForIn(groupVarParent)) {
+            // The target of the for-in expression must be an assignable expression.
+            return;
+        }
+        // we have an initialized var in the VAR node. We will replace the
+        // VAR node with an assignment.
+        // first create a detached childless clone of initializedName.
+        Node clone = initializedName.cloneNode();
+        // replace
+        groupVar.replaceChild(initializedName, clone);
+        // add the assignment now.
+        Node initializedVal = initializedName.getFirstChild();
+        initializedName.removeChild(initializedVal);
+        Node assignmentNode = new Node(Token.ASSIGN, initializedName);
+        assignmentNode.addChildAfter(initializedVal, initializedName);
+        if (groupVarParent.getType() == Token.FOR) {
+            // Handle For and For-In Loops specially. For these, we do not need
+            // to construct an EXPR_RESULT node.
+            groupVarParent.replaceChild(groupVar, assignmentNode);
+        } else {
+            Node exprNode = NodeUtil.newExpr(assignmentNode);
+            groupVarParent.replaceChild(groupVar, exprNode);
+        }
+    } else {
+        // FOR-IN loops specially
+        if (groupVarParent.getType() == Token.FOR) {
+            if (NodeUtil.isForIn(groupVarParent)) {
+                // In For-In loop, we replace the VAR node with a NAME node
+                Node nameNodeClone = groupVar.getFirstChild().cloneNode();
+                groupVarParent.replaceChild(groupVar, nameNodeClone);
+            } else {
+                // In For loop, we replace the VAR node with an EMPTY node
+                Node emptyNode = new Node(Token.EMPTY);
+                groupVarParent.replaceChild(groupVar, emptyNode);
+            }
+        } else {
+            // we can safely remove the VAR node
+            groupVarParent.removeChild(groupVar);
+        }
+    }
+    Node children = groupVar.removeChildren();
+    firstVar.addChildrenToBack(children);
+    compiler.reportCodeChange();
+}

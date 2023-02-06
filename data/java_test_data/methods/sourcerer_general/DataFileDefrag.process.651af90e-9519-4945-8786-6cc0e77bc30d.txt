@@ -1,0 +1,57 @@
+void process() throws HsqlException, IOException {
+    boolean complete = false;
+    Trace.printSystemOut("Defrag Transfer begins");
+    transactionRowLookup = database.txManager.getTransactionIDList();
+    HsqlArrayList allTables = database.schemaManager.getAllTables();
+    rootsList = new int[allTables.size()][];
+    Storage dest = null;
+    try {
+        OutputStream fos = database.getFileAccess().openOutputStreamElement(filename + ".new");
+        fileStreamOut = new BufferedOutputStream(fos, 1 << 12);
+        for (int i = 0; i < DataFileCache.INITIAL_FREE_POS; i++) {
+            fileStreamOut.write(0);
+        }
+        fileOffset = DataFileCache.INITIAL_FREE_POS;
+        for (int i = 0, tSize = allTables.size(); i < tSize; i++) {
+            Table t = (Table) allTables.get(i);
+            if (t.getTableType() == Table.CACHED_TABLE) {
+                int[] rootsArray = writeTableToDataFile(t);
+                rootsList[i] = rootsArray;
+            } else {
+                rootsList[i] = null;
+            }
+            Trace.printSystemOut(t.getName().name + " complete");
+        }
+        writeTransactionRows();
+        fileStreamOut.close();
+        fileStreamOut = null;
+        // write out the end of file position
+        dest = ScaledRAFile.newScaledRAFile(database, filename + ".new", false, ScaledRAFile.DATA_FILE_RAF, database.getURLProperties().getProperty("storage_class_name"), database.getURLProperties().getProperty("storage_key"));
+        dest.seek(DataFileCache.LONG_FREE_POS_POS);
+        dest.writeLong(fileOffset);
+        dest.close();
+        dest = null;
+        for (int i = 0, size = rootsList.length; i < size; i++) {
+            int[] roots = rootsList[i];
+            if (roots != null) {
+                Trace.printSystemOut(org.hsqldb.lib.StringUtil.getList(roots, ",", ""));
+            }
+        }
+        complete = true;
+    } catch (IOException e) {
+        throw Trace.error(Trace.FILE_IO_ERROR, filename + ".new");
+    } catch (OutOfMemoryError e) {
+        throw Trace.error(Trace.OUT_OF_MEMORY);
+    } finally {
+        if (fileStreamOut != null) {
+            fileStreamOut.close();
+        }
+        if (dest != null) {
+            dest.close();
+        }
+        if (!complete) {
+            database.getFileAccess().removeElement(filename + ".new");
+        }
+    }
+// Trace.printSystemOut("Transfer complete: ", stopw.elapsedTime());
+}

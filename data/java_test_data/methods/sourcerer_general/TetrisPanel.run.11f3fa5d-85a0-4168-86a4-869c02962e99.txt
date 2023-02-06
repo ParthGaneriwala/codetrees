@@ -1,0 +1,156 @@
+@Override
+public void run() {
+    if (Renderables.menu.inGame()) {
+        if (!Settings.isPaused && GameSettings.movingBackground) {
+            synchronized (Renderables.background) {
+                backgroundTick++;
+                Updatables.bgLocation.x = (int) (Math.sin(backgroundTick / 600) * 150);
+                Updatables.bgLocation.y = (int) (Math.cos(backgroundTick / 600) * 150);
+                updateBackground();
+            }
+        }
+        if (Updatables.doTick) {
+            GlobalSettings.time++;
+            if (Updatables.isWaitingAfterPiece) {
+                if (pieceWait > 0)
+                    pieceWait -= GlobalSettings.updateTickTime;
+                else {
+                    Updatables.isWaitingAfterPiece = false;
+                    pieceWait = 500;
+                }
+            } else {
+                if (Updatables.tickTime > 0)
+                    Updatables.tickTime--;
+                else {
+                    Updatables.tickTime = Updatables.timeoutTime;
+                    if (GameSettings.gameMode == GameMode.Expert) {
+                        if (GlobalSettings.levelModes.contains(LevelMode.RotationChange)) {
+                            Updatables.nextRotation--;
+                            if (Updatables.nextRotation == 0) {
+                                if (!tryMove(Settings.currPiece.rotateLeft(), Settings.curX, Settings.curY))
+                                    tryMove(Settings.currPiece.rotateRight(), Settings.curX, Settings.curY);
+                            }
+                        }
+                        if (GlobalSettings.levelModes.contains(LevelMode.ShapeChange)) {
+                            Updatables.nextShapeChange--;
+                            if (Updatables.nextShapeChange == 0) {
+                                int attempts = 0;
+                                Settings.currPiece.setRandomShape();
+                                while (!tryMove(Settings.currPiece, Settings.curX, Settings.curY) && attempts++ < 7) Settings.currPiece.setRandomShape();
+                                Updatables.nextShapeChange = 3;
+                            }
+                        }
+                    }
+                    oneLineDown(true);
+                    Updatables.pieceDropHeight = 0;
+                }
+            }
+        }
+        if (!Renderables.scores.isEmpty()) {
+            ScoreText score;
+            synchronized (Renderables.scores) {
+                for (Iterator<ScoreText> it = Renderables.scores.iterator(); it.hasNext(); ) {
+                    score = it.next();
+                    score.update();
+                    if (!score.isAlive())
+                        it.remove();
+                }
+            }
+        }
+        if (!Renderables.linesToRemove.isEmpty() && !Updatables.isBomb) {
+            boolean isClear = true;
+            for (LineToRemove line : Renderables.linesToRemove) {
+                line.update();
+                if (!line.isFinished())
+                    isClear = false;
+            }
+            if (isClear) {
+                GlobalSettings.numLinesDropped += Renderables.linesToRemove.size();
+                Renderables.linesToRemove.clear();
+                for (int i = Settings.boardHeight - 1; i >= 0; i--) {
+                    boolean lineIsFull = true;
+                    for (int j = 0; j < Settings.boardWidth; ++j) {
+                        if (shapeAt(j, i) == TetrisShape.NoShape) {
+                            lineIsFull = false;
+                            break;
+                        }
+                    }
+                    if (lineIsFull) {
+                        for (int k = i; k < Settings.boardHeight - 1; k++) for (int j = 0; j < Settings.boardWidth; j++) setShapeAt(j, k, shapeAt(j, k + 1));
+                        for (int j = 0; j < Settings.boardWidth; j++) setShapeAt(j, Settings.boardHeight - 1, TetrisShape.NoShape);
+                    }
+                }
+                Arrays.fill(Updatables.linesNoRender, false);
+                Updatables.doTick = true;
+                if (Updatables.isWaitingAfterLine) {
+                    Updatables.isWaitingAfterLine = false;
+                    newPiece();
+                    updateGhost();
+                    Updatables.doTick = true;
+                }
+            }
+        }
+        // TODO Fix bomb code
+        if (!Renderables.bombAnimation.isEmpty()) {
+            BombAnimation anim;
+            bombTime++;
+            if (bombTime % 2 == 0) {
+                for (Iterator<BombAnimation> it = Renderables.bombAnimation.iterator(); it.hasNext(); ) {
+                    anim = it.next();
+                    anim.update();
+                    if (!anim.isAlive())
+                        it.remove();
+                }
+                if (Renderables.bombAnimation.isEmpty()) {
+                    for (int i = 0; i < Settings.boardHeight; i++) {
+                        if (Updatables.linesNoRender[i] == true) {
+                            for (int j = 0; j < Settings.boardWidth; j++) setShapeAt(j, Settings.boardHeight - i - 1, TetrisShape.__BOMBCLEAR);
+                        }
+                    }
+                    for (int i = Settings.boardHeight - 1; i >= 0; i--) {
+                        boolean lineIsFull = true;
+                        for (int j = 0; j < Settings.boardWidth; ++j) {
+                            if (shapeAt(j, i) != TetrisShape.__BOMBCLEAR) {
+                                lineIsFull = false;
+                                break;
+                            }
+                        }
+                        if (lineIsFull) {
+                            for (int k = i; k < Settings.boardHeight - 1; k++) for (int j = 0; j < Settings.boardWidth; j++) setShapeAt(j, k, shapeAt(j, k + 1));
+                            for (int j = 0; j < Settings.boardWidth; j++) setShapeAt(j, Settings.boardHeight - 1, TetrisShape.NoShape);
+                        }
+                    }
+                    Updatables.isBomb = false;
+                    Arrays.fill(Updatables.linesNoRender, false);
+                    Updatables.doTick = true;
+                    Updatables.isWaitingAfterPiece = true;
+                    Updatables.isWaitingAfterLine = false;
+                    Settings.currPiece = new TetrisPiece();
+                    newPiece();
+                    updateGhost();
+                }
+            }
+        }
+        GlobalSettings.score.update();
+        GlobalSettings.combo.update();
+        if (Renderables.ghostOutline.isStarted()) {
+            Renderables.ghostOutline.update();
+        }
+        if (GlobalSettings.tetris) {
+            Renderables.tetris.update();
+            if (Renderables.tetris.isFinished())
+                GlobalSettings.tetris = false;
+        }
+        if (Settings.nextLevel != -1) {
+            if (Settings.nextLevel < Settings.boardHeight - 1) {
+                Settings.nextLevel++;
+            } else {
+                Settings.nextLevel = -1;
+            }
+        }
+    }
+    if (GlobalSettings.completeTetris) {
+        Renderables.cTetris.update();
+    }
+    repaint();
+}

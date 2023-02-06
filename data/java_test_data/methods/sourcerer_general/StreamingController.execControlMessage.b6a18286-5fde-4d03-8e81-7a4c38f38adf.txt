@@ -1,0 +1,129 @@
+public void execControlMessage(final StreamingControlMessage scmsg) {
+    /* Mark the Streaming Control Message as 'Performed Command' */
+    service.PerformedCmdID.put((new Long(scmsg.getCmdID())), (new Boolean(true)));
+    if (scmsg.getProtocol().startsWith("http"))
+        urlToShow = scmsg.getFilename();
+    else
+        urlToShow = scmsg.getAddress() + "/" + scmsg.getFilename();
+    String StreamingCommand = scmsg.getStreamingCmd();
+    final String fileName = scmsg.getFilename();
+    if ((StreamingCommand.startsWith("InitFlashPlayer"))) {
+        final Thread t = new Thread(new Runnable() {
+
+            public void run() {
+                if (flashPlayer != null)
+                    flashPlayer.recreate();
+                String SWFPlayerPath = StreamingSettings.getFlashPlayerPath();
+                isATeacherBroadCast = false;
+                /*
+					 * Prepare the 'StartFlashPlayer' message for clients...
+					 */
+                StreamingControlMessage initReply = new StreamingControlMessage(scmsg);
+                initReply.setUsername(ConstantsUtils.TEACHER);
+                initReply.setStreamingCmd("StartFlashPlayer");
+                Long val = (new Long(service.lastCmdID.longValue() + 1));
+                initReply.setCmdID(val.toString());
+                synchronized (this) {
+                    isLocked = true;
+                    lastStartFlashPlayerMessage = initReply;
+                    isLocked = false;
+                    notifyAll();
+                }
+                final StreamingControlMessage initReplyMsg = new StreamingControlMessage(initReply);
+                final Runnable runOnPlayBackStart = new Runnable() {
+
+                    public void run() {
+                        final Timer firstMsgTimer = new Timer();
+                        firstMsgTimer.schedule(new TimerTask() {
+
+                            public void run() {
+                                try {
+                                    service.sendStreamingControlMessage(initReplyMsg);
+                                } catch (IOException e) {
+                                    e.printStackTrace();
+                                }
+                            }
+                        }, timeToWaitRed5);
+                    }
+                };
+                flashPlayer.runOnceOnFSCommand(runOnPlayBackStart, fsCmdLstForPlayBackStart);
+                // Reset video MetaData to default values before loading new movie...
+                currentVideoWidth = videoWidth = 360;
+                currentVideoHeight = videoHeight = 270;
+                videoLength = 0D;
+                timeToWaitRed5 = 1500L;
+                if ((scmsg.getStreamingCmd().endsWith("ForBroadcast")) && (!streamingComposite.isRemoteStreaming())) {
+                    streamTypeForAddContent = "Live BroadCast Started";
+                    timeToWaitRed5 = RED5_NETWORK_DELAY;
+                    if (flashPlayer != null)
+                        flashPlayer.recreate();
+                    isATeacherBroadCast = true;
+                    String broadCastSettingsVarsString = "&record=" + StartWebCamDialog.recordBoolean + "&ww=" + String.valueOf(StartWebCamDialog.ResWidths[StartWebCamDialog.indexResolution]) + "&hh=" + String.valueOf(StartWebCamDialog.ResHeights[StartWebCamDialog.indexResolution]) + "&fps=" + String.valueOf(StartWebCamDialog.fpsValue) + "&qlt=" + String.valueOf(StartWebCamDialog.qualityVideoValue) + "&micrate=" + String.valueOf(StartWebCamDialog.micRateValue);
+                    streamingReport.addStreamingContent(fileName, StreamingService.getCurrentDateAndTime(), streamTypeForAddContent, "");
+                    flashPlayer.startLiveBroadcast(SWFPlayerPath, scmsg.getAddress(), scmsg.getFilename(), scmsg.getProtocol(), String.valueOf(StartWebCamDialog.inputVideoDevice), broadCastSettingsVarsString, DEFAULT_BUFFER_TIME);
+                } else // XXX http test...
+                if (scmsg.getStreamingCmd().endsWith("ForHTTP")) {
+                    streamTypeForAddContent = "PlaybackStarted";
+                    streamingReport.addStreamingContent(fileName, StreamingService.getCurrentDateAndTime(), streamTypeForAddContent, "");
+                    flashPlayer.loadRemoteHTTPMovie(SWFPlayerPath, scmsg.getAddress(), scmsg.getFilename(), scmsg.getProtocol(), DEFAULT_BUFFER_TIME);
+                } else {
+                    streamTypeForAddContent = "PlaybackStarted";
+                    streamingReport.addStreamingContent(fileName, StreamingService.getCurrentDateAndTime(), streamTypeForAddContent, "");
+                    flashPlayer.loadRemoteRTMPMovie(SWFPlayerPath, scmsg.getAddress(), scmsg.getFilename(), scmsg.getProtocol(), DEFAULT_BUFFER_TIME);
+                }
+            }
+        });
+        t.start();
+        return;
+    } else if (StreamingCommand.startsWith("StartFlashPlayer")) {
+        long delay = 1500;
+        if (scmsg.getProtocol().startsWith("http"))
+            delay = 5000L;
+        final Timer timer = new Timer();
+        timer.schedule(new TimerTask() {
+
+            public void run() {
+                if (flashPlayer != null) {
+                    if ((scmsg.getFilename().length()) < 5)
+                        return;
+                    if (!(scmsg.getStreamingCmd().endsWith("ForBroadcast"))) {
+                        getVideoMetaData();
+                        String position = scmsg.getPosition();
+                        if (position.startsWith("0"))
+                            position = "0.0001";
+                        flashPlayer.CallFunctionWithParam("SeekToPosition", "<string>" + position + "</string>");
+                        lastSeekingPosition = position;
+                    }
+                    streamingComposite.toolStatusBar.showStreamingURL(getNotifyString());
+                }
+            }
+        }, delay);
+    } else if ((StreamingCommand.compareTo("PlayPause")) == 0) {
+        try {
+            Thread.sleep(500L);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        flashPlayer.CallFunctionWithParam("SeekToPosition", "<string>" + scmsg.getPosition() + "</string>");
+        lastSeekingPosition = scmsg.getPosition();
+    } else /* This 'else if' Block code is called iff we are in LateComer Mode or
+		 * in Lead.Replayer...
+		 */
+    if ((StreamingCommand.compareTo("LocalPlayPause")) == 0) {
+        flashPlayer.CallFunctionWithParam("LocalSeekToPosition", "<string>" + scmsg.getPosition() + "</string>");
+        flashPlayer.CallFunction("LocalPlayPause");
+        lastSeekingPosition = scmsg.getPosition();
+        System.out.println("\n LOCAL PLAY-PAUSE Invoked... **************************");
+    } else if ((StreamingCommand.compareTo("SeekToPosition")) == 0) {
+        if (lastSeekingPosition.compareTo((scmsg.getPosition())) == 0)
+            return;
+        streamingReport.addStreamingContent(fileName, StreamingService.getCurrentDateAndTime(), StreamingCommand, scmsg.getPosition());
+        // command performed on local flash player...
+        flashPlayer.CallFunctionWithParam("SeekToPosition", "<string>" + scmsg.getPosition() + "</string>");
+        lastSeekingPosition = scmsg.getPosition();
+        System.out.println("/n LOCAL SEEKING Invoked... **************************");
+    } else if ((StreamingCommand.compareTo("SoundOnOff")) == 0) {
+    // command performed with Red5 Shared Object...
+    // flashPlayer.CallFunction("SoundOnOff");
+    }
+}

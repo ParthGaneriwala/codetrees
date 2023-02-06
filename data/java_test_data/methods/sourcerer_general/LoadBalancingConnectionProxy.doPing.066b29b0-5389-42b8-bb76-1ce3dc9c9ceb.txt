@@ -1,0 +1,61 @@
+public synchronized void doPing() throws SQLException {
+    SQLException se = null;
+    boolean foundHost = false;
+    int pingTimeout = this.currentConn.getLoadBalancePingTimeout();
+    synchronized (this) {
+        for (Iterator<String> i = this.hostList.iterator(); i.hasNext(); ) {
+            String host = i.next();
+            ConnectionImpl conn = this.liveConnections.get(host);
+            if (conn == null) {
+                continue;
+            }
+            try {
+                if (pingTimeout == 0) {
+                    conn.ping();
+                } else {
+                    conn.pingInternal(true, pingTimeout);
+                }
+                foundHost = true;
+            } catch (SQLException e) {
+                this.activePhysicalConnections--;
+                // faking resultset later.
+                if (host.equals(this.connectionsToHostsMap.get(this.currentConn))) {
+                    // clean up underlying connections, since connection
+                    // pool won't do it
+                    closeAllConnections();
+                    this.isClosed = true;
+                    this.closedReason = "Connection closed because ping of current connection failed.";
+                    throw e;
+                }
+                // checks, don't add to blacklist
+                if (e.getMessage().equals(Messages.getString("Connection.exceededConnectionLifetime"))) {
+                    // only set the return Exception if it's null
+                    if (se == null) {
+                        se = e;
+                    }
+                } else {
+                    // overwrite the return Exception no matter what
+                    se = e;
+                    if (this.isGlobalBlacklistEnabled()) {
+                        this.addToGlobalBlacklist(host);
+                    }
+                }
+                // take the connection out of the liveConnections Map
+                this.liveConnections.remove(this.connectionsToHostsMap.get(conn));
+            }
+        }
+    }
+    // if there were no successful pings
+    if (!foundHost) {
+        closeAllConnections();
+        this.isClosed = true;
+        this.closedReason = "Connection closed due to inability to ping any active connections.";
+        // throw the stored Exception, if exists
+        if (se != null) {
+            throw se;
+        }
+        // or create a new SQLException and throw it, must be no
+        // liveConnections
+        ((ConnectionImpl) this.currentConn).throwConnectionClosedException();
+    }
+}

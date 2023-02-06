@@ -1,0 +1,81 @@
+@Override
+public void processIncoming(Data data) throws WekaException {
+    if (!m_structureCheckComplete) {
+        m_structureCheckComplete = true;
+        Instances structure = null;
+        if (data.getConnectionName().equals(StepManager.CON_INSTANCE)) {
+            structure = ((Instance) data.getPrimaryPayload()).dataset();
+        } else if (data.getConnectionName().equals(StepManager.CON_ENVIRONMENT)) {
+            structure = ((Instance) data.getPayloadElement(StepManager.CON_AUX_DATA_INSTANCE)).dataset();
+        } else {
+            structure = data.getPrimaryPayload();
+        }
+        checkStructure(structure);
+    }
+    if (isStopRequested()) {
+        getStepManager().interrupted();
+        return;
+    }
+    if (data.isIncremental()) {
+        if (getStepManager().isStreamFinished(data)) {
+            Data finished = new Data(data.getConnectionName());
+            if (data.getConnectionName().equals(StepManager.CON_ENVIRONMENT) || data.getConnectionName().equals(StepManager.CON_JOB_SUCCESS) || data.getConnectionName().equals(StepManager.CON_JOB_FAILURE)) {
+                finished.setPayloadElement(StepManager.CON_AUX_DATA_ENVIRONMENT_VARIABLES, data.getPayloadElement(StepManager.CON_AUX_DATA_ENVIRONMENT_VARIABLES));
+                finished.setPayloadElement(StepManager.CON_AUX_DATA_ENVIRONMENT_PROPERTIES, data.getPayloadElement(StepManager.CON_AUX_DATA_ENVIRONMENT_PROPERTIES));
+            }
+            if (data.getConnectionName().equals(StepManager.CON_JOB_SUCCESS) || data.getConnectionName().equals(StepManager.CON_JOB_FAILURE)) {
+                finished.setPayloadElement(StepManager.CON_AUX_DATA_ENVIRONMENT_RESULTS, data.getPayloadElement(StepManager.CON_AUX_DATA_ENVIRONMENT_RESULTS));
+            }
+            getStepManager().throughputFinished(finished);
+            return;
+        }
+        Map<String, String> envVars = data.getPayloadElement(StepManager.CON_AUX_DATA_ENVIRONMENT_VARIABLES);
+        Map<String, Map<String, String>> propsToSet = data.getPayloadElement(StepManager.CON_AUX_DATA_ENVIRONMENT_PROPERTIES);
+        Map<String, LinkedHashSet<Data>> results = data.getPayloadElement(StepManager.CON_AUX_DATA_ENVIRONMENT_RESULTS);
+        if (!m_useDynamic) {
+            // just do the static thing
+            getStepManager().throughputUpdateStart();
+            try {
+                ProcessBuilder builder = makeStaticProcess();
+                runProcess(builder, envVars, propsToSet, results);
+            } catch (Exception ex) {
+                throw new WekaException(ex);
+            }
+            getStepManager().throughputUpdateEnd();
+        } else {
+            if (data.getConnectionName().equals(StepManager.CON_INSTANCE) || data.getConnectionName().equals(StepManager.CON_ENVIRONMENT)) {
+                Instance toProcess = (Instance) (data.getConnectionName().equals(StepManager.CON_INSTANCE) ? data.getPrimaryPayload() : data.getPayloadElement(StepManager.CON_AUX_DATA_INSTANCE));
+                getStepManager().throughputUpdateStart();
+                try {
+                    ProcessBuilder builder = makeDynamicProcess(toProcess);
+                    runProcess(builder, envVars, propsToSet, results);
+                } catch (Exception ex) {
+                    throw new WekaException(ex);
+                }
+                getStepManager().throughputUpdateEnd();
+            }
+        }
+    } else {
+        getStepManager().processing();
+        // handle dataset/trainingset/testset conns
+        Instances toProcess = data.getPrimaryPayload();
+        for (Instance inst : toProcess) {
+            try {
+                if (isStopRequested()) {
+                    getStepManager().interrupted();
+                    return;
+                }
+                ProcessBuilder builder = makeDynamicProcess(inst);
+                runProcess(builder, null, null, null);
+            } catch (Exception ex) {
+                throw new WekaException(ex);
+            }
+        }
+        if (getStepManager().numOutgoingConnectionsOfType(StepManager.CON_INSTANCE) > 0) {
+            // signal end of output stream
+            Data finished = new Data(StepManager.CON_INSTANCE);
+            getStepManager().throughputFinished(finished);
+        }
+        getStepManager().finished();
+    }
+}

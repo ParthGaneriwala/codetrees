@@ -1,0 +1,102 @@
+@Override
+public void acceptDataSet(DataSetEvent e) {
+    if (e.isStructureOnly()) {
+        // Pass on structure to training and test set listeners
+        TrainingSetEvent tse = new TrainingSetEvent(this, e.getDataSet());
+        TestSetEvent tsee = new TestSetEvent(this, e.getDataSet());
+        notifyTrainingSetProduced(tse);
+        notifyTestSetProduced(tsee);
+        return;
+    }
+    if (m_foldThread == null) {
+        final Instances dataSet = new Instances(e.getDataSet());
+        m_foldThread = new Thread() {
+
+            @Override
+            public void run() {
+                boolean errorOccurred = false;
+                try {
+                    Random random = new Random(getSeed());
+                    if (!m_preserveOrder) {
+                        dataSet.randomize(random);
+                    }
+                    if (dataSet.classIndex() >= 0 && dataSet.attribute(dataSet.classIndex()).isNominal() && !m_preserveOrder) {
+                        dataSet.stratify(getFolds());
+                        if (m_logger != null) {
+                            m_logger.logMessage("[" + getCustomName() + "] " + "stratifying data");
+                        }
+                    }
+                    for (int i = 0; i < getFolds(); i++) {
+                        if (m_foldThread == null) {
+                            if (m_logger != null) {
+                                m_logger.logMessage("[" + getCustomName() + "] Cross validation has been canceled!");
+                            }
+                            // exit gracefully
+                            break;
+                        }
+                        Instances train = (!m_preserveOrder) ? dataSet.trainCV(getFolds(), i, random) : dataSet.trainCV(getFolds(), i);
+                        Instances test = dataSet.testCV(getFolds(), i);
+                        // inform all training set listeners
+                        TrainingSetEvent tse = new TrainingSetEvent(this, train);
+                        tse.m_setNumber = i + 1;
+                        tse.m_maxSetNumber = getFolds();
+                        String msg = getCustomName() + "$" + CrossValidationFoldMaker.this.hashCode() + "|";
+                        if (m_logger != null) {
+                            m_logger.statusMessage(msg + "seed: " + getSeed() + " folds: " + getFolds() + "|Training fold " + (i + 1));
+                        }
+                        if (m_foldThread != null) {
+                            // System.err.println("--Just before notify training set");
+                            notifyTrainingSetProduced(tse);
+                        // System.err.println("---Just after notify");
+                        }
+                        // inform all test set listeners
+                        TestSetEvent teste = new TestSetEvent(this, test);
+                        teste.m_setNumber = i + 1;
+                        teste.m_maxSetNumber = getFolds();
+                        if (m_logger != null) {
+                            m_logger.statusMessage(msg + "seed: " + getSeed() + " folds: " + getFolds() + "|Test fold " + (i + 1));
+                        }
+                        if (m_foldThread != null) {
+                            notifyTestSetProduced(teste);
+                        }
+                    }
+                } catch (Exception ex) {
+                    // stop all processing
+                    errorOccurred = true;
+                    if (m_logger != null) {
+                        m_logger.logMessage("[" + getCustomName() + "] problem during fold creation. " + ex.getMessage());
+                    }
+                    ex.printStackTrace();
+                    CrossValidationFoldMaker.this.stop();
+                } finally {
+                    m_foldThread = null;
+                    if (errorOccurred) {
+                        if (m_logger != null) {
+                            m_logger.statusMessage(getCustomName() + "$" + CrossValidationFoldMaker.this.hashCode() + "|" + "ERROR (See log for details).");
+                        }
+                    } else if (isInterrupted()) {
+                        String msg = "[" + getCustomName() + "] Cross validation interrupted";
+                        if (m_logger != null) {
+                            m_logger.logMessage("[" + getCustomName() + "] Cross validation interrupted");
+                            m_logger.statusMessage(getCustomName() + "$" + CrossValidationFoldMaker.this.hashCode() + "|" + "INTERRUPTED");
+                        } else {
+                            System.err.println(msg);
+                        }
+                    } else {
+                        String msg = getCustomName() + "$" + CrossValidationFoldMaker.this.hashCode() + "|";
+                        if (m_logger != null) {
+                            m_logger.statusMessage(msg + "Finished.");
+                        }
+                    }
+                    block(false);
+                }
+            }
+        };
+        m_foldThread.setPriority(Thread.MIN_PRIORITY);
+        m_foldThread.start();
+        // if (m_foldThread.isAlive()) {
+        block(true);
+        // }
+        m_foldThread = null;
+    }
+}

@@ -1,0 +1,70 @@
+private Node arrayCompTransformHelper(ArrayComprehension node, String arrayName) {
+    decompiler.addToken(Token.LB);
+    int lineno = node.getLineno();
+    Node expr = transform(node.getResult());
+    List<ArrayComprehensionLoop> loops = node.getLoops();
+    int numLoops = loops.size();
+    // Walk through loops, collecting and defining their iterator symbols.
+    Node[] iterators = new Node[numLoops];
+    Node[] iteratedObjs = new Node[numLoops];
+    for (int i = 0; i < numLoops; i++) {
+        ArrayComprehensionLoop acl = loops.get(i);
+        decompiler.addName(" ");
+        decompiler.addToken(Token.FOR);
+        if (acl.isForEach()) {
+            decompiler.addName("each ");
+        }
+        decompiler.addToken(Token.LP);
+        AstNode iter = acl.getIterator();
+        String name = null;
+        if (iter.getType() == Token.NAME) {
+            name = iter.getString();
+            decompiler.addName(name);
+        } else {
+            // destructuring assignment
+            decompile(iter);
+            name = currentScriptOrFn.getNextTempName();
+            defineSymbol(Token.LP, name, false);
+            expr = createBinary(Token.COMMA, createAssignment(Token.ASSIGN, iter, createName(name)), expr);
+        }
+        Node init = createName(name);
+        // Define as a let since we want the scope of the variable to
+        // be restricted to the array comprehension
+        defineSymbol(Token.LET, name, false);
+        iterators[i] = init;
+        decompiler.addToken(Token.IN);
+        iteratedObjs[i] = transform(acl.getIteratedObject());
+        decompiler.addToken(Token.RP);
+    }
+    // generate code for tmpArray.push(body)
+    Node call = createCallOrNew(Token.CALL, createPropertyGet(createName(arrayName), null, "push", 0));
+    Node body = new Node(Token.EXPR_VOID, call, lineno);
+    if (node.getFilter() != null) {
+        decompiler.addName(" ");
+        decompiler.addToken(Token.IF);
+        decompiler.addToken(Token.LP);
+        body = createIf(transform(node.getFilter()), body, null, lineno);
+        decompiler.addToken(Token.RP);
+    }
+    // Now walk loops in reverse to build up the body statement.
+    int pushed = 0;
+    try {
+        for (int i = numLoops - 1; i >= 0; i--) {
+            ArrayComprehensionLoop acl = loops.get(i);
+            Scope loop = createLoopNode(// no label
+            null, acl.getLineno());
+            pushScope(loop);
+            pushed++;
+            body = createForIn(Token.LET, loop, iterators[i], iteratedObjs[i], body, acl.isForEach());
+        }
+    } finally {
+        for (int i = 0; i < pushed; i++) {
+            popScope();
+        }
+    }
+    decompiler.addToken(Token.RB);
+    // Now that we've accumulated any destructuring forms,
+    // add expr to the call node; it's pushed on each iteration.
+    call.addChildToBack(expr);
+    return body;
+}

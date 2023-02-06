@@ -1,0 +1,45 @@
+private String createNewVM(String vmName) {
+    try {
+        ServiceInstance si = connect2vSphere();
+        SearchIndex searchIndex = si.getSearchIndex();
+        VirtualMachine vmTemplate = (VirtualMachine) searchIndex.findByInventoryPath((String) awsProps.getProperty("vSphere.vmTemplatePath"));
+        System.out.println("vmTempStr=" + (String) awsProps.getProperty("vSphere.vmTemplatePath"));
+        System.out.println("vmTemp=" + vmTemplate);
+        Folder vmFolder = (Folder) vmTemplate.getParent();
+        ManagedEntity[] mes = vmFolder.getChildEntity();
+        for (int i = 0; mes != null && i < mes.length; i++) {
+            if (mes[i].getName().indexOf("J2EE_precloned") != -1) {
+                mes[i].rename_Task(vmName);
+                if (((VirtualMachine) mes[i]).getRuntime().getPowerState() == VirtualMachinePowerState.poweredOff) {
+                    ((VirtualMachine) mes[i]).powerOnVM_Task(null);
+                }
+                String ip = getIPAddr((VirtualMachine) mes[i]);
+                String preCloneVmName = "J2EE_precloned" + new Date().getTime();
+                cloneVM(vmTemplate, vmFolder, preCloneVmName);
+                // we are not tracking the clone task here.
+                return ip;
+            }
+        }
+        Task task = cloneVM(vmTemplate, vmFolder, vmName);
+        TaskInfoState tis;
+        for (; ; ) {
+            Thread.sleep(3 * 1000);
+            tis = task.getTaskInfo().getState();
+            if (tis == TaskInfoState.success || tis == TaskInfoState.error) {
+                break;
+            }
+        }
+        if (tis == TaskInfoState.success) {
+            System.out.println("VM Deployment Succeeded!");
+            ManagedObjectReference newVmMOR = (ManagedObjectReference) task.getTaskInfo().getResult();
+            VirtualMachine newVM = (VirtualMachine) MorUtil.createExactManagedEntity(si.getServerConnection(), newVmMOR);
+            return getIPAddr(newVM);
+        } else if (tis == TaskInfoState.error) {
+            System.out.println("Deploy task failed.");
+        }
+        si.getServerConnection().logout();
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+    return null;
+}

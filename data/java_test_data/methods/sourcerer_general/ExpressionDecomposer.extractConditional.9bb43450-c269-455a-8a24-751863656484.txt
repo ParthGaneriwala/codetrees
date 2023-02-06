@@ -1,0 +1,58 @@
+private Node extractConditional(Node expr, Node injectionPoint, boolean needResult) {
+    Node parent = expr.getParent();
+    String tempName = getTempValueName();
+    // Break down the conditional.
+    Node first = expr.getFirstChild();
+    Node second = first.getNext();
+    Node last = expr.getLastChild();
+    // Isolate the children nodes.
+    expr.detachChildren();
+    // Transform the conditional to an IF statement.
+    Node cond = null;
+    Node trueExpr = new Node(Token.BLOCK).copyInformationFrom(expr);
+    Node falseExpr = new Node(Token.BLOCK).copyInformationFrom(expr);
+    switch(expr.getType()) {
+        case Token.HOOK:
+            // a = x?y:z --> if (x) {a=y} else {a=z}
+            cond = first;
+            trueExpr.addChildToFront(NodeUtil.newExpr(buildResultExpression(second, needResult, tempName)));
+            falseExpr.addChildToFront(NodeUtil.newExpr(buildResultExpression(last, needResult, tempName)));
+            break;
+        case Token.AND:
+            // a = x&&y --> if (a=x) {a=y} else {}
+            cond = buildResultExpression(first, needResult, tempName);
+            trueExpr.addChildToFront(NodeUtil.newExpr(buildResultExpression(last, needResult, tempName)));
+            break;
+        case Token.OR:
+            // a = x||y --> if (a=x) {} else {a=y}
+            cond = buildResultExpression(first, needResult, tempName);
+            falseExpr.addChildToFront(NodeUtil.newExpr(buildResultExpression(last, needResult, tempName)));
+            break;
+        default:
+            // With a valid tree we should never get here.
+            throw new IllegalStateException("Unexpected.");
+    }
+    Node ifNode;
+    if (falseExpr.hasChildren()) {
+        ifNode = new Node(Token.IF, cond, trueExpr, falseExpr);
+    } else {
+        ifNode = new Node(Token.IF, cond, trueExpr);
+    }
+    ifNode.copyInformationFrom(expr);
+    if (needResult) {
+        Node tempVarNode = NodeUtil.newVarNode(tempName, null).copyInformationFromForTree(expr);
+        Node injectionPointParent = injectionPoint.getParent();
+        injectionPointParent.addChildBefore(tempVarNode, injectionPoint);
+        injectionPointParent.addChildAfter(ifNode, tempVarNode);
+        // Replace the expression with the temporary name.
+        Node replacementValueNode = Node.newString(Token.NAME, tempName);
+        parent.replaceChild(expr, replacementValueNode);
+    } else {
+        // Only conditionals that are the direct child of an expression statement
+        // don't need results, for those simply replace the expression statement.
+        Preconditions.checkArgument(parent.getType() == Token.EXPR_RESULT);
+        Node gramps = parent.getParent();
+        gramps.replaceChild(parent, ifNode);
+    }
+    return ifNode;
+}

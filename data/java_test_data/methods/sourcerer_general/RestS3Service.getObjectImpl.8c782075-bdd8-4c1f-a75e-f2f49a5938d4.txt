@@ -1,0 +1,61 @@
+private S3Object getObjectImpl(boolean headOnly, String bucketName, String objectKey, Calendar ifModifiedSince, Calendar ifUnmodifiedSince, String[] ifMatchTags, String[] ifNoneMatchTags, Long byteRangeStart, Long byteRangeEnd) throws S3ServiceException {
+    log.debug("Retrieving " + (headOnly ? "Head" : "All") + " information for bucket " + bucketName + " and object " + objectKey);
+    HashMap requestHeaders = new HashMap();
+    if (ifModifiedSince != null) {
+        requestHeaders.put("If-Modified-Since", ServiceUtils.formatRfc822Date(ifModifiedSince.getTime()));
+        log.debug("Only retrieve object if-modified-since:" + ifModifiedSince);
+    }
+    if (ifUnmodifiedSince != null) {
+        requestHeaders.put("If-Unmodified-Since", ServiceUtils.formatRfc822Date(ifUnmodifiedSince.getTime()));
+        log.debug("Only retrieve object if-unmodified-since:" + ifUnmodifiedSince);
+    }
+    if (ifMatchTags != null) {
+        StringBuffer tags = new StringBuffer();
+        for (int i = 0; i < ifMatchTags.length; i++) {
+            if (i > 0) {
+                tags.append(",");
+            }
+            tags.append(ifMatchTags[i]);
+        }
+        requestHeaders.put("If-Match", tags.toString());
+        log.debug("Only retrieve object by hash if-match:" + tags.toString());
+    }
+    if (ifNoneMatchTags != null) {
+        StringBuffer tags = new StringBuffer();
+        for (int i = 0; i < ifNoneMatchTags.length; i++) {
+            if (i > 0) {
+                tags.append(",");
+            }
+            tags.append(ifNoneMatchTags[i]);
+        }
+        requestHeaders.put("If-None-Match", tags.toString());
+        log.debug("Only retrieve object by hash if-none-match:" + tags.toString());
+    }
+    if (byteRangeStart != null || byteRangeEnd != null) {
+        String range = "bytes=" + (byteRangeStart != null ? byteRangeStart.toString() : "") + "-" + (byteRangeEnd != null ? byteRangeEnd.toString() : "");
+        requestHeaders.put("Range", range);
+        log.debug("Only retrieve object if it is within range:" + range);
+    }
+    HttpMethodBase httpMethod = null;
+    if (headOnly) {
+        httpMethod = performRestHead(bucketName, objectKey, null, requestHeaders);
+    } else {
+        httpMethod = performRestGet(bucketName, objectKey, null, requestHeaders);
+    }
+    HashMap map = new HashMap();
+    map.putAll(convertHeadersToMap(httpMethod.getResponseHeaders()));
+    S3Object responseObject = new S3Object(objectKey);
+    responseObject.setBucketName(bucketName);
+    responseObject.replaceAllMetadata(ServiceUtils.cleanRestMetadataMap(map));
+    // Flag this object as having the complete metadata set.
+    responseObject.setMetadataComplete(true);
+    if (!headOnly) {
+        HttpMethodReleaseInputStream releaseIS = new HttpMethodReleaseInputStream(httpMethod);
+        responseObject.setDataInputStream(releaseIS);
+    } else {
+        // Release connection after HEAD (there's no response content)
+        log.debug("Releasing HttpMethod after HEAD");
+        httpMethod.releaseConnection();
+    }
+    return responseObject;
+}

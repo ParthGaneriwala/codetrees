@@ -1,0 +1,146 @@
+private CNode findHost(Instance newInstance, boolean structureFrozen) {
+    if (!structureFrozen) {
+        updateStats(newInstance, false);
+    }
+    // look for a host in existing children and also consider as a new
+    // leaf
+    double[] categoryUtils = cuScoresForChildren(newInstance);
+    // make a temporary new leaf for this instance and get CU
+    CNode newLeaf = new CNode(m_numAttributes, newInstance);
+    m_children.addElement(newLeaf);
+    double bestHostCU = categoryUtility();
+    CNode finalBestHost = newLeaf;
+    // remove new leaf when seaching for best and second best nodes to
+    // consider for merging and splitting
+    m_children.removeElementAt(m_children.size() - 1);
+    // now determine the best host (and the second best)
+    int best = 0;
+    int secondBest = 0;
+    for (int i = 0; i < categoryUtils.length; i++) {
+        if (categoryUtils[i] > categoryUtils[secondBest]) {
+            if (categoryUtils[i] > categoryUtils[best]) {
+                secondBest = best;
+                best = i;
+            } else {
+                secondBest = i;
+            }
+        }
+    }
+    CNode a = (CNode) m_children.elementAt(best);
+    CNode b = (CNode) m_children.elementAt(secondBest);
+    if (categoryUtils[best] > bestHostCU) {
+        bestHostCU = categoryUtils[best];
+        finalBestHost = a;
+    // System.out.println("Node is best");
+    }
+    if (structureFrozen) {
+        if (finalBestHost == newLeaf) {
+            // *this* node is the best host
+            return null;
+        } else {
+            return finalBestHost;
+        }
+    }
+    double mergedCU = -Double.MAX_VALUE;
+    CNode merged = new CNode(m_numAttributes);
+    if (a != b) {
+        mergedCU = cuScoreForBestTwoMerged(merged, a, b, newInstance);
+        if (mergedCU > bestHostCU) {
+            bestHostCU = mergedCU;
+            finalBestHost = merged;
+        }
+    }
+    // Consider splitting the best
+    double splitCU = -Double.MAX_VALUE;
+    double splitBestChildCU = -Double.MAX_VALUE;
+    double splitPlusNewLeafCU = -Double.MAX_VALUE;
+    double splitPlusMergeBestTwoCU = -Double.MAX_VALUE;
+    if (a.m_children != null) {
+        Vector<CNode> tempChildren = new Vector<CNode>();
+        for (int i = 0; i < m_children.size(); i++) {
+            CNode existingChild = (CNode) m_children.elementAt(i);
+            if (existingChild != a) {
+                tempChildren.addElement(existingChild);
+            }
+        }
+        for (int i = 0; i < a.m_children.size(); i++) {
+            CNode promotedChild = (CNode) a.m_children.elementAt(i);
+            tempChildren.addElement(promotedChild);
+        }
+        // also add the new leaf
+        tempChildren.addElement(newLeaf);
+        Vector<CNode> saveStatusQuo = m_children;
+        m_children = tempChildren;
+        // split + new leaf
+        splitPlusNewLeafCU = categoryUtility();
+        // remove the new leaf
+        tempChildren.removeElementAt(tempChildren.size() - 1);
+        // now look for best and second best
+        categoryUtils = cuScoresForChildren(newInstance);
+        // now determine the best host (and the second best)
+        best = 0;
+        secondBest = 0;
+        for (int i = 0; i < categoryUtils.length; i++) {
+            if (categoryUtils[i] > categoryUtils[secondBest]) {
+                if (categoryUtils[i] > categoryUtils[best]) {
+                    secondBest = best;
+                    best = i;
+                } else {
+                    secondBest = i;
+                }
+            }
+        }
+        CNode sa = (CNode) m_children.elementAt(best);
+        CNode sb = (CNode) m_children.elementAt(secondBest);
+        splitBestChildCU = categoryUtils[best];
+        // now merge best and second best
+        CNode mergedSplitChildren = new CNode(m_numAttributes);
+        if (sa != sb) {
+            splitPlusMergeBestTwoCU = cuScoreForBestTwoMerged(mergedSplitChildren, sa, sb, newInstance);
+        }
+        splitCU = (splitBestChildCU > splitPlusNewLeafCU) ? splitBestChildCU : splitPlusNewLeafCU;
+        splitCU = (splitCU > splitPlusMergeBestTwoCU) ? splitCU : splitPlusMergeBestTwoCU;
+        if (splitCU > bestHostCU) {
+            bestHostCU = splitCU;
+            finalBestHost = this;
+        // tempChildren.removeElementAt(tempChildren.size()-1);
+        } else {
+            // restore the status quo
+            m_children = saveStatusQuo;
+        }
+    }
+    if (finalBestHost != this) {
+        // can commit the instance to the set of instances at this node
+        m_clusterInstances.add(newInstance);
+    } else {
+        m_numberSplits++;
+    }
+    if (finalBestHost == merged) {
+        m_numberMerges++;
+        m_children.removeElementAt(m_children.indexOf(a));
+        m_children.removeElementAt(m_children.indexOf(b));
+        m_children.addElement(merged);
+    }
+    if (finalBestHost == newLeaf) {
+        finalBestHost = new CNode(m_numAttributes);
+        m_children.addElement(finalBestHost);
+    }
+    if (bestHostCU < m_cutoff) {
+        if (finalBestHost == this) {
+            // splitting was the best, but since we are cutting all
+            // children
+            // recursion is aborted and we still need to add the
+            // instance
+            // to the set of instances at this node
+            m_clusterInstances.add(newInstance);
+        }
+        m_children = null;
+        finalBestHost = null;
+    }
+    if (finalBestHost == this) {
+        // splitting is still the best, so downdate the stats as
+        // we'll be recursively calling on this node
+        updateStats(newInstance, true);
+    }
+    return finalBestHost;
+}

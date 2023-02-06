@@ -1,0 +1,68 @@
+public static void loadBible(String file_bible_xml) throws FileNotFoundException, IOException, SQLException, IllegalAccessException, ClassNotFoundException, InstantiationException, DocumentException {
+    String bibleXml = IOUtils.toString(new FileInputStream(CSWConstants.bibleDirectory + file_bible_xml), "UTF8");
+    Document bibleDoc = null;
+    try {
+        bibleDoc = DocumentHelper.parseText(bibleXml);
+    } catch (Exception e) {
+        // If BOM
+        bibleDoc = DocumentHelper.parseText(bibleXml.substring(1));
+    }
+    Element xmlbible = bibleDoc.getRootElement();
+    String bibleTableName = CSWConstants.xmlBibleToTableName(file_bible_xml);
+    log.debug("Bible Table Name = " + bibleTableName);
+    createBibleTable(DBUtils.getConnection(), bibleTableName);
+    List books = xmlbible.selectNodes("BIBLEBOOK");
+    StringBuffer verseText = new StringBuffer();
+    // 
+    String sql = "INSERT INTO " + bibleTableName + " (BOOK_NO,BOOK_NAME,CHAPTER_NO,VERSE_NO," + "VERSE_TEXT) VALUES (?,?,?,?,?)";
+    PreparedStatement stmt = DBUtils.getConnection().prepareStatement(sql);
+    // 
+    for (int i = 0; i < books.size(); i++) {
+        Element book = (Element) books.get(i);
+        String book_no = book.attributeValue("bnumber");
+        String book_name = book.attributeValue("bname");
+        if (book_name == null)
+            book_name = CSWConstants.shortBookNames[Integer.parseInt(book.attributeValue("bnumber")) - 1];
+        List chapters = book.selectNodes("CHAPTER");
+        for (int j = 0; j < chapters.size(); j++) {
+            Element chapter = (Element) chapters.get(j);
+            String chap_no = chapter.attributeValue("cnumber");
+            List verses = chapter.selectNodes("VERS");
+            for (int k = 0; k < verses.size(); k++) {
+                ;
+                Element verse = (Element) verses.get(k);
+                String verse_no = verse.attributeValue("vnumber");
+                // 
+                verseText.setLength(0);
+                if (verse.nodeCount() >= 1) {
+                    // KJV+
+                    List dt = verse.content();
+                    for (int m = 0; m < dt.size(); m++) {
+                        if (dt.get(m) instanceof DefaultText)
+                            verseText.append(((DefaultText) dt.get(m)).getText().trim() + " ");
+                        else if (dt.get(m) instanceof DefaultElement) {
+                            verseText.append(mTraverseXml((DefaultElement) dt.get(m)));
+                        } else
+                            verseText.append(verse.getText().trim().replace("\n", ""));
+                    }
+                } else
+                    verseText.append(verse.getText().trim().replace("\n", ""));
+                // 
+                String verseTextO = verseText.toString();
+                insertBibleVerse(stmt, bibleTableName, book_no, book_name, chap_no, verse_no, verseTextO);
+                verseTextO = null;
+            }
+            chap_no = null;
+        }
+    }
+    // 
+    bibleLoadingStatus = "Importing " + bibleTableName + ". This may take a few minutes...";
+    try {
+        stmt.executeBatch();
+        stmt.close();
+        // 
+        updateBibleNamesTable(file_bible_xml, bibleTableName);
+    } catch (Exception e) {
+    // Not a show stopper.
+    }
+}

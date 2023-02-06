@@ -1,0 +1,57 @@
+private boolean saveToLists(Connection db, TaskList existingTasks, Collection<Integer> listIds, int userId, int projectIdToBookmark, String projectNameToBookmark, int projectIdOfLists, ActionRequest request) throws SQLException {
+    Set<Integer> existingIds = new HashSet<Integer>(existingTasks.size());
+    Set<Integer> createForTaskCategoryIds = new HashSet<Integer>(listIds);
+    for (Task task : existingTasks) {
+        existingIds.add(task.getCategoryId());
+    }
+    // find all the task category ids that do not already have tasks (these will have tasks inserted)
+    createForTaskCategoryIds.removeAll(existingIds);
+    if (!createForTaskCategoryIds.isEmpty()) {
+        boolean recordInserted = false;
+        LookupList priorityList = CacheUtils.getLookupList("lookup_task_priority");
+        if (priorityList.isEmpty())
+            throw new RuntimeException("Could not load task priorities");
+        // just default to the top priority
+        int priorityId = priorityList.get(0).getId();
+        for (LookupElement priority : priorityList) {
+            if (priority.getDefaultItem()) {
+                priorityList.get(0).getId();
+                break;
+            }
+        }
+        // Parameters
+        TaskList taskList = new TaskList();
+        for (Integer taskCategoryId : createForTaskCategoryIds) {
+            Task task = new Task();
+            task.setEnteredBy(userId);
+            task.setOwner(userId);
+            task.setDescription(projectNameToBookmark);
+            task.setModifiedBy(userId);
+            task.setProjectId(projectIdOfLists);
+            task.setLinkModuleId(Constants.TASK_CATEGORY_PROJECTS);
+            task.setLinkItemId(projectIdToBookmark);
+            task.setCategoryId(taskCategoryId);
+            task.setPriority(priorityId);
+            // Verify the specified category is in the same project
+            TaskCategoryList list = new TaskCategoryList();
+            list.setProjectId(projectIdOfLists);
+            list.setCategoryId(taskCategoryId);
+            list.buildList(db);
+            if (list.size() == 0) {
+                return false;
+            }
+            recordInserted = task.insert(db);
+            if (!recordInserted) {
+                request.getPortletSession().setAttribute("task", task);
+                return false;
+            }
+            taskList.add(task);
+        }
+        // Trigger the workflow
+        PortalUtils.processInsertHook(request, taskList);
+        return recordInserted;
+    } else {
+        // no inserts needed
+        return true;
+    }
+}

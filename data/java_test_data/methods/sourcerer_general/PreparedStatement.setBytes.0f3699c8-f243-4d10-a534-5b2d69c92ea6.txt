@@ -1,0 +1,81 @@
+protected void setBytes(int parameterIndex, byte[] x, boolean checkForIntroducer, boolean escapeForMBChars) throws SQLException {
+    if (x == null) {
+        setNull(parameterIndex, java.sql.Types.BINARY);
+    } else {
+        String connectionEncoding = this.connection.getEncoding();
+        if (this.connection.isNoBackslashEscapesSet() || (escapeForMBChars && this.connection.getUseUnicode() && connectionEncoding != null && CharsetMapping.isMultibyteCharset(connectionEncoding))) {
+            // Send as hex
+            ByteArrayOutputStream bOut = new ByteArrayOutputStream((x.length * 2) + 3);
+            bOut.write('x');
+            bOut.write('\'');
+            for (int i = 0; i < x.length; i++) {
+                int lowBits = (x[i] & 0xff) / 16;
+                int highBits = (x[i] & 0xff) % 16;
+                bOut.write(HEX_DIGITS[lowBits]);
+                bOut.write(HEX_DIGITS[highBits]);
+            }
+            bOut.write('\'');
+            setInternal(parameterIndex, bOut.toByteArray());
+            return;
+        }
+        // escape them
+        int numBytes = x.length;
+        int pad = 2;
+        boolean needsIntroducer = checkForIntroducer && this.connection.versionMeetsMinimum(4, 1, 0);
+        if (needsIntroducer) {
+            pad += 7;
+        }
+        ByteArrayOutputStream bOut = new ByteArrayOutputStream(numBytes + pad);
+        if (needsIntroducer) {
+            bOut.write('_');
+            bOut.write('b');
+            bOut.write('i');
+            bOut.write('n');
+            bOut.write('a');
+            bOut.write('r');
+            bOut.write('y');
+        }
+        bOut.write('\'');
+        for (int i = 0; i < numBytes; ++i) {
+            byte b = x[i];
+            switch(b) {
+                case 0:
+                    /* Must be escaped for 'mysql' */
+                    bOut.write('\\');
+                    bOut.write('0');
+                    break;
+                case '\n':
+                    /* Must be escaped for logs */
+                    bOut.write('\\');
+                    bOut.write('n');
+                    break;
+                case '\r':
+                    bOut.write('\\');
+                    bOut.write('r');
+                    break;
+                case '\\':
+                    bOut.write('\\');
+                    bOut.write('\\');
+                    break;
+                case '\'':
+                    bOut.write('\\');
+                    bOut.write('\'');
+                    break;
+                case '"':
+                    /* Better safe than sorry */
+                    bOut.write('\\');
+                    bOut.write('"');
+                    break;
+                case '\032':
+                    /* This gives problems on Win32 */
+                    bOut.write('\\');
+                    bOut.write('Z');
+                    break;
+                default:
+                    bOut.write(b);
+            }
+        }
+        bOut.write('\'');
+        setInternal(parameterIndex, bOut.toByteArray());
+    }
+}

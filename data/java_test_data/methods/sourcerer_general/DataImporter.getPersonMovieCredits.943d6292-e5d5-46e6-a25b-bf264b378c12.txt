@@ -1,0 +1,138 @@
+private boolean getPersonMovieCredits(ListFilesEnum listType, int personIndexMarkStart, int personIndexMarkEnd) {
+    Parser parser = new Parser();
+    Map<String, Integer> moviesMap = new HashMap<String, Integer>();
+    Relation[] personsArray = null;
+    Set<CastingRelation> personMovieCreditsSet = new LinkedHashSet<CastingRelation>();
+    String lineFromFile;
+    String patternRegExp = null;
+    Pattern pattern;
+    Matcher matcher;
+    boolean isMoviesEmpty;
+    boolean isPersonsEmpty;
+    int totalElementsNum = 0;
+    String tempMovieFullName;
+    int tempMovieId;
+    int moviesStartRow, personsStartRow;
+    int moviesEndRow, personsEndRow;
+    int tempArrayIndex;
+    String tempActorRole;
+    int tempActorCreditRank;
+    boolean isActor;
+    int productionRoleId;
+    isActor = false;
+    tempActorRole = null;
+    tempActorCreditRank = 0;
+    productionRoleId = 0;
+    switch(listType) {
+        case ACTORS:
+        case ACTRESSES:
+            System.out.println("entering movie credits of ACTORS / ACTRESSES");
+            patternRegExp = actorsMoviesPattern;
+            isActor = true;
+            productionRoleId = 1;
+            break;
+        case PRODUCERS:
+            System.out.println("entering movie credits of PRODUCERS");
+            patternRegExp = nonActorsMoviesPattern;
+            productionRoleId = 2;
+            break;
+        case DIRECTORS:
+            System.out.println("entering movie credits of DIRECTORS");
+            patternRegExp = nonActorsMoviesPattern;
+            productionRoleId = 3;
+            break;
+        case WRITERS:
+            System.out.println("entering movie credits of WRITERS");
+            patternRegExp = nonActorsMoviesPattern;
+            productionRoleId = 4;
+            break;
+    }
+    // compiling the pattern to look for in the list file
+    pattern = Pattern.compile(patternRegExp);
+    isPersonsEmpty = false;
+    personsStartRow = personIndexMarkStart;
+    personsEndRow = personsStartRow + SELECT_BUCKET_SIZE - 1;
+    // then run only until the end of that persons' list
+    if (personsEndRow > personIndexMarkEnd)
+        personsEndRow = personIndexMarkEnd;
+    do {
+        // retrieving part of the persons list to put inside a map
+        // since the movie list is huge, we select buckets and iterate over all of them
+        personsArray = DBManager.getInstance().getAllPersonsAndLineNumbersArray(personsStartRow, personsEndRow, SELECT_BUCKET_SIZE);
+        if (personsArray[0] == null)
+            isPersonsEmpty = true;
+        if (!isPersonsEmpty) {
+            parser.loadFile(listfilesMap.get(listType), listType);
+            moviesStartRow = 1;
+            moviesEndRow = moviesStartRow + SELECT_BUCKET_SIZE - 1;
+            isMoviesEmpty = false;
+            // going in the list to the first person in the array
+            do {
+                // retrieving part of the movies list to put inside a map
+                // since the movie list is huge, we select buckets and iterate over all of them
+                moviesMap = DBManager.getInstance().getAllMovies(moviesStartRow, moviesEndRow);
+                if (moviesMap.size() == 0)
+                    isMoviesEmpty = true;
+                if (!isMoviesEmpty) {
+                    tempArrayIndex = 0;
+                    parser.findLine(personsArray[0].getSecondaryId());
+                    personMovieCreditsSet = new LinkedHashSet<CastingRelation>();
+                    // Making sure we find the start of the list
+                    while (personsArray[tempArrayIndex] != null) {
+                        lineFromFile = parser.readLine();
+                        matcher = pattern.matcher(lineFromFile);
+                        if (matcher.matches()) {
+                            tempMovieFullName = matcher.group(2).trim();
+                            if (moviesMap.containsKey(tempMovieFullName)) {
+                                tempMovieId = moviesMap.get(tempMovieFullName).intValue();
+                                // if this is an actor/actresses list, there are more parameters on the line
+                                if (isActor) {
+                                    tempActorRole = matcher.group(3);
+                                    try {
+                                        tempActorCreditRank = Integer.parseInt(matcher.group(4));
+                                    } catch (Exception e) {
+                                        tempActorCreditRank = 0;
+                                    }
+                                }
+                                personMovieCreditsSet.add(new CastingRelation(personsArray[tempArrayIndex].getId(), tempMovieId, productionRoleId, isActor, tempActorRole, tempActorCreditRank));
+                            }
+                        } else {
+                            if (lineFromFile.length() == 0)
+                                // if the line was empty, this signifies moving on to the next actor in the list
+                                ++tempArrayIndex;
+                        }
+                        // flush results every BATCH_SIZE
+                        if ((personMovieCreditsSet.size() > 0) && (personMovieCreditsSet.size() % PSTMT_BATCH_SIZE == 0)) {
+                            System.out.println("Inserting " + personMovieCreditsSet.size() + " elements to the DB");
+                            DBManager.getInstance().insertPersonMovieCreditsSetToDB(connection, personMovieCreditsSet);
+                            totalElementsNum += personMovieCreditsSet.size();
+                            personMovieCreditsSet.clear();
+                        }
+                    }
+                    // flush the results that were left
+                    System.out.println("Inserting " + personMovieCreditsSet.size() + " elements to the DB");
+                    DBManager.getInstance().insertPersonMovieCreditsSetToDB(connection, personMovieCreditsSet);
+                    totalElementsNum += personMovieCreditsSet.size();
+                    personMovieCreditsSet.clear();
+                    System.out.println("clearing moviesMap");
+                    moviesMap.clear();
+                    moviesMap = null;
+                    System.out.println("calling GarbageCollector");
+                    System.gc();
+                    System.out.println("Total number of elements entered into DB: " + totalElementsNum);
+                    moviesStartRow += SELECT_BUCKET_SIZE;
+                    moviesEndRow += SELECT_BUCKET_SIZE;
+                }
+            } while (!isMoviesEmpty);
+        }
+        personsStartRow += SELECT_BUCKET_SIZE;
+        personsEndRow += SELECT_BUCKET_SIZE;
+        // finish the run
+        if (personsStartRow > personIndexMarkEnd)
+            isPersonsEmpty = true;
+        // then run only until the end of that persons' list
+        if (personsEndRow > personIndexMarkEnd)
+            personsEndRow = personIndexMarkEnd;
+    } while (!isPersonsEmpty);
+    return true;
+}

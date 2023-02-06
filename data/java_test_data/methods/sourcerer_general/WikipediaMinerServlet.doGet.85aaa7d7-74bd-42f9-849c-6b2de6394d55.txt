@@ -1,0 +1,148 @@
+public void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException {
+    try {
+        response.setHeader("Cache-Control", "no-cache");
+        response.setCharacterEncoding("UTF-8");
+        String task = request.getParameter("task");
+        Element data = null;
+        // process help request
+        if (request.getParameter("help") != null)
+            data = getDescription(task);
+        // redirect to home page if there is no task
+        if (data == null && task == null) {
+            response.setContentType("text/html");
+            response.getWriter().append("<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\"><html><head><meta http-equiv=\"REFRESH\" content=\"0;url=" + context.getInitParameter("server_path") + "></head><body></body></html>");
+            return;
+        }
+        // process definition request
+        if (data == null && task.equals("define")) {
+            int id = resolveIntegerArg(request.getParameter("id"), -1);
+            int length = resolveIntegerArg(request.getParameter("length"), definer.getDefaultLength());
+            int format = resolveIntegerArg(request.getParameter("format"), definer.getDefaultFormat());
+            int maxImageWidth = resolveIntegerArg(request.getParameter("maxImageWidth"), definer.getDefaultMaxImageWidth());
+            int maxImageHeight = resolveIntegerArg(request.getParameter("maxImageHeight"), definer.getDefaultMaxImageHeight());
+            int linkDestination = resolveIntegerArg(request.getParameter("linkDestination"), definer.getDefaultLinkDestination());
+            boolean getImages = resolveBooleanArg(request.getParameter("getImages"), false);
+            data = definer.getDefinition(id, length, format, linkDestination, getImages, maxImageWidth, maxImageHeight);
+        }
+        // all of the remaining tasks require data to be cached, so lets make sure that is finished before continuing.
+        if (!cachingThread.isOk())
+            throw new ServletException("Could not cache wikipedia data");
+        double progress = cachingThread.getProgress();
+        if (data == null && (progress < 1 || task.equals("progress"))) {
+            // still caching up data, not ready to return a response yet.
+            data = doc.createElement("loading");
+            data.setAttribute("progress", df.format(progress));
+            task = "loading";
+        }
+        // process astar request
+        if (data == null && task.equals("astar")) {
+            // String term = request.getParameter("term") ;
+            String id = request.getParameter("id");
+            String id2 = request.getParameter("id2");
+            int linkLimit = resolveIntegerArg(request.getParameter("linkLimit"), searcher.getDefaultMaxLinkCount());
+            // int senseLimit = resolveIntegerArg(request.getParameter("senseLimit"), searcher.getDefaultMaxSenseCount()) ;
+            // if (id == null)
+            // data = searcher.doSearch(term, linkLimit, senseLimit) ;
+            // else
+            data = astar.doSearch(Integer.parseInt(id), Integer.parseInt(id2), linkLimit);
+        }
+        // process search request
+        if (data == null && task.equals("search")) {
+            String term = request.getParameter("term");
+            String id = request.getParameter("id");
+            int linkLimit = resolveIntegerArg(request.getParameter("linkLimit"), searcher.getDefaultMaxLinkCount());
+            int senseLimit = resolveIntegerArg(request.getParameter("senseLimit"), searcher.getDefaultMaxSenseCount());
+            if (id == null)
+                data = searcher.doSearch(term, linkLimit, senseLimit);
+            else
+                data = searcher.doSearch(Integer.parseInt(id), linkLimit);
+        }
+        // process compare request
+        if (data == null && task.equals("compare")) {
+            String term1 = request.getParameter("term1");
+            String term2 = request.getParameter("term2");
+            int linkLimit = resolveIntegerArg(request.getParameter("linkLimit"), comparer.getDefaultMaxLinkCount());
+            boolean details = resolveBooleanArg(request.getParameter("details"), comparer.getDefaultShowDetails());
+            data = comparer.getRelatedness(term1, term2, details, linkLimit);
+        }
+        if (data == null && task.equals("masscompare")) {
+            String term1 = request.getParameter("term1");
+            String term2 = request.getParameter("term2");
+            data = masscomparer.getRelatedness(term1, term2);
+        }
+        /*
+			//process wikify request
+			if (data==null && task.equals("wikify")) {
+				
+				if (this.wikifier == null) 
+					throw new ServletException("Wikifier is not available. You must configure the servlet so that it has access to link detection and disambiguation models.") ;
+
+				String source = request.getParameter("source") ;
+				int sourceMode = resolveIntegerArg(request.getParameter("sourceMode"), Wikifier.SOURCE_AUTODETECT) ;
+				String linkColor = request.getParameter("linkColor") ;
+				String baseColor = request.getParameter("baseColor") ;
+				double minProb = resolveDoubleArg(request.getParameter("minProbability"), wikifier.getDefaultMinProbability()) ;
+				int repeatMode = resolveIntegerArg(request.getParameter("repeatMode"), wikifier.getDefaultRepeatMode()) ;
+				boolean showTooltips = resolveBooleanArg(request.getParameter("showTooltips"), wikifier.getDefaultShowTooltips()) ;
+				String bannedTopics = request.getParameter("bannedTopics") ;
+
+				boolean wrapInXml = resolveBooleanArg(request.getParameter("wrapInXml"), true) ;
+
+				if (wrapInXml) {				
+					data = wikifier.wikifyAndWrapInXML(source, sourceMode, minProb, repeatMode, bannedTopics, baseColor, linkColor, showTooltips) ;
+				} else {
+					response.setContentType("text/html");
+					response.getWriter().append(wikifier.wikify(source, sourceMode, minProb, repeatMode, bannedTopics, baseColor, linkColor, showTooltips)) ;
+					return ;
+				}
+			}
+			*/
+        if (data == null)
+            throw new Exception("Unknown Task");
+        // wrap data
+        Element wrapper = doc.createElement("WikipediaMinerResponse");
+        wrapper.setAttribute("server_path", context.getInitParameter("server_path"));
+        wrapper.setAttribute("service_name", context.getInitParameter("service_name"));
+        wrapper.appendChild(data);
+        data = wrapper;
+        // Transform or serialize xml data as appropriate
+        Transformer tf = null;
+        if (request.getParameter("xml") == null) {
+            // we need to transform the data into html
+            tf = transformersByName.get(task);
+            if (request.getParameter("help") != null)
+                tf = transformersByName.get("help");
+        }
+        if (tf == null) {
+            // we need to serialize the data as xml
+            tf = transformersByName.get("serializer");
+            response.setContentType("application/xml");
+        } else {
+            // output will be transformed to html
+            response.setContentType("text/html");
+            response.getWriter().append("<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\" \"http://www.w3.org/TR/html4/strict.dtd\">\n");
+        }
+        tf.transform(new DOMSource(data), new StreamResult(response.getWriter()));
+    } catch (Exception error) {
+        response.reset();
+        response.setContentType("application/xml");
+        response.setHeader("Cache-Control", "no-cache");
+        response.setCharacterEncoding("UTF8");
+        Element xmlError = doc.createElement("Error");
+        if (error.getMessage() != null)
+            xmlError.setAttribute("message", error.getMessage());
+        Element xmlStackTrace = doc.createElement("StackTrace");
+        xmlError.appendChild(xmlStackTrace);
+        for (StackTraceElement ste : error.getStackTrace()) {
+            Element xmlSte = doc.createElement("StackTraceElement");
+            xmlSte.setAttribute("message", ste.toString());
+            xmlStackTrace.appendChild(xmlSte);
+        }
+        try {
+            transformersByName.get("serializer").transform(new DOMSource(xmlError), new StreamResult(response.getWriter()));
+        } catch (Exception e) {
+        // TODO: something for when an error is thrown processing an error????
+        }
+        ;
+    }
+}

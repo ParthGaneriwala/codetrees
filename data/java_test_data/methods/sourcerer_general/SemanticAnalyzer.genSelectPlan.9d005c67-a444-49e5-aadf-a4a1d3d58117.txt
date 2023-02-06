@@ -1,0 +1,61 @@
+@SuppressWarnings("nls")
+private OperatorInfoList genSelectPlan(String dest, QB qb, OperatorInfoList input) throws SemanticException {
+    // We can assert here that the input list is of size one
+    if (input.size() != 1) {
+        throw new SemanticException("Select has more than one inputs");
+    }
+    CommonTree selExprList = qb.getParseInfo().getSelForClause(dest);
+    ArrayList<exprNodeDesc> col_list = new ArrayList<exprNodeDesc>();
+    RowResolver out_rwsch = new RowResolver();
+    CommonTree trfm = null;
+    Integer pos = Integer.valueOf(0);
+    // Iterate over the selects
+    for (int i = 0; i < selExprList.getChildCount(); ++i) {
+        // list of the columns
+        CommonTree selExpr = (CommonTree) selExprList.getChild(i);
+        String colAlias = getColAlias(selExpr, "_C" + i);
+        CommonTree sel = (CommonTree) selExpr.getChild(0);
+        if (sel.getToken().getType() == HiveParser.TOK_COLREF || sel.getToken().getType() == HiveParser.TOK_ALLCOLREF) {
+            genColList(qb.getParseInfo().getAlias(), sel, col_list, input.get(0).getRowResolver(), pos, out_rwsch, colAlias);
+        } else if (sel.getToken().getType() == HiveParser.TOK_TRANSFORM) {
+            if (i > 0) {
+                throw new SemanticException(ErrorMsg.INVALID_TRANSFORM.getMsg(sel));
+            }
+            trfm = sel;
+            CommonTree cols = (CommonTree) trfm.getChild(0);
+            for (int j = 0; j < cols.getChildCount(); ++j) {
+                CommonTree expr = (CommonTree) cols.getChild(j);
+                if (expr.getToken().getType() == HiveParser.TOK_COLREF || expr.getToken().getType() == HiveParser.TOK_ALLCOLREF) {
+                    genColList(qb.getParseInfo().getAlias(), expr, col_list, input.get(0).getRowResolver(), pos, out_rwsch, expr.getChild(1).getText());
+                } else {
+                    exprNodeDesc exp = genExprNodeDesc(expr, qb.getParseInfo().getAlias(), input.get(0).getRowResolver());
+                    col_list.add(exp);
+                    out_rwsch.put(qb.getParseInfo().getAlias(), expr.getText(), new ColumnInfo((Integer.valueOf(pos)).toString(), String.class, // Everything is a string right now
+                    false));
+                }
+            }
+        } else {
+            // Case when this is an expression
+            exprNodeDesc exp = genExprNodeDesc(sel, qb.getParseInfo().getAlias(), input.get(0).getRowResolver());
+            col_list.add(exp);
+            // Since the as clause is lacking we just use the text representation
+            // of the expression as the column name
+            out_rwsch.put(qb.getParseInfo().getAlias(), colAlias, new ColumnInfo((Integer.valueOf(pos)).toString(), String.class, // Everything is a string right now
+            false));
+        }
+        pos = Integer.valueOf(pos.intValue() + 1);
+    }
+    for (int i = 0; i < col_list.size(); i++) {
+        if (col_list.get(i) instanceof exprNodeNullDesc) {
+            col_list.set(i, new exprNodeConstantDesc(String.class, null));
+        }
+    }
+    OperatorInfoList output = (OperatorInfoList) input.clone();
+    output.get(0).setOp(OperatorFactory.getAndMakeChild(new selectDesc(col_list), new RowSchema(out_rwsch.getColumnInfos()), input.get(0).getOp()));
+    output.get(0).setRowResolver(out_rwsch);
+    if (trfm != null) {
+        output = genScriptPlan(trfm, qb, output);
+    }
+    LOG.debug("Created Select Plan for clause: " + dest + " row schema: " + output.get(0).getRowResolver().toString());
+    return output;
+}

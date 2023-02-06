@@ -1,0 +1,77 @@
+private void evaluateExtraParamsServletRequest(String action, String namespace, boolean isAjax) {
+    if (action == null) {
+        // no action supplied? ok, then default to the current request (action or general URL)
+        ActionInvocation ai = (ActionInvocation) getStack().getContext().get(ActionContext.ACTION_INVOCATION);
+        if (ai != null) {
+            action = ai.getProxy().getActionName();
+            namespace = ai.getProxy().getNamespace();
+        } else {
+            // hmm, ok, we need to just assume the current URL cut down
+            String uri = request.getRequestURI();
+            action = uri.substring(uri.lastIndexOf('/'));
+        }
+    }
+    String actionMethod = "";
+    // handle "name!method" convention.
+    if (enableDynamicMethodInvocation) {
+        if (action.indexOf("!") != -1) {
+            int endIdx = action.lastIndexOf("!");
+            actionMethod = action.substring(endIdx + 1, action.length());
+            action = action.substring(0, endIdx);
+        }
+    }
+    final ActionConfig actionConfig = configuration.getRuntimeConfiguration().getActionConfig(namespace, action);
+    String actionName = action;
+    if (actionConfig != null) {
+        ActionMapping mapping = new ActionMapping(action, namespace, actionMethod, parameters);
+        String result = UrlHelper.buildUrl(actionMapper.getUriFromActionMapping(mapping), request, response, null);
+        addParameter("action", result);
+        // let's try to get the actual action class and name
+        // this can be used for getting the list of validators
+        addParameter("actionName", actionName);
+        try {
+            Class clazz = objectFactory.getClassInstance(actionConfig.getClassName());
+            addParameter("actionClass", clazz);
+        } catch (ClassNotFoundException e) {
+        // this is OK, we'll just move on
+        }
+        addParameter("namespace", namespace);
+        // if the name isn't specified, use the action name
+        if (name == null) {
+            addParameter("name", action);
+        }
+        // if the id isn't specified, use the action name
+        if (id == null && action != null) {
+            addParameter("id", escape(action));
+        }
+    } else if (action != null) {
+        // was not found in the configuration.
+        if (namespace != null) {
+            LOG.warn("No configuration found for the specified action: '" + action + "' in namespace: '" + namespace + "'. Form action defaulting to 'action' attribute's literal value.");
+        }
+        String result = UrlHelper.buildUrl(action, request, response, null);
+        addParameter("action", result);
+        // namespace: cut out anything between the start and the last /
+        int slash = result.lastIndexOf('/');
+        if (slash != -1) {
+            addParameter("namespace", result.substring(0, slash));
+        } else {
+            addParameter("namespace", "");
+        }
+        // name/id: cut out anything between / and . should be the id and name
+        if (id == null) {
+            slash = result.lastIndexOf('/');
+            int dot = result.indexOf('.', slash);
+            if (dot != -1) {
+                id = result.substring(slash + 1, dot);
+            } else {
+                id = result.substring(slash + 1);
+            }
+            addParameter("id", escape(id));
+        }
+    }
+    // WW-1284
+    // evaluate if client-side js is to be enabled. (if validation interceptor
+    // does allow validation eg. method is not filtered out)
+    evaluateClientSideJsEnablement(actionName, namespace, actionMethod);
+}

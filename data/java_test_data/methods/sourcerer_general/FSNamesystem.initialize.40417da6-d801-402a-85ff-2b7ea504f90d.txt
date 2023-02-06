@@ -1,0 +1,64 @@
+private void initialize(NameNode nn, Configuration conf) throws IOException {
+    this.systemStart = now();
+    this.startTime = new Date(systemStart);
+    setConfigurationParameters(conf);
+    this.localMachine = nn.getNameNodeAddress().getHostName();
+    this.port = nn.getNameNodeAddress().getPort();
+    // register the MBean for the FSNamesystemStutus
+    this.registerMBean(conf);
+    this.dir = new FSDirectory(this, conf);
+    StartupOption startOpt = NameNode.getStartupOption(conf);
+    this.dir.loadFSImage(getNamespaceDirs(conf), getNamespaceEditsDirs(conf), startOpt);
+    long timeTakenToLoadFSImage = now() - systemStart;
+    LOG.info("Finished loading FSImage in " + timeTakenToLoadFSImage + " msecs");
+    NameNode.getNameNodeMetrics().fsImageLoadTime.set((int) timeTakenToLoadFSImage);
+    this.safeMode = new SafeModeInfo(conf);
+    setBlockTotal();
+    pendingReplications = new PendingReplicationBlocks(conf.getInt("dfs.replication.pending.timeout.sec", -1) * 1000L);
+    this.hbthread = new Daemon(new HeartbeatMonitor());
+    this.lmthread = new Daemon(leaseManager.createMonitor());
+    this.replthread = new Daemon(new ReplicationMonitor());
+    hbthread.start();
+    lmthread.start();
+    replthread.start();
+    this.hostsReader = new HostsFileReader(conf.get("dfs.hosts", ""), conf.get("dfs.hosts.exclude", ""));
+    this.dnthread = new Daemon(new DecommissionedMonitor());
+    dnthread.start();
+    this.dnsToSwitchMapping = ReflectionUtils.newInstance(conf.getClass("topology.node.switch.mapping.impl", ScriptBasedMapping.class, DNSToSwitchMapping.class), conf);
+    /* If the dns to swith mapping supports cache, resolve network 
+     * locations of those hosts in the include list, 
+     * and store the mapping in the cache; so future calls to resolve
+     * will be fast.
+     */
+    if (dnsToSwitchMapping instanceof CachedDNSToSwitchMapping) {
+        dnsToSwitchMapping.resolve(new ArrayList<String>(hostsReader.getHosts()));
+    }
+    String infoAddr = NetUtils.getServerAddress(conf, "dfs.info.bindAddress", "dfs.info.port", "dfs.http.address");
+    InetSocketAddress infoSocAddr = NetUtils.createSocketAddr(infoAddr);
+    String infoHost = infoSocAddr.getHostName();
+    int tmpInfoPort = infoSocAddr.getPort();
+    this.infoServer = new HttpServer("hdfs", infoHost, tmpInfoPort, tmpInfoPort == 0, conf);
+    InetSocketAddress secInfoSocAddr = NetUtils.createSocketAddr(conf.get("dfs.https.address", infoHost + ":" + 0));
+    Configuration sslConf = new Configuration(conf);
+    sslConf.addResource(conf.get("https.keystore.info.rsrc", "sslinfo.xml"));
+    String keyloc = sslConf.get("https.keystore.location");
+    if (null != keyloc) {
+        this.infoServer.addSslListener(secInfoSocAddr, keyloc, sslConf.get("https.keystore.password", ""), sslConf.get("https.keystore.keypassword", ""));
+    }
+    // assume same ssl port for all datanodes
+    InetSocketAddress datanodeSslPort = NetUtils.createSocketAddr(conf.get("dfs.datanode.https.address", infoHost + ":" + 50475));
+    this.infoServer.setAttribute("datanode.https.port", datanodeSslPort.getPort());
+    this.infoServer.setAttribute("name.node", nn);
+    this.infoServer.setAttribute("name.system.image", getFSImage());
+    this.infoServer.setAttribute("name.conf", conf);
+    this.infoServer.addInternalServlet("fsck", "/fsck", FsckServlet.class);
+    this.infoServer.addInternalServlet("getimage", "/getimage", GetImageServlet.class);
+    this.infoServer.addInternalServlet("listPaths", "/listPaths/*", ListPathsServlet.class);
+    this.infoServer.addInternalServlet("data", "/data/*", FileDataServlet.class);
+    this.infoServer.addInternalServlet("checksum", "/fileChecksum/*", FileChecksumServlets.RedirectServlet.class);
+    this.infoServer.start();
+    // The web-server port can be ephemeral... ensure we have the correct info
+    this.infoPort = this.infoServer.getPort();
+    conf.set("dfs.http.address", infoHost + ":" + infoPort);
+    LOG.info("Web-server up at: " + infoHost + ":" + infoPort);
+}

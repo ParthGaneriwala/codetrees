@@ -1,0 +1,56 @@
+public Pair<SortedSet<? extends TaggedPath>, Double> evaluateSentence(long[] sentence) {
+    ForestModel forest = decoder.getForest();
+    TreeTrellisNode currentNode = Decoder.createTreeTrellis(forest.getOrder() - 1);
+    final FactorTupleDescription desc = Experiment.getInstance().getTupleDescription();
+    final long overtFactorsMask = desc.getOvertFactorsMask();
+    final long hiddenFactorsMask = desc.getHiddenFactorsMask();
+    final int lockNodes = /*forest.getOrder() +*/
+    2;
+    double prob = 1.0;
+    TaggerTrellisSlice prevTaggerSlice = new TaggerTrellisSlice();
+    {
+        // make the start state
+        int[] ctx = new int[taggerCtxSize + 1];
+        Arrays.fill(ctx, Dictionary.getStart());
+        prevTaggerSlice.addProb(ctx, 1.0);
+        TaggerState state = prevTaggerSlice.getState(ctx);
+        state.nbest = new TreeSet<TaggerNbestItem>();
+        state.nbest.add(new TaggerNbestItem(null, 0.0, new SimpleList<Integer>()));
+    }
+    TreeSet<TaggerNbestItem> overallNbest = null;
+    for (int i = 0; i < sentence.length; ++i) {
+        long word = sentence[i] & overtFactorsMask;
+        if (true || i == sentence.length - 1) {
+            overallNbest = new TreeSet<TaggerNbestItem>();
+        }
+        currentNode = currentNode.appendNodeAndLock(word);
+        TreeTrellisNode prevNode = currentNode.getPreviousNode();
+        try {
+            if (!currentNode.isDecoded()) {
+                prevNode.lock(forest.getOrder());
+                try {
+                    DecodingContext context = new DecodingContext(currentNode, forest);
+                    decoder.partition(context);
+                    IdentityHashMap<TrellisNodeItem, Integer> item2tag = decoder.ensurePrefixes(currentNode, tags);
+                    currentNode.finishDecoding();
+                    TaggerTrellisSlice taggerSlice = computeApproximatedProbs(currentNode, item2tag);
+                    taggerSlice.makeNbest(prevTaggerSlice, beamSize, overallNbest);
+                    /*
+						for(Iterator<TaggerNbestItem> it = overallNbest.descendingIterator(); it.hasNext(); ) {
+							TaggerNbestItem item = it.next();
+							System.err.println(item.toString());
+						}
+						*/
+                    prevTaggerSlice = taggerSlice;
+                } finally {
+                    prevNode.unlock(forest.getOrder());
+                }
+            }
+            prob = currentNode.getCumulativeLogScale() + Math.log10(currentNode.getTotalProb());
+        } finally {
+            currentNode.unlock();
+        }
+    }
+    currentNode.releasePath();
+    return new Pair<SortedSet<? extends TaggedPath>, Double>(overallNbest, prob);
+}

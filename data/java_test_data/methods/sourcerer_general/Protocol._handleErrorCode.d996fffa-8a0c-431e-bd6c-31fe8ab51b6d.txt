@@ -1,0 +1,181 @@
+// ----------------------------------------------------------------------------
+private boolean _handleErrorCode(int errCode, int hdrType, Payload payload) {
+    switch(errCode) {
+        case ServerErrors.NAK_ID_INVALID:
+            {
+                // Invalid unique id
+                // The DMT server doesn't recognize our unique-id.
+                // We should try to send our account and device id.
+                this.sendIdentification = SEND_ID_ACCOUNT;
+                return true;
+            }
+        // Invalid/missing account id
+        case ServerErrors.NAK_ACCOUNT_INVALID:
+        case ServerErrors.NAK_DEVICE_INVALID:
+            {
+                // Invalid/missing device id
+                // The DMT server doesn't know who we are
+                this.severeErrorCount++;
+                if (++this.invalidAcctErrorCount >= 2) {
+                    // fail on 2nd error
+                    return false;
+                } else {
+                    // try one more time (if the server will let us)
+                    return true;
+                }
+            }
+        // Account has expired, or has become inactive
+        case ServerErrors.NAK_ACCOUNT_INACTIVE:
+        case ServerErrors.NAK_DEVICE_INACTIVE:
+            {
+                // Device has expired, or has become inactive
+                this.severeErrorCount++;
+                return false;
+            }
+        case ServerErrors.NAK_EXCESSIVE_CONNECTIONS:
+            {
+                // Excessive connections
+                // The DMT server may mark (or has marked) us as an abuser.
+                // No alternative, but to quit
+                // Slow down minimum connection interval
+                Props.addLong(Props.PROP_COMM_MIN_XMIT_RATE, 0, 300L);
+                Props.addLong(Props.PROP_COMM_MIN_XMIT_DELAY, 0, 300L);
+                return false;
+            }
+        // Invalid/Unsupported packet header
+        case ServerErrors.NAK_PACKET_HEADER:
+        case ServerErrors.NAK_PACKET_TYPE:
+            {
+                // Ignore the error and continue.
+                return true;
+            }
+        // Invalid packet length
+        case ServerErrors.NAK_PACKET_LENGTH:
+        case ServerErrors.NAK_PACKET_PAYLOAD:
+            {
+                // Invalid packet payload
+                // This indicates a protocol compliance issue in the client
+                this.severeErrorCount++;
+                return false;
+            }
+        case ServerErrors.NAK_PACKET_ENCODING:
+            {
+                // We need to handle getting several of these errors during a transmission block.
+                if (!this.sessionEncodingChanged) {
+                    // mark changed
+                    this.sessionEncodingChanged = true;
+                    if (Encoding.IsServerRequired(this.sessionEncoding)) {
+                        // (of course it can't be the server! :-)
+                        return false;
+                    }
+                    long encodingMask = Props.getLong(Props.PROP_COMM_ENCODINGS, 0, 0L) & Encoding.ENCODING_MASK;
+                    encodingMask &= ~Encoding.SUPPORTED_ENCODING_CSV;
+                    Props.setLong(Props.PROP_COMM_ENCODINGS, 0, encodingMask);
+                    // save checksum
+                    this.sessionEncoding &= ~Encoding.ENCODING_MASK;
+                    // new encoding
+                    this.sessionEncoding |= Encoding.SUPPORTED_ENCODING_BASE64;
+                    if ((hdrType == Packet.PKT_CLIENT_UNIQUE_ID) || (hdrType == Packet.PKT_CLIENT_ACCOUNT_ID) || (hdrType == Packet.PKT_CLIENT_DEVICE_ID)) {
+                        // error occured on identification packets, resend id
+                        this.sendIdentification = SEND_ID_UNIQUE;
+                    }
+                }
+                return true;
+            }
+        // Invalid packet checksum (ASCII encoding only)
+        case ServerErrors.NAK_PACKET_CHECKSUM:
+        case ServerErrors.NAK_BLOCK_CHECKSUM:
+            {
+                // increment checksum failure indicator, if it gets too large, quit
+                if (++this.checkSumErrorCount >= 3) {
+                    // fail on 3rd error (per session)
+                    this.severeErrorCount++;
+                    return false;
+                } else {
+                    return true;
+                }
+            }
+        case ServerErrors.NAK_PROTOCOL_ERROR:
+            {
+                // Protocol error
+                // This indicates a protocol compliance issue in the client
+                this.severeErrorCount++;
+                return false;
+            }
+        case ServerErrors.NAK_FORMAT_DEFINITION_INVALID:
+            {
+                // Custom format type is invalid
+                // The custom type we've specified isn't within the supported custom format packet types
+                // This indicates a protocol compliance issue in the client
+                Props.setBoolean(Props.PROP_COMM_CUSTOM_FORMATS, 0, false);
+                this.severeErrorCount++;
+                return false;
+            }
+        case ServerErrors.NAK_FORMAT_NOT_SUPPORTED:
+            {
+                // Custom formats not supported
+                // The DMT server does not support custom formats (at least not for our
+                // current level of service).
+                // We should acknowledge all sent events, and set a flag indicating that
+                // we should not send custom formats to this server in the future.
+                this.getEventQueue().deleteToSequence(Packet.SEQUENCE_ALL);
+                // these records are not counted
+                Props.setBoolean(Props.PROP_COMM_CUSTOM_FORMATS, 0, false);
+                return true;
+            }
+        case ServerErrors.NAK_FORMAT_NOT_RECOGNIZED:
+            {
+                // Custom format not recognized
+                // The DMT does support custom formats, but it doesn't recognize the
+                // format we've used in an event packet.  We should send the custom
+                // format template(s), then resend the events.
+                PayloadTemplate template = Packet.GetClientPayloadTemplate(hdrType);
+                if (template != null) {
+                    Payload p = template.getPayload();
+                    Packet custPkt = Packet.createClientPacket(Packet.PKT_CLIENT_FORMAT_DEF_24, p);
+                    custPkt.setPriority(Packet.PRIORITY_HIGH);
+                    this.queuePacket(custPkt);
+                    return true;
+                } else {
+                    // One of the following has occured:
+                    // - The server just told us it doesn't support a custom format that we didn't
+                    // send it (unlikely).
+                    // - An internal buffer overflow has ocurred.
+                    // - We were unable to add the packet to the queue
+                    this.severeErrorCount++;
+                    return false;
+                }
+            }
+        case ServerErrors.NAK_EXCESSIVE_EVENTS:
+            {
+                // Excessive events
+                // The DMT server may mark (or has marked) us as an abuser.
+                // If present, the next (first) event will never be accepted, purge it from the queue.
+                // first "sent" event
+                this.getEventQueue().deleteFirstSent();
+                // Slow down periodic messages to prevent this from occurring in the future
+                long inMotionInterval = Props.getLong(Props.PROP_MOTION_IN_MOTION, 0, 0L);
+                if (inMotionInterval > 0L) {
+                    Props.setLong(Props.PROP_MOTION_IN_MOTION, 0, (inMotionInterval + DateTime.MinuteSeconds(2)));
+                }
+                long dormantInterval = Props.getLong(Props.PROP_MOTION_DORMANT_INTRVL, 0, 0L);
+                if (dormantInterval > 0L) {
+                    Props.setLong(Props.PROP_MOTION_DORMANT_INTRVL, 0, (dormantInterval + DateTime.MinuteSeconds(10)));
+                }
+                // continue with session
+                return true;
+            }
+        case ServerErrors.NAK_DUPLICATE_EVENT:
+            {
+                // ignore error
+                return true;
+            }
+        case ServerErrors.NAK_EVENT_ERROR:
+            {
+                // ignore error
+                return true;
+            }
+    }
+    /* unhandled error - ignore */
+    return true;
+}

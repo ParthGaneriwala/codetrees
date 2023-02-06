@@ -1,0 +1,149 @@
+private void processCommand(String msg) {
+    StringBuffer sbuff = new StringBuffer();
+    String[] args = msg.split(" ");
+    if (args[0].equals("/listusers")) {
+        sbuff.append("List of users in the system:\n");
+        try {
+            for (ChessPlayer p : userManagementSessionBean.listPlayers()) {
+                sbuff.append(p.getUsername());
+                sbuff.append("\t");
+                for (String g : p.getGroupNames()) {
+                    sbuff.append(g + " ");
+                }
+                sbuff.append("\n");
+            }
+        } catch (EJBException e) {
+            processEJBException(e, sbuff);
+        }
+    } else if (args[0].equals("/adduser")) {
+        if (args.length == 3) {
+            try {
+                userManagementSessionBean.addUser(args[1], args[2]);
+                sbuff.append("Successfully added user: " + args[1]);
+            } catch (EJBException e) {
+                // this one is slightly more complicated, so we inline the processing code
+                Throwable t = e.getCausedByException();
+                if (t instanceof java.rmi.AccessException) {
+                    sbuff.append("You do not have permission to execute this command.");
+                } else if (t instanceof ServerException) {
+                    Throwable t2 = ((ServerException) t).getCause();
+                    Throwable cause = t2.getCause();
+                    if (cause instanceof SecurityException) {
+                        sbuff.append("Security restriction: " + cause.getMessage());
+                    } else if (cause instanceof javax.persistence.EntityExistsException) {
+                        sbuff.append("User " + args[1] + " already exists.");
+                    } else {
+                        sbuff.append("Invalid database command.");
+                    }
+                } else if (null != t) {
+                    System.err.println("Cause of exception is a " + t.getClass());
+                } else {
+                    sbuff.append("Invalid database command.  Either you don't have permission or duplicate user.");
+                    System.err.println("Cause is null; root exception is a " + e.getClass());
+                }
+            }
+        } else {
+            sbuff.append("Invalid command to add user");
+        }
+    } else if (args[0].equals("/killuser")) {
+        if (args.length == 2) {
+            try {
+                userManagementSessionBean.deleteUser(args[1]);
+                sbuff.append("Successfully deleted user: " + args[1]);
+            } catch (EJBException e) {
+                processEJBException(e, sbuff);
+            }
+        } else {
+            sbuff.append("Invalid command to delete user");
+        }
+    } else if (args[0].equals("/ban")) {
+        if (args.length == 2) {
+            try {
+                userManagementSessionBean.dePrivilege(args[1]);
+                sbuff.append("Successfully banned user: " + args[1]);
+            } catch (EJBException e) {
+                processEJBException(e, sbuff);
+            }
+        } else {
+            sbuff.append("Invalid command to delete user");
+        }
+    } else if (args[0].equals("/deban")) {
+        if (args.length == 2) {
+            try {
+                userManagementSessionBean.rePrivilege(args[1]);
+                sbuff.append("Successfully de-banned user: " + args[1]);
+            } catch (EJBException e) {
+                processEJBException(e, sbuff);
+            }
+        } else {
+            sbuff.append("Invalid command to delete user");
+        }
+    } else if (args[0].equals("/makeadmin")) {
+        if (args.length == 2) {
+            try {
+                userManagementSessionBean.makeAdmin(args[1]);
+                sbuff.append("Successfully promoted user: " + args[1]);
+            } catch (EJBException e) {
+                processEJBException(e, sbuff);
+            }
+        } else {
+            sbuff.append("Invalid command to promote user");
+        }
+    } else if (args[0].equals("/join")) {
+        boolean isValidLong;
+        long id = -1;
+        try {
+            id = Long.parseLong(args[1]);
+            isValidLong = (id > -1) ? true : false;
+        } catch (Exception e) {
+            isValidLong = false;
+        }
+        if (args.length == 2 && isValidLong) {
+            ChessBoard cb = new ChessBoard();
+            cb.startGame(id);
+        } else {
+            sbuff.append("Invalid command to join a game");
+        }
+    } else if (args[0].equals("/resign")) {
+        if (chatSession instanceof GameControllerRemote) {
+            GameControllerRemote gcr = (GameControllerRemote) chatSession;
+            gcr.resignGame();
+        }
+    } else if (args[0].equals("/trashtalk")) {
+        if (chatSession instanceof GameControllerRemote) {
+            GameControllerRemote gcr = (GameControllerRemote) chatSession;
+            gcr.postTrash();
+        }
+    } else if (args[0].equals("/help")) {
+        sbuff.append(userManagementSessionBean.getCommands());
+    } else if (args[0].equals("/spam")) {
+        // XXX this would be in a testing branch, if we had one
+        int seconds = 10;
+        if (1 < args.length) {
+            seconds = Integer.parseInt(args[1]);
+            if (0 >= seconds || 30 < seconds)
+                seconds = 10;
+        }
+        final long endtime = System.currentTimeMillis() + 1000 * seconds;
+        Thread spamthread = new Thread(new Runnable() {
+
+            public void run() {
+                while (true) {
+                    long now = System.currentTimeMillis();
+                    if (endtime <= now)
+                        break;
+                    chatSession.postChat("Spam message " + now);
+                }
+            }
+        });
+        spamthread.start();
+    } else if (args[0].equals("/spammoves")) {
+        if (gameSession != null)
+            unleashHell(Integer.parseInt(args[1]));
+        else
+            update("Cant spam moves in waiting room");
+    } else {
+        sbuff.append(msg);
+    }
+    update(sbuff.toString());
+}

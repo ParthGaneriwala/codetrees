@@ -1,0 +1,131 @@
+public Object createEntry(Object key) throws Exception {
+    if (key == null) {
+        throw new Exception("FeedCacheEntryFactory-> Invalid key specified: null");
+    }
+    // Determine the feed, expect an optional category and a site purpose for lookup
+    String[] items = key.toString().split("[|]");
+    Connection db = null;
+    String requestedFeedUrl = items[0];
+    String serverUrl = items[1];
+    String[] requestedFeedUrlPart = requestedFeedUrl.split("/rss.xml");
+    String purpose = "";
+    if (requestedFeedUrlPart.length > 1) {
+        purpose = requestedFeedUrlPart[1].substring(1);
+    }
+    String category = requestedFeedUrlPart[0];
+    // Load the RSS config file to determine the objects for display
+    String fileName = "rss_en_US.xml";
+    URL resource = FeedServlet.class.getResource("/" + fileName);
+    LOG.debug("RSS config file: " + resource.toString());
+    XMLUtils library = new XMLUtils(resource);
+    try {
+        // Determine if a site feed or a specific category feed
+        Element feedElement;
+        if (StringUtils.hasText(category)) {
+            // Find the site specific category configuration
+            feedElement = XMLUtils.getElement(library.getDocumentElement(), "feed", "url", "site," + purpose + ",category," + category);
+            if (feedElement == null) {
+                // Find the specific category configuration
+                feedElement = XMLUtils.getElement(library.getDocumentElement(), "feed", "url", "category," + category);
+                if (feedElement == null) {
+                    // Find the site specific generic category
+                    feedElement = XMLUtils.getElement(library.getDocumentElement(), "feed", "url", "site," + purpose + ",category");
+                    // If not found, use the generic category configuration
+                    if (feedElement == null) {
+                        feedElement = XMLUtils.getElement(library.getDocumentElement(), "feed", "url", "category");
+                    }
+                }
+            }
+        } else {
+            // Use the site specific configuration
+            feedElement = XMLUtils.getElement(library.getDocumentElement(), "feed", "url", "site," + purpose);
+            if (feedElement == null) {
+                feedElement = XMLUtils.getElement(library.getDocumentElement(), "feed", "url", "site");
+            }
+        }
+        // Process the feedElement
+        if (feedElement != null) {
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Feed found: " + feedElement.getAttribute("url"));
+            }
+            // Determine the maximum number of feed entries
+            String limit = feedElement.getAttribute("limit");
+            String useDefaultProfile = feedElement.getAttribute("useDefaultProfile");
+            // Determine the types of entries to display in the feed based on the config file
+            ArrayList<Element> entryElements = new ArrayList<Element>();
+            XMLUtils.getAllChildren(feedElement, "entry", entryElements);
+            // Create the Feed object to be returned
+            SyndFeed feed = new SyndFeedImpl();
+            ArrayList<SyndEntry> entries = new ArrayList<SyndEntry>();
+            // Find feed items by querying the ProjectHistoryList
+            ProjectHistoryList historyList = new ProjectHistoryList();
+            historyList.setInstanceId(InstanceUtils.getInstance(serverUrl).getId());
+            PagedListInfo info = new PagedListInfo();
+            info.setItemsPerPage(limit);
+            historyList.setPagedListInfo(info);
+            // Retrieve the database connection to use
+            db = CacheUtils.getConnection(context);
+            // Check to see if the main profile is to be used
+            if (StringUtils.hasText(useDefaultProfile) && "true".equals(useDefaultProfile)) {
+                Project project = ProjectUtils.loadProject(context.getApplicationPrefs().get("MAIN_PROFILE"));
+                historyList.setProjectId(project.getId());
+            }
+            // set all the requested types based on the types we allow for the query..
+            ArrayList<String> types = new ArrayList<String>();
+            for (Element entryElement : entryElements) {
+                String type = XMLUtils.getNodeText(entryElement);
+                types.add(type);
+            }
+            historyList.setObjectPreferences(types);
+            // If a specific category is requested, search for it's id
+            if (StringUtils.hasText(category)) {
+                int projectCategoryId = -1;
+                ProjectCategoryList projectCategoryList = new ProjectCategoryList();
+                projectCategoryList.setTopLevelOnly(true);
+                projectCategoryList.setEnabled(true);
+                projectCategoryList.setCategoryDescriptionLowerCase(category.toLowerCase());
+                projectCategoryList.buildList(db);
+                if (projectCategoryList.size() >= 1) {
+                    projectCategoryId = projectCategoryList.get(0).getId();
+                }
+                historyList.setProjectCategoryId(projectCategoryId);
+            }
+            // Since this is a public feed, base the feed off of a guest user
+            User guestUser = UserUtils.createGuestUser();
+            historyList.setForUser(guestUser.getId());
+            historyList.buildList(db);
+            // For each history item, determine the feed content
+            for (ProjectHistory item : historyList) {
+                SyndEntry syndEntry = null;
+                if (ProjectHistoryList.BLOG_OBJECT.equals(item.getLinkObject())) {
+                    syndEntry = BlogPostFeedEntry.getSyndEntry(db, item.getLinkItemId(), serverUrl);
+                    if (syndEntry != null) {
+                        entries.add(syndEntry);
+                    }
+                } else if (ProjectHistoryList.RATING_OBJECT.equals(item.getLinkObject())) {
+                    syndEntry = ProjectRatingFeedEntry.getSyndEntry(db, item.getLinkItemId(), serverUrl);
+                    if (syndEntry != null) {
+                        entries.add(syndEntry);
+                    }
+                } else if (ProjectHistoryList.TOPIC_OBJECT.equals(item.getLinkObject())) {
+                    syndEntry = DiscussionTopicFeedEntry.getSyndEntry(db, item.getLinkItemId(), serverUrl);
+                    if (syndEntry != null) {
+                        entries.add(syndEntry);
+                    }
+                } else if (ProjectHistoryList.PROFILE_OBJECT.equals(item.getLinkObject())) {
+                    syndEntry = ProjectFeedEntry.getSyndEntry(db, item.getLinkItemId(), serverUrl);
+                    if (syndEntry != null) {
+                        entries.add(syndEntry);
+                    }
+                }
+            }
+            feed.setEntries(entries);
+            return feed;
+        }
+    } catch (Exception e) {
+        throw new Exception(e);
+    } finally {
+        CacheUtils.freeConnection(context, db);
+    }
+    return null;
+}

@@ -1,0 +1,75 @@
+protected static Xid[] recover(Connection c, int flag) throws XAException {
+    /*
+		    The XA RECOVER statement returns information for those XA transactions on the MySQL server that are in the PREPARED state. (See Section 13.4.7.2, �XA Transaction States�.) The output includes a row for each such XA transaction on the server, regardless of which client started it.
+
+			XA RECOVER output rows look like this (for an example xid value consisting of the parts 'abc', 'def', and 7):
+
+			mysql> XA RECOVER;
+			+----------+--------------+--------------+--------+
+			| formatID | gtrid_length | bqual_length | data   |
+			+----------+--------------+--------------+--------+
+			|        7 |            3 |            3 | abcdef |
+			+----------+--------------+--------------+--------+
+
+			The output columns have the following meanings:
+
+      			formatID is the formatID part of the transaction xid
+			    gtrid_length is the length in bytes of the gtrid part of the xid
+			    bqual_length is the length in bytes of the bqual part of the xid
+ 			    data is the concatenation of the gtrid and bqual parts of the xid
+		 */
+    boolean startRscan = ((flag & TMSTARTRSCAN) > 0);
+    boolean endRscan = ((flag & TMENDRSCAN) > 0);
+    if (!startRscan && !endRscan && flag != TMNOFLAGS) {
+        throw new MysqlXAException(XAException.XAER_INVAL, "Invalid flag, must use TMNOFLAGS, or any combination of TMSTARTRSCAN and TMENDRSCAN", null);
+    }
+    if (!startRscan) {
+        return new Xid[0];
+    }
+    ResultSet rs = null;
+    Statement stmt = null;
+    List recoveredXidList = new ArrayList();
+    try {
+        // TODO: Cache this for lifetime of XAConnection
+        stmt = c.createStatement();
+        rs = stmt.executeQuery("XA RECOVER");
+        while (rs.next()) {
+            final int formatId = rs.getInt(1);
+            int gtridLength = rs.getInt(2);
+            int bqualLength = rs.getInt(3);
+            byte[] gtridAndBqual = rs.getBytes(4);
+            final byte[] gtrid = new byte[gtridLength];
+            final byte[] bqual = new byte[bqualLength];
+            if (gtridAndBqual.length != (gtridLength + bqualLength)) {
+                throw new MysqlXAException(XAException.XA_RBPROTO, "Error while recovering XIDs from RM. GTRID and BQUAL are wrong sizes", null);
+            }
+            System.arraycopy(gtridAndBqual, 0, gtrid, 0, gtridLength);
+            System.arraycopy(gtridAndBqual, gtridLength, bqual, 0, bqualLength);
+            recoveredXidList.add(new MysqlXid(gtrid, bqual, formatId));
+        }
+    } catch (SQLException sqlEx) {
+        throw mapXAExceptionFromSQLException(sqlEx);
+    } finally {
+        if (rs != null) {
+            try {
+                rs.close();
+            } catch (SQLException sqlEx) {
+                throw mapXAExceptionFromSQLException(sqlEx);
+            }
+        }
+        if (stmt != null) {
+            try {
+                stmt.close();
+            } catch (SQLException sqlEx) {
+                throw mapXAExceptionFromSQLException(sqlEx);
+            }
+        }
+    }
+    int numXids = recoveredXidList.size();
+    Xid[] asXids = new Xid[numXids];
+    Object[] asObjects = recoveredXidList.toArray();
+    for (int i = 0; i < numXids; i++) {
+        asXids[i] = (Xid) asObjects[i];
+    }
+    return asXids;
+}

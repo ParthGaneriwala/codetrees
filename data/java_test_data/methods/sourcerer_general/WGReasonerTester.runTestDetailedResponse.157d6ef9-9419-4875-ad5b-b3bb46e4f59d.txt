@@ -1,0 +1,100 @@
+/**
+ * Run a single designated test.
+ * @param uri the uri of the test, as defined in the manifest file
+ * @param reasonerF the factory for the reasoner to be tested
+ * @param testcase the JUnit test case which is requesting this test
+ * @param configuration optional configuration information
+ * @return true if the test passes
+ * @throws IOException if one of the test files can't be found
+ * @throws RDFException if the test can't be found or fails internally
+ */
+public int runTestDetailedResponse(String uri, ReasonerFactory reasonerF, TestCase testcase, Resource configuration) throws IOException {
+    // Find the specification for the named test
+    Resource test = testManifest.getResource(uri);
+    testType = (Resource) test.getRequiredProperty(RDF.type).getObject();
+    if (!(testType.equals(NegativeEntailmentTest) || testType.equals(PositiveEntailmentTest))) {
+        throw new JenaException("Can't find test: " + uri);
+    }
+    Statement descriptionS = test.getProperty(descriptionP);
+    String description = (descriptionS == null) ? "no description" : descriptionS.getObject().toString();
+    String status = test.getRequiredProperty(statusP).getObject().toString();
+    logger.debug("WG test " + test.getURI() + " - " + status);
+    if (!status.equals("APPROVED")) {
+        return NOT_APPLICABLE;
+    }
+    // Skip the test designed for only non-datatype aware processors
+    for (int i = 0; i < blockedTests.length; i++) {
+        if (test.getURI().equals(blockedTests[i]))
+            return NOT_APPLICABLE;
+    }
+    // Load up the premise documents
+    Model premises = ModelFactory.createNonreifyingModel();
+    for (StmtIterator premisesI = test.listProperties(premiseDocumentP); premisesI.hasNext(); ) {
+        premises.add(loadFile(premisesI.nextStatement().getObject().toString()));
+    }
+    // Load up the conclusions document
+    Model conclusions = null;
+    Resource conclusionsRes = (Resource) test.getRequiredProperty(conclusionDocumentP).getObject();
+    Resource conclusionsType = (Resource) conclusionsRes.getRequiredProperty(RDF.type).getObject();
+    if (!conclusionsType.equals(FalseDocument)) {
+        conclusions = loadFile(conclusionsRes.toString());
+    }
+    // Construct the inferred graph
+    Reasoner reasoner = reasonerF.create(configuration);
+    InfGraph graph = reasoner.bind(premises.getGraph());
+    Model result = ModelFactory.createModelForGraph(graph);
+    // Check the results against the official conclusions
+    boolean correct = true;
+    int goodResult = PASS;
+    boolean noisy = !(baseDir.equals(DEFAULT_BASE_DIR) || ARPTests.internet);
+    if (testType.equals(PositiveEntailmentTest)) {
+        if (conclusions == null) {
+            // Check that the result is flagged as semantically invalid
+            correct = !graph.validate().isValid();
+            if (noisy) {
+                System.out.println("PositiveEntailmentTest of FalseDoc " + test.getURI() + (correct ? " - OK" : " - FAIL"));
+            }
+        } else {
+            correct = testConclusions(conclusions.getGraph(), result.getGraph());
+            if (!graph.validate().isValid()) {
+                correct = false;
+            }
+            if (noisy) {
+                System.out.println("PositiveEntailmentTest " + test.getURI() + (correct ? " - OK" : " - FAIL"));
+            }
+        }
+    } else {
+        goodResult = INCOMPLETE;
+        // A negative entailment check
+        if (conclusions == null) {
+            // Check the result is not flagged as invalid
+            correct = graph.validate().isValid();
+            if (noisy) {
+                System.out.println("NegativentailmentTest of FalseDoc " + test.getURI() + (correct ? " - OK" : " - FAIL"));
+            }
+        } else {
+            correct = !testConclusions(conclusions.getGraph(), result.getGraph());
+            if (noisy) {
+                System.out.println("NegativeEntailmentTest " + test.getURI() + (correct ? " - OK" : " - FAIL"));
+            }
+        }
+    }
+    // Debug output on failure
+    if (!correct) {
+        logger.debug("Premises: ");
+        for (StmtIterator i = premises.listStatements(); i.hasNext(); ) {
+            logger.debug("  - " + i.nextStatement());
+        }
+        logger.debug("Conclusions: ");
+        if (conclusions != null) {
+            for (StmtIterator i = conclusions.listStatements(); i.hasNext(); ) {
+                logger.debug("  - " + i.nextStatement());
+            }
+        }
+    }
+    // Signal the results
+    if (testcase != null) {
+        TestCase.assertTrue("Test: " + test + "\n" + description, correct);
+    }
+    return correct ? goodResult : FAIL;
+}

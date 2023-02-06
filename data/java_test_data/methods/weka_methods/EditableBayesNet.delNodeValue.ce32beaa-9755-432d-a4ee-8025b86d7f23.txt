@@ -1,0 +1,85 @@
+// addNodeValue
+public void delNodeValue(int nTargetNode, String sValue) throws Exception {
+    // update undo stack
+    if (m_bNeedsUndoAction) {
+        addUndoAction(new DelValueAction(nTargetNode, sValue));
+    }
+    Attribute att = m_Instances.attribute(nTargetNode);
+    int nCardinality = att.numValues();
+    ArrayList<String> values = new ArrayList<String>(nCardinality);
+    int nValue = -1;
+    for (int iValue = 0; iValue < nCardinality; iValue++) {
+        if (att.value(iValue).equals(sValue)) {
+            nValue = iValue;
+        } else {
+            values.add(att.value(iValue));
+        }
+    }
+    if (nValue < 0) {
+        // could not find value
+        throw new Exception("Node " + nTargetNode + " does not have value (" + sValue + ")");
+    }
+    replaceAtt(nTargetNode, att.name(), values);
+    // update distributions
+    Estimator[] distributions = m_Distributions[nTargetNode];
+    int nCard = values.size();
+    for (int iParent = 0; iParent < distributions.length; iParent++) {
+        DiscreteEstimatorBayes distribution = new DiscreteEstimatorBayes(nCard, 0);
+        double sum = 0;
+        for (int iValue = 0; iValue < nCard; iValue++) {
+            sum += distributions[iParent].getProbability(iValue);
+        }
+        if (sum > 0) {
+            for (int iValue = 0; iValue < nCard; iValue++) {
+                distribution.addValue(iValue, distributions[iParent].getProbability(iValue) / sum);
+            }
+        } else {
+            for (int iValue = 0; iValue < nCard; iValue++) {
+                distribution.addValue(iValue, 1.0 / nCard);
+            }
+        }
+        distributions[iParent] = distribution;
+    }
+    // update distributions of all children
+    for (int iNode = 0; iNode < getNrOfNodes(); iNode++) {
+        if (m_ParentSets[iNode].contains(nTargetNode)) {
+            ParentSet parentSet = m_ParentSets[iNode];
+            distributions = m_Distributions[iNode];
+            Estimator[] newDistributions = new Estimator[distributions.length * nCard / (nCard + 1)];
+            int iCurrentDist = 0;
+            int nParents = parentSet.getNrOfParents();
+            int[] values2 = new int[nParents];
+            // fill in the values
+            int nParentCard = parentSet.getFreshCardinalityOfParents(m_Instances) * (nCard + 1) / nCard;
+            int iTargetNode = 0;
+            while (parentSet.getParent(iTargetNode) != nTargetNode) {
+                iTargetNode++;
+            }
+            int[] nCards = new int[nParents];
+            for (int iParent = 0; iParent < nParents; iParent++) {
+                nCards[iParent] = getCardinality(parentSet.getParent(iParent));
+            }
+            nCards[iTargetNode]++;
+            for (int iPos = 0; iPos < nParentCard; iPos++) {
+                if (values2[iTargetNode] != nValue) {
+                    newDistributions[iCurrentDist++] = distributions[iPos];
+                }
+                // update values
+                int i = 0;
+                values2[i]++;
+                while (i < nParents && values2[i] == nCards[i]) {
+                    values2[i] = 0;
+                    i++;
+                    if (i < nParents) {
+                        values2[i]++;
+                    }
+                }
+            }
+            m_Distributions[iNode] = newDistributions;
+        }
+    }
+    // update evidence
+    if (getEvidence(nTargetNode) > nValue) {
+        setEvidence(nTargetNode, getEvidence(nTargetNode) - 1);
+    }
+}

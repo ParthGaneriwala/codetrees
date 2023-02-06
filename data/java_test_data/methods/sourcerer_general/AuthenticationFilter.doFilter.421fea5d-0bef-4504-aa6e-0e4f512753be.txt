@@ -1,0 +1,71 @@
+public void doFilter(ServletRequest sReq, ServletResponse sRes, FilterChain chain) throws IOException, ServletException {
+    HttpServletRequest request = (HttpServletRequest) sReq;
+    try {
+        RequestVisit requestVisit = (RequestVisit) request.getAttribute(RequestVisit.REQUEST_VISIT_KEY);
+        SessionVisit sessionVisit = (SessionVisit) request.getSession().getAttribute(SessionVisit.SESSION_VISIT_KEY);
+        /* Caso a URI seja para a named page de login, e
+             * caso exista o servidor de autentica��o externo informado:
+             *
+             * 1. Ent�o deve redirecionar para o servidor externo de autentica��o.
+             *    Para isso gera-se o output para o HTML diretamente, com um POST para o servidor externo.
+             *
+             * 2. Caso seja retorno do servidor externo de autentica��o, deve-se tratar o retorno,
+             *    cadastrando o usu�rio no e-Content e direcionando para a URI de destino anteriormente salva.
+             */
+        if (requestVisit.getRequestURI().indexOf("Users_Login.html") != -1 && authenticationServer != null && !sessionVisit.getUser().isAutenticated()) {
+            if (request.getParameter("MATRICULA") != null || request.getParameter("ERRO") != null) {
+                /* Caso 2: � resposta do servidor de autentica��o
+                     */
+                String erro = request.getParameter("ERRO");
+                if (erro != null && !"".equals(erro.trim())) {
+                    /* houve erro, ent�o mostra o erro na named page de login
+                         */
+                    LoginForm loginForm = new LoginForm();
+                    loginForm.getColErrorBean().add(new ErrorBean(1, erro));
+                    requestVisit.setBasicForm(loginForm);
+                } else {
+                    /* Usu�rio autenticado com sucesso,
+                         * autentica/cadastra no eContent e redireciona para a returnURI.
+                         */
+                    String matricula = request.getParameter("MATRICULA");
+                    String nome = request.getParameter("NOME");
+                    String lotacao = request.getParameter("LOTACAO");
+                    String username = request.getParameter("CHAVE");
+                    /* Verifica username no e-Content, e cadastra o usu�rio se ele n�o existir.
+                         */
+                    BusinessDelegate del = new BusinessDelegate();
+                    PessoaVO pessoaVO = del.LoginPetrobras(requestVisit.getPortalInfo().getPortalVO().getPorId().intValue(), nome, username, lotacao, request.getLocalAddr());
+                    // Armazena os dados do usu�rio logado na session
+                    sessionVisit.getUser().setPessoa(pessoaVO);
+                    sessionVisit.getUser().setUsername(username);
+                    sessionVisit.getUser().setChave(username);
+                    sessionVisit.getUser().setNome(nome);
+                    sessionVisit.getUser().setMatricula(matricula);
+                    sessionVisit.getUser().setLotacao(lotacao);
+                    sessionVisit.getUser().setAutenticated(true);
+                    /* Direciona para a return URL.
+                         */
+                    requestVisit.setRequestURI(sessionVisit.getReturnUrl());
+                }
+            } else {
+                /* Caso 1: � nova solicita��o de autentica��o.
+                     *         Grava a returnURI para posterior callback.
+                     */
+                WriteFullViewCodeToAuthenticationServer(Utils.GetBasePathWithoutContext(request) + requestVisit.getRequestURI(), sRes);
+                String returnUrl = request.getParameter("returnUrl");
+                if (returnUrl != null) {
+                    sessionVisit.setReturnUrl(returnUrl);
+                } else {
+                    // retornar� para a HOME
+                    sessionVisit.setReturnUrl(request.getContextPath());
+                }
+                // sai do filter, abortando toda a cadeia e retornando o output para o browser do usu�rio.
+                return;
+            }
+        }
+        // Executa pr�ximo filtro da sequ�ncia na cadeia de filtros
+        chain.doFilter(sReq, sRes);
+    } catch (Exception e) {
+        throw new ServletException("Erro em AuthenticationFilter", e);
+    }
+}

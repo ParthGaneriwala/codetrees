@@ -1,0 +1,102 @@
+private void deadCodeElimination() {
+    // First Create the inverse flow graph from the given control flow graph which is in SSA form
+    int numCFGNodes = controlFlowGraph.getNumNodes();
+    ControlFlowGraph reverseCFG = new ControlFlowGraph();
+    ControlFlowNode endNode = controlFlowGraph.getEndNode();
+    updateReverseCFG(endNode, reverseCFG);
+    // Now we have the SSA in the reverse form, create the dominator tree from it
+    DominatorCalculationContext dominatorCalculationContext = new DominatorCalculationContext(reverseCFG, reverseCFG.getStartNode());
+    dominatorCalculationContext.setLengauerTarjan();
+    DominatorTree dominatorTree = dominatorCalculationContext.getDominatorTree();
+    // Get the dominance frontiers - this will determine the reverse dominance frontier in the
+    // original flow graph
+    HashMap<ControlFlowNode, HashSet<ControlFlowNode>> reverseDominanceFrontiers = new HashMap<ControlFlowNode, HashSet<ControlFlowNode>>();
+    HashMap dominanceFrontiers = Utilities.getDominanceFrontiers(reverseCFG, dominatorTree);
+    Set entries = dominanceFrontiers.entrySet();
+    Iterator iter = entries.iterator();
+    while (iter.hasNext()) {
+        Map.Entry entry = (Map.Entry) iter.next();
+        ControlFlowNode cfNode = (ControlFlowNode) entry.getKey();
+        HashSet dfNodes = (HashSet) entry.getValue();
+        ControlFlowNode cfNodeOriginalFlowGraph = controlFlowGraph.getNodeWithName(cfNode.getName());
+        HashSet dfOriginal = new HashSet();
+        Iterator dfIter = dfNodes.iterator();
+        while (dfIter.hasNext()) {
+            ControlFlowNode dfMember = (ControlFlowNode) dfIter.next();
+            ControlFlowNode cfNodeOriginalFlowGraphMember = controlFlowGraph.getNodeWithName(dfMember.getName());
+            dfOriginal.add(cfNodeOriginalFlowGraphMember);
+        }
+        reverseDominanceFrontiers.put(cfNodeOriginalFlowGraph, dfOriginal);
+    }
+    // Get all critical operations
+    HashSet criticalOperations = getCriticalOperations();
+    System.out.println("Num of initial critical operations found = " + criticalOperations.size());
+    // Using the set of critical operations as a work-list, mark out other operations as critical
+    // that are dependent on already marked ones
+    HashSet<AssemblyInstruction> allCriticalOperations = new HashSet<AssemblyInstruction>();
+    while (criticalOperations.size() > 0) {
+        // Remove the first instruction
+        iter = criticalOperations.iterator();
+        AssemblyInstruction instr = (AssemblyInstruction) iter.next();
+        criticalOperations.remove(instr);
+        // Add to final list
+        allCriticalOperations.add(instr);
+        // Get the list of source variables; for each source, add the instruction that defines it;
+        // to get the instruction that defines it, use the use-def chain. There will be only
+        // one definition site since this is in SSA form
+        Vector srcList = instr.getSrcList();
+        if (srcList != null) {
+            for (int i = 0; i < srcList.size(); i++) {
+                Temp srcTemp = (Temp) srcList.elementAt(i);
+                AssemblyInstruction defSite = (AssemblyInstruction) useDefChain.get(srcTemp.toString());
+                if (defSite != null) {
+                    if (!allCriticalOperations.contains(defSite))
+                        criticalOperations.add(defSite);
+                    System.out.println("ADDING USEFUL OPERATION: " + defSite.getAssemCode(false));
+                    allCriticalOperations.add(defSite);
+                }
+            }
+        }
+        // For the block in which the instruction is located, get the reverse dominance frontiers;
+        // For each block in the frontier, get the last statement which could be a branch and mark it
+        ControlFlowNode nodeOfInstruction = controlFlowGraph.getCFNodeForQuadruple(instr);
+        HashSet<ControlFlowNode> reverseDF = reverseDominanceFrontiers.get(nodeOfInstruction);
+        if (reverseDF != null) {
+            // The node has a set of reverse dominance frontiers; iterate through them
+            // to identify the last statement (branch) in each of them
+            Iterator dfIter = reverseDF.iterator();
+            while (dfIter.hasNext()) {
+                ControlFlowNode dfMember = (ControlFlowNode) dfIter.next();
+                Vector instrsInNode = dfMember.getInstructions();
+                AssemblyInstruction lastInstr = (AssemblyInstruction) instrsInNode.lastElement();
+                if (lastInstr.getType() == AssemblyInstruction.CJUMP) {
+                    if (!allCriticalOperations.contains(lastInstr))
+                        criticalOperations.add(lastInstr);
+                    allCriticalOperations.add(lastInstr);
+                }
+            }
+        }
+    }
+    // Remove the list of instructions from the flow graph now, by iterating through each control flow node.
+    // Remove an instruction if it is in the not in the list of all critical operations AND it is neither
+    // a jump nor a label. Also, if the instruction a branch and is not a critical operation, replace the
+    // branch with a jump to the nearest marked postdominator
+    int numNodes = controlFlowGraph.getNumNodes();
+    for (int a = 0; a < numNodes; a++) {
+        ControlFlowNode cfNode = (ControlFlowNode) controlFlowGraph.getNode(a);
+        Vector instrsInNode = cfNode.getInstructions();
+        for (int i = 0; i < instrsInNode.size(); i++) {
+            AssemblyInstruction instr = (AssemblyInstruction) instrsInNode.elementAt(i);
+            if (!allCriticalOperations.contains(instr)) {
+                int type = instr.getType();
+                if (type == AssemblyInstruction.CJUMP) {
+                // Replace the branch with a jump to the nearest marked postdominator
+                } else if (!(type == AssemblyInstruction.LABEL || type == AssemblyInstruction.JUMP)) {
+                    System.out.println("REMOVING INSTRUCTION: " + instr.getAssemCode(false));
+                    instrsInNode.remove(instr);
+                    i--;
+                }
+            }
+        }
+    }
+}

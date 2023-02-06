@@ -1,0 +1,74 @@
+private void executeRequest(HttpMethod method) throws SAXException {
+    try {
+        if (getLogger().isDebugEnabled()) {
+            getLogger().debug("using preemptive-authentication=" + preemptive_authentication + ".");
+        }
+        client.getParams().setAuthenticationPreemptive(preemptive_authentication);
+        client.executeMethod(method.getHostConfiguration(), method, m_state);
+        super.contentHandler.startPrefixMapping(NS_PREFIX, NS_URI);
+        // start <response>
+        AttributesImpl atts = new AttributesImpl();
+        atts.addCDATAAttribute(TARGET_ATTR, m_target);
+        atts.addCDATAAttribute(METHOD_ATTR, m_method);
+        super.contentHandler.startElement(NS_URI, RESPONSE_TAG, qName(RESPONSE_TAG), atts);
+        atts.clear();
+        // <status>
+        atts.addCDATAAttribute(CODE_ATTR, String.valueOf(method.getStatusCode()));
+        atts.addCDATAAttribute(MSG_ATTR, method.getStatusText());
+        super.contentHandler.startElement(NS_URI, STATUS_TAG, qName(STATUS_TAG), atts);
+        atts.clear();
+        super.contentHandler.endElement(NS_URI, STATUS_TAG, qName(STATUS_TAG));
+        // <header>s
+        Header[] headers = method.getResponseHeaders();
+        for (int i = 0; i < headers.length; i++) {
+            atts.addCDATAAttribute(NAME_ATTR, headers[i].getName());
+            atts.addCDATAAttribute(VALUE_ATTR, headers[i].getValue());
+            super.contentHandler.startElement(NS_URI, HEADER_TAG, qName(HEADER_TAG), atts);
+            atts.clear();
+            super.contentHandler.endElement(NS_URI, HEADER_TAG, qName(HEADER_TAG));
+        }
+        // response <body>
+        final InputStream in = method.getResponseBodyAsStream();
+        if (in != null) {
+            String mimeType = null;
+            Header header = method.getResponseHeader("Content-Type");
+            if (header != null) {
+                mimeType = header.getValue();
+                int pos = mimeType.indexOf(';');
+                if (pos != -1) {
+                    mimeType = mimeType.substring(0, pos);
+                }
+            }
+            if (mimeType != null) {
+                if (mimeType.equals("text/plain")) {
+                    super.contentHandler.startElement(NS_URI, BODY_TAG, qName(BODY_TAG), atts);
+                    String error = IOUtils.toString(in, "UTF-8");
+                    super.contentHandler.characters(error.toCharArray(), 0, error.length());
+                    super.contentHandler.endElement(NS_URI, BODY_TAG, qName(BODY_TAG));
+                } else // Treat everything else as XML
+                {
+                    // if (mimeType.equals("text/xml") || mimeType.equals("application/xml")) {
+                    super.contentHandler.startElement(NS_URI, BODY_TAG, qName(BODY_TAG), atts);
+                    IncludeXMLConsumer consumer = new IncludeXMLConsumer(super.contentHandler);
+                    XMLizer xmlizer = null;
+                    try {
+                        xmlizer = (XMLizer) manager.lookup(XMLizer.ROLE);
+                        xmlizer.toSAX(in, mimeType, m_target, consumer);
+                    } catch (ServiceException ce) {
+                        throw new SAXException("Missing service dependency: " + XMLizer.ROLE, ce);
+                    } finally {
+                        manager.release(xmlizer);
+                    }
+                    super.contentHandler.endElement(NS_URI, BODY_TAG, qName(BODY_TAG));
+                }
+            }
+        }
+        // end <response>
+        super.contentHandler.endElement(NS_URI, RESPONSE_TAG, qName(RESPONSE_TAG));
+        super.contentHandler.endPrefixMapping(NS_PREFIX);
+    } catch (HttpException e) {
+        throw new SAXException("Error executing REST request. Server responded " + e.getReasonCode() + " (" + e.getReason() + ") - " + e.getMessage(), e);
+    } catch (IOException e) {
+        throw new SAXException("Error executing REST request", e);
+    }
+}

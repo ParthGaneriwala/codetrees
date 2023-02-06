@@ -1,0 +1,94 @@
+// ----------------------------------------------------------
+public static String explain(Throwable exception) {
+    String explanation = null;
+    String message = exception.getMessage();
+    if (exception instanceof org.xml.sax.SAXParseException || exception instanceof org.zkoss.util.IllegalSyntaxException) {
+        explanation = "This error indicates there is incorrect or " + "malformed textual markup in the page that is being " + "viewed.";
+        System.out.println("message:\n" + message);
+        if (message.matches("(?s).*must be followed by either attribute" + "\\s+specifications, \">\" or \"/>\".*")) {
+            explanation += "  Be sure that you have not accidentally " + "included any double quotes in your attribute values.  " + "A double quote (\") appearing inside an attribute " + "value must be written as &amp;quot;.";
+        }
+    } else if (exception instanceof org.zkoss.zk.ui.metainfo.PropertyNotFoundException && message != null) {
+        Matcher m = BAD_TAG_ATTRIBUTE.matcher(message);
+        if (m.matches()) {
+            String varName = m.group(1);
+            String tagName = m.group(2);
+            if (varName.length() > 0) {
+                varName = varName.substring(0, 1).toLowerCase() + varName.substring(1);
+            }
+            int pos = tagName.lastIndexOf('.');
+            if (pos > 0) {
+                tagName = tagName.substring(pos + 1);
+            }
+            if (tagName.length() > 0) {
+                tagName = tagName.substring(0, 1).toLowerCase() + tagName.substring(1);
+            }
+            if (varName.equals("onClick") || varName.equals("onChange")) {
+                explanation = "This error indicates that you have " + "incorrectly added an \"<code>" + varName + "</code>\" attribute on some tag when you should " + "have used a nested <code>&lt;attribute name=\"" + varName + "\"&gt;</code> child element instead, somewhere in " + "the page that is being viewed.";
+            } else {
+                message = "Unrecognized attribute " + varName + "on tag <" + tagName + ">";
+                explanation = "This error may indicate that you have " + "incorrectly used an attribute called \"<code>" + varName + "</code>\" on a &lt;" + tagName + "&gt; tag that does not support such " + "an attribute, somewhere in the " + "page that is being viewed.";
+            }
+        }
+    } else if (exception instanceof bsh.EvalError) {
+        // First, look for a broken @{...} expression serving as an rvalue
+        // Message should look like this if @{...} uses an undefined
+        // method:
+        // Sourced file: inline evaluation of: 1: _z_9rq_d_value.bean =
+        // foo.methodDoesNotExist(); : Error in method invocation:
+        // Method methodDoesNotExist() not found in class'Foo'
+        // System.out.println("Raw bsh message: " + exception.getMessage());
+        Matcher m = BAD_AT_EXPRESSION.matcher(exception.getMessage());
+        if (m.find()) {
+            String expression = m.group(1);
+            explanation = "This error was produced while evaluating " + "<code>@{" + expression + "}</code>, which is used to define the value of an " + "attribute on a tag somewhere in the page that is being " + "viewed.";
+            String remainder = exception.getMessage().substring(m.end()).trim();
+            m = METHOD_INVOCATION_MSG.matcher(remainder);
+            if (m.matches()) {
+                explanation = explanation + "  It means that you tried to call the method " + "<span style=\"color:red;font-weight:bold\"><code>" + m.group(1) + "</code></span> on an object of class <b><code>" + m.group(2) + "</code></b>, but that class does not define that " + "method.";
+            } else {
+                if (TOKEN_PARSING_EOF_MSG.matcher(remainder).matches() || PARSE_ERROR_MSG.matcher(remainder).matches()) {
+                    if (countOccurrences('"', expression) % 2 != 0) {
+                        explanation += "  Here, it appears that your " + "attribute expression may be missing (or " + "may have an extra) double quote.  Remember " + "that a double quote (\") appearing inside " + "an attribute value must be written as " + "&amp;quot;.";
+                    } else if (countOccurrences('\'', expression) % 2 != 0) {
+                        explanation += "  Here, it appears that your " + "attribute expression may be missing (or " + "may have an extra) single quote.";
+                    } else if (countOccurrences('(', expression) != countOccurrences(')', expression)) {
+                        explanation += "  Here, it appears that your " + "attribute expression does not have " + "balanced parentheses.";
+                    } else if (countOccurrences('[', expression) != countOccurrences(']', expression)) {
+                        explanation += "  Here, it appears that your " + "attribute expression does not have " + "balanced square brackets.";
+                    } else if (countOccurrences('{', expression) != countOccurrences('}', expression)) {
+                        explanation += "  Here, it appears that your " + "attribute expression does not have " + "balanced curly braces.";
+                    } else {
+                        explanation += "  It means that your attribute " + "expression has a punctuation error, such " + "as an unmatched delimiter.";
+                    }
+                } else {
+                    m = CANNOT_ACCESS_FIELD_MSG.matcher(remainder);
+                    if (m.find()) {
+                        String method = m.group(1);
+                        if (method.length() > 0) {
+                            method = "get" + Character.toUpperCase(method.charAt(0)) + method.substring(1) + "()";
+                        }
+                        explanation += "  It means that <b>there is no " + "method named <code>" + method + "</code></b> that can be used to evaluate " + "the attribute expression <code>@{" + expression + "}</code>.  Check that you have typed your " + "expression correctly, and that your class " + "defines the appropriate getter method.";
+                    }
+                }
+            }
+        } else {
+            if (VARIABLE_VALUE.matcher(message).find()) {
+                explanation = "This error was produced while evaluating " + "the value for a &lt;variable&gt; tag on your page.";
+            }
+            m = METHOD_INVOCATION_MSG.matcher(message);
+            if (m.find()) {
+                explanation = explanation + "  It means that you tried to call the method " + "<span style=\"color:red;font-weight:bold\"><code>" + m.group(1) + "</code></span> on an object of class <b><code>" + m.group(2) + "</code></b>, but that class does not define that " + "method.";
+            }
+        }
+        if (explanation == null) {
+            explanation = "This error was produced while evaluating Java " + "code that was embedded somewhere in your page.";
+        }
+    } else {
+        StackTraceElement[] elements = exception.getStackTrace();
+        if (elements != null && elements.length > 0 && elements[0].getFileName().equals("Reflect.java")) {
+            explanation = "This error was produced while evaluating java code embeded in your ZHTML page.";
+        }
+    }
+    return explanation;
+}

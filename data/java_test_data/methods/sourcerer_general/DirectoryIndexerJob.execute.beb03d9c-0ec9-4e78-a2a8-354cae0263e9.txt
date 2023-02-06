@@ -1,0 +1,42 @@
+public void execute(JobExecutionContext context) throws JobExecutionException {
+    // The RAM index is lazy loaded so that application startup is not blocked.
+    // The index can also be interrupted if the application needs to shutdown
+    // before the index is loaded.
+    SchedulerContext schedulerContext = null;
+    try {
+        schedulerContext = context.getScheduler().getContext();
+        ApplicationPrefs prefs = (ApplicationPrefs) schedulerContext.get("ApplicationPrefs");
+        ServletContext servletContext = (ServletContext) schedulerContext.get("ServletContext");
+        // @todo remove the servlet context and use the indexer
+        if (servletContext != null) {
+            IIndexerService indexer = IndexerFactory.getInstance().getIndexerService();
+            if (indexer == null) {
+                throw (new JobExecutionException("Indexer Configuration error: No indexer defined."));
+            }
+            // Determine the database connection to use
+            Connection db = null;
+            ConnectionPool commonCP = (ConnectionPool) servletContext.getAttribute(Constants.CONNECTION_POOL);
+            ConnectionElement ce = new ConnectionElement();
+            ce.setDriver(prefs.get(ApplicationPrefs.CONNECTION_DRIVER));
+            ce.setUrl(prefs.get(ApplicationPrefs.CONNECTION_URL));
+            ce.setUsername(prefs.get(ApplicationPrefs.CONNECTION_USER));
+            ce.setPassword(prefs.get(ApplicationPrefs.CONNECTION_PASSWORD));
+            // Setup the directory index
+            indexerContext = new IndexerContext(prefs);
+            indexerContext.setIndexType(Constants.INDEXER_DIRECTORY);
+            try {
+                db = commonCP.getConnection(ce, true);
+                indexer.initializeData(indexerContext, db);
+            } catch (Exception e) {
+                LOG.error("Could not load RAM index", e);
+            } finally {
+                commonCP.free(db);
+            }
+            // Tell the indexer it's ok to create other writers now
+            servletContext.setAttribute(Constants.DIRECTORY_INDEX_INITIALIZED, "true");
+        }
+    } catch (Exception e) {
+        e.printStackTrace(System.out);
+        throw new JobExecutionException(e.getMessage());
+    }
+}

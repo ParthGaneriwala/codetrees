@@ -1,0 +1,67 @@
+@Override
+public void visit(NodeTraversal t, Node n, Node parent) {
+    RefInfo refInfo = allRefInfo.get(n);
+    if (refInfo != null) {
+        Ref ref = refInfo.ref;
+        Name name = refInfo.name;
+        String fullName = name.getFullName();
+        switch(ref.type) {
+            case SET_FROM_GLOBAL:
+            case SET_FROM_LOCAL:
+                Node valParent = getValueParent(ref);
+                Node val = valParent.getLastChild();
+                if (valParent.getType() == Token.ASSIGN && name.isSimpleName() && name.getDeclaration() == ref) {
+                    // For defines, it's an error if a simple name is assigned
+                    // before it's declared
+                    compiler.report(t.makeError(val, INVALID_DEFINE_INIT_ERROR, fullName));
+                } else if (processDefineAssignment(t, fullName, val, valParent)) {
+                    // remove the assignment so that the variable is still declared,
+                    // but no longer assigned to a value, e.g.,
+                    // DEF_FOO = 5; // becomes "5;"
+                    // We can't remove the ASSIGN/VAR when we're still visiting its
+                    // children, so we'll have to come back later to remove it.
+                    refInfo.name.removeRef(ref);
+                    lvalueToRemoveLater = valParent;
+                }
+                break;
+            default:
+                if (t.inGlobalScope()) {
+                    // Treat this as a reference to a define in the global scope.
+                    // After this point, the define must not be reassigned,
+                    // or it's an error.
+                    DefineInfo info = assignableDefines.get(fullName);
+                    if (info != null) {
+                        setDefineInfoNotAssignable(info, t);
+                        assignableDefines.remove(fullName);
+                    }
+                }
+                break;
+        }
+    }
+    if (!t.inGlobalScope() && n.getJSDocInfo() != null && n.getJSDocInfo().isDefine()) {
+        // warn about @define annotations in local scopes
+        compiler.report(t.makeError(n, NON_GLOBAL_DEFINE_INIT_ERROR, ""));
+    }
+    if (lvalueToRemoveLater == n) {
+        lvalueToRemoveLater = null;
+        if (n.getType() == Token.ASSIGN) {
+            Node last = n.getLastChild();
+            n.removeChild(last);
+            parent.replaceChild(n, last);
+        } else {
+            Preconditions.checkState(n.getType() == Token.NAME);
+            n.removeChild(n.getFirstChild());
+        }
+        compiler.reportCodeChange();
+    }
+    if (n.getType() == Token.CALL) {
+        if (t.inGlobalScope()) {
+            // all the defines are at the top of the bundle.
+            for (DefineInfo info : assignableDefines.values()) {
+                setDefineInfoNotAssignable(info, t);
+            }
+            assignableDefines.clear();
+        }
+    }
+    updateAssignAllowedStack(n, false);
+}

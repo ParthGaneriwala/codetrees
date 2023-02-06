@@ -1,0 +1,57 @@
+@Override
+protected Result evaluate(final LogicContext context, final Integer patientId, final Map<String, Object> parameters) throws LogicException {
+    Result result = new Result();
+    // check if the caller already pass encounter list object in the parameter
+    Object encounters = parameters.get(EvaluableConstants.OBS_ENCOUNTER);
+    if (encounters == null) {
+        EncounterWithRestrictionRule encounterWithRestrictionRule = new EncounterWithStringRestrictionRule();
+        parameters.put(EvaluableConstants.ENCOUNTER_FETCH_SIZE, 1);
+        Result encounterResults = encounterWithRestrictionRule.eval(context, patientId, parameters);
+        if (CollectionUtils.isNotEmpty(encounterResults)) {
+            Result latestResult = encounterResults.latest();
+            encounters = Arrays.asList(latestResult.getResultObject());
+        }
+    }
+    // if the caller didn't pass any encounter list and we can't find any encounter in the database, then just ignore the rest of the process
+    if (encounters != null) {
+        parameters.put(EvaluableConstants.OBS_ENCOUNTER, encounters);
+        ObsWithRestrictionRule obsWithRestrictionRule = new ObsWithStringRestrictionRule();
+        // get the started
+        parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.PCP_PROPHYLAXIS_STARTED));
+        Result startedResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+        if (CollectionUtils.isNotEmpty(startedResults)) {
+            result.addAll(startedResults);
+        } else {
+            // process the plan when there's no started
+            parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.PCP_PROPHYLAXIS_PLAN));
+            parameters.put(EvaluableConstants.OBS_VALUE_CODED, Arrays.asList(EvaluableNameConstants.CONTINUE_REGIMEN, EvaluableNameConstants.REFILLED, EvaluableNameConstants.DOSING_CHANGE, EvaluableNameConstants.START_DRUGS));
+            Result planResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+            if (CollectionUtils.isNotEmpty(planResults)) {
+                // process the reported when there's a correct plan
+                parameters.remove(EvaluableConstants.OBS_VALUE_CODED);
+                parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.PATIENT_REPORTED_CURRENT_PCP_PROPHYLAXIS));
+                Result reportedResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+                Concept noneConcept = CacheUtils.getConcept(EvaluableNameConstants.NONE);
+                Integer counter = 0;
+                Boolean noneExists = Boolean.FALSE;
+                Result validReportedResults = new Result();
+                while (counter < reportedResults.size() && !noneExists) {
+                    Result reportedResult = reportedResults.get(counter++);
+                    // if we have none, then clear all reported
+                    if (!OpenmrsUtil.nullSafeEquals(reportedResult.toConcept(), noneConcept))
+                        validReportedResults.add(reportedResult);
+                    if (OpenmrsUtil.nullSafeEquals(reportedResult.toConcept(), noneConcept))
+                        noneExists = Boolean.TRUE;
+                }
+                if (!noneExists)
+                    result.addAll(validReportedResults);
+            }
+        }
+        // process the medication added
+        parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.MEDICATION_ADDED));
+        parameters.put(EvaluableConstants.OBS_VALUE_CODED, Arrays.asList(EvaluableNameConstants.DAPSONE, EvaluableNameConstants.TRIMETHOPRIM_AND_SULFAMETHOXAZOLE));
+        Result addedResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+        result.addAll(addedResults);
+    }
+    return result;
+}

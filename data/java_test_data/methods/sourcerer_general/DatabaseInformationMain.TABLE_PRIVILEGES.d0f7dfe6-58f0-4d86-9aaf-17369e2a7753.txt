@@ -1,0 +1,91 @@
+/*
+    WHERE ( GRANTEE IN ( 'PUBLIC', CURRENT_USER )
+    OR GRANTEE IN ( SELECT ROLE_NAME FROM ENABLED_ROLES )
+    OR GRANTOR = CURRENT_USER
+    OR GRANTOR IN ( SELECT ROLE_NAME FROM ENABLED_ROLES ) )
+
+*/
+final Table TABLE_PRIVILEGES(Session session) {
+    Table t = sysTables[TABLE_PRIVILEGES];
+    if (t == null) {
+        t = createBlankTable(sysTableHsqlNames[TABLE_PRIVILEGES]);
+        // not null
+        addColumn(t, "GRANTOR", SQL_IDENTIFIER);
+        // not null
+        addColumn(t, "GRANTEE", SQL_IDENTIFIER);
+        addColumn(t, "TABLE_CATALOG", SQL_IDENTIFIER);
+        addColumn(t, "TABLE_SCHEMA", SQL_IDENTIFIER);
+        // not null
+        addColumn(t, "TABLE_NAME", SQL_IDENTIFIER);
+        // not null
+        addColumn(t, "PRIVILEGE_TYPE", CHARACTER_DATA);
+        // not null
+        addColumn(t, "IS_GRANTABLE", YES_OR_NO);
+        addColumn(t, "WITH_HIERARCHY", YES_OR_NO);
+        // 
+        HsqlName name = HsqlNameManager.newInfoSchemaObjectName(sysTableHsqlNames[SEQUENCES].name, false, SchemaObject.INDEX);
+        t.createPrimaryKeyConstraint(name, new int[] { 0, 1, 2, 3, 4, 5, 6 }, false);
+        return t;
+    }
+    PersistentStore store = session.sessionData.getRowStore(t);
+    // calculated column values
+    String tableCatalog;
+    String tableSchema;
+    String tableName;
+    Grantee granteeObject;
+    String privilege;
+    // intermediate holders
+    Iterator tables;
+    Table table;
+    Object[] row;
+    // column number mappings
+    final int grantor = 0;
+    final int grantee = 1;
+    final int table_catalog = 2;
+    final int table_schema = 3;
+    final int table_name = 4;
+    final int privilege_type = 5;
+    final int is_grantable = 6;
+    final int with_hierarchy = 7;
+    OrderedHashSet grantees = session.getGrantee().getGranteeAndAllRolesWithPublic();
+    tables = allTables();
+    while (tables.hasNext()) {
+        table = (Table) tables.next();
+        tableName = table.getName().name;
+        tableCatalog = table.getCatalogName().name;
+        tableSchema = table.getSchemaName().name;
+        for (int i = 0; i < grantees.size(); i++) {
+            granteeObject = (Grantee) grantees.get(i);
+            OrderedHashSet rights = granteeObject.getAllDirectPrivileges(table);
+            OrderedHashSet grants = granteeObject.getAllGrantedPrivileges(table);
+            if (!grants.isEmpty()) {
+                grants.addAll(rights);
+                rights = grants;
+            }
+            for (int j = 0; j < rights.size(); j++) {
+                Right right = (Right) rights.get(j);
+                Right grantableRight = right.getGrantableRights();
+                for (int k = 0; k < Right.privilegeTypes.length; k++) {
+                    if (!right.canAccessFully(Right.privilegeTypes[k])) {
+                        continue;
+                    }
+                    privilege = Right.privilegeNames[k];
+                    row = t.getEmptyRowData();
+                    row[grantor] = right.getGrantor().getName().name;
+                    row[grantee] = right.getGrantee().getName().name;
+                    row[table_catalog] = tableCatalog;
+                    row[table_schema] = tableSchema;
+                    row[table_name] = tableName;
+                    row[privilege_type] = privilege;
+                    row[is_grantable] = right.getGrantee() == table.getOwner() || grantableRight.canAccessFully(Right.privilegeTypes[k]) ? "YES" : "NO";
+                    row[with_hierarchy] = "NO";
+                    try {
+                        t.insertSys(store, row);
+                    } catch (HsqlException e) {
+                    }
+                }
+            }
+        }
+    }
+    return t;
+}

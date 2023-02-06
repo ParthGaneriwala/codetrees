@@ -1,0 +1,93 @@
+public String bringUpToDate(boolean dirty, boolean upToDate) throws IOException, UnsupportedEncodingException, OWLOntologyCreationException, OWLOntologyChangeException, URISyntaxException {
+    // if the user must check for conflicts, return a status alert in this string
+    String messageString = null;
+    if (dirty) {
+        // dirty and outdated/up-to-date
+        // download the latest tag from the server
+        // new ontology manager for the temporary downloaded ontology
+        OWLOntologyManager tempManager = OWLManager.createOWLOntologyManager();
+        File tag = operationsClient.downloadLatestTag(localOntology);
+        OWLOntology tagOntology = tempManager.loadOntologyFromPhysicalURI(tag.toURI());
+        // generate diff: latest server's+mem
+        // what do I need to get from local to tag?
+        List<OWLAxiom> toAdd = generateDiff(localOntology, tagOntology);
+        // what do I need to get from tag to local?
+        List<OWLAxiom> toDelete = generateDiff(tagOntology, localOntology);
+        // keep memory copy loaded
+        // apply locally w/conf.res.
+        List<OWLOntologyChange> changesToApply = new ArrayList<OWLOntologyChange>();
+        for (OWLAxiom addMe : toAdd) {
+            // add first, then delete
+            changesToApply.add(new AddAxiom(localOntology, addMe));
+        }
+        for (OWLAxiom deleteMe : toDelete) {
+            changesToApply.add(new RemoveAxiom(localOntology, deleteMe));
+        }
+        // make sure we are recording changes here, because these will need to be published to server
+        changeMonitor.setEnabled(true);
+        // apply and save the changes in the ChangeMonitor
+        manager.applyChanges(changesToApply);
+        // no need to check for errors, if we already up to date, otherwise ask user to check for errors
+        if (upToDate)
+            messageString = null;
+        else
+            messageString = "Recovered from dirty local ontology.\n Integreated changes from latest version of the ontology on the server.\n Please check for any errors (dangling references, etc.) in the ontology.";
+        // clean up
+        tempManager.removeOntology(tagOntology.getURI());
+        tag.deleteOnExit();
+        // we are now garanteed to be stay clean (until Protege is quit and reloaded
+        isClean = true;
+    // no need to update version number manually, since this will have been done as part of the change synchronizing/diff from that downloaded tag
+    }
+    if (!dirty && !upToDate) {
+        // clean and outdated
+        // save monitored changes
+        List<OWLOntologyChange> changes = changeMonitor.getChanges();
+        List<OWLOntologyChange> copyOfChanges = new ArrayList<OWLOntologyChange>();
+        for (OWLOntologyChange change : changes) {
+            copyOfChanges.add(change);
+        }
+        // undo all changes
+        changeMonitor.undoAndDeleteChanges(manager);
+        // download missing server changes need to update to latest version
+        Long currentVersionCounter = changeMonitor.getLatestVersionNumber();
+        Long serverVersion = operationsClient.getLatestVersionNumber(localOntology);
+        // all changes from the server wrapped into one long list
+        List<OWLOntologyChange> serverChanges = new ArrayList<OWLOntologyChange>();
+        StringBuffer updateDetails = new StringBuffer();
+        while (currentVersionCounter < serverVersion) {
+            // start downloading latest version
+            currentVersionCounter++;
+            ChangeCapsule capsule = operationsClient.getSpecificChange(localOntology, currentVersionCounter);
+            // build string to notify user of all changes which have taken place
+            updateDetails.append("\n user: ");
+            updateDetails.append(capsule.getUsername());
+            updateDetails.append("; time: ");
+            updateDetails.append(capsule.getTimestamp());
+            updateDetails.append("; summary: ");
+            updateDetails.append(capsule.getSummary());
+            // collect all the changes into one long transaction (easy to undo in a single click of the back/undo button)
+            List<OWLOntologyChange> singleServerChange = capsule.getChangeOWL(manager);
+            serverChanges.addAll(singleServerChange);
+        }
+        // apply server changes to memory model
+        // disable monitoring of changes while integrating the changes from the server
+        changeMonitor.setEnabled(false);
+        manager.applyChanges(serverChanges);
+        // apply saved changes to memory model (i.e. redo what the undo removed earlier)
+        // re-enable change recording, because these re-applied changes haven't been published to the server yet
+        changeMonitor.setEnabled(true);
+        manager.applyChanges(copyOfChanges);
+        // (with conflict resolution, while monitoring)
+        // [now we are up-to-date]
+        // update annotation to match state of the ontology version
+        boolean successInVersionUpdate = updateVersionAnnotation(serverVersion);
+        // need to check for errors introduced during the re-application of the copyOfChanges
+        messageString = "The ontology has been updated with the following changes from the server:\n";
+        if (!successInVersionUpdate)
+            messageString += "(warning: ontology version annotation could not be updated)\n";
+        messageString += updateDetails;
+        messageString += "\n\nPlease check for any errors (dangling references, etc.) in the ontology";
+    }
+    return messageString;
+}

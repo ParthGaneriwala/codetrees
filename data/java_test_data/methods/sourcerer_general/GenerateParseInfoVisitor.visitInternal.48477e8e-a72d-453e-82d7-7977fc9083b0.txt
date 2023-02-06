@@ -1,0 +1,147 @@
+@Override
+protected void visitInternal(SoyFileNode node) {
+    if (node.getFilePath() == null) {
+        throw new SoySyntaxException("In order to generate parse info, all Soy files must have paths (file name is" + " extracted from the path).");
+    }
+    String javaClassName = soyFileToJavaClassNameMap.get(node);
+    // Collect the following:
+    // + all the partial template names of non-private templates,
+    // + all the param keys from all templates (including private),
+    // + for each param key, the list of templates that list it directly.
+    List<String> nonprivateTemplatePartialNames = Lists.newArrayList();
+    Set<String> allParamKeys = Sets.newHashSet();
+    LinkedHashMultimap<String, TemplateNode> paramKeyToTemplatesMultimap = LinkedHashMultimap.create();
+    for (TemplateNode template : node.getChildren()) {
+        if (!template.isPrivate()) {
+            nonprivateTemplatePartialNames.add(template.getPartialTemplateName());
+        }
+        for (SoyDocParam param : template.getSoyDocParams()) {
+            allParamKeys.add(param.key);
+            paramKeyToTemplatesMultimap.put(param.key, template);
+        }
+    }
+    // allParamKeysMap is a map from upper-underscore key to original key.
+    SortedMap<String, String> allParamKeysMap = Maps.newTreeMap();
+    for (String key : allParamKeys) {
+        String upperUnderscoreKey = convertToUpperUnderscore(key);
+        if (allParamKeysMap.containsKey(upperUnderscoreKey)) {
+            throw new SoySyntaxException("Cannot generate parse info because two param keys '" + allParamKeysMap.get(upperUnderscoreKey) + "' and '" + key + "' generate the same upper-underscore name '" + upperUnderscoreKey + "'.");
+        }
+        allParamKeysMap.put(upperUnderscoreKey, key);
+    }
+    ilb = new IndentedLinesBuilder(2);
+    // ------ Header ------
+    ilb.appendLine("// This file was automatically generated from ", node.getFileName(), ".");
+    ilb.appendLine("// Please don't edit this file by hand.");
+    ilb.appendLine();
+    ilb.appendLine("package ", javaPackage, ";");
+    ilb.appendLine();
+    ilb.appendLine("import com.google.common.collect.ImmutableList;");
+    ilb.appendLine("import com.google.common.collect.ImmutableMap;");
+    ilb.appendLine("import com.google.common.collect.ImmutableSortedSet;");
+    ilb.appendLine("import com.google.template.soy.parseinfo.SoyFileInfo;");
+    ilb.appendLine("import com.google.template.soy.parseinfo.SoyTemplateInfo;");
+    ilb.appendLine("import com.google.template.soy.parseinfo.SoyTemplateInfo.ParamRequisiteness;");
+    ilb.appendLine("import static ", "com.google.template.soy.parseinfo.SoyTemplateInfo.ParamRequisiteness.OPTIONAL;");
+    ilb.appendLine("import static ", "com.google.template.soy.parseinfo.SoyTemplateInfo.ParamRequisiteness.REQUIRED;");
+    // ------ Class start ------
+    ilb.appendLine();
+    ilb.appendLine();
+    appendJavadoc(ilb, "Soy parse info for " + node.getFileName() + ".", true, false);
+    ilb.appendLine("public class ", javaClassName, " extends SoyFileInfo {");
+    ilb.increaseIndent();
+    // ------ Params ------
+    ilb.appendLine();
+    ilb.appendLine();
+    ilb.appendLine("public static class Param {");
+    ilb.increaseIndent();
+    ilb.appendLine("private Param() {}");
+    ilb.appendLine();
+    for (Map.Entry<String, String> paramEntry : allParamKeysMap.entrySet()) {
+        String upperUnderscoreKey = paramEntry.getKey();
+        String key = paramEntry.getValue();
+        StringBuilder javadocSb = new StringBuilder();
+        javadocSb.append("Listed by ");
+        boolean isFirst = true;
+        for (TemplateNode template : paramKeyToTemplatesMultimap.get(key)) {
+            if (isFirst) {
+                isFirst = false;
+            } else {
+                javadocSb.append(", ");
+            }
+            javadocSb.append(template.getPartialTemplateName());
+            if (template.isPrivate()) {
+                javadocSb.append(" (private)");
+            }
+        }
+        javadocSb.append(".");
+        appendJavadoc(ilb, javadocSb.toString(), false, true);
+        ilb.appendLine("public static final String ", upperUnderscoreKey, " = \"", key, "\";");
+    }
+    ilb.decreaseIndent();
+    ilb.appendLine("}");
+    // ------ Templates ------
+    for (TemplateNode template : node.getChildren()) {
+        try {
+            visit(template);
+        } catch (SoySyntaxException sse) {
+            throw sse.setTemplateName(template.getTemplateName());
+        }
+    }
+    // ------ File info ------
+    ilb.appendLine();
+    ilb.appendLine();
+    // Constructor.
+    ilb.appendLine("private ", javaClassName, "() {");
+    ilb.increaseIndent();
+    ilb.appendLine("super(\"", node.getFileName(), "\",");
+    ilb.setIndentLen(ilb.getCurrIndentLen() + 6);
+    ilb.appendLine("\"", node.getNamespace(), "\",");
+    ilb.appendLine("ImmutableSortedSet.<String>of(");
+    ilb.increaseIndent();
+    ilb.increaseIndent();
+    boolean isFirst = true;
+    for (String upperUnderscoreKey : allParamKeysMap.keySet()) {
+        if (isFirst) {
+            isFirst = false;
+        } else {
+            ilb.append(",\n");
+        }
+        ilb.appendIndent().append("Param.").append(upperUnderscoreKey);
+    }
+    ilb.append("),").appendLineEnd();
+    ilb.decreaseIndent();
+    ilb.decreaseIndent();
+    ilb.appendLine("ImmutableList.<SoyTemplateInfo>of(");
+    ilb.increaseIndent();
+    ilb.increaseIndent();
+    isFirst = true;
+    for (String partialTemplateName : nonprivateTemplatePartialNames) {
+        if (isFirst) {
+            isFirst = false;
+        } else {
+            ilb.append(",\n");
+        }
+        ilb.appendIndent().append(convertToUpperUnderscore(partialTemplateName.substring(1)));
+    }
+    ilb.append("));").appendLineEnd();
+    ilb.decreaseIndent();
+    ilb.decreaseIndent();
+    ilb.setIndentLen(ilb.getCurrIndentLen() - 6);
+    ilb.decreaseIndent();
+    ilb.appendLine("}");
+    ilb.appendLine();
+    ilb.appendLine("private static final ", javaClassName, " __INSTANCE__ = new ", javaClassName, "();");
+    ilb.appendLine();
+    ilb.appendLine("public static ", javaClassName, " getInstance() {");
+    ilb.increaseIndent();
+    ilb.appendLine("return __INSTANCE__;");
+    ilb.decreaseIndent();
+    ilb.appendLine("}");
+    // ------ Class end ------
+    ilb.appendLine();
+    ilb.decreaseIndent();
+    ilb.appendLine("}");
+    generatedFiles.put(javaClassName + ".java", ilb.toString());
+    ilb = null;
+}

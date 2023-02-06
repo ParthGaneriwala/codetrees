@@ -1,0 +1,123 @@
+public void updateHeuristicMeasureBinaryTest(Instance instance) throws IademException {
+    if (!this.heuristicMeasureUpdated) {
+        double measureLower, measureUpper;
+        IademSplitCriterion measure = tree.getMeasure();
+        if (this.bestSplitSuggestion != null && this.bestSplitSuggestion.splitTest instanceof NominalAttributeBinaryTest) {
+            this.bestSplitSuggestion = null;
+        }
+        int // binary test
+        numberOfSplits = 2, numberOfTests = this.tree.getValuesOfNominalAttributes(this.attIndex, instance);
+        int numberOfClasses = instance.attribute(instance.classIndex()).numValues();
+        double[][][] classDistPerTestAndSplit_lower = new double[numberOfTests][numberOfSplits][numberOfClasses];
+        double[][][] classDistPerTestAndSplit_upper = new double[numberOfTests][numberOfSplits][numberOfClasses];
+        computeClassDistBinaryTest(classDistPerTestAndSplit_lower, classDistPerTestAndSplit_upper);
+        for (int k = 0; k < numberOfTests; k++) {
+            double[] sumPerSplit_lower = new double[numberOfSplits];
+            double[] availableErrorPerSplit = new double[numberOfSplits];
+            Arrays.fill(sumPerSplit_lower, 0.0);
+            for (int i = 0; i < numberOfSplits; i++) {
+                for (int j = 0; j < numberOfClasses; j++) {
+                    sumPerSplit_lower[i] += classDistPerTestAndSplit_lower[k][i][j];
+                }
+                availableErrorPerSplit[i] = 1.0 - sumPerSplit_lower[i];
+                if (availableErrorPerSplit[i] < 0.0) {
+                    if (Math.abs(availableErrorPerSplit[i]) < Iadem2.ERROR_MARGIN) {
+                        availableErrorPerSplit[i] = 0.0;
+                    } else {
+                        throw new IademException("NominalVirtualNode", "updateHeuristicMeasureBinaryTest", "Problems when calculating measures");
+                    }
+                }
+            }
+            double[] measurePerSplit_upper = new double[numberOfSplits];
+            double[] valueLevels = new double[numberOfSplits];
+            for (int i = 0; i < numberOfSplits; i++) {
+                ArrayList<Double> lot = new ArrayList<Double>();
+                lot.add(0.0);
+                lot.add(1.0);
+                ArrayList<Integer> hole = new ArrayList<Integer>();
+                hole.add(0);
+                for (int j = 0; j < numberOfClasses; j++) {
+                    IademCommonProcedures.insertLotsHoles(lot, hole, classDistPerTestAndSplit_lower[k][i][j], classDistPerTestAndSplit_upper[k][i][j]);
+                }
+                valueLevels[i] = IademCommonProcedures.computeLevel(lot, hole, availableErrorPerSplit[i]);
+            }
+            for (int i = 0; i < numberOfSplits; i++) {
+                ArrayList<Double> vectorToMeasure = new ArrayList<Double>();
+                for (int j = 0; j < numberOfClasses; j++) {
+                    double measureProb_uppper = Math.max(valueLevels[i], classDistPerTestAndSplit_lower[k][i][j]);
+                    measureProb_uppper = Math.min(classDistPerTestAndSplit_upper[k][i][j], measureProb_uppper);
+                    vectorToMeasure.add(measureProb_uppper);
+                }
+                measurePerSplit_upper[i] = measure.doMeasure(vectorToMeasure);
+            }
+            double[] measurePerSplit_lower = new double[numberOfSplits];
+            for (int i = 0; i < numberOfSplits; i++) {
+                double tmpAvailable = availableErrorPerSplit[i];
+                ArrayList<Integer> decOrderClassDist_upper = new ArrayList<Integer>();
+                ArrayList<Integer> unusedClasses = new ArrayList<Integer>();
+                for (int j = 0; j < numberOfClasses; j++) {
+                    unusedClasses.add(j);
+                }
+                double auxAvailable = availableErrorPerSplit[i];
+                for (int j = 0; j < numberOfClasses; j++) {
+                    if (auxAvailable < 0.0) {
+                        if (Math.abs(auxAvailable) < Iadem2.ERROR_MARGIN) {
+                            auxAvailable = 0.0;
+                        } else {
+                            throw new IademException("NominalVirtualNode", "updateHeuristicMeasureBinaryTest", "Problems when calculating measures");
+                        }
+                    }
+                    int classIndex = getClassProbabilities(i, unusedClasses, classDistPerTestAndSplit_lower[k], classDistPerTestAndSplit_upper[k], auxAvailable);
+                    double probUp = Math.min(classDistPerTestAndSplit_upper[k][i][classIndex], classDistPerTestAndSplit_lower[k][i][classIndex] + auxAvailable);
+                    auxAvailable -= (probUp - classDistPerTestAndSplit_lower[k][i][classIndex]);
+                    unusedClasses.remove(new Integer(classIndex));
+                    decOrderClassDist_upper.add(new Integer(classIndex));
+                }
+                ArrayList<Double> vectorToMeasure = new ArrayList<Double>();
+                for (int j = 0; j < decOrderClassDist_upper.size(); j++) {
+                    int classIndex = decOrderClassDist_upper.get(j);
+                    if (tmpAvailable < 0.0) {
+                        if (Math.abs(tmpAvailable) < Iadem2.ERROR_MARGIN) {
+                            tmpAvailable = 0.0;
+                        } else {
+                            throw new IademException("NominalVirtualNode", "updateHeuristicMeasureBinaryTest", "Problems when calculating measures");
+                        }
+                    }
+                    double probUp = Math.min(classDistPerTestAndSplit_upper[k][i][classIndex], classDistPerTestAndSplit_lower[k][i][classIndex] + tmpAvailable);
+                    tmpAvailable -= (probUp - classDistPerTestAndSplit_lower[k][i][classIndex]);
+                    vectorToMeasure.add(probUp);
+                }
+                measurePerSplit_lower[i] = measure.doMeasure(vectorToMeasure);
+            }
+            double dividendUpper = 0.0;
+            double dividendLower = 0.0;
+            double leftDivUpper = measurePerSplit_upper[0] * attValueDist.getValue(k), leftDivLower = measurePerSplit_lower[0] * attValueDist.getValue(k);
+            double divisor = classValueDist.sumOfValues(), rightTotal = divisor - attValueDist.getValue(k);
+            double rightDivUpper = measurePerSplit_upper[1] * rightTotal, rightDivLower = measurePerSplit_lower[1] * rightTotal;
+            dividendUpper = leftDivUpper + rightDivUpper;
+            dividendLower = leftDivLower + rightDivLower;
+            if (divisor != 0) {
+                measureLower = dividendLower / divisor;
+                measureUpper = dividendUpper / divisor;
+                if (this.bestSplitSuggestion == null) {
+                    DoubleVector tmpClassDist = this.nominalAttClassObserver.get(k);
+                    if (tmpClassDist != null) {
+                        // is it a useful split?
+                        NominalAttributeBinaryTest test = new IademNominalAttributeBinaryTest(this.attIndex, k);
+                        this.bestSplitSuggestion = new IademAttributeSplitSuggestion(test, new double[0][0], measureUpper, measureLower);
+                    }
+                } else // compete with multiway test
+                if (!this.onlyBinaryTest) {
+                    if ((measureUpper < this.bestSplitSuggestion.merit) || (measureUpper == this.bestSplitSuggestion.merit && measureLower < this.bestSplitSuggestion.getMeritLowerBound())) {
+                        DoubleVector tmpClassDist = this.nominalAttClassObserver.get(k);
+                        if (tmpClassDist != null) {
+                            // is it a useful split?
+                            NominalAttributeBinaryTest test = new IademNominalAttributeBinaryTest(this.attIndex, k);
+                            this.bestSplitSuggestion = new IademAttributeSplitSuggestion(test, new double[0][0], measureUpper, measureLower);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

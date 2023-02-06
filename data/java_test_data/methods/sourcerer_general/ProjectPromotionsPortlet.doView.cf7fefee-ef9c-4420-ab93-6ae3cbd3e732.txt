@@ -1,0 +1,91 @@
+public void doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    try {
+        // The JSP to show upon success
+        String defaultView = VIEW_PAGE;
+        // Determine the current user
+        User thisUser = PortalUtils.getUser(request);
+        // General display preferences
+        request.setAttribute(TITLE, request.getPreferences().getValue(PREF_TITLE, ""));
+        String limit = request.getPreferences().getValue(PREF_LIMIT, "-1");
+        String hasMoreURL = request.getPreferences().getValue(PREF_HAS_MORE_URL, null);
+        request.setAttribute(HAS_MORE_URL, hasMoreURL);
+        request.setAttribute(HAS_MORE_TITLE, request.getPreferences().getValue(PREF_HAS_MORE_TITLE, "more"));
+        // Check for a specific category
+        String categoryName = request.getPreferences().getValue(PREF_CATEGORY, "");
+        // Check any generated data
+        for (String event : PortalUtils.getDashboardPortlet(request).getConsumeDataEvents()) {
+            // Detects if another instance of this portlet is showing categories
+            if (event.toLowerCase().equals("category")) {
+                categoryName = (String) PortalUtils.getGeneratedData(request, event);
+            }
+        }
+        // Check the current project profile page if a category is not specified
+        Project project = null;
+        if (!StringUtils.hasText(categoryName)) {
+            project = PortalUtils.findProject(request);
+        }
+        // Use the valid categories
+        ProjectCategoryList categories = (ProjectCategoryList) request.getAttribute(Constants.REQUEST_TAB_CATEGORY_LIST);
+        request.setAttribute(PROJECT_CATEGORY_LIST, categories);
+        // Determine the actual category
+        int categoryId = -1;
+        if (StringUtils.hasText(categoryName)) {
+            // Use the current category
+            if ("${category}".equals(categoryName)) {
+                Project thisProject = PortalUtils.findProject(request);
+                if (thisProject != null) {
+                    categoryName = categories.getValueFromId(thisProject.getCategoryId());
+                }
+            }
+            categoryId = categories.size() > 0 ? categories.getIdFromValue(categoryName) : -1;
+        }
+        // Determine the database connection to use
+        Connection db = PortalUtils.useConnection(request);
+        // Ads to show - use paged data for sorting
+        PagedListInfo pagedListInfo = new PagedListInfo();
+        pagedListInfo.setItemsPerPage(limit);
+        pagedListInfo.setRandomOrder(true);
+        AdList adList = new AdList();
+        adList.setPagedListInfo(pagedListInfo);
+        if (project == null) {
+            adList.setInstanceId(PortalUtils.getInstance(request).getId());
+        }
+        adList.setGroupId(thisUser.getGroupId());
+        if (categoryId > -1) {
+            adList.setProjectCategoryId(categoryId);
+            adList.setOpenProjectsOnly(true);
+        } else if (project != null) {
+            adList.setProjectId(project.getId());
+        }
+        if (PortalUtils.getDashboardPortlet(request).isCached()) {
+            if (PortalUtils.canShowSensitiveData(request)) {
+                // Use the most generic settings since this portlet is cached
+                adList.setForParticipant(Constants.TRUE);
+            } else {
+                // Use the most generic settings since this portlet is cached
+                adList.setPublicProjects(Constants.TRUE);
+            }
+        } else {
+            // Use the current user's setting
+            thisUser = PortalUtils.getUser(request);
+            adList.setForUser(thisUser.getId());
+        }
+        adList.setCurrentAds(Constants.TRUE);
+        adList.setPublished(Constants.TRUE);
+        adList.setEnabled(Constants.TRUE);
+        adList.buildList(db);
+        request.setAttribute(PROJECT_AD_LIST, adList);
+        // Decide if the url to show more classifieds needs to be displayed
+        if (StringUtils.hasText(hasMoreURL) && adList.size() < pagedListInfo.getMaxRecords() && (project == null || ProjectUtils.hasAccess(project.getId(), thisUser, "project-ads-view"))) {
+            request.setAttribute(HAS_MORE, "true");
+        }
+        // JSP view
+        if (adList.size() > 0) {
+            PortletContext context = getPortletContext();
+            PortletRequestDispatcher requestDispatcher = context.getRequestDispatcher(defaultView);
+            requestDispatcher.include(request, response);
+        }
+    } catch (Exception e) {
+        throw new PortletException(e.getMessage());
+    }
+}

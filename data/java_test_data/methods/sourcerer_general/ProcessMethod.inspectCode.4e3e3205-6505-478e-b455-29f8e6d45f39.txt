@@ -1,0 +1,61 @@
+private static void inspectCode(ConstantPool constant_pool, JavaClass jClass, ArrayList<IClassFileParseHandler> handlerList, HashMap<String, java.lang.reflect.AccessibleObject> hashMapSynthetic, boolean isStaticBlock, boolean isParentSynthetic, Method methodBCEL, java.lang.reflect.AccessibleObject methodReflection, Code code) throws Exception {
+    if (code != null) {
+        LineNumberTable lineTable = code.getLineNumberTable();
+        String pkg = jClass.getPackageName();
+        String sourceFile = null;
+        if (pkg != null) {
+            sourceFile = jClass.getPackageName().replace(".", File.separator) + File.separator + jClass.getSourceFileName();
+        } else {
+            sourceFile = jClass.getSourceFileName();
+        }
+        int lineNumber = lineTable.getSourceLine(0);
+        Class classReflection = ClassLoaderBridge.loadClass(jClass.getClassName());
+        IMethodInfo methodInfo = MethodInfoImpl.newInstance(sourceFile, jClass.getFileName(), isStaticBlock, classReflection, methodReflection, methodBCEL, lineNumber);
+        // notify handlers
+        boolean doInspectMethod = true;
+        if (handlerList != null && (methodReflection instanceof java.lang.reflect.Method || methodReflection instanceof java.lang.reflect.Constructor)) {
+            for (IClassFileParseHandler handler : handlerList) {
+                if (!handler.handleStartMethod(methodInfo)) {
+                    doInspectMethod = false;
+                    break;
+                }
+            }
+        }
+        // through byte code
+        if (!doInspectMethod) {
+            return;
+        }
+        CodeException[] exceptionTable = code.getExceptionTable();
+        int[] exBranchPoint = null;
+        int[] exHandlerPoint = null;
+        if (exceptionTable.length > 0) {
+            exBranchPoint = new int[exceptionTable.length];
+            exHandlerPoint = new int[exceptionTable.length];
+            for (int n = 0; n < exceptionTable.length; n++) {
+                exBranchPoint[n] = exceptionTable[n].getStartPC();
+                exHandlerPoint[n] = exceptionTable[n].getHandlerPC();
+            }
+        }
+        // global references per code block
+        Queue<BranchState> branchQueue = new LinkedList<BranchState>();
+        HashMap<Integer, Type> runtimeVariableTable = new HashMap<Integer, Type>();
+        HashMap<Integer, Boolean> visitedByteOffsets = new HashMap<Integer, Boolean>();
+        // create initial branch
+        OperandStack stack = new OperandStack(code.getMaxStack());
+        LockStack lockInfo = new LockStack(methodBCEL.isSynchronized());
+        BranchState currBranch = new BranchState(stack, lockInfo, 0);
+        // add branch to queue
+        branchQueue.add(currBranch);
+        // that contains control flow (e.g. if/while/for/try)
+        while (branchQueue.peek() != null) {
+            currBranch = branchQueue.poll();
+            inspectCodeRecurse(exBranchPoint, exHandlerPoint, visitedByteOffsets, branchQueue, currBranch, runtimeVariableTable, jClass, handlerList, hashMapSynthetic, methodBCEL, methodReflection, lockInfo, methodInfo);
+        }
+        // notify handlers
+        if (handlerList != null && (methodReflection instanceof java.lang.reflect.Method || methodReflection instanceof java.lang.reflect.Constructor)) {
+            for (IClassFileParseHandler handler : handlerList) {
+                handler.handleStopMethod(methodInfo);
+            }
+        }
+    }
+}

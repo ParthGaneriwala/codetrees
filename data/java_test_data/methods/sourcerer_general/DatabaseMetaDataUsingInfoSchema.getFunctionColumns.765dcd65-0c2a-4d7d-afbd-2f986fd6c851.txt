@@ -1,0 +1,78 @@
+public ResultSet getFunctionColumns(String catalog, String schemaPattern, String functionNamePattern, String columnNamePattern) throws SQLException {
+    if (!this.conn.versionMeetsMinimum(5, 4, 0)) {
+        return super.getFunctionColumns(catalog, schemaPattern, functionNamePattern, columnNamePattern);
+    }
+    if (!this.hasParametersView) {
+        return super.getFunctionColumns(catalog, schemaPattern, functionNamePattern, columnNamePattern);
+    }
+    if ((functionNamePattern == null) || (functionNamePattern.length() == 0)) {
+        if (this.conn.getNullNamePatternMatchesAll()) {
+            functionNamePattern = "%";
+        } else {
+            throw SQLError.createSQLException("Procedure name pattern can not be NULL or empty.", SQLError.SQL_STATE_ILLEGAL_ARGUMENT, getExceptionInterceptor());
+        }
+    }
+    String db = null;
+    if (catalog == null) {
+        if (this.conn.getNullCatalogMeansCurrent()) {
+            db = this.database;
+        }
+    } else {
+        db = catalog;
+    }
+    // FIXME: Use DBMD constants when we leave Java5
+    // FUNCTION_CAT
+    // FUNCTION_SCHEM
+    // FUNCTION_NAME
+    // COLUMN_NAME
+    // COLUMN_TYPE
+    StringBuffer sqlBuf = new StringBuffer("SELECT SPECIFIC_SCHEMA AS FUNCTION_CAT, " + "NULL AS `FUNCTION_SCHEM`, " + "SPECIFIC_NAME AS `FUNCTION_NAME`, " + "PARAMETER_NAME AS `COLUMN_NAME`, " + "CASE WHEN PARAMETER_MODE = 'IN' THEN " + 1 + /* functionColumnIn */
+    " WHEN PARAMETER_MODE='OUT' THEN " + 3 + /* functionColumnOut */
+    " WHEN PARAMETER_MODE='INOUT' THEN " + 2 + /* functionColumnInOut */
+    " WHEN ORDINAL_POSITION=0 THEN " + 4 + /* functionReturn */
+    " ELSE " + 0 + /* functionColumnUnknown */
+    " END AS `COLUMN_TYPE`, ");
+    // DATA_TYPE
+    MysqlDefs.appendJdbcTypeMappingQuery(sqlBuf, "DATA_TYPE");
+    sqlBuf.append(" AS `DATA_TYPE`, ");
+    // TYPE_NAME
+    if (conn.getCapitalizeTypeNames()) {
+        sqlBuf.append("UPPER(CASE WHEN LOCATE('unsigned', DATA_TYPE) != 0 AND LOCATE('unsigned', DATA_TYPE) = 0 THEN CONCAT(DATA_TYPE, ' unsigned') ELSE DATA_TYPE END) AS `TYPE_NAME`,");
+    } else {
+        sqlBuf.append("CASE WHEN LOCATE('unsigned', DATA_TYPE) != 0 AND LOCATE('unsigned', DATA_TYPE) = 0 THEN CONCAT(DATA_TYPE, ' unsigned') ELSE DATA_TYPE END AS `TYPE_NAME`,");
+    }
+    // PRECISION</B> int => precision
+    sqlBuf.append("NUMERIC_PRECISION AS `PRECISION`, ");
+    // LENGTH</B> int => length in bytes of data
+    sqlBuf.append("CASE WHEN LCASE(DATA_TYPE)='date' THEN 10 WHEN LCASE(DATA_TYPE)='time' THEN 8 WHEN LCASE(DATA_TYPE)='datetime' THEN 19 WHEN LCASE(DATA_TYPE)='timestamp' THEN 19 WHEN CHARACTER_MAXIMUM_LENGTH IS NULL THEN NUMERIC_PRECISION WHEN CHARACTER_MAXIMUM_LENGTH > " + Integer.MAX_VALUE + " THEN " + Integer.MAX_VALUE + " ELSE CHARACTER_MAXIMUM_LENGTH END AS LENGTH, ");
+    // SCALE</B> short => scale
+    sqlBuf.append("NUMERIC_SCALE AS `SCALE`, ");
+    // RADIX</B> short => radix
+    sqlBuf.append("10 AS RADIX,");
+    // NULLABLE
+    // REMARKS
+    // CHAR_OCTET_LENGTH *
+    // ORDINAL_POSITION *
+    // IS_NULLABLE *
+    // SPECIFIC_NAME *
+    sqlBuf.append(2 + /* functionNullableUnknown */
+    " AS `NULLABLE`, " + " NULL AS `REMARKS`, " + "CHARACTER_OCTET_LENGTH AS `CHAR_OCTET_LENGTH`, " + " ORDINAL_POSITION, " + "'' AS `IS_NULLABLE`, " + "SPECIFIC_NAME " + "FROM INFORMATION_SCHEMA.PARAMETERS WHERE " + "SPECIFIC_SCHEMA LIKE ? AND SPECIFIC_NAME LIKE ? AND (PARAMETER_NAME LIKE ? OR PARAMETER_NAME IS NULL) " + "AND ROUTINE_TYPE='FUNCTION' ORDER BY SPECIFIC_SCHEMA, SPECIFIC_NAME, ORDINAL_POSITION");
+    java.sql.PreparedStatement pStmt = null;
+    try {
+        pStmt = prepareMetaDataSafeStatement(sqlBuf.toString());
+        if (db != null) {
+            pStmt.setString(1, db);
+        } else {
+            pStmt.setString(1, "%");
+        }
+        pStmt.setString(2, functionNamePattern);
+        pStmt.setString(3, columnNamePattern);
+        ResultSet rs = executeMetadataQuery(pStmt);
+        ((com.mysql.jdbc.ResultSetInternalMethods) rs).redefineFieldsForDBMD(createFunctionColumnsFields());
+        return rs;
+    } finally {
+        if (pStmt != null) {
+            pStmt.close();
+        }
+    }
+}

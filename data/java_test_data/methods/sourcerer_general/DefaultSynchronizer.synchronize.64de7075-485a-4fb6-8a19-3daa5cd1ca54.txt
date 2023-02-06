@@ -1,0 +1,155 @@
+public void synchronize() {
+    List<Post> posts = new LinkedList<Post>();
+    try {
+        trackers.clear();
+        for (City city : cityDao.findBySubscribed(true)) {
+            for (Category category : categoryDao.findBySubscribed(true)) {
+                if (log.isDebugEnabled()) {
+                    log.debug("creating " + city.getName() + "/" + category.getExternalName() + " worker");
+                }
+                ScrapCityCategoryWorker worker = new ScrapCityCategoryWorker(sessionFactory, city, category, spamDetector, postDao, imageDao, cityAreaDao);
+                if (log.isDebugEnabled()) {
+                    log.debug("submitting " + city.getName() + "/" + category.getExternalName() + " worker");
+                }
+                trackers.add(pool.submit(worker));
+                if (log.isDebugEnabled()) {
+                    log.debug("done submitting " + city.getName() + "/" + category.getExternalName() + " worker");
+                }
+            }
+        }
+    } catch (Exception e) {
+        StringWriter sw = new StringWriter();
+        e.printStackTrace(new PrintWriter(sw));
+        log.error(sw.toString());
+    } finally {
+        int count = 0;
+        for (Future<ScrapResult> f : trackers) {
+            try {
+                if (log.isDebugEnabled()) {
+                    log.debug("getting city/cat result " + count);
+                }
+                ScrapResult result = f.get();
+                if (log.isDebugEnabled()) {
+                    log.debug("received " + result.getCity().getName() + "/" + result.getCategory().getExternalName() + " result " + count);
+                }
+                if (result.isSucceeded()) {
+                    if (log.isDebugEnabled()) {
+                        StringBuffer sb = new StringBuffer();
+                        for (Post p : result.getPosts()) {
+                            sb.append(p.getClId()).append(" - ").append(p.getTitle()).append('\n');
+                        }
+                        log.debug("succeeded " + result.getCity().getName() + "/" + result.getCategory().getExternalName() + " result " + count + " posts:\n" + sb.toString());
+                    }
+                    posts.addAll(result.getPosts());
+                }
+                if (!result.isSucceeded() && result.getException() != null) {
+                    log.error("ScrapeWorker failed", result.getException());
+                }
+                count++;
+            } catch (Exception e) {
+                log.error(e);
+            }
+        }
+        trackers.clear();
+    }
+    List<Post> createdPosts = new LinkedList<Post>();
+    List<Post> updatedPosts = new LinkedList<Post>();
+    openSession();
+    try {
+        for (Post p : posts) {
+            if (log.isDebugEnabled()) {
+                log.debug("Processing post " + p.getClId() + " - " + p.getTitle());
+            }
+            refreshSession();
+            Post fetchedPost = postDao.findUniqueByClId(p.getClId());
+            if (fetchedPost == null && p.isSpam()) {
+                if (log.isDebugEnabled()) {
+                    log.debug("new post " + p.getClId() + " - " + p.getTitle());
+                }
+                createdPosts.add(p);
+            } else if (!p.isSpam() && !p.isFlagged()) {
+                if (fetchedPost != null) {
+                    p.setId(fetchedPost.getId());
+                }
+                if (log.isDebugEnabled()) {
+                    log.debug("scaping post " + p.getClId() + " - " + p.getTitle());
+                }
+                ScrapPostWorker worker = new ScrapPostWorker(sessionFactory, imagePath, p, spamDetector, postDao, imageDao, cityAreaDao);
+                if (log.isDebugEnabled()) {
+                    log.debug("submitting post " + p.getClId() + " - " + p.getTitle());
+                }
+                trackers.add(pool.submit(worker));
+                if (log.isDebugEnabled()) {
+                    log.debug("done submitting post " + p.getClId() + " - " + p.getTitle());
+                }
+            }
+        }
+    } catch (Exception e) {
+        StringWriter sw = new StringWriter();
+        e.printStackTrace(new PrintWriter(sw));
+        log.error(sw.toString());
+    } finally {
+        closeSession();
+        int count = 0;
+        for (Future<ScrapResult> f : trackers) {
+            try {
+                if (log.isDebugEnabled()) {
+                    log.debug("getting scrap result " + count);
+                }
+                ScrapResult result = f.get();
+                Post p = result.getPost();
+                if (log.isDebugEnabled()) {
+                    log.debug("received scrap result, post " + p.getClId() + " - " + p.getTitle());
+                }
+                if (result.isSucceeded()) {
+                    if (p.getId() == null) {
+                        if (log.isDebugEnabled()) {
+                            log.debug("new scrap post " + p.getClId() + " - " + p.getTitle());
+                        }
+                        createdPosts.add(p);
+                    } else {
+                        if (log.isDebugEnabled()) {
+                            log.debug("updated scrap post " + p.getClId() + " - " + p.getTitle());
+                        }
+                        updatedPosts.add(p);
+                    }
+                }
+                if (!result.isSucceeded() && result.getException() != null) {
+                    log.error("ScrapeWorker failed", result.getException());
+                }
+            } catch (Exception e) {
+                log.error(e);
+            }
+            count++;
+        }
+        trackers.clear();
+    }
+    openSession();
+    try {
+        for (Post p : createdPosts) {
+            if (log.isDebugEnabled()) {
+                log.debug("processing new post " + p.getClId() + " - " + p.getTitle());
+            }
+            for (Image i : p.getImages()) {
+                imageDao.create(i);
+            }
+            postDao.create(p);
+            if (log.isDebugEnabled()) {
+                log.debug("done processing new post " + p.getClId() + " - " + p.getTitle());
+            }
+        }
+        for (Post p : updatedPosts) {
+            if (log.isDebugEnabled()) {
+                log.debug("processing updated post " + p.getClId() + " - " + p.getTitle());
+            }
+            postDao.update(p);
+            if (log.isDebugEnabled()) {
+                log.debug("done processing updated post " + p.getClId() + " - " + p.getTitle());
+            }
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+    } finally {
+        closeSession();
+    }
+}

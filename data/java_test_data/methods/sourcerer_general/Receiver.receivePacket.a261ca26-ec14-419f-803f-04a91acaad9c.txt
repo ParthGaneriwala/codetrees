@@ -1,0 +1,104 @@
+synchronized void receivePacket() throws ConnectException {
+    DataMessage me;
+    try {
+        DatagramPacket dp = ds2.receive();
+        if (dp != null) {
+            if (conn.isConnected()) {
+                int ver = MessageCheck.checkVer(dp);
+                synchronized (availOb) {
+                    int sType = MessageCheck.checkSType(dp);
+                    if (ver == Config.ver) {
+                        conn.live();
+                        if (sType == peer.tools.MessageType.sType_DataMessage) {
+                            me = new DataMessage(dp);
+                            // System.out.println("Receive "+me.getSequence());
+                            conn.sender.sendAckDelay(me.getSequence());
+                            if (me.getSequence() > lastRead) {
+                                receiveTable.put(me.getSequence(), me);
+                                if (receiveTable.containsKey(lastRead + 1)) {
+                                    availOb.notify();
+                                }
+                                int miss = me.getSequence() - lastReceive;
+                                // �����ط��ж� ����
+                                if (miss >= 2) {
+                                    for (int i = 1; i < miss; i++) {
+                                        // System.out.println("addTask�ط�addTask�ط�addTask�ط�addTask�ط� "+(lastReceive+i));
+                                        Config.reSendMange.addTask(conn, lastReceive + i);
+                                    }
+                                }
+                                // ����ط��ж�
+                                Config.reSendMange.removeTask(conn, me.getSequence());
+                                // lastReceive�޸�
+                                if (miss >= 1) {
+                                    lastReceive = me.getSequence();
+                                }
+                            }
+                        } else if (sType == peer.tools.MessageType.sType_ALMessage) {
+                            ALMessage alm = new ALMessage(dp);
+                            int lastRead3 = alm.getLastRead();
+                            if (lastRead3 > lastRead2) {
+                                lastRead2 = lastRead3;
+                            }
+                            // System.out.println("Receive LastRead "+lastRead3);
+                            ArrayList ackList = alm.getHm();
+                            for (int i = 0; i < ackList.size(); i++) {
+                                int sequence = (Integer) ackList.get(i);
+                                if (conn.sender.unAckTable.containsKey(sequence)) {
+                                    addWin();
+                                }
+                                conn.sender.unAckTable.remove(sequence);
+                                conn.sender.sendTable.remove(sequence);
+                                if (checkWin()) {
+                                    conn.sender.play();
+                                }
+                            }
+                            if (checkWin()) {
+                                conn.sender.play();
+                            }
+                        } else if (sType == peer.tools.MessageType.sType_RDP_LiveMessage) {
+                            conn.live();
+                        } else if (sType == peer.tools.MessageType.sType_ReSendMessage) {
+                            ReSendMessage rsm = new ReSendMessage(dp);
+                            conn.sender.reSend(rsm.getSequence());
+                            reduceWin();
+                        } else if (sType == peer.tools.MessageType.sType_AskFillMessage) {
+                            AskFillMessage rfm = new AskFillMessage(dp);
+                            if (rfm.getSequence() <= lastRead | receiveTable.containsKey(rfm.getSequence())) {
+                                conn.sender.sendAckDelay(rfm.getSequence());
+                            // System.out.println("		AskFillMessage2222222222 "+rfm.getSequence());
+                            } else if (rfm.getSequence() > lastRead & !receiveTable.containsKey(rfm.getSequence())) {
+                                // System.out.println("		AskFillMessage11111111111 "+rfm.getSequence());
+                                ReSendMessage rsm2 = new ReSendMessage(conn, rfm.getSequence());
+                                rsm2.setDstAddress(conn.dstIp);
+                                rsm2.setDstPort(conn.dstPort);
+                                conn.sender.sendReSendMessage(rsm2);
+                            // System.out.println("sendReSendMessage1111111  "+rfm.getSequence());
+                            } else {
+                                System.out.println("AskFillMessage " + rfm.getSequence());
+                            }
+                        } else if (sType == peer.tools.MessageType.sType_CloseMessage) {
+                            conn.close2();
+                            synchronized (availOb) {
+                                availOb.notify();
+                            }
+                        } else {
+                        // System.out.println("δ�������ݰ� "+sType);
+                        }
+                    }
+                }
+            }
+        }
+    } catch (IOException e) {
+        e.printStackTrace();
+        conn.close2();
+        synchronized (availOb) {
+            availOb.notify();
+        }
+    } catch (ConnectException e) {
+        e.printStackTrace();
+        conn.close2();
+        synchronized (availOb) {
+            availOb.notify();
+        }
+    }
+}

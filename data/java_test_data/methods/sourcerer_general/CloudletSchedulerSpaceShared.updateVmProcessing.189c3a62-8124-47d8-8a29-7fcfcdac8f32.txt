@@ -1,0 +1,75 @@
+@Override
+public double updateVmProcessing(double currentTime, List<Double> mipsShare) {
+    setCurrentMipsShare(mipsShare);
+    // time since last update
+    double timeSpam = currentTime - getPreviousTime();
+    double capacity = 0.0;
+    int cpus = 0;
+    for (Double mips : mipsShare) {
+        // count the CPUs available to the VMM
+        capacity += mips;
+        if (mips > 0) {
+            cpus++;
+        }
+    }
+    currentCpus = cpus;
+    // average capacity of each cpu
+    capacity /= cpus;
+    for (ResCloudlet rcl : getCloudletExecList()) {
+        // each machine in the exec list has the same amount of cpu
+        rcl.updateCloudletFinishedSoFar((long) Math.ceil((capacity * timeSpam * rcl.getPesNumber())));
+    }
+    if (getCloudletExecList().size() == 0 && getCloudletWaitingList().size() == 0) {
+        // no more cloudlets in this scheduler
+        setPreviousTime(currentTime);
+        return 0.0;
+    }
+    // update each cloudlet
+    int finished = 0;
+    int cont = 0;
+    List<ResCloudlet> toRemove = new ArrayList<ResCloudlet>();
+    for (ResCloudlet rcl : getCloudletExecList()) {
+        if (rcl.getRemainingCloudletLength() == 0) {
+            // finished anyway, rounding issue...
+            toRemove.add(rcl);
+            cloudletFinish(rcl);
+            finished++;
+        }
+        cont++;
+    }
+    getCloudletExecList().removeAll(toRemove);
+    // for each finished cloudlet, add a new one from the waiting list
+    if (!getCloudletWaitingList().isEmpty()) {
+        for (int i = 0; i < finished; i++) {
+            toRemove.clear();
+            for (ResCloudlet rcl : getCloudletWaitingList()) {
+                if ((currentCpus - usedPes) >= rcl.getPesNumber()) {
+                    rcl.setCloudletStatus(Cloudlet.INEXEC);
+                    for (int k = 0; k < rcl.getPesNumber(); k++) {
+                        rcl.setMachineAndPeId(0, i);
+                    }
+                    getCloudletExecList().add(rcl);
+                    usedPes += rcl.getPesNumber();
+                    toRemove.add(rcl);
+                    break;
+                }
+            }
+            getCloudletWaitingList().removeAll(toRemove);
+        }
+    // for(cont)
+    }
+    // estimate finish time of cloudlets in the execution queue
+    double nextEvent = Double.MAX_VALUE;
+    for (ResCloudlet rcl : getCloudletExecList()) {
+        double remainingLength = rcl.getRemainingCloudletLength();
+        double estimatedFinishTime = currentTime + (remainingLength / (capacity * rcl.getPesNumber()));
+        if (estimatedFinishTime - currentTime < 0.1) {
+            estimatedFinishTime = currentTime + 0.1;
+        }
+        if (estimatedFinishTime < nextEvent) {
+            nextEvent = estimatedFinishTime;
+        }
+    }
+    setPreviousTime(currentTime);
+    return nextEvent;
+}

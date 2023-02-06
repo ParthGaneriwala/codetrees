@@ -1,0 +1,46 @@
+public synchronized Path getLocalPathForWrite(String pathStr, long size, Configuration conf) throws IOException {
+    confChanged(conf);
+    int numDirs = localDirs.length;
+    int numDirsSearched = 0;
+    // resolution results in a valid path on the dir being checked)
+    if (pathStr.startsWith("/")) {
+        pathStr = pathStr.substring(1);
+    }
+    Path returnPath = null;
+    if (size == -1) {
+        // do roulette selection: pick dir with probability
+        // proportional to available size
+        long[] availableOnDisk = new long[dirDF.length];
+        long totalAvailable = 0;
+        // build the "roulette wheel"
+        for (int i = 0; i < dirDF.length; ++i) {
+            availableOnDisk[i] = dirDF[i].getAvailable();
+            totalAvailable += availableOnDisk[i];
+        }
+        // "roll the ball" -- pick a directory
+        Random r = new java.util.Random();
+        long randomPosition = Math.abs(r.nextLong()) % totalAvailable;
+        int dir = 0;
+        while (randomPosition > availableOnDisk[dir]) {
+            randomPosition -= availableOnDisk[dir];
+            dir++;
+        }
+        dirNumLastAccessed = dir;
+        returnPath = createPath(pathStr);
+    } else {
+        while (numDirsSearched < numDirs && returnPath == null) {
+            long capacity = dirDF[dirNumLastAccessed].getAvailable();
+            if (capacity > size) {
+                returnPath = createPath(pathStr);
+            }
+            dirNumLastAccessed++;
+            dirNumLastAccessed = dirNumLastAccessed % numDirs;
+            numDirsSearched++;
+        }
+    }
+    if (returnPath != null) {
+        return returnPath;
+    }
+    // no path found
+    throw new DiskErrorException("Could not find any valid local " + "directory for " + pathStr);
+}

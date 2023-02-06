@@ -1,0 +1,59 @@
+public int submitAndMonitorJob() throws IOException {
+    if (jar_ != null && isLocalHadoop()) {
+        // getAbs became required when shell and subvm have different working dirs...
+        File wd = new File(".").getAbsoluteFile();
+        StreamUtil.unJar(new File(jar_), wd);
+    }
+    // if jobConf_ changes must recreate a JobClient
+    jc_ = new JobClient(jobConf_);
+    boolean error = true;
+    running_ = null;
+    String lastReport = null;
+    try {
+        running_ = jc_.submitJob(jobConf_);
+        jobId_ = running_.getID();
+        LOG.info("getLocalDirs(): " + Arrays.asList(jobConf_.getLocalDirs()));
+        LOG.info("Running job: " + jobId_);
+        jobInfo();
+        while (!running_.isComplete()) {
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+            }
+            running_ = jc_.getJob(jobId_);
+            String report = null;
+            report = " map " + Math.round(running_.mapProgress() * 100) + "%  reduce " + Math.round(running_.reduceProgress() * 100) + "%";
+            if (!report.equals(lastReport)) {
+                LOG.info(report);
+                lastReport = report;
+            }
+        }
+        if (!running_.isSuccessful()) {
+            jobInfo();
+            LOG.error("Job not Successful!");
+            return 1;
+        }
+        LOG.info("Job complete: " + jobId_);
+        LOG.info("Output: " + output_);
+        error = false;
+    } catch (FileNotFoundException fe) {
+        LOG.error("Error launching job , bad input path : " + fe.getMessage());
+        return 2;
+    } catch (InvalidJobConfException je) {
+        LOG.error("Error launching job , Invalid job conf : " + je.getMessage());
+        return 3;
+    } catch (FileAlreadyExistsException fae) {
+        LOG.error("Error launching job , Output path already exists : " + fae.getMessage());
+        return 4;
+    } catch (IOException ioe) {
+        LOG.error("Error Launching job : " + ioe.getMessage());
+        return 5;
+    } finally {
+        if (error && (running_ != null)) {
+            LOG.info("killJob...");
+            running_.killJob();
+        }
+        jc_.close();
+    }
+    return 0;
+}

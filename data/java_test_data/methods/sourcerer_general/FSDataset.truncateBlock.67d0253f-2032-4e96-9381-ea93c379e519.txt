@@ -1,0 +1,38 @@
+private static void truncateBlock(File blockFile, File metaFile, long oldlen, long newlen) throws IOException {
+    if (newlen == oldlen) {
+        return;
+    }
+    if (newlen > oldlen) {
+        throw new IOException("Cannout truncate block to from oldlen (=" + oldlen + ") to newlen (=" + newlen + ")");
+    }
+    DataChecksum dcs = BlockMetadataHeader.readHeader(metaFile).getChecksum();
+    int checksumsize = dcs.getChecksumSize();
+    int bpc = dcs.getBytesPerChecksum();
+    long n = (newlen - 1) / bpc + 1;
+    long newmetalen = BlockMetadataHeader.getHeaderSize() + n * checksumsize;
+    long lastchunkoffset = (n - 1) * bpc;
+    int lastchunksize = (int) (newlen - lastchunkoffset);
+    byte[] b = new byte[Math.max(lastchunksize, checksumsize)];
+    RandomAccessFile blockRAF = new RandomAccessFile(blockFile, "rw");
+    try {
+        // truncate blockFile
+        blockRAF.setLength(newlen);
+        // read last chunk
+        blockRAF.seek(lastchunkoffset);
+        blockRAF.readFully(b, 0, lastchunksize);
+    } finally {
+        blockRAF.close();
+    }
+    // compute checksum
+    dcs.update(b, 0, lastchunksize);
+    dcs.writeValue(b, 0, false);
+    // update metaFile
+    RandomAccessFile metaRAF = new RandomAccessFile(metaFile, "rw");
+    try {
+        metaRAF.setLength(newmetalen);
+        metaRAF.seek(newmetalen - checksumsize);
+        metaRAF.write(b, 0, checksumsize);
+    } finally {
+        metaRAF.close();
+    }
+}

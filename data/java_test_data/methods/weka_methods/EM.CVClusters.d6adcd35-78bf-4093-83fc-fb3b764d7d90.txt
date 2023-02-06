@@ -1,0 +1,91 @@
+private void CVClusters() throws Exception {
+    double CVLogLikely = -Double.MAX_VALUE;
+    double templl, tll;
+    boolean CVincreased = true;
+    m_num_clusters = 1;
+    int upperBoundMaxClusters = (m_upperBoundNumClustersCV > 0) ? m_upperBoundNumClustersCV : Integer.MAX_VALUE;
+    int num_clusters = m_num_clusters;
+    int i;
+    Random cvr;
+    Instances trainCopy;
+    int numFolds = (m_theInstances.numInstances() < m_cvFolds) ? m_theInstances.numInstances() : m_cvFolds;
+    boolean ok = true;
+    int seed = getSeed();
+    int restartCount = 0;
+    CLUSTER_SEARCH: while (CVincreased) {
+        if (num_clusters > upperBoundMaxClusters) {
+            break CLUSTER_SEARCH;
+        }
+        // theInstances.stratify(10);
+        CVincreased = false;
+        cvr = new Random(getSeed());
+        trainCopy = new Instances(m_theInstances);
+        trainCopy.randomize(cvr);
+        templl = 0.0;
+        for (i = 0; i < numFolds; i++) {
+            Instances cvTrain = trainCopy.trainCV(numFolds, i, cvr);
+            if (num_clusters > cvTrain.numInstances()) {
+                break CLUSTER_SEARCH;
+            }
+            Instances cvTest = trainCopy.testCV(numFolds, i);
+            m_rr = new Random(seed);
+            for (int z = 0; z < 10; z++) {
+                m_rr.nextDouble();
+            }
+            m_num_clusters = num_clusters;
+            EM_Init(cvTrain);
+            try {
+                iterate(cvTrain, false);
+            } catch (Exception ex) {
+                // catch any problems - i.e. empty clusters occurring
+                ex.printStackTrace();
+                // System.err.println("Restarting after CV training failure ("+num_clusters+" clusters");
+                seed++;
+                restartCount++;
+                ok = false;
+                if (restartCount > 5) {
+                    break CLUSTER_SEARCH;
+                }
+                break;
+            }
+            try {
+                tll = E(cvTest, false);
+            } catch (Exception ex) {
+                // catch any problems - i.e. empty clusters occurring
+                // ex.printStackTrace();
+                ex.printStackTrace();
+                // System.err.println("Restarting after CV testing failure ("+num_clusters+" clusters");
+                // throw new Exception(ex);
+                seed++;
+                restartCount++;
+                ok = false;
+                if (restartCount > 5) {
+                    break CLUSTER_SEARCH;
+                }
+                break;
+            }
+            if (m_verbose) {
+                System.out.println("# clust: " + num_clusters + " Fold: " + i + " Loglikely: " + tll);
+            }
+            templl += tll;
+        }
+        if (ok) {
+            restartCount = 0;
+            seed = getSeed();
+            templl /= numFolds;
+            if (m_verbose) {
+                System.out.println("===================================" + "==============\n# clust: " + num_clusters + " Mean Loglikely: " + templl + "\n================================" + "=================");
+            }
+            // if (templl > CVLogLikely) {
+            if (templl - CVLogLikely > m_minLogLikelihoodImprovementCV) {
+                CVLogLikely = templl;
+                CVincreased = true;
+                num_clusters++;
+            }
+        }
+    }
+    if (m_verbose) {
+        System.out.println("Number of clusters: " + (num_clusters - 1));
+    }
+    m_num_clusters = num_clusters - 1;
+}

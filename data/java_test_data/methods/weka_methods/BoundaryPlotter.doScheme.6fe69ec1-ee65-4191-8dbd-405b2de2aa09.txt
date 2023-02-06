@@ -1,0 +1,110 @@
+protected void doScheme(Classifier classifier, DensityBasedClusterer clust, Instances trainingData, int setNum, int maxSetNum) throws WekaException {
+    try {
+        m_osi = new BufferedImage(m_imageWidth, m_imageHeight, BufferedImage.TYPE_INT_RGB);
+        m_currentDescription = makeSchemeSpec(classifier != null ? classifier : clust, setNum, maxSetNum);
+        // notify listeners
+        getStepManager().logBasic("Starting new plot for " + m_currentDescription);
+        if (m_plotListener != null) {
+            m_plotListener.newPlotStarted(m_currentDescription);
+        }
+        Graphics m = m_osi.getGraphics();
+        m.fillRect(0, 0, m_imageWidth, m_imageHeight);
+        Classifier toTrainClassifier = null;
+        weka.clusterers.DensityBasedClusterer toTrainClusterer = null;
+        if (classifier != null) {
+            toTrainClassifier = (Classifier) AbstractClassifier.makeCopy(classifier);
+            toTrainClassifier.buildClassifier(trainingData);
+        } else {
+            int tempClassIndex = trainingData.classIndex();
+            trainingData.setClassIndex(-1);
+            toTrainClusterer = (DensityBasedClusterer) weka.clusterers.AbstractClusterer.makeCopy((weka.clusterers.Clusterer) clust);
+            toTrainClusterer.buildClusterer(trainingData);
+            trainingData.setClassIndex(tempClassIndex);
+        }
+        // populate the thread classifiers ready for parallel processing
+        if (toTrainClassifier != null) {
+            m_threadClassifiers = AbstractClassifier.makeCopies(toTrainClassifier, m_maxRowsInParallel);
+        } else {
+            m_threadClusterers = AbstractClusterer.makeCopies(toTrainClusterer, m_maxRowsInParallel);
+        }
+        m_threadGenerators = new DataGenerator[m_maxRowsInParallel];
+        SerializedObject so = new SerializedObject(m_dataGenerator);
+        for (int i = 0; i < m_maxRowsInParallel; i++) {
+            m_threadGenerators[i] = (DataGenerator) so.getObject();
+        }
+        int taskCount = 0;
+        List<Future<ExecutionResult<RowResult>>> results = new ArrayList<Future<ExecutionResult<RowResult>>>();
+        for (int i = 0; i < m_imageHeight; i++) {
+            if (taskCount < m_maxRowsInParallel) {
+                getStepManager().logDetailed("Launching task to compute image row " + i);
+                SchemeRowTask t = new SchemeRowTask(this);
+                t.setResourceIntensive(isResourceIntensive());
+                t.m_classifier = null;
+                t.m_clusterer = null;
+                if (toTrainClassifier != null) {
+                    t.m_classifier = m_threadClassifiers[taskCount];
+                } else {
+                    t.m_clusterer = (DensityBasedClusterer) m_threadClusterers[taskCount];
+                }
+                t.m_rowNum = i;
+                t.m_xAtt = m_xAttribute;
+                t.m_yAtt = m_yAttribute;
+                t.m_imageWidth = m_imageWidth;
+                t.m_imageHeight = m_imageHeight;
+                t.m_pixWidth = m_pixWidth;
+                t.m_pixHeight = m_pixHeight;
+                t.m_dataGenerator = m_threadGenerators[taskCount];
+                t.m_trainingData = trainingData;
+                t.m_minX = m_minX;
+                t.m_maxX = m_maxX;
+                t.m_minY = m_minY;
+                t.m_maxY = m_maxY;
+                t.m_numOfSamplesPerRegion = m_numSamplesPerRegion;
+                t.m_samplesBase = m_samplesBase;
+                results.add(getStepManager().getExecutionEnvironment().submitTask(t));
+                taskCount++;
+            } else {
+                // wait for running tasks
+                for (Future<ExecutionResult<RowResult>> r : results) {
+                    double[][] rowProbs = r.get().getResult().m_rowProbs;
+                    for (int j = 0; j < m_imageWidth; j++) {
+                        plotPoint(m_osi, j, r.get().getResult().m_rowNumber, rowProbs[j], j == m_imageWidth - 1);
+                    }
+                    getStepManager().statusMessage("Completed row " + r.get().getResult().m_rowNumber);
+                    getStepManager().logDetailed("Completed image row " + r.get().getResult().m_rowNumber);
+                }
+                results.clear();
+                taskCount = 0;
+                if (i != m_imageHeight - 1) {
+                    i--;
+                }
+                if (isStopRequested()) {
+                    return;
+                }
+            }
+        }
+        if (results.size() > 0) {
+            // wait for running tasks
+            for (Future<ExecutionResult<RowResult>> r : results) {
+                double[][] rowProbs = r.get().getResult().m_rowProbs;
+                for (int i = 0; i < m_imageWidth; i++) {
+                    plotPoint(m_osi, i, r.get().getResult().m_rowNumber, rowProbs[i], i == m_imageWidth - 1);
+                }
+                getStepManager().statusMessage("Completed row " + r.get().getResult().m_rowNumber);
+                getStepManager().logDetailed("Completed image row " + r.get().getResult().m_rowNumber);
+            }
+            if (isStopRequested()) {
+                return;
+            }
+        }
+        if (m_plotTrainingData) {
+            plotTrainingData(trainingData);
+        }
+        m_completedImages.put(m_currentDescription, m_osi);
+        Data imageOut = new Data(StepManager.CON_IMAGE, m_osi);
+        imageOut.setPayloadElement(StepManager.CON_AUX_DATA_TEXT_TITLE, m_currentDescription);
+        getStepManager().outputData(imageOut);
+    } catch (Exception ex) {
+        throw new WekaException(ex);
+    }
+}

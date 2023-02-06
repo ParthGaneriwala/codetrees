@@ -1,0 +1,57 @@
+private Iq handlePubSubPublish(JID from, XmlStanza stanza, Iq iq, PubSubExtension pubSubExtension) {
+    Iq iqResponse = null;
+    Iq.Type type = iq.getType();
+    if (type != Iq.Type.set) {
+        iqResponse = PacketUtils.createErrorIq(iq);
+        iqResponse.setError(new XmppError(XmppError.Condition.bad_request));
+        return iqResponse;
+    }
+    PubSubPublish pubSubPublish = (PubSubPublish) stanza;
+    RosterItemDbHelper rosterItemDbHelper = rosterItemDbHelperTracker.getRosterItemDbHelper();
+    if (rosterItemDbHelper != null) {
+        String node = pubSubPublish.getNode();
+        Message message = new Message();
+        JID fromBareJid = new JID(from.getNode(), from.getDomain(), null);
+        message.setFrom(fromBareJid);
+        message.setType(Message.Type.headline);
+        PubSubEventExtension event = new PubSubEventExtension();
+        PubSubItems pubSubItems = new PubSubItems(node);
+        for (PubSubPublish.Item publishItem : pubSubPublish.getItems()) {
+            PubSubItems.Item item = new PubSubItems.Item();
+            item.setPayload(publishItem.getPayload());
+            pubSubItems.addItem(item);
+        }
+        event.addStanza(pubSubItems);
+        message.addExtension(event);
+        RouteMessage routeMessage = new RouteMessage(PEPManager.this.getSubDomain());
+        routeMessage.setXmlStanza(message);
+        try {
+            RosterItem[] rosterItems = rosterItemDbHelper.getRosterItems(from.getNode());
+            for (RosterItem item : rosterItems) {
+                RosterItem.Subscription subs = item.getSubscription();
+                if (subs == RosterItem.Subscription.both || subs == RosterItem.Subscription.from) {
+                    message.setStanzaId(null);
+                    JID rosterJID = new JID(item.getRosterJID());
+                    message.setTo(rosterJID);
+                    if (rosterJID.getDomain().equals(PEPManager.this.getDomain())) {
+                        routeMessage.setToUserNode(rosterJID.getNode());
+                    }
+                    sendToRouter(routeMessage);
+                }
+            }
+            // owner's all resources
+            message.setStanzaId(null);
+            message.setTo(fromBareJid);
+            routeMessage.setToUserNode(from.getNode());
+            sendToRouter(routeMessage);
+            iqResponse = PacketUtils.createResultIq(iq);
+        } catch (Exception e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+        }
+    } else {
+        iqResponse = PacketUtils.createErrorIq(iq);
+        iqResponse.setError(new XmppError(XmppError.Condition.internal_server_error));
+    }
+    return iqResponse;
+}

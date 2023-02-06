@@ -1,0 +1,80 @@
+Table moveDefinition(Session session, int newType, ColumnSchema column, Constraint constraint, Index index, int colIndex, int adjust, OrderedHashSet dropConstraints, OrderedHashSet dropIndexes) {
+    boolean newPK = false;
+    if (constraint != null && constraint.constType == SchemaObject.ConstraintTypes.PRIMARY_KEY) {
+        newPK = true;
+    }
+    Table tn;
+    if (isText) {
+        tn = new TextTable(database, tableName, newType);
+        ((TextTable) tn).dataSource = ((TextTable) this).dataSource;
+        ((TextTable) tn).isReversed = ((TextTable) this).isReversed;
+        ((TextTable) tn).isConnected = ((TextTable) this).isConnected;
+    } else {
+        tn = new Table(database, tableName, newType);
+    }
+    if (tableType == TEMP_TABLE) {
+        tn.persistenceScope = persistenceScope;
+    }
+    for (int i = 0; i < columnCount; i++) {
+        ColumnSchema col = (ColumnSchema) columnList.get(i);
+        if (i == colIndex) {
+            if (column != null) {
+                tn.addColumn(column);
+            }
+            if (adjust <= 0) {
+                continue;
+            }
+        }
+        tn.addColumn(col);
+    }
+    if (columnCount == colIndex) {
+        tn.addColumn(column);
+    }
+    int[] pkCols = null;
+    if (hasPrimaryKey() && !dropConstraints.contains(getPrimaryConstraint().getName())) {
+        pkCols = primaryKeyCols;
+        pkCols = ArrayUtil.toAdjustedColumnArray(pkCols, colIndex, adjust);
+    } else if (newPK) {
+        pkCols = constraint.getMainColumns();
+    }
+    tn.createPrimaryKey(getIndex(0).getName(), pkCols, false);
+    for (int i = 1; i < indexList.length; i++) {
+        Index idx = indexList[i];
+        if (dropIndexes.contains(idx.getName())) {
+            continue;
+        }
+        int[] colarr = ArrayUtil.toAdjustedColumnArray(idx.getColumns(), colIndex, adjust);
+        idx = tn.createIndexStructure(idx.getName(), colarr, idx.getColumnDesc(), null, idx.isUnique(), idx.isConstraint(), idx.isForward());
+        tn.addIndex(session, idx);
+    }
+    if (index != null) {
+        tn.addIndex(session, index);
+    }
+    HsqlArrayList newList = new HsqlArrayList();
+    if (newPK) {
+        constraint.core.mainIndex = tn.indexList[0];
+        constraint.core.mainTable = tn;
+        constraint.core.mainTableName = tn.tableName;
+        newList.add(constraint);
+    }
+    for (int i = 0; i < constraintList.length; i++) {
+        Constraint c = constraintList[i];
+        if (dropConstraints.contains(c.getName())) {
+            continue;
+        }
+        c = c.duplicate();
+        c.updateTable(session, this, tn, colIndex, adjust);
+        newList.add(c);
+    }
+    if (!newPK && constraint != null) {
+        constraint.updateTable(session, this, tn, -1, 0);
+        newList.add(constraint);
+    }
+    tn.constraintList = new Constraint[newList.size()];
+    newList.toArray(tn.constraintList);
+    tn.updateConstraintLists();
+    tn.setBestRowIdentifiers();
+    tn.triggerList = triggerList;
+    tn.triggerLists = triggerLists;
+    return tn;
+}

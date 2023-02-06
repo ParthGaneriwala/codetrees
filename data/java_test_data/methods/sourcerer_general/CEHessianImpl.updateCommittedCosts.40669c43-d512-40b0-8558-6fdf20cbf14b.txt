@@ -1,0 +1,63 @@
+private void updateCommittedCosts(String subnum, int jcunique, Subcontract sub, boolean closeDb) throws SQLException {
+    ResultSet rs = cdb.dbQuery("select name from vendor where vennum = '" + sub.getAltCompanyId() + "'");
+    String who = "Unknown";
+    if (rs.first())
+        who = rs.getString(1);
+    rs.getStatement().close();
+    rs = cdb.dbQuery("select * from jcdetail where jcunique = " + jcunique + " and ponum = '" + subnum + "' and type = " + JC_DETAIL_COMMITTED, true);
+    if (!rs.isBeforeFirst()) {
+        insertCommittedCost(subnum, jcunique, JC_DETAIL_COMMITTED, who, sub, rs);
+        insertCommittedCost(subnum, jcunique, JC_DETAIL_COMMITT_BILL, who, sub, rs);
+    } else {
+        String phasenum, catnum;
+        Code code = sub.getCode();
+        boolean found = false;
+        while (rs.next()) {
+            phasenum = rs.getString("phasenum");
+            catnum = rs.getString("catnum");
+            if (phasenum.equals(code.getDivision()) && catnum.equals(code.getCostCode())) {
+                rs.updateDouble("cost", sub.getAmount());
+                rs.updateString("who", who);
+                found = true;
+            } else
+                rs.updateDouble("cost", 0);
+            rs.updateDate("dateposted", new java.sql.Date(System.currentTimeMillis()));
+            rs.updateRow();
+        }
+        // not found on our code insert it.
+        if (!found)
+            insertCommittedCost(subnum, jcunique, JC_DETAIL_COMMITTED, who, sub, rs);
+        rs.getStatement().close();
+        // Now we got to do committ bill.
+        rs = cdb.dbQuery("select phasenum, catnum, sum(cost) as amount from jcdetail where jcunique = " + jcunique + " and ponum = '" + subnum + "' and type = " + JC_DETAIL_COMMITT_BILL + " group by phasenum, catnum", true);
+        double amount;
+        Code oc;
+        found = false;
+        while (rs.next()) {
+            phasenum = rs.getString("phasenum");
+            catnum = rs.getString("catnum");
+            amount = rs.getDouble("amount");
+            if (phasenum.equals(code.getDivision()) && catnum.equals(code.getCostCode())) {
+                found = true;
+                if (log.isDebugEnabled())
+                    log.debug("found committed billing amount: " + amount + " new: " + sub.getAmount() + " insert neg amount? " + (amount > sub.getAmount()));
+                if (amount > sub.getAmount())
+                    insertCommittedCost(subnum, jcunique, JC_DETAIL_COMMITT_BILL, who, sub, -(amount - sub.getAmount()));
+                else if (sub.getAmount() > amount)
+                    insertCommittedCost(subnum, jcunique, JC_DETAIL_COMMITT_BILL, who, sub, sub.getAmount() - amount);
+            } else if (amount != 0) {
+                log.debug("Non zero amount on unexpected code committed billing cost, zeroing");
+                oc = new Code();
+                oc.setJobNum(code.getJobNum());
+                oc.setCostCode(catnum);
+                oc.setDivision(phasenum);
+                insertCommittedCost(subnum, jcunique, JC_DETAIL_COMMITT_BILL, who, sub, -amount, oc);
+            }
+        }
+        if (!found)
+            insertCommittedCost(subnum, jcunique, JC_DETAIL_COMMITT_BILL, who, sub);
+    }
+    rs.getStatement().close();
+    if (closeDb)
+        cdb.disconnect();
+}

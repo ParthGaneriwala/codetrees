@@ -1,0 +1,100 @@
+@Override
+public void buildEvaluator(Instances data) throws Exception {
+    int z, totalInstances;
+    Random r = new Random(m_seed);
+    // can evaluator handle data?
+    getCapabilities().testWithFail(data);
+    m_trainInstances = data;
+    m_classIndex = m_trainInstances.classIndex();
+    m_numAttribs = m_trainInstances.numAttributes();
+    m_numInstances = m_trainInstances.numInstances();
+    if (m_trainInstances.attribute(m_classIndex).isNumeric()) {
+        m_numericClass = true;
+    } else {
+        m_numericClass = false;
+    }
+    if (!m_numericClass) {
+        m_numClasses = m_trainInstances.attribute(m_classIndex).numValues();
+    } else {
+        m_ndc = 0;
+        m_numClasses = 1;
+        m_nda = new double[m_numAttribs];
+        m_ndcda = new double[m_numAttribs];
+    }
+    if (// set up the rank based weights
+    m_weightByDistance) {
+        m_weightsByRank = new double[m_Knn];
+        for (int i = 0; i < m_Knn; i++) {
+            m_weightsByRank[i] = Math.exp(-((i / (double) m_sigma) * (i / (double) m_sigma)));
+        }
+    }
+    // the final attribute weights
+    m_weights = new double[m_numAttribs];
+    // num classes (1 for numeric class) knn neighbours,
+    // and 0 = distance, 1 = instance index
+    m_karray = new double[m_numClasses][m_Knn][2];
+    if (!m_numericClass) {
+        m_classProbs = new double[m_numClasses];
+        for (int i = 0; i < m_numInstances; i++) {
+            if (!m_trainInstances.instance(i).classIsMissing()) {
+                m_classProbs[(int) m_trainInstances.instance(i).value(m_classIndex)]++;
+            }
+        }
+        for (int i = 0; i < m_numClasses; i++) {
+            m_classProbs[i] /= m_numInstances;
+        }
+    }
+    m_worst = new double[m_numClasses];
+    m_index = new int[m_numClasses];
+    m_stored = new int[m_numClasses];
+    m_minArray = new double[m_numAttribs];
+    m_maxArray = new double[m_numAttribs];
+    for (int i = 0; i < m_numAttribs; i++) {
+        m_minArray[i] = m_maxArray[i] = Double.NaN;
+    }
+    for (int i = 0; i < m_numInstances; i++) {
+        updateMinMax(m_trainInstances.instance(i));
+    }
+    if ((m_sampleM > m_numInstances) || (m_sampleM < 0)) {
+        totalInstances = m_numInstances;
+    } else {
+        totalInstances = m_sampleM;
+    }
+    // process each instance, updating attribute weights
+    for (int i = 0; i < totalInstances; i++) {
+        if (totalInstances == m_numInstances) {
+            z = i;
+        } else {
+            z = r.nextInt() % m_numInstances;
+        }
+        if (z < 0) {
+            z *= -1;
+        }
+        if (!(m_trainInstances.instance(z).isMissing(m_classIndex))) {
+            // first clear the knn and worst index stuff for the classes
+            for (int j = 0; j < m_numClasses; j++) {
+                m_index[j] = m_stored[j] = 0;
+                for (int k = 0; k < m_Knn; k++) {
+                    m_karray[j][k][0] = m_karray[j][k][1] = 0;
+                }
+            }
+            findKHitMiss(z);
+            if (m_numericClass) {
+                updateWeightsNumericClass(z);
+            } else {
+                updateWeightsDiscreteClass(z);
+            }
+        }
+    }
+    // System.out.println("num inst:"+m_numInstances+" r_ndc:"+r_ndc);
+    for (int i = 0; i < m_numAttribs; i++) {
+        if (i != m_classIndex) {
+            if (m_numericClass) {
+                m_weights[i] = m_ndcda[i] / m_ndc - ((m_nda[i] - m_ndcda[i]) / (totalInstances - m_ndc));
+            } else {
+                m_weights[i] *= (1.0 / totalInstances);
+            }
+        // System.out.println(r_weights[i]);
+        }
+    }
+}

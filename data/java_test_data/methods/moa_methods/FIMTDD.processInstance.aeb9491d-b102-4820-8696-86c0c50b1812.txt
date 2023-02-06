@@ -1,0 +1,67 @@
+public void processInstance(Instance inst, Node node, double prediction, double normalError, boolean growthAllowed, boolean inAlternate) {
+    Node currentNode = node;
+    while (true) {
+        if (currentNode instanceof LeafNode) {
+            ((LeafNode) currentNode).learnFromInstance(inst, growthAllowed);
+            break;
+        } else {
+            currentNode.examplesSeen += inst.weight();
+            currentNode.sumOfAbsErrors += inst.weight() * normalError;
+            SplitNode iNode = (SplitNode) currentNode;
+            if (!inAlternate && iNode.alternateTree != null) {
+                boolean altTree = true;
+                double lossO = Math.pow(inst.classValue() - prediction, 2);
+                double lossA = Math.pow(inst.classValue() - iNode.alternateTree.getPrediction(inst), 2);
+                // Loop for compatibility with bagging methods
+                for (int i = 0; i < inst.weight(); i++) {
+                    iNode.lossFadedSumOriginal = lossO + alternateTreeFadingFactorOption.getValue() * iNode.lossFadedSumOriginal;
+                    iNode.lossFadedSumAlternate = lossA + alternateTreeFadingFactorOption.getValue() * iNode.lossFadedSumAlternate;
+                    iNode.lossExamplesSeen++;
+                    double Qi = Math.log((iNode.lossFadedSumOriginal) / (iNode.lossFadedSumAlternate));
+                    iNode.lossSumQi += Qi;
+                    iNode.lossNumQiTests += 1;
+                }
+                double Qi = Math.log((iNode.lossFadedSumOriginal) / (iNode.lossFadedSumAlternate));
+                double previousQiAverage = iNode.lossSumQi / iNode.lossNumQiTests;
+                double QiAverage = iNode.lossSumQi / iNode.lossNumQiTests;
+                if (iNode.lossExamplesSeen - iNode.previousWeight >= alternateTreeTMinOption.getValue()) {
+                    iNode.previousWeight = iNode.lossExamplesSeen;
+                    if (Qi > 0) {
+                        // Switch the subtrees
+                        Node parent = currentNode.getParent();
+                        if (parent != null) {
+                            Node replacementTree = iNode.alternateTree;
+                            parent.setChild(parent.getChildIndex(currentNode), replacementTree);
+                            if (growthAllowed)
+                                replacementTree.restartChangeDetection();
+                        } else {
+                            treeRoot = iNode.alternateTree;
+                            treeRoot.restartChangeDetection();
+                        }
+                        currentNode = iNode.alternateTree;
+                        currentNode.originalNode = null;
+                        altTree = false;
+                    } else if ((QiAverage < previousQiAverage && iNode.lossExamplesSeen >= (10 * this.gracePeriodOption.getValue())) || iNode.lossExamplesSeen >= alternateTreeTimeOption.getValue()) {
+                        // Remove the alternate tree
+                        iNode.alternateTree = null;
+                        if (growthAllowed)
+                            iNode.restartChangeDetection();
+                        altTree = false;
+                    }
+                }
+                if (altTree) {
+                    growthAllowed = false;
+                    processInstance(inst, iNode.alternateTree, prediction, normalError, true, true);
+                }
+            }
+            if (iNode.changeDetection && !inAlternate) {
+                if (iNode.PageHinckleyTest(normalError - iNode.sumOfAbsErrors / iNode.examplesSeen - PageHinckleyAlphaOption.getValue(), PageHinckleyThresholdOption.getValue())) {
+                    iNode.initializeAlternateTree();
+                }
+            }
+            if (currentNode instanceof SplitNode) {
+                currentNode = ((SplitNode) currentNode).descendOneStep(inst);
+            }
+        }
+    }
+}

@@ -1,0 +1,77 @@
+@SuppressWarnings({ "fallthrough", "nls" })
+private void doPhase1(CommonTree ast, QB qb, Phase1Ctx ctx_1) throws SemanticException {
+    QBParseInfo qbp = qb.getParseInfo();
+    boolean skipRecursion = false;
+    if (ast.getToken() != null) {
+        skipRecursion = true;
+        switch(ast.getToken().getType()) {
+            case HiveParser.TOK_SELECTDI:
+                qb.countSelDi();
+            // fall through
+            case HiveParser.TOK_SELECT:
+                qb.countSel();
+                qbp.setSelExprForClause(ctx_1.dest, ast);
+                HashMap<String, CommonTree> aggregations = doPhase1GetAggregationsFromSelect(ast);
+                qbp.setAggregationExprsForClause(ctx_1.dest, aggregations);
+                qbp.setDistinctFuncExprForClause(ctx_1.dest, doPhase1GetDistinctFuncExpr(aggregations));
+                break;
+            case HiveParser.TOK_WHERE:
+                {
+                    qbp.setWhrExprForClause(ctx_1.dest, ast);
+                }
+                break;
+            case HiveParser.TOK_DESTINATION:
+                {
+                    ctx_1.dest = "insclause-" + ctx_1.nextNum;
+                    ctx_1.nextNum++;
+                    qbp.setDestForClause(ctx_1.dest, (CommonTree) ast.getChild(0));
+                }
+                break;
+            case HiveParser.TOK_FROM:
+                {
+                    int child_count = ast.getChildCount();
+                    if (child_count != 1)
+                        throw new SemanticException("Multiple Children " + child_count);
+                    // Check if this is a subquery
+                    CommonTree frm = (CommonTree) ast.getChild(0);
+                    if (frm.getToken().getType() == HiveParser.TOK_TABREF)
+                        processTable(qb, frm);
+                    else if (frm.getToken().getType() == HiveParser.TOK_SUBQUERY)
+                        processSubQuery(qb, frm);
+                    else if (isJoinToken(frm)) {
+                        processJoin(qb, frm);
+                        qbp.setJoinExpr(frm);
+                    }
+                }
+                break;
+            case HiveParser.TOK_CLUSTERBY:
+                {
+                    // Get the clusterby aliases - these are aliased to the entries in the
+                    // select list
+                    qbp.setClusterByExprForClause(ctx_1.dest, ast);
+                }
+                break;
+            case HiveParser.TOK_GROUPBY:
+                {
+                    // select list
+                    if (qbp.getSelForClause(ctx_1.dest).getToken().getType() == HiveParser.TOK_SELECTDI) {
+                        throw new SemanticException(ErrorMsg.SELECT_DISTINCT_WITH_GROUPBY.getMsg(ast));
+                    }
+                    qbp.setGroupByExprForClause(ctx_1.dest, ast);
+                    skipRecursion = true;
+                }
+                break;
+            default:
+                skipRecursion = false;
+                break;
+        }
+    }
+    if (!skipRecursion) {
+        // Iterate over the rest of the children
+        int child_count = ast.getChildCount();
+        for (int child_pos = 0; child_pos < child_count; ++child_pos) {
+            // Recurse
+            doPhase1((CommonTree) ast.getChild(child_pos), qb, ctx_1);
+        }
+    }
+}

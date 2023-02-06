@@ -1,0 +1,98 @@
+@Override
+public void buildClassifier(Instances data) throws Exception {
+    // can classifier handle the data?
+    getCapabilities().testWithFail(data);
+    // remove instances with missing class
+    data = new Instances(data);
+    data.deleteWithMissingClass();
+    Random random = new Random(m_Seed);
+    m_zeroR = null;
+    if (data.numAttributes() == 1) {
+        m_zeroR = new ZeroR();
+        m_zeroR.buildClassifier(data);
+        return;
+    }
+    // Randomize and stratify
+    data.randomize(random);
+    if (data.classAttribute().isNominal()) {
+        data.stratify(m_NumFolds);
+    }
+    // Split data into training and pruning set
+    Instances train = null;
+    Instances prune = null;
+    if (!m_NoPruning) {
+        train = data.trainCV(m_NumFolds, 0, random);
+        prune = data.testCV(m_NumFolds, 0);
+    } else {
+        train = data;
+    }
+    // Create array of sorted indices and weights
+    int[][][] sortedIndices = new int[1][train.numAttributes()][0];
+    double[][][] weights = new double[1][train.numAttributes()][0];
+    double[] vals = new double[train.numInstances()];
+    for (int j = 0; j < train.numAttributes(); j++) {
+        if (j != train.classIndex()) {
+            weights[0][j] = new double[train.numInstances()];
+            if (train.attribute(j).isNominal()) {
+                // Handling nominal attributes. Putting indices of
+                // instances with missing values at the end.
+                sortedIndices[0][j] = new int[train.numInstances()];
+                int count = 0;
+                for (int i = 0; i < train.numInstances(); i++) {
+                    Instance inst = train.instance(i);
+                    if (!inst.isMissing(j)) {
+                        sortedIndices[0][j][count] = i;
+                        weights[0][j][count] = inst.weight();
+                        count++;
+                    }
+                }
+                for (int i = 0; i < train.numInstances(); i++) {
+                    Instance inst = train.instance(i);
+                    if (inst.isMissing(j)) {
+                        sortedIndices[0][j][count] = i;
+                        weights[0][j][count] = inst.weight();
+                        count++;
+                    }
+                }
+            } else {
+                // Sorted indices are computed for numeric attributes
+                for (int i = 0; i < train.numInstances(); i++) {
+                    Instance inst = train.instance(i);
+                    vals[i] = inst.value(j);
+                }
+                sortedIndices[0][j] = Utils.sort(vals);
+                for (int i = 0; i < train.numInstances(); i++) {
+                    weights[0][j][i] = train.instance(sortedIndices[0][j][i]).weight();
+                }
+            }
+        }
+    }
+    // Compute initial class counts
+    double[] classProbs = new double[train.numClasses()];
+    double totalWeight = 0, totalSumSquared = 0;
+    for (int i = 0; i < train.numInstances(); i++) {
+        Instance inst = train.instance(i);
+        if (data.classAttribute().isNominal()) {
+            classProbs[(int) inst.classValue()] += inst.weight();
+            totalWeight += inst.weight();
+        } else {
+            classProbs[0] += inst.classValue() * inst.weight();
+            totalSumSquared += inst.classValue() * inst.classValue() * inst.weight();
+            totalWeight += inst.weight();
+        }
+    }
+    m_Tree = new Tree();
+    double trainVariance = 0;
+    if (data.classAttribute().isNumeric()) {
+        trainVariance = m_Tree.singleVariance(classProbs[0], totalSumSquared, totalWeight) / totalWeight;
+        classProbs[0] /= totalWeight;
+    }
+    // Build tree
+    m_Tree.buildTree(sortedIndices, weights, train, totalWeight, classProbs, new Instances(train, 0), m_MinNum, m_MinVarianceProp * trainVariance, 0, m_MaxDepth);
+    // Insert pruning data and perform reduced error pruning
+    if (!m_NoPruning) {
+        m_Tree.insertHoldOutSet(prune);
+        m_Tree.reducedErrorPrune();
+        m_Tree.backfitHoldOutSet();
+    }
+}

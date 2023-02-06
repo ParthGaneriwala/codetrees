@@ -1,0 +1,147 @@
+// The thread's entry point.
+public void run() {
+    // An incoming message.
+    // /////////////////////
+    SpreadMessage message;
+    // A basic listener.
+    // //////////////////
+    BasicMessageListener basicListener;
+    // An advanced listener.
+    // //////////////////////
+    AdvancedMessageListener advancedListener;
+    // A buffered command.
+    // ////////////////////
+    Object command;
+    int previous_socket_timeout = 100;
+    try {
+        try {
+            previous_socket_timeout = connection.socket.getSoTimeout();
+            connection.socket.setSoTimeout(100);
+        } catch (SocketException e) {
+            // just ignore for now
+            System.out.println("socket error setting timeout" + e.toString());
+        }
+        while (true) {
+            // //////////////////////////////
+            synchronized (connection) {
+                // /////////////////////////
+                if (signal == true) {
+                    // We're done.
+                    // ////////////
+                    System.out.println("LISTENER: told to exit so returning");
+                    try {
+                        connection.socket.setSoTimeout(previous_socket_timeout);
+                    } catch (SocketException e) {
+                        // just ignore for now
+                        System.out.println("socket error setting timeout" + e.toString());
+                    }
+                    return;
+                }
+                // ///////////////
+                try {
+                    synchronized (rsynchro) {
+                        message = connection.internal_receive();
+                    }
+                    // Calling listeners.
+                    // ///////////////////
+                    callingListeners = true;
+                    // //////////////////////////////
+                    for (int i = 0; i < basicListeners.size(); i++) {
+                        // Get the listener.
+                        // //////////////////
+                        basicListener = (BasicMessageListener) basicListeners.elementAt(i);
+                        // Tell it.
+                        // /////////
+                        basicListener.messageReceived(message);
+                    }
+                    // /////////////////////////////////
+                    for (int i = 0; i < advancedListeners.size(); i++) {
+                        // Get the listener.
+                        // //////////////////
+                        advancedListener = (AdvancedMessageListener) advancedListeners.elementAt(i);
+                        // ////////////////////////////
+                        if (message.isRegular()) {
+                            // Tell it.
+                            // /////////
+                            advancedListener.regularMessageReceived(message);
+                        } else {
+                            // Tell it.
+                            // /////////
+                            advancedListener.membershipMessageReceived(message);
+                        }
+                    }
+                    // Done calling listeners.
+                    // ////////////////////////
+                    callingListeners = false;
+                } catch (InterruptedIOException e) {
+                // / Ignore
+                }
+                // ///////////////////////////
+                while (listenerBuffer.isEmpty() == false) {
+                    // Get the first command.
+                    // ///////////////////////
+                    command = listenerBuffer.firstElement();
+                    // Remove it from the list.
+                    // /////////////////////////
+                    listenerBuffer.removeElementAt(0);
+                    // //////////////////////////////////
+                    if (command == BUFFER_DISCONNECT) {
+                        // Disconnect.
+                        // ////////////
+                        connection.disconnect();
+                        // Don't execute any more commands.
+                        // /////////////////////////////////
+                        listenerBuffer.removeAllElements();
+                    } else if (command == BUFFER_ADD_BASIC) {
+                        // Get the listener.
+                        // //////////////////
+                        basicListener = (BasicMessageListener) listenerBuffer.firstElement();
+                        // Add it.
+                        // ////////
+                        connection.add(basicListener);
+                        // Remove the listener from the Vector.
+                        // /////////////////////////////////////
+                        listenerBuffer.removeElementAt(0);
+                    } else if (command == BUFFER_ADD_ADVANCED) {
+                        // Get the listener.
+                        // //////////////////
+                        advancedListener = (AdvancedMessageListener) listenerBuffer.firstElement();
+                        // Add it.
+                        // ////////
+                        connection.add(advancedListener);
+                        // Remove the listener from the Vector.
+                        // /////////////////////////////////////
+                        listenerBuffer.removeElementAt(0);
+                    } else if (command == BUFFER_REMOVE_BASIC) {
+                        // Get the listener.
+                        // //////////////////
+                        basicListener = (BasicMessageListener) listenerBuffer.firstElement();
+                        // Remove it.
+                        // ///////////
+                        connection.remove(basicListener);
+                        // Remove the listener from the Vector.
+                        // /////////////////////////////////////
+                        listenerBuffer.removeElementAt(0);
+                    } else if (command == BUFFER_REMOVE_ADVANCED) {
+                        // Get the listener.
+                        // //////////////////
+                        advancedListener = (AdvancedMessageListener) listenerBuffer.firstElement();
+                        // Remove it.
+                        // ///////////
+                        connection.remove(advancedListener);
+                        // Remove the listener from the Vector.
+                        // /////////////////////////////////////
+                        listenerBuffer.removeElementAt(0);
+                    }
+                }
+            }
+            // There are no messages waiting, take a break.
+            // /////////////////////////////////////////////
+            yield();
+        }
+    } catch (SpreadException e) {
+        // Nothing to do but ignore it.
+        // /////////////////////////////
+        System.out.println("SpreadException: " + e.toString());
+    }
+}

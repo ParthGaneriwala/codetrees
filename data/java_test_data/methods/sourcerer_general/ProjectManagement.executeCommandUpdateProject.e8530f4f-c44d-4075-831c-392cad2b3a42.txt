@@ -1,0 +1,58 @@
+public String executeCommandUpdateProject(ActionContext context) {
+    Project thisProject = (Project) context.getFormBean();
+    Project previousProject = null;
+    Connection db = null;
+    int resultCount = 0;
+    try {
+        db = this.getConnection(context);
+        thisProject.buildPermissionList(db);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-details-edit")) {
+            return "PermissionError";
+        }
+        thisProject.setModifiedBy(getUserId(context));
+        // Only allow projects to be set as public by those with authority
+        if (getUser(context).getAccessGuestProjects() || getUser(context).getAccessAdmin()) {
+            thisProject.getFeatures().setUpdateAllowGuests(true);
+            thisProject.getFeatures().setUpdateAllowParticipants(true);
+            thisProject.getFeatures().setUpdateMembershipRequired(true);
+        } else {
+            thisProject.getFeatures().setUpdateAllowGuests(false);
+            thisProject.getFeatures().setUpdateAllowParticipants(false);
+            thisProject.getFeatures().setUpdateMembershipRequired(false);
+        }
+        previousProject = ProjectUtils.loadProject(thisProject.getId());
+        resultCount = thisProject.update(db);
+        if (resultCount == -1) {
+            this.processErrors(context, thisProject.getErrors());
+            // Category List
+            ProjectCategoryList categoryList = new ProjectCategoryList();
+            categoryList.setEnabled(true);
+            categoryList.setTopLevelOnly(true);
+            categoryList.buildList(db);
+            context.getRequest().setAttribute("categoryList", categoryList);
+        } else if (resultCount == 1) {
+            // Only allow the system default to be set by the admin
+            if (getUser(context).getAccessAdmin() && thisProject.getSystemDefault()) {
+                thisProject.updateSystemDefault(db);
+            }
+            indexAddItem(context, ProjectUtils.loadProject(thisProject.getId()));
+        }
+    } catch (Exception errorMessage) {
+        context.getRequest().setAttribute("Error", errorMessage);
+        return ("SystemError");
+    } finally {
+        this.freeConnection(context, db);
+    }
+    // Results
+    if (resultCount == -1) {
+        context.getRequest().setAttribute("project", thisProject);
+        return ("ModifyProjectOK");
+    } else if (resultCount == 1) {
+        context.getRequest().setAttribute("project", thisProject);
+        processUpdateHook(context, previousProject, thisProject);
+        return ("UpdateProjectOK");
+    } else {
+        context.getRequest().setAttribute("Error", NOT_UPDATED_MESSAGE);
+        return ("UserError");
+    }
+}

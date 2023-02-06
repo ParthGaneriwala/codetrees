@@ -1,0 +1,53 @@
+private static void setupPipesJob(JobConf conf) throws IOException {
+    // default map output types to Text
+    if (!getIsJavaMapper(conf)) {
+        conf.setMapRunnerClass(PipesMapRunner.class);
+        // Save the user's partitioner and hook in our's.
+        setJavaPartitioner(conf, conf.getPartitionerClass());
+        conf.setPartitionerClass(PipesPartitioner.class);
+    }
+    if (!getIsJavaReducer(conf)) {
+        conf.setReducerClass(PipesReducer.class);
+        if (!getIsJavaRecordWriter(conf)) {
+            conf.setOutputFormat(NullOutputFormat.class);
+        }
+    }
+    String textClassname = Text.class.getName();
+    setIfUnset(conf, "mapred.mapoutput.key.class", textClassname);
+    setIfUnset(conf, "mapred.mapoutput.value.class", textClassname);
+    setIfUnset(conf, "mapred.output.key.class", textClassname);
+    setIfUnset(conf, "mapred.output.value.class", textClassname);
+    // from C++ RecordReaders ...
+    if (!getIsJavaRecordReader(conf) && !getIsJavaMapper(conf)) {
+        conf.setClass("mapred.pipes.user.inputformat", conf.getInputFormat().getClass(), InputFormat.class);
+        conf.setInputFormat(PipesNonJavaInputFormat.class);
+    }
+    String exec = getExecutable(conf);
+    if (exec == null) {
+        throw new IllegalArgumentException("No application program defined.");
+    }
+    // <path>#<executable>
+    if (exec.contains("#")) {
+        DistributedCache.createSymlink(conf);
+        // set default gdb commands for map and reduce task
+        String defScript = "$HADOOP_HOME/src/c++/pipes/debug/pipes-default-script";
+        setIfUnset(conf, "mapred.map.task.debug.script", defScript);
+        setIfUnset(conf, "mapred.reduce.task.debug.script", defScript);
+    }
+    URI[] fileCache = DistributedCache.getCacheFiles(conf);
+    if (fileCache == null) {
+        fileCache = new URI[1];
+    } else {
+        URI[] tmp = new URI[fileCache.length + 1];
+        System.arraycopy(fileCache, 0, tmp, 1, fileCache.length);
+        fileCache = tmp;
+    }
+    try {
+        fileCache[0] = new URI(exec);
+    } catch (URISyntaxException e) {
+        IOException ie = new IOException("Problem parsing execable URI " + exec);
+        ie.initCause(e);
+        throw ie;
+    }
+    DistributedCache.setCacheFiles(fileCache, conf);
+}

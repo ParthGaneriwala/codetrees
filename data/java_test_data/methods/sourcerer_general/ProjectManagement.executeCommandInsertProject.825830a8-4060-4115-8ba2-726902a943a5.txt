@@ -1,0 +1,51 @@
+public String executeCommandInsertProject(ActionContext context) {
+    if (getUser(context).getId() < 0) {
+        return "PermissionError";
+    }
+    if (!getUser(context).getAccessAddProjects()) {
+        return "PermissionError";
+    }
+    Connection db = null;
+    try {
+        db = getConnection(context);
+        Project thisProject = (Project) context.getFormBean();
+        thisProject.setInstanceId(getInstance(context).getId());
+        thisProject.setGroupId(getUser(context).getGroupId());
+        thisProject.setEnteredBy(getUserId(context));
+        thisProject.setModifiedBy(getUserId(context));
+        // Only allow projects to be set as public by those with authority
+        if (getUser(context).getAccessGuestProjects() || getUser(context).getAccessAdmin()) {
+            thisProject.getFeatures().setUpdateAllowGuests(true);
+            thisProject.getFeatures().setUpdateAllowParticipants(true);
+            thisProject.getFeatures().setUpdateMembershipRequired(true);
+        } else {
+            thisProject.getFeatures().setUpdateAllowGuests(false);
+            thisProject.getFeatures().setUpdateAllowParticipants(false);
+            thisProject.getFeatures().setUpdateMembershipRequired(false);
+        }
+        if (thisProject.insert(db)) {
+            CacheUtils.updateValue(Constants.SYSTEM_PROJECT_NAME_CACHE, thisProject.getId(), thisProject.getTitle());
+            indexAddItem(context, thisProject);
+            // Add the current user to the team
+            TeamMember thisMember = new TeamMember();
+            thisMember.setProjectId(thisProject.getId());
+            thisMember.setUserId(getUserId(context));
+            thisMember.setUserLevel(getUserLevel(TeamMember.PROJECT_ADMIN));
+            thisMember.setEnteredBy(getUserId(context));
+            thisMember.setModifiedBy(getUserId(context));
+            thisMember.insert(db);
+            // Go to the project
+            context.getRequest().setAttribute("project", thisProject);
+            processInsertHook(context, thisProject);
+            return "InsertProjectOK";
+        } else {
+            this.processErrors(context, thisProject.getErrors());
+            return (executeCommandAddProject(context));
+        }
+    } catch (Exception errorMessage) {
+        context.getRequest().setAttribute("Error", errorMessage);
+        return ("SystemError");
+    } finally {
+        freeConnection(context, db);
+    }
+}

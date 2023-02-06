@@ -1,0 +1,101 @@
+private byte[] readLine(ClientSocket client, ClientPacketHandler clientHandler) throws IOException {
+    // Read until:
+    // - EOL
+    // - Timeout
+    // - IO error
+    // - Read 'maxLen' characters
+    /* timeouts */
+    long idleTimeoutMS = ServerSocketThread.this.getIdleTimeout();
+    long pcktTimeoutMS = ServerSocketThread.this.getPacketTimeout();
+    long pcktTimeoutAt = (idleTimeoutMS > 0L) ? (DateTime.getCurrentTimeMillis() + idleTimeoutMS) : -1L;
+    /* max read length */
+    int maxLen = ServerSocketThread.this.getMaximumPacketLength();
+    // no minimum
+    /* set default socket timeout */
+    // client.setSoTimeout(10000);
+    /* packet */
+    byte[] buff = new byte[maxLen];
+    int buffLen = 0;
+    boolean isIdle = true;
+    long readStartTime = DateTime.getCurrentTimeMillis();
+    try {
+        while (true) {
+            /* read byte */
+            int ch = this.readByte(client, pcktTimeoutAt, buffLen);
+            /* reset idle timeout */
+            if (isIdle) {
+                isIdle = false;
+                if (pcktTimeoutMS > 0L) {
+                    // reset timeout
+                    pcktTimeoutAt = DateTime.getCurrentTimeMillis() + pcktTimeoutMS;
+                }
+            }
+            /* check special characters */
+            if (ServerSocketThread.this.isLineTerminatorChar(ch)) {
+                // end of line (typically '\n')
+                break;
+            } else if (ServerSocketThread.this.isIgnoreChar(ch)) {
+                // ignore this character (typically '\r')
+                continue;
+            } else if (ServerSocketThread.this.isBackspaceChar(ch)) {
+                if (buffLen > 0) {
+                    buffLen--;
+                }
+                continue;
+            } else if (ch < ' ') {
+                // ignore non-printable characters
+                continue;
+            }
+            /* save byte */
+            if (buffLen >= buff.length) {
+                // overflow?
+                byte[] newBuff = new byte[buff.length * 2];
+                System.arraycopy(buff, 0, newBuff, 0, buff.length);
+                buff = newBuff;
+            }
+            buff[buffLen++] = (byte) ch;
+            /* check lengths */
+            if ((maxLen > 0) && (buffLen >= maxLen)) {
+                // we've read all the bytes we can
+                break;
+            }
+        }
+    } catch (SSReadTimeoutException te) {
+        // This could mean a protocol error
+        if (buffLen > 0) {
+            String s = StringTools.toStringValue(buff, 0, buffLen);
+            Print.logWarn("Timeout: " + s);
+        }
+        if (ServerSocketThread.this.getTerminateOnTimeout()) {
+            throw te;
+        }
+    } catch (SSEndOfStreamException eos) {
+        // This could mean a protocol error
+        if (buffLen > 0) {
+            String s = StringTools.toStringValue(buff, 0, buffLen);
+            Print.logWarn("EOS: " + s);
+        }
+        if (client.isTCP()) {
+            // readLine
+            Print.logError(eos.getMessage());
+            throw eos;
+        } else {
+        // We're at the end of the UDP datastream
+        // (just fall through to return what bytes we've already read.)
+        }
+    } catch (IOException ioe) {
+        Print.logError("ReadLine error - " + ioe);
+        throw ioe;
+    }
+    long readEndTime = DateTime.getCurrentTimeMillis();
+    /* return packet */
+    if (buff.length == buffLen) {
+        // highly unlikely
+        return buff;
+    } else {
+        // resize buffer
+        byte[] newBuff = new byte[buffLen];
+        System.arraycopy(buff, 0, newBuff, 0, buffLen);
+        return newBuff;
+    }
+}

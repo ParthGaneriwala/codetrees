@@ -1,0 +1,59 @@
+@Override
+public void processIncoming(Data data) throws WekaException {
+    try {
+        getStepManager().processing();
+        if (m_isReset) {
+            m_isReset = false;
+            Instances incomingStructure = null;
+            if (data.getConnectionName().equals(StepManager.CON_INSTANCE)) {
+                incomingStructure = new Instances(((Instance) data.getPayloadElement(StepManager.CON_INSTANCE)).dataset(), 0);
+            } else {
+                incomingStructure = (Instances) data.getPayloadElement(data.getConnectionName());
+            }
+            if (incomingStructure.classAttribute() == null) {
+                getStepManager().logWarning("No class index is set in the data - using last attribute as class");
+                incomingStructure.setClassIndex(incomingStructure.numAttributes() - 1);
+            }
+            if (data.getConnectionName().equals(StepManager.CON_INSTANCE)) {
+                m_streaming = true;
+                if (m_trainedClassifier == null) {
+                    m_trainedClassifier = weka.classifiers.AbstractClassifier.makeCopy(m_classifierTemplate);
+                    getStepManager().logBasic("Initialising incremental classifier");
+                    m_trainedClassifier.buildClassifier(incomingStructure);
+                    m_trainedClassifierHeader = incomingStructure;
+                } else if (m_resetIncrementalClassifier && m_classifierIsIncremental) {
+                    // make a copy here, just in case buildClassifier() implementations
+                    // do not re-initialize the classifier correctly
+                    m_trainedClassifier = weka.classifiers.AbstractClassifier.makeCopy(m_classifierTemplate);
+                    m_trainedClassifierHeader = incomingStructure;
+                    getStepManager().logBasic("Resetting incremental classifier");
+                    m_trainedClassifier.buildClassifier(m_trainedClassifierHeader);
+                }
+                getStepManager().logBasic(m_updateIncrementalClassifier && m_classifierIsIncremental ? "Training incrementally" : "Predicting incrementally");
+            } else if (data.getConnectionName().equals(StepManager.CON_TRAININGSET)) {
+                m_trainedClassifierHeader = incomingStructure;
+            } else if (data.getConnectionName().equals(StepManager.CON_TESTSET) && getStepManager().numIncomingConnectionsOfType(StepManager.CON_TRAININGSET) == 0 && m_classifierTemplate instanceof InputMappedClassifier) {
+                m_trainedClassifier = weka.classifiers.AbstractClassifier.makeCopy(m_classifierTemplate);
+                // force the InputMappedClassifier to load a model (if one has been
+                // configured)
+                ((InputMappedClassifier) m_trainedClassifier).getModelHeader(null);
+            }
+            if (m_trainedClassifierHeader != null && !incomingStructure.equalHeaders(m_trainedClassifierHeader)) {
+                if (!(m_trainedClassifier instanceof InputMappedClassifier)) {
+                    throw new WekaException("Structure of incoming data does not match " + "that of the trained classifier");
+                }
+            }
+        }
+        if (m_streaming) {
+            processStreaming(data);
+        } else if (m_trainTestHelper != null) {
+            // train test pairs
+            m_trainTestHelper.process(data);
+        } else {
+            // test only
+            processOnlyTestSet(data);
+        }
+    } catch (Exception ex) {
+        throw new WekaException(ex);
+    }
+}

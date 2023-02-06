@@ -1,0 +1,297 @@
+// ------------------------------------------------------------------------
+private void _decodeEvent() throws PacketParseException {
+    Payload payload = this.packet.getPayload(true);
+    /* raw data */
+    this.setEventValue(DMTPGeoEvent.FLD_rawData, this.packet.toString());
+    /* defaults */
+    this.setEventValue(DMTPGeoEvent.FLD_statusCode, StatusCodes.STATUS_NONE);
+    this.setEventValue(DMTPGeoEvent.FLD_timestamp, DateTime.getCurrentTimeSec());
+    /* parse payload */
+    boolean hasStatusCode = false;
+    boolean hasGeoPoint = false;
+    payload.resetIndex();
+    for (this.custFieldLen = 0; payload.hasAvailableRead(); this.custFieldLen++) {
+        /* safety net */
+        if (this.custFieldLen >= PayloadTemplate.MAX_FIELD_COUNT) {
+            Print.logError("Invalid number of fields: " + this.custFieldLen);
+            Payload p = new Payload();
+            p.writeULong(this.packet.getPacketType(), 1);
+            byte[] errData = p.getBytes();
+            // formatType, fieldIndex
+            throw new PacketParseException(ServerErrors.NAK_FORMAT_DEFINITION_INVALID, this.packet, errData);
+        }
+        /* get field */
+        PayloadTemplate.Field field = this.custTemplate.getField(this.custFieldLen);
+        if (field == null) {
+            break;
+        }
+        int type = field.getType();
+        boolean hiRes = field.isHiRes();
+        int ndx = field.getIndex();
+        int length = field.getLength();
+        if (length == 0) {
+            Print.logError("Invalid Field length: " + StringTools.toHexString(type, 8));
+            Payload p = new Payload();
+            p.writeULong(this.packet.getPacketType(), 1);
+            byte[] errData = p.getBytes();
+            // formatType, fieldIndex
+            throw new PacketParseException(ServerErrors.NAK_FORMAT_DEFINITION_INVALID, this.packet, errData);
+        }
+        /* parse file type */
+        long longVal = 0L;
+        GeoPoint gp = null;
+        switch(type) {
+            case // %2u
+            PayloadTemplate.FIELD_STATUS_CODE:
+                this.setEventValue(DMTPGeoEvent.FLD_statusCode, payload.readULong(length, 0L));
+                hasStatusCode = true;
+                break;
+            case // %4u
+            PayloadTemplate.FIELD_TIMESTAMP:
+                this.setEventValue(DMTPGeoEvent.FLD_timestamp, payload.readULong(length, 0L));
+                break;
+            case // %4u 0 to 4294967295
+            PayloadTemplate.FIELD_INDEX:
+                this.setEventValue(DMTPGeoEvent.FLD_index, payload.readULong(length, 0L));
+                break;
+            case // %6g                          %8g
+            PayloadTemplate.FIELD_GPS_POINT:
+                this.setEventValue(DMTPGeoEvent.FLD_geoPoint, payload.readGPS(length));
+                hasGeoPoint = true;
+                break;
+            case // %1u 0 to 255 kph             %2u 0.0 to 655.3 kph
+            PayloadTemplate.FIELD_SPEED:
+                this.setEventValue(DMTPGeoEvent.FLD_speedKPH, hiRes ? ((double) payload.readULong(length, 0L) / 10.0) : ((double) payload.readULong(length, 0L)));
+                break;
+            case // %1u 1.412 deg un.            %2u 0.00 to 360.00 deg
+            PayloadTemplate.FIELD_HEADING:
+                this.setEventValue(DMTPGeoEvent.FLD_heading, hiRes ? ((double) payload.readULong(length, 0L) / 100.0) : ((double) payload.readULong(length, 0L) * 360.0 / 255.0));
+                break;
+            case // %2i -32767 to +32767 m       %3i -838860.7 to +838860.7 m
+            PayloadTemplate.FIELD_ALTITUDE:
+                this.setEventValue(DMTPGeoEvent.FLD_altitude, hiRes ? ((double) payload.readLong(length, 0L) / 10.0) : ((double) payload.readLong(length, 0L)));
+                break;
+            case // %3u 0 to 16777216 km         %3u 0.0 to 1677721.6 km
+            PayloadTemplate.FIELD_DISTANCE:
+                this.setEventValue(DMTPGeoEvent.FLD_distanceKM, hiRes ? ((double) payload.readULong(length, 0L) / 10.0) : ((double) payload.readULong(length, 0L)));
+                break;
+            case // %3u 0 to 16777216 km         %3u 0.0 to 1677721.6 km
+            PayloadTemplate.FIELD_ODOMETER:
+                this.setEventValue(DMTPGeoEvent.FLD_odometerKM, hiRes ? ((double) payload.readULong(length, 0L) / 10.0) : ((double) payload.readULong(length, 0L)));
+                break;
+            case // %1u 0 to 255
+            PayloadTemplate.FIELD_SEQUENCE:
+                this.setEventValue(DMTPGeoEvent.FLD_sequence, payload.readULong(length, -1L));
+                this.setEventValue(DMTPGeoEvent.FLD_sequenceLength, length);
+                break;
+            case // %4u 0x00000000 to 0xFFFFFFFF
+            PayloadTemplate.FIELD_INPUT_ID:
+                this.setEventValue(DMTPGeoEvent.FLD_inputID, payload.readULong(length, 0L));
+                break;
+            case // %4u 0x00000000 to 0xFFFFFFFF
+            PayloadTemplate.FIELD_INPUT_STATE:
+                this.setEventValue(DMTPGeoEvent.FLD_inputState, payload.readULong(length, 0L));
+                break;
+            case // %4u 0x00000000 to 0xFFFFFFFF
+            PayloadTemplate.FIELD_OUTPUT_ID:
+                this.setEventValue(DMTPGeoEvent.FLD_outputID, payload.readULong(length, 0L));
+                break;
+            case // %4u 0x00000000 to 0xFFFFFFFF
+            PayloadTemplate.FIELD_OUTPUT_STATE:
+                this.setEventValue(DMTPGeoEvent.FLD_outputState, payload.readULong(length, 0L));
+                break;
+            case // %3u 0 to 16777216 sec        %4u 0.000 to 4294967.295 sec
+            PayloadTemplate.FIELD_ELAPSED_TIME:
+                this.setEventValue(DMTPGeoEvent.FLD_elapsedTime, hiRes ? (payload.readULong(length, 0L)) : (payload.readULong(length, 0L) * 1000L), ndx);
+                break;
+            case // %4u 0 to 4294967295
+            PayloadTemplate.FIELD_COUNTER:
+                this.setEventValue(DMTPGeoEvent.FLD_counter, payload.readULong(length, 0L), ndx);
+                break;
+            case // %4u 0x00000000 to 0xFFFFFFFF
+            PayloadTemplate.FIELD_SENSOR32_LOW:
+                this.setEventValue(DMTPGeoEvent.FLD_sensor32LO, payload.readULong(length, 0L), ndx);
+                break;
+            case // %4u 0x00000000 to 0xFFFFFFFF
+            PayloadTemplate.FIELD_SENSOR32_HIGH:
+                this.setEventValue(DMTPGeoEvent.FLD_sensor32HI, payload.readULong(length, 0L), ndx);
+                break;
+            case // %4u 0x00000000 to 0xFFFFFFFF
+            PayloadTemplate.FIELD_SENSOR32_AVER:
+                this.setEventValue(DMTPGeoEvent.FLD_sensor32AV, payload.readULong(length, 0L), ndx);
+                break;
+            case // %1i -126 to +126 C           %2i -3276.6 to +3276.6 C
+            PayloadTemplate.FIELD_TEMP_LOW:
+                longVal = payload.readLong(length, INVALID_TEMPERATURE);
+                if ((length == 1) && (Math.abs(longVal) > 126)) {
+                    longVal = INVALID_TEMPERATURE;
+                }
+                this.setEventValue(DMTPGeoEvent.FLD_tempLO, hiRes ? ((double) longVal / 10.0) : ((double) longVal), ndx);
+                break;
+            case // %1i -126 to +126 C           %2i -3276.6 to +3276.6 C
+            PayloadTemplate.FIELD_TEMP_HIGH:
+                longVal = payload.readLong(length, INVALID_TEMPERATURE);
+                if ((length == 1) && (Math.abs(longVal) > 126)) {
+                    longVal = INVALID_TEMPERATURE;
+                }
+                this.setEventValue(DMTPGeoEvent.FLD_tempHI, hiRes ? ((double) longVal / 10.0) : ((double) longVal), ndx);
+                break;
+            case // %1i -126 to +126 C           %2i -3276.6 to +3276.6 C
+            PayloadTemplate.FIELD_TEMP_AVER:
+                longVal = payload.readLong(length, INVALID_TEMPERATURE);
+                if ((length == 1) && (Math.abs(longVal) > 126)) {
+                    longVal = INVALID_TEMPERATURE;
+                }
+                this.setEventValue(DMTPGeoEvent.FLD_tempAV, hiRes ? ((double) longVal / 10.0) : ((double) longVal), ndx);
+                break;
+            case // %4u 0x00000000 to 0xFFFFFFFF
+            PayloadTemplate.FIELD_GEOFENCE_ID:
+                this.setEventValue(DMTPGeoEvent.FLD_geofenceID, payload.readULong(length, 0L), ndx);
+                break;
+            case // %1u 0 to 255 kph             %2u 0.0 to 655.3 kph
+            PayloadTemplate.FIELD_TOP_SPEED:
+                this.setEventValue(DMTPGeoEvent.FLD_topSpeedKPH, hiRes ? ((double) payload.readULong(length, 0L) / 10.0) : ((double) payload.readULong(length, 0L)), ndx);
+                break;
+            case // %1u 0.0 to 25.5              %2u 0.0 to 655.3
+            PayloadTemplate.FIELD_BRAKE_G_FORCE:
+                this.setEventValue(DMTPGeoEvent.FLD_brakeGForce, ((double) payload.readLong(length, 0L) / 10.0));
+                break;
+            // %*s may contain only 'A'..'Z', 'a'..'z, '0'..'9', '-', '.'
+            case PayloadTemplate.FIELD_STRING:
+            case // %*s may contain only 'A'..'Z', 'a'..'z, '0'..'9', '-', '.'
+            PayloadTemplate.FIELD_STRING_PAD:
+                this.setEventValue(DMTPGeoEvent.FLD_string, payload.readString(length), ndx);
+                break;
+            // %*s may contain only 'A'..'Z', 'a'..'z, '0'..'9', '-', '.'
+            case PayloadTemplate.FIELD_ENTITY:
+            case // %*s may contain only 'A'..'Z', 'a'..'z, '0'..'9', '-', '.'
+            PayloadTemplate.FIELD_ENTITY_PAD:
+                this.setEventValue(DMTPGeoEvent.FLD_entity, payload.readString(length), ndx);
+                break;
+            case // %*b
+            PayloadTemplate.FIELD_BINARY:
+                this.setEventValue(DMTPGeoEvent.FLD_binary, payload.readBytes(length), ndx);
+                break;
+            case // %2u 0 to 65535 sec
+            PayloadTemplate.FIELD_GPS_AGE:
+                this.setEventValue(DMTPGeoEvent.FLD_gpsAge, payload.readULong(length, 0L));
+                break;
+            case // %2u 0 to 65535 sec
+            PayloadTemplate.FIELD_GPS_DGPS_UPDATE:
+                this.setEventValue(DMTPGeoEvent.FLD_gpsDgpsUpdate, payload.readULong(length, 0L));
+                break;
+            case // %1u 0 to 255 m               %2u 0.0 to 6553.5 m
+            PayloadTemplate.FIELD_GPS_HORZ_ACCURACY:
+                this.setEventValue(DMTPGeoEvent.FLD_gpsHorzAccuracy, hiRes ? ((double) payload.readULong(length, 0L) / 10.0) : ((double) payload.readULong(length, 0L)));
+                break;
+            case // %1u 0 to 255 m               %2u 0.0 to 6553.5 m
+            PayloadTemplate.FIELD_GPS_VERT_ACCURACY:
+                this.setEventValue(DMTPGeoEvent.FLD_gpsVertAccuracy, hiRes ? ((double) payload.readULong(length, 0L) / 10.0) : ((double) payload.readULong(length, 0L)));
+                break;
+            case // %1u 0 to 12
+            PayloadTemplate.FIELD_GPS_SATELLITES:
+                this.setEventValue(DMTPGeoEvent.FLD_gpsSatellites, payload.readULong(length, 0L));
+                break;
+            case // %2i -180.00 to 180.00 deg
+            PayloadTemplate.FIELD_GPS_MAG_VARIATION:
+                this.setEventValue(DMTPGeoEvent.FLD_gpsMagVariation, (double) payload.readLong(length, 0L) / 100.0);
+                break;
+            case // %1u (0=None, 1=GPS, 2=DGPS, ...)
+            PayloadTemplate.FIELD_GPS_QUALITY:
+                this.setEventValue(DMTPGeoEvent.FLD_gpsQuality, payload.readULong(length, 0L));
+                break;
+            case // %1u (1=None, 2=2D, 3=3D, ...)
+            PayloadTemplate.FIELD_GPS_TYPE:
+                this.setEventValue(DMTPGeoEvent.FLD_gps2D3D, payload.readULong(length, 0L));
+                break;
+            case // %1i -128 to +127 m           %2i -3276.7 to +3276.7 m
+            PayloadTemplate.FIELD_GPS_GEOID_HEIGHT:
+                this.setEventValue(DMTPGeoEvent.FLD_gpsGeoidHeight, hiRes ? ((double) payload.readLong(length, 0L) / 10.0) : ((double) payload.readLong(length, 0L)));
+                break;
+            case // %1u 0.0 to 25.5              %2u 0.0 to 99.9
+            PayloadTemplate.FIELD_GPS_PDOP:
+                this.setEventValue(DMTPGeoEvent.FLD_gpsPDOP, ((double) payload.readLong(length, 0L) / 10.0));
+                break;
+            case // %1u 0.0 to 25.5              %2u 0.0 to 99.9
+            PayloadTemplate.FIELD_GPS_HDOP:
+                this.setEventValue(DMTPGeoEvent.FLD_gpsHDOP, ((double) payload.readLong(length, 0L) / 10.0));
+                break;
+            case // %1u 0.0 to 25.5              %2u 0.0 to 99.9
+            PayloadTemplate.FIELD_GPS_VDOP:
+                this.setEventValue(DMTPGeoEvent.FLD_gpsVDOP, ((double) payload.readLong(length, 0L) / 10.0));
+                break;
+            case // %*b
+            PayloadTemplate.FIELD_OBC_VALUE:
+                this.setEventValue(DMTPGeoEvent.FLD_obcValue, payload.readBytes(length), ndx);
+                break;
+            case // %4u
+            PayloadTemplate.FIELD_OBC_GENERIC:
+                this.setEventValue(DMTPGeoEvent.FLD_obcGeneric, payload.readULong(length, 0L), ndx);
+                break;
+            case // %4u
+            PayloadTemplate.FIELD_OBC_J1708_FAULT:
+                this.setEventValue(DMTPGeoEvent.FLD_obcJ1708Fault, payload.readULong(length, 0L), ndx);
+                break;
+            case // %3u 0 to 16777216 km         %3u 0.0 to 1677721.6 km
+            PayloadTemplate.FIELD_OBC_DISTANCE:
+                this.setEventValue(DMTPGeoEvent.FLD_obcDistanceKM, hiRes ? ((double) payload.readULong(length, 0L) / 10.0) : ((double) payload.readULong(length, 0L)));
+                break;
+            case // %3u 0 to 1677721.6 hours
+            PayloadTemplate.FIELD_OBC_ENGINE_HOURS:
+                this.setEventValue(DMTPGeoEvent.FLD_obcEngineHours, (double) payload.readULong(length, 0L) / 10.0);
+                break;
+            case // %2u 0 to 65535 rpm
+            PayloadTemplate.FIELD_OBC_ENGINE_RPM:
+                this.setEventValue(DMTPGeoEvent.FLD_obcEngineRPM, payload.readULong(length, 0L));
+                break;
+            case // %1i -126 to +126 C           %2i -3276.6 to +3276.6 C
+            PayloadTemplate.FIELD_OBC_COOLANT_TEMP:
+                longVal = payload.readLong(length, INVALID_TEMPERATURE);
+                if ((length == 1) && (Math.abs(longVal) > 126)) {
+                    longVal = INVALID_TEMPERATURE;
+                }
+                this.setEventValue(DMTPGeoEvent.FLD_obcCoolantTemp, hiRes ? ((double) longVal / 10.0) : ((double) longVal));
+                break;
+            case // %1u 0% to 100% percent       %2u 0.0% to 100.0% percent
+            PayloadTemplate.FIELD_OBC_COOLANT_LEVEL:
+                this.setEventValue(DMTPGeoEvent.FLD_obcCoolantLevel, hiRes ? ((double) payload.readULong(length, 0L) / 1000.0) : ((double) payload.readULong(length, 0L) / 100.0));
+                break;
+            case // %1u 0% to 100% percent       %2u 0.0% to 100.0% percent
+            PayloadTemplate.FIELD_OBC_OIL_LEVEL:
+                this.setEventValue(DMTPGeoEvent.FLD_obcOilLevel, hiRes ? ((double) payload.readULong(length, 0L) / 1000.0) : ((double) payload.readULong(length, 0L) / 100.0));
+                break;
+            case // %1u 0 to 255 kPa            %2u 0.0 to 6553.5 kPa
+            PayloadTemplate.FIELD_OBC_OIL_PRESSURE:
+                this.setEventValue(DMTPGeoEvent.FLD_obcOilPressure, hiRes ? ((double) payload.readULong(length, 0L) / 10.0) : ((double) payload.readULong(length, 0L)));
+                break;
+            case // %1u 0% to 100% percent       %2u 0.0% to 100.0% percent
+            PayloadTemplate.FIELD_OBC_FUEL_LEVEL:
+                this.setEventValue(DMTPGeoEvent.FLD_obcFuelLevel, hiRes ? ((double) payload.readULong(length, 0L) / 1000.0) : ((double) payload.readULong(length, 0L) / 100.0));
+                break;
+            case // %2u 0.0 to 6553.5 kpg
+            PayloadTemplate.FIELD_OBC_FUEL_ECONOMY:
+                this.setEventValue(DMTPGeoEvent.FLD_obcFuelEconomy, ((double) payload.readULong(length, 0L) / 10.0));
+                break;
+            case // %3u 0 to 16777216 liters     %4u 0.0 to 429496729.5 liters
+            PayloadTemplate.FIELD_OBC_FUEL_TOTAL:
+                this.setEventValue(DMTPGeoEvent.FLD_obcFuelTotal, hiRes ? ((double) payload.readULong(length, 0L) / 10.0) : ((double) payload.readULong(length, 0L)));
+                break;
+            case // %3u 0 to 16777216 liters     %4u 0.0 to 429496729.5 liters
+            PayloadTemplate.FIELD_OBC_FUEL_IDLE:
+                this.setEventValue(DMTPGeoEvent.FLD_obcFuelIdle, hiRes ? ((double) payload.readULong(length, 0L) / 10.0) : ((double) payload.readULong(length, 0L)));
+                break;
+            default:
+                // internal error (this should not occur here - formats should be pre-validated)
+                Print.logError("Field not defined: " + StringTools.toHexString(type, 8));
+                Payload p = new Payload();
+                p.writeULong(this.packet.getPacketType(), 1);
+                byte[] errData = p.getBytes();
+                // formatType, fieldIndex
+                throw new PacketParseException(ServerErrors.NAK_FORMAT_DEFINITION_INVALID, this.packet, errData);
+        }
+    }
+    /* set status code if not specified in packet */
+    if (!hasStatusCode) {
+        this.setEventValue(DMTPGeoEvent.FLD_statusCode, hasGeoPoint ? StatusCodes.STATUS_LOCATION : StatusCodes.STATUS_NONE);
+    }
+}

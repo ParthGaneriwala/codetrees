@@ -1,0 +1,62 @@
+public void run() {
+    synchronized (ioLock) {
+        DNSOutgoing out = null;
+        try {
+            // send probes for JmDNS itself
+            if (state == taskState && task == this) {
+                if (out == null) {
+                    out = new DNSOutgoing(DNSConstants.FLAGS_QR_QUERY);
+                }
+                out.addQuestion(new DNSQuestion(localHost.getName(), DNSConstants.TYPE_ANY, DNSConstants.CLASS_IN));
+                DNSRecord answer = localHost.getDNS4AddressRecord();
+                if (answer != null) {
+                    out.addAuthorativeAnswer(answer);
+                }
+                answer = localHost.getDNS6AddressRecord();
+                if (answer != null) {
+                    out.addAuthorativeAnswer(answer);
+                }
+                advanceState();
+            }
+            // send probes for services
+            // Defensively copy the services into a local list,
+            // to prevent race conditions with methods registerService
+            // and unregisterService.
+            List list;
+            synchronized (JmDNS.this) {
+                list = new LinkedList(services.values());
+            }
+            for (Iterator i = list.iterator(); i.hasNext(); ) {
+                ServiceInfo info = (ServiceInfo) i.next();
+                synchronized (info) {
+                    if (info.getState() == taskState && info.task == this) {
+                        info.advanceState();
+                        logger.fine("run() JmDNS probing " + info.getQualifiedName() + " state " + info.getState());
+                        if (out == null) {
+                            out = new DNSOutgoing(DNSConstants.FLAGS_QR_QUERY);
+                            out.addQuestion(new DNSQuestion(info.getQualifiedName(), DNSConstants.TYPE_ANY, DNSConstants.CLASS_IN));
+                        }
+                        out.addAuthorativeAnswer(new DNSRecord.Service(info.getQualifiedName(), DNSConstants.TYPE_SRV, DNSConstants.CLASS_IN, DNSConstants.DNS_TTL, info.priority, info.weight, info.port, localHost.getName()));
+                    }
+                }
+            }
+            if (out != null) {
+                logger.finer("run() JmDNS probing #" + taskState);
+                send(out);
+            } else {
+                // If we have nothing to send, another timer taskState ahead
+                // of us has done the job for us. We can cancel.
+                cancel();
+                return;
+            }
+        } catch (Throwable e) {
+            logger.log(Level.WARNING, "run() exception ", e);
+            recover();
+        }
+        taskState = taskState.advance();
+        if (!taskState.isProbing()) {
+            cancel();
+            new Announcer().start();
+        }
+    }
+}

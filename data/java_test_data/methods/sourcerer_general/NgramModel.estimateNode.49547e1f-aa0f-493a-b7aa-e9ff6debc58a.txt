@@ -1,0 +1,72 @@
+private void estimateNode(Trie<BONode> trie, Trie<Counts.Count> counts, int currentOrder, int[] context, KNModSmoother[] smoothers) {
+    // estimate discount for the node:
+    SmootherProducer producer = new SmootherProducer();
+    for (Long2IntMap.Iterator it = counts.getData().counts.iterator(); it.hasNext(); ) {
+        Long2IntMap.Entry e = it.next();
+        int count = e.getValue();
+        producer.addCount(count);
+    }
+    KNModSmoother smoother = smoothers[currentOrder - 1];
+    // use order-global discounts with context-specific counts
+    smoother = new KNModSmoother(producer, smoother.getD1(), smoother.getD2(), smoother.getD3());
+    double totalBackoffProb = 0;
+    double totalProb = 0;
+    boolean hasBackoff = currentOrder > 1 && contextVariables[currentOrder - 2] != futureTimeVar;
+    if (hasBackoff) {
+        // compute probabilities
+        for (Long2IntMap.Iterator it = counts.getData().counts.iterator(); it.hasNext(); ) {
+            Long2IntMap.Entry e = it.next();
+            int word = (int) e.getKey();
+            int count = e.getValue();
+            double prob = smoother.getProb(count);
+            double boProb;
+            if (currentOrder == 1) {
+                boProb = 1.0 / futureVocab.length;
+            } else {
+                boProb = getProb(word, context, currentOrder - 1);
+            }
+            totalBackoffProb += boProb;
+            // interpolate
+            prob += smoother.getBackoffProb() * boProb;
+            totalProb += prob;
+            trie.getData().putProb(word, prob);
+        }
+        double nominator = 1.0 - totalProb;
+        double denominator = 1.0 - totalBackoffProb;
+        double bow = nominator / denominator;
+        trie.getData().bow = bow;
+    } else {
+        if (futureTimeVar == null || currentOrder == 1) {
+            for (int word : futureVocab) {
+                int count = counts.getData().counts.get(word);
+                double prob = smoother.getProb(count);
+                // interpolate with uniform
+                prob += smoother.getBackoffProb() / futureVocab.length;
+                trie.getData().putProb(word, prob);
+            }
+            trie.getData().bow = 1.0;
+        } else {
+            // assert(contextVariables[currentOrder-1] == futureTimeVar);
+            int[] limitedVocab = limitedFutureVocabs.get(context[currentOrder - 2]);
+            for (int word : limitedVocab) {
+                int count = counts.getData().counts.get(word);
+                double prob = smoother.getProb(count);
+                // interpolate with uniform
+                prob += smoother.getBackoffProb() / limitedVocab.length;
+                trie.getData().putProb(word, prob);
+            }
+            trie.getData().bow = 1.0;
+        }
+    }
+    verifyContextProbs(context, currentOrder);
+    if (counts.getSubTries() == null)
+        return;
+    for (Map.Entry<Integer, Trie<Counts.Count>> entry : counts.getSubTries().entrySet()) {
+        int nextContext = entry.getKey();
+        Trie<Counts.Count> nextCounts = entry.getValue();
+        Trie<BONode> nextTrie = new Trie<BONode>(new BONode(nextCounts.getData().counts.size()));
+        trie.addSubtrie(nextContext, nextTrie);
+        context[currentOrder - 1] = nextContext;
+        estimateNode(nextTrie, nextCounts, currentOrder + 1, context, smoothers);
+    }
+}

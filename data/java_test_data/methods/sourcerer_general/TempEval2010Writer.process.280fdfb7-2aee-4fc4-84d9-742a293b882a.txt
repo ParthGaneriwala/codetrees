@@ -1,0 +1,96 @@
+@Override
+public void process(JCas jCas) throws AnalysisEngineProcessException {
+    // determine the filename
+    URI uri = ViewURIUtil.getURI(jCas);
+    String fileName = uri.getFragment();
+    if (fileName == null) {
+        fileName = new File(uri.getPath()).getName();
+    }
+    // get the view with text, sentences and tokens
+    JCas textJCas = JCasUtil.getView(jCas, this.textView, false);
+    // write the document creation time
+    if (this.documentCreationTimeView != null) {
+        JCas dctJCas = JCasUtil.getView(jCas, this.documentCreationTimeView, false);
+        for (DocumentCreationTime time : JCasUtil.select(dctJCas, DocumentCreationTime.class)) {
+            this.write(this.dctWriter, fileName, time.getValue().replaceAll("-", ""));
+        }
+    }
+    // align tokens to times
+    Map<Token, Time> tokenTimeExtents = new HashMap<Token, Time>();
+    if (this.timeExtentView != null) {
+        JCas timeExtentJCas = JCasUtil.getView(jCas, this.timeExtentView, false);
+        for (Time time : JCasUtil.select(timeExtentJCas, Time.class)) {
+            for (Token token : JCasUtil.selectCovered(textJCas, Token.class, time)) {
+                tokenTimeExtents.put(token, time);
+            }
+        }
+    }
+    Map<Token, Time> tokenTimeAttributes = new HashMap<Token, Time>();
+    if (this.timeAttributeView != null) {
+        JCas timeAttributeJCas = JCasUtil.getView(jCas, this.timeAttributeView, false);
+        for (Time time : JCasUtil.select(timeAttributeJCas, Time.class)) {
+            for (Token token : JCasUtil.selectCovered(textJCas, Token.class, time)) {
+                tokenTimeAttributes.put(token, time);
+            }
+        }
+    }
+    // align tokens to events
+    Map<Token, Event> tokenEventExtents = new HashMap<Token, Event>();
+    if (this.eventExtentView != null) {
+        JCas eventExtentJCas = JCasUtil.getView(jCas, this.eventExtentView, false);
+        for (Event event : JCasUtil.select(eventExtentJCas, Event.class)) {
+            for (Token token : JCasUtil.selectCovered(textJCas, Token.class, event)) {
+                tokenEventExtents.put(token, event);
+            }
+        }
+    }
+    Map<Token, Event> tokenEventAttributes = new HashMap<Token, Event>();
+    if (this.eventAttributeView != null) {
+        JCas eventAttributeJCas = JCasUtil.getView(jCas, this.eventAttributeView, false);
+        for (Event event : JCasUtil.select(eventAttributeJCas, Event.class)) {
+            for (Token token : JCasUtil.selectCovered(textJCas, Token.class, event)) {
+                tokenEventAttributes.put(token, event);
+            }
+        }
+    }
+    // walk through tokens by sentence, writing tokens, times, events, etc.
+    int sentIndex = -1;
+    for (Sentence sentence : JCasUtil.select(textJCas, Sentence.class)) {
+        sentIndex += 1;
+        int tokenIndex = -1;
+        for (Token token : JCasUtil.selectCovered(textJCas, Token.class, sentence)) {
+            tokenIndex += 1;
+            // write the token to the segmentation file
+            this.write(this.baseWriter, fileName, sentIndex, tokenIndex, token.getCoveredText());
+            // write the time extent and attributes
+            this.writeAnchors(this.timexExtentWriter, this.timexAttributeWriter, tokenTimeExtents, tokenTimeAttributes, "timex3", token, fileName, sentIndex, tokenIndex, new AttributeGetter<Time>() {
+
+                @Override
+                public List<Attribute> getAttributes(Time time) {
+                    Attribute value = new Attribute("value", time.getValue());
+                    Attribute type = new Attribute("type", time.getTimeType());
+                    return Arrays.asList(value, type);
+                }
+            });
+            // write the event extent and attributes
+            this.writeAnchors(this.eventExtentWriter, this.eventAttributeWriter, tokenEventExtents, tokenEventAttributes, "event", token, fileName, sentIndex, tokenIndex, new AttributeGetter<Event>() {
+
+                @Override
+                public List<Attribute> getAttributes(Event event) {
+                    Attribute polarity = new Attribute("polarity", event.getPolarity());
+                    Attribute modality = new Attribute("modality", event.getModality());
+                    Attribute pos = new Attribute("pos", event.getPos());
+                    Attribute tense = new Attribute("tense", event.getTense());
+                    Attribute aspect = new Attribute("aspect", event.getAspect());
+                    Attribute eventClass = new Attribute("class", event.getEventClass());
+                    return Arrays.asList(polarity, modality, pos, tense, aspect, eventClass);
+                }
+            });
+        }
+    }
+    // write the temporal links
+    this.writeTemporalLinks(this.tlinkDCTEventWriter, jCas, this.temporalLinkEventToDocumentCreationTimeView, fileName);
+    this.writeTemporalLinks(this.tlinkTimexEventWriter, jCas, this.temporalLinkEventToSameSentenceTimeView, fileName);
+    this.writeTemporalLinks(this.tlinkSubordinatedEventsWriter, jCas, this.temporalLinkEventToSubordinatedEventView, fileName);
+    this.writeTemporalLinks(this.tlinkMainEventsWriter, jCas, this.temporalLinkMainEventToNextSentenceMainEventView, fileName);
+}

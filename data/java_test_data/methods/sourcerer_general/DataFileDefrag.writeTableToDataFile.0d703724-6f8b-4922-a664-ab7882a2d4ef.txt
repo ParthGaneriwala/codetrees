@@ -1,0 +1,45 @@
+int[] writeTableToDataFile(Table table) throws IOException, HsqlException {
+    Session session = database.getSessionManager().getSysSession();
+    RowOutputBinary rowOut = new RowOutputBinary();
+    DoubleIntIndex pointerLookup = new DoubleIntIndex(table.getPrimaryIndex().sizeEstimate(), false);
+    int[] rootsArray = table.getIndexRootsArray();
+    long pos = fileOffset;
+    int count = 0;
+    pointerLookup.setKeysSearchTarget();
+    Trace.printSystemOut("lookup begins: " + stopw.elapsedTime());
+    RowIterator it = table.rowIterator(session);
+    for (; it.hasNext(); count++) {
+        CachedObject row = (CachedObject) it.next();
+        pointerLookup.addUnsorted(row.getPos(), (int) (pos / scale));
+        if (count % 50000 == 0) {
+            Trace.printSystemOut("pointer pair for row " + count + " " + row.getPos() + " " + pos);
+        }
+        pos += row.getStorageSize();
+    }
+    Trace.printSystemOut(table.getName().name + " list done ", stopw.elapsedTime());
+    count = 0;
+    it = table.rowIterator(session);
+    for (; it.hasNext(); count++) {
+        CachedObject row = it.next();
+        rowOut.reset();
+        row.write(rowOut, pointerLookup);
+        fileStreamOut.write(rowOut.getOutputStream().getBuffer(), 0, rowOut.size());
+        fileOffset += row.getStorageSize();
+        if ((count) % 50000 == 0) {
+            Trace.printSystemOut(count + " rows " + stopw.elapsedTime());
+        }
+    }
+    for (int i = 0; i < rootsArray.length; i++) {
+        if (rootsArray[i] == -1) {
+            continue;
+        }
+        int lookupIndex = pointerLookup.findFirstEqualKeyIndex(rootsArray[i]);
+        if (lookupIndex == -1) {
+            throw Trace.error(Trace.DATA_FILE_ERROR);
+        }
+        rootsArray[i] = pointerLookup.getValue(lookupIndex);
+    }
+    setTransactionRowLookups(pointerLookup);
+    Trace.printSystemOut(table.getName().name + " : table converted");
+    return rootsArray;
+}

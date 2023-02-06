@@ -1,0 +1,102 @@
+protected static void viewTopic(HttpServletRequest request, ModelAndView next, WikiPageInfo pageInfo, WikiMessage pageTitle, Topic topic, boolean sectionEdit) throws Exception {
+    // FIXME - what should the default be for topics that don't exist?
+    String userId = "";
+    if (topic == null) {
+        throw new WikiException(new WikiMessage("common.exception.notopic"));
+    }
+    WikiUtil.validateTopicName(topic.getName());
+    if (topic.getTopicType() == Topic.TYPE_REDIRECT && (request.getParameter("redirect") == null || !request.getParameter("redirect").equalsIgnoreCase("no"))) {
+        Topic child = WikiUtil.findRedirectedTopic(topic, 0);
+        if (!child.getName().equals(topic.getName())) {
+            pageInfo.setRedirectName(topic.getName());
+            pageTitle = new WikiMessage("topic.title", child.getName());
+            topic = child;
+        }
+    }
+    String virtualWiki = topic.getVirtualWiki();
+    String topicName = topic.getName();
+    WikiUserAuth user = ServletUtil.currentUser();
+    if (sectionEdit && !ServletUtil.isEditable(virtualWiki, topicName, user)) {
+        sectionEdit = false;
+    }
+    ParserInput parserInput = new ParserInput();
+    parserInput.setContext(request.getContextPath());
+    parserInput.setLocale(request.getLocale());
+    parserInput.setWikiUser(user);
+    parserInput.setTopicName(topicName);
+    parserInput.setUserIpAddress(ServletUtil.getIpAddress(request));
+    parserInput.setVirtualWiki(virtualWiki);
+    parserInput.setAllowSectionEdit(sectionEdit);
+    ParserOutput parserOutput = new ParserOutput();
+    String content = ParserUtil.parse(parserInput, parserOutput, topic.getTopicContent());
+    if (parserOutput.getCategories().size() > 0) {
+        LinkedHashMap categories = new LinkedHashMap();
+        for (Iterator iterator = parserOutput.getCategories().keySet().iterator(); iterator.hasNext(); ) {
+            String key = (String) iterator.next();
+            String value = key.substring(NamespaceHandler.NAMESPACE_CATEGORY.length() + NamespaceHandler.NAMESPACE_SEPARATOR.length());
+            categories.put(key, value);
+        }
+        next.addObject("categories", categories);
+    }
+    // content = content.replace("<pre>", "&nbsp;&nbsp;");
+    content = content.replace("\n", "<br>");
+    topic.setTopicContent(content);
+    if (topic.getTopicType() == Topic.TYPE_CATEGORY) {
+        loadCategoryContent(next, virtualWiki, topic.getName());
+    }
+    // ͼƬ�����ļ�
+    if (topic.getTopicType() == Topic.TYPE_IMAGE || topic.getTopicType() == Topic.TYPE_FILE) {
+        Collection fileVersions = WikiBase.getDataHandler().getAllWikiFileVersions(virtualWiki, topicName, true);
+        String topic_id = "";
+        int versionId = fileVersions.size();
+        request.setAttribute("auditStatus", topic.getAuditStatus() + "");
+        for (Iterator iterator = fileVersions.iterator(); iterator.hasNext(); ) {
+            // update version urls to include web root path
+            WikiFileVersion fileVersion = (WikiFileVersion) iterator.next();
+            topic_id = fileVersion.getTopicId() + "";
+            // ȡ������汾�������
+            userId = fileVersion.getAuthorId() + "";
+            String url = FilenameUtils.normalize(Environment.getValue(Environment.PROP_FILE_DIR_RELATIVE_PATH) + "/" + fileVersion.getUrl());
+            url = FilenameUtils.separatorsToUnix(url);
+            fileVersion.setUrl(url);
+            fileVersion.setFileVersionId_display(versionId);
+            versionId--;
+        }
+        next.addObject("fileVersions", fileVersions);
+        next.addObject("topic_id", topic_id);
+        next.addObject("userId", userId);
+        request.setAttribute("topic_id", topic_id);
+        request.setAttribute("userId", userId);
+        if (topic.getTopicType() == Topic.TYPE_IMAGE) {
+            next.addObject("topicImage", new Boolean(true));
+        } else {
+            next.addObject("topicFile", new Boolean(true));
+        }
+    }
+    pageInfo.setSpecial(false);
+    pageInfo.setTopicName(topicName);
+    topic = WikiBase.getDataHandler().putTopic(topic);
+    next.addObject(ServletUtil.PARAMETER_TOPIC_OBJECT, topic);
+    next.addObject("categoryId", topic.getCategory_id());
+    if (pageTitle != null) {
+        pageInfo.setPageTitle(pageTitle);
+    }
+    if ("comment".equals(request.getParameter("editComment"))) {
+        Comment comment = new Comment();
+        String topicId = request.getParameter("topicId");
+        comment.setTopicId(Integer.parseInt(topicId));
+        comment.setCommentInfo(request.getParameter("contents"));
+        comment.setIpAddress(ServletUtil.getIpAddress(request));
+        comment.setUserId(user.getUserId());
+        comment.setUserName(user.getUsername());
+        WikiBase.getDataHandler().insertComment(comment);
+    }
+    int size = WikiBase.getDataHandler().getCommentSize(topic.getTopicId());
+    request.setAttribute("size", String.valueOf(size));
+    request.setAttribute("topicId", String.valueOf(topic.getTopicId()));
+/*if(topicName.indexOf("Comments:")!=-1){
+			pageInfo.setContentJsp("view-comments.jsp");
+			List list = WikiBase.getDataHandler().getCommentByTopicId(topic.getTopicId());
+			request.setAttribute("list", list);
+		}*/
+}

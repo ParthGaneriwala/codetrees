@@ -1,0 +1,401 @@
+@Override
+public Void doInBackground() {
+    m_installing = true;
+    m_installBut.setEnabled(false);
+    m_unofficialBut.setEnabled(true);
+    m_uninstallBut.setEnabled(false);
+    m_refreshCacheBut.setEnabled(false);
+    m_toggleLoad.setEnabled(false);
+    m_availableBut.setEnabled(false);
+    m_allBut.setEnabled(false);
+    m_installedBut.setEnabled(false);
+    ProgressPrintStream pps = new ProgressPrintStream(this);
+    m_progress.setMaximum(m_packageNamesToInstall.size() * 30);
+    for (int zz = 0; zz < m_packageNamesToInstall.size(); zz++) {
+        Package packageToInstall = null;
+        String packageName = m_packageNamesToInstall.get(zz);
+        Object versionToInstall = m_versionsToInstall.get(zz);
+        try {
+            packageToInstall = WekaPackageManager.getRepositoryPackageInfo(packageName, versionToInstall.toString());
+        } catch (Exception e) {
+            e.printStackTrace();
+            displayErrorDialog("Unable to obtain package info for package: " + packageName, e);
+            // return null; // bail out here
+            m_unsuccessfulInstalls.add(packageToInstall);
+            continue;
+        }
+        // check for any special installation instructions
+        Object specialInstallMessage = packageToInstall.getPackageMetaDataElement("MessageToDisplayOnInstallation");
+        if (specialInstallMessage != null && specialInstallMessage.toString().length() > 0) {
+            if (!Utils.getDontShowDialog("weka.gui.PackageManager.ShowSpecialInstallInstructions")) {
+                String siM = specialInstallMessage.toString();
+                try {
+                    siM = Environment.getSystemWide().substitute(siM);
+                } catch (Exception ex) {
+                // quietly ignore
+                }
+                JCheckBox dontShow = new JCheckBox("Do not show this message again");
+                Object[] stuff = new Object[2];
+                stuff[0] = packageToInstall + "\n\n" + siM;
+                stuff[1] = dontShow;
+                JOptionPane.showMessageDialog(PackageManager.this, stuff, "Weka Package Manager", JOptionPane.OK_OPTION);
+                if (dontShow.isSelected()) {
+                    try {
+                        Utils.setDontShowDialog("weka.gui.PackageManager.ShowSpecialInstallInstructions");
+                    } catch (Exception ex) {
+                    // quietly ignore
+                    }
+                }
+            }
+        }
+        if (!m_forceBut.isSelected()) {
+            // Check to see if it's disabled at the repository
+            Object disabled = packageToInstall.getPackageMetaDataElement(DISABLE_KEY);
+            if (disabled == null) {
+                disabled = packageToInstall.getPackageMetaDataElement(DISABLED_KEY);
+            }
+            if (disabled != null && disabled.toString().equalsIgnoreCase("true")) {
+                JOptionPane.showMessageDialog(PackageManager.this, "Unable to " + "install package\n" + packageName + " because it has been " + "disabled at the repository", "Weka Package Manager", JOptionPane.ERROR_MESSAGE);
+                m_unsuccessfulInstalls.add(packageToInstall);
+                continue;
+            }
+            try {
+                if (!packageToInstall.isCompatibleBaseSystem()) {
+                    List<Dependency> baseSysDep = packageToInstall.getBaseSystemDependency();
+                    StringBuffer depList = new StringBuffer();
+                    for (Dependency bd : baseSysDep) {
+                        depList.append(bd.getTarget().toString() + " ");
+                    }
+                    JOptionPane.showMessageDialog(PackageManager.this, "Unable to install package " + "\n" + packageName + " because it requires" + "\n" + depList.toString(), "Weka Package Manager", JOptionPane.ERROR_MESSAGE);
+                    // bail out here
+                    // return null;
+                    m_unsuccessfulInstalls.add(packageToInstall);
+                    continue;
+                }
+                // Check for any os/arch constraints
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                PrintStream ps = new PrintStream(baos);
+                if (!WekaPackageManager.osAndArchCheck(packageToInstall, ps)) {
+                    String probString = new String(baos.toByteArray());
+                    probString = probString.replace("[WekaPackageManager] Skipping package ", "");
+                    JOptionPane.showMessageDialog(PackageManager.this, "Unable to install package\n" + probString, "Weka Package Manager", JOptionPane.ERROR_MESSAGE);
+                    m_unsuccessfulInstalls.add(packageToInstall);
+                    continue;
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+                displayErrorDialog("Problem determining dependency on base system" + " for package: " + packageName, e);
+                // return null; // can't proceed
+                m_unsuccessfulInstalls.add(packageToInstall);
+                continue;
+            }
+            // check to see if package is already installed
+            if (packageToInstall.isInstalled()) {
+                Package installedVersion = null;
+                try {
+                    installedVersion = WekaPackageManager.getInstalledPackageInfo(packageName);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    displayErrorDialog("Problem obtaining package info for package: " + packageName, e);
+                    // return null; // can't proceed
+                    m_unsuccessfulInstalls.add(packageToInstall);
+                    continue;
+                }
+                if (!packageToInstall.equals(installedVersion)) {
+                    int result = JOptionPane.showConfirmDialog(PackageManager.this, "Package " + installedVersion + " is already installed. Replace with " + packageToInstall + "?", "Weka Package Manager", JOptionPane.YES_NO_OPTION);
+                    if (result == JOptionPane.NO_OPTION) {
+                        // bail out here
+                        // return null;
+                        m_unsuccessfulInstalls.add(packageToInstall);
+                        continue;
+                    }
+                    if (!Utils.getDontShowDialog("weka.gui.PackageManager.RestartAfterUpgrade")) {
+                        JCheckBox dontShow = new JCheckBox("Do not show this message again");
+                        Object[] stuff = new Object[2];
+                        stuff[0] = "Weka will need to be restarted after installation for\n" + "the changes to come into effect.\n";
+                        stuff[1] = dontShow;
+                        JOptionPane.showMessageDialog(PackageManager.this, stuff, "Weka Package Manager", JOptionPane.OK_OPTION);
+                        if (dontShow.isSelected()) {
+                            try {
+                                Utils.setDontShowDialog("weka.gui.PackageManager.RestartAfterUpgrade");
+                            } catch (Exception ex) {
+                            // quietly ignore
+                            }
+                        }
+                    }
+                } else {
+                    int result = JOptionPane.showConfirmDialog(PackageManager.this, "Package " + installedVersion + " is already installed. Install again?", "Weka Package Manager", JOptionPane.YES_NO_OPTION);
+                    if (result == JOptionPane.NO_OPTION) {
+                        // bail out here
+                        // return null;
+                        m_unsuccessfulInstalls.add(packageToInstall);
+                        continue;
+                    }
+                }
+            }
+            // Now get a full list of dependencies for this package and
+            // check for any conflicts
+            Map<String, List<Dependency>> conflicts = new HashMap<String, List<Dependency>>();
+            List<Dependency> dependencies = null;
+            try {
+                dependencies = WekaPackageManager.getAllDependenciesForPackage(packageToInstall, conflicts);
+            } catch (Exception e) {
+                e.printStackTrace();
+                displayErrorDialog("Problem determining dependencies for package: " + packageToInstall.getName(), e);
+                // return null; // can't proceed
+                m_unsuccessfulInstalls.add(packageToInstall);
+                continue;
+            }
+            if (conflicts.size() > 0) {
+                StringBuffer message = new StringBuffer();
+                message.append("Package " + packageName + " requires the following packages:\n\n");
+                Iterator<Dependency> depI = dependencies.iterator();
+                while (depI.hasNext()) {
+                    Dependency d = depI.next();
+                    message.append("\t" + d + "\n");
+                }
+                message.append("\nThere are conflicting dependencies:\n\n");
+                Set<String> pNames = conflicts.keySet();
+                Iterator<String> pNameI = pNames.iterator();
+                while (pNameI.hasNext()) {
+                    String pName = pNameI.next();
+                    message.append("Conflicts for " + pName + "\n");
+                    List<Dependency> confsForPackage = conflicts.get(pName);
+                    Iterator<Dependency> confs = confsForPackage.iterator();
+                    while (confs.hasNext()) {
+                        Dependency problem = confs.next();
+                        message.append("\t" + problem + "\n");
+                    }
+                }
+                JOptionPane.showConfirmDialog(PackageManager.this, message.toString(), "Weka Package Manager", JOptionPane.OK_OPTION);
+                // bail out here
+                // return null;
+                m_unsuccessfulInstalls.add(packageToInstall);
+                continue;
+            }
+            // Next check all dependencies against what is installed and
+            // inform the user about which installed packages will be altered.
+            // Also
+            // build the list of only those packages that need to be installed or
+            // upgraded (excluding those that are already installed and are OK).
+            List<PackageConstraint> needsUpgrade = new ArrayList<PackageConstraint>();
+            List<Package> finalListToInstall = new ArrayList<Package>();
+            Iterator<Dependency> depI = dependencies.iterator();
+            boolean depsOk = true;
+            while (depI.hasNext()) {
+                Dependency toCheck = depI.next();
+                if (toCheck.getTarget().getPackage().isInstalled()) {
+                    String toCheckName = toCheck.getTarget().getPackage().getPackageMetaDataElement("PackageName").toString();
+                    try {
+                        Package installedVersion = WekaPackageManager.getInstalledPackageInfo(toCheckName);
+                        if (!toCheck.getTarget().checkConstraint(installedVersion)) {
+                            needsUpgrade.add(toCheck.getTarget());
+                            Package mostRecent = toCheck.getTarget().getPackage();
+                            if (toCheck.getTarget() instanceof weka.core.packageManagement.VersionPackageConstraint) {
+                                mostRecent = WekaPackageManager.mostRecentVersionWithRespectToConstraint(toCheck.getTarget());
+                            }
+                            finalListToInstall.add(mostRecent);
+                        }
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
+                        displayErrorDialog("An error has occurred while checking " + "package dependencies", ex);
+                        // bail out here
+                        // return null;
+                        depsOk = false;
+                        break;
+                    }
+                } else {
+                    try {
+                        Package mostRecent = toCheck.getTarget().getPackage();
+                        if (toCheck.getTarget() instanceof weka.core.packageManagement.VersionPackageConstraint) {
+                            mostRecent = WekaPackageManager.mostRecentVersionWithRespectToConstraint(toCheck.getTarget());
+                        }
+                        finalListToInstall.add(mostRecent);
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
+                        displayErrorDialog("An error has occurred while checking " + "package dependencies", ex);
+                        // bail out here
+                        // return null;
+                        depsOk = false;
+                        break;
+                    }
+                }
+            }
+            // now check for precludes
+            if (packageToInstall.getPackageMetaDataElement(WekaPackageManager.PRECLUDES_KEY) != null) {
+                try {
+                    List<Package> installed = WekaPackageManager.getInstalledPackages();
+                    Map<String, Package> packageMap = new HashMap<>();
+                    for (Package p : installed) {
+                        packageMap.put(p.getName(), p);
+                    }
+                    for (Package p : finalListToInstall) {
+                        packageMap.put(p.getName(), p);
+                    }
+                    List<Package> precluded = packageToInstall.getPrecludedPackages(new ArrayList<Package>(packageMap.values()));
+                    if (precluded.size() > 0) {
+                        List<Package> finalPrecluded = new ArrayList<>();
+                        for (Package p : precluded) {
+                            if (!WekaPackageManager.m_doNotLoadList.contains(p.getName())) {
+                                finalPrecluded.add(p);
+                            }
+                        }
+                        if (finalPrecluded.size() > 0) {
+                            StringBuilder temp = new StringBuilder();
+                            for (Package fp : finalPrecluded) {
+                                temp.append("\n\t").append(fp.toString());
+                            }
+                            JOptionPane.showMessageDialog(PackageManager.this, "Package " + packageToInstall.getName() + " cannot be " + "installed because it precludes the following packages" + ":\n\n" + temp.toString(), "Weka Package Manager", JOptionPane.ERROR_MESSAGE);
+                            m_unsuccessfulInstalls.add(packageToInstall);
+                            continue;
+                        }
+                    }
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                    displayErrorDialog("An error has occurred while checking " + "precluded packages", ex);
+                    // bail out here
+                    depsOk = false;
+                    break;
+                }
+            }
+            if (!depsOk) {
+                // bail out on this package
+                m_unsuccessfulInstalls.add(packageToInstall);
+                continue;
+            }
+            if (needsUpgrade.size() > 0) {
+                StringBuffer temp = new StringBuffer();
+                for (PackageConstraint pc : needsUpgrade) {
+                    temp.append(pc + "\n");
+                }
+                int result = JOptionPane.showConfirmDialog(PackageManager.this, "The following packages will be upgraded in order to install:\n\n" + temp.toString(), "Weka Package Manager", JOptionPane.YES_NO_OPTION);
+                if (result == JOptionPane.NO_OPTION) {
+                    // bail out here
+                    // return null;
+                    m_unsuccessfulInstalls.add(packageToInstall);
+                    continue;
+                }
+                // now take a look at the other installed packages and see if
+                // any would have a problem when these ones are upgraded
+                boolean conflictsAfterUpgrade = false;
+                List<Package> installed = null;
+                try {
+                    installed = WekaPackageManager.getInstalledPackages();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    displayErrorDialog("Unable to determine what packages are installed!", e);
+                    // return null; // can't proceed
+                    m_unsuccessfulInstalls.add(packageToInstall);
+                    continue;
+                }
+                List<Package> toUpgrade = new ArrayList<Package>();
+                for (PackageConstraint pc : needsUpgrade) {
+                    toUpgrade.add(pc.getPackage());
+                }
+                // add the actual package the user is wanting to install if it
+                // is going to be an up/downgrade rather than a first install since
+                // other installed packages may depend on the currently installed
+                // version
+                // and thus could be affected after the up/downgrade
+                toUpgrade.add(packageToInstall);
+                StringBuffer tempM = new StringBuffer();
+                depsOk = true;
+                for (int i = 0; i < installed.size(); i++) {
+                    Package tempP = installed.get(i);
+                    String tempPName = tempP.getName();
+                    boolean checkIt = true;
+                    for (int j = 0; j < needsUpgrade.size(); j++) {
+                        if (tempPName.equals(needsUpgrade.get(j).getPackage().getName())) {
+                            checkIt = false;
+                            break;
+                        }
+                    }
+                    if (checkIt) {
+                        List<Dependency> problem = null;
+                        try {
+                            problem = tempP.getIncompatibleDependencies(toUpgrade);
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                            displayErrorDialog("An error has occurred while checking " + "package dependencies", e);
+                            // return null; // can't continue
+                            depsOk = false;
+                            break;
+                        }
+                        if (problem.size() > 0) {
+                            conflictsAfterUpgrade = true;
+                            tempM.append("Package " + tempP.getName() + " will have a compatibility" + "problem with the following packages after upgrading them:\n");
+                            Iterator<Dependency> dI = problem.iterator();
+                            while (dI.hasNext()) {
+                                tempM.append("\t" + dI.next().getTarget().getPackage() + "\n");
+                            }
+                        }
+                    }
+                }
+                if (!depsOk) {
+                    m_unsuccessfulInstalls.add(packageToInstall);
+                    continue;
+                }
+                if (conflictsAfterUpgrade) {
+                    JOptionPane.showConfirmDialog(PackageManager.this, tempM.toString() + "\n" + "Unable to continue with installation.", "Weka Package Manager", JOptionPane.OK_OPTION);
+                    // return null; //bail out here
+                    m_unsuccessfulInstalls.add(packageToInstall);
+                    continue;
+                }
+            }
+            if (finalListToInstall.size() > 0) {
+                StringBuffer message = new StringBuffer();
+                message.append("To install " + packageName + " the following packages will" + " be installed/upgraded:\n\n");
+                for (Package p : finalListToInstall) {
+                    message.append("\t" + p + "\n");
+                }
+                int result = JOptionPane.showConfirmDialog(PackageManager.this, message.toString(), "Weka Package Manager", JOptionPane.YES_NO_OPTION);
+                if (result == JOptionPane.NO_OPTION) {
+                    // bail out here
+                    // return null;
+                    m_unsuccessfulInstalls.add(packageToInstall);
+                    continue;
+                }
+                m_progress.setMaximum(m_progress.getMaximum() + (finalListToInstall.size() * 30));
+            }
+            // first install the final list of dependencies
+            try {
+                boolean tempB = WekaPackageManager.installPackages(finalListToInstall, pps);
+                s_atLeastOnePackageUpgradeHasOccurredInThisSession = (s_atLeastOnePackageUpgradeHasOccurredInThisSession || tempB);
+            } catch (Exception e) {
+                e.printStackTrace();
+                displayErrorDialog("An error has occurred while installing " + "dependent packages", e);
+                // return null;
+                m_unsuccessfulInstalls.add(packageToInstall);
+                continue;
+            }
+            // m_progress.setMaximum(finalListToInstall.size() * 10 + 10);
+            try {
+                boolean tempB = WekaPackageManager.installPackageFromRepository(packageName, versionToInstall.toString(), pps);
+                s_atLeastOnePackageUpgradeHasOccurredInThisSession = (s_atLeastOnePackageUpgradeHasOccurredInThisSession || tempB);
+            } catch (Exception e) {
+                e.printStackTrace();
+                displayErrorDialog("Problem installing package: " + packageName, e);
+                // return null;
+                m_unsuccessfulInstalls.add(packageToInstall);
+                continue;
+            }
+        } else {
+            // etc.
+            try {
+                boolean tempB = WekaPackageManager.installPackageFromRepository(packageName, versionToInstall.toString(), pps);
+                s_atLeastOnePackageUpgradeHasOccurredInThisSession = (s_atLeastOnePackageUpgradeHasOccurredInThisSession || tempB);
+            } catch (Exception e) {
+                e.printStackTrace();
+                displayErrorDialog("Problem installing package: " + packageName, e);
+                // return null;
+                m_unsuccessfulInstalls.add(packageToInstall);
+                continue;
+            }
+        }
+    }
+    // refresh in this case in order to avoid old/new class conflicts
+    if (!s_atLeastOnePackageUpgradeHasOccurredInThisSession) {
+        WekaPackageManager.refreshGOEProperties();
+    }
+    return null;
+}

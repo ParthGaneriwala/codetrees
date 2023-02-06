@@ -1,0 +1,147 @@
+Object getAggregatedValue(Session session, Object currValue) throws HsqlException {
+    if (!isAggregate()) {
+        return currValue;
+    }
+    // handle expressions
+    Object leftValue = null, rightValue = null;
+    switch(aggregateSpec) {
+        case AGGREGATE_SELF:
+            {
+                // handles results of aggregates plus NEGATE and CONVERT
+                switch(exprType) {
+                    case COUNT:
+                        if (currValue == null) {
+                            return INTEGER_0;
+                        }
+                        return ((SetFunction) currValue).getValue();
+                    case MAX:
+                    case MIN:
+                    case SUM:
+                    case AVG:
+                    case EVERY:
+                    case SOME:
+                    case STDDEV_POP:
+                    case STDDEV_SAMP:
+                    case VAR_POP:
+                    case VAR_SAMP:
+                        if (currValue == null) {
+                            return null;
+                        }
+                        return ((SetFunction) currValue).getValue();
+                }
+            }
+        case AGGREGATE_LEFT:
+            leftValue = eArg.getAggregatedValue(session, currValue == null ? null : ((Object[]) currValue)[0]);
+            if (currValue == null) {
+                rightValue = eArg2 == null ? null : eArg2.getValue(session);
+            } else {
+                rightValue = ((Object[]) currValue)[1];
+            }
+            break;
+        case AGGREGATE_RIGHT:
+            if (currValue == null) {
+                leftValue = eArg == null ? null : eArg.getValue(session);
+            } else {
+                leftValue = ((Object[]) currValue)[0];
+            }
+            rightValue = eArg2.getAggregatedValue(session, currValue == null ? null : ((Object[]) currValue)[1]);
+            break;
+        case AGGREGATE_BOTH:
+            if (currValue == null) {
+                currValue = new Object[2];
+            }
+            leftValue = eArg.getAggregatedValue(session, ((Object[]) currValue)[0]);
+            rightValue = eArg2.getAggregatedValue(session, ((Object[]) currValue)[1]);
+            break;
+    }
+    // handle other operations
+    switch(exprType) {
+        case NEGATE:
+            return Column.negate(leftValue, dataType);
+        case CONVERT:
+            return Column.convertObject(session, leftValue, dataType, precision, scale);
+        case TRUE:
+            return Boolean.TRUE;
+        case FALSE:
+            return Boolean.FALSE;
+        case NOT:
+            if (leftValue == null) {
+                return null;
+            }
+            return ((Boolean) leftValue).booleanValue() ? Boolean.FALSE : Boolean.TRUE;
+        case AND:
+            if (leftValue == null || rightValue == null) {
+                return null;
+            }
+            return ((Boolean) leftValue).booleanValue() && ((Boolean) rightValue).booleanValue() ? Boolean.TRUE : Boolean.FALSE;
+        case OR:
+            if (Boolean.TRUE.equals(leftValue)) {
+                return Boolean.TRUE;
+            }
+            return Boolean.TRUE.equals(rightValue) ? Boolean.TRUE : Boolean.FALSE;
+        case IS_NULL:
+            return leftValue == null ? Boolean.TRUE : Boolean.FALSE;
+        case LIKE:
+            String s = (String) Column.convertObject(rightValue, Types.VARCHAR);
+            if (eArg2.isParam || eArg2.exprType != VALUE) {
+                likeObject.resetPattern(session, s);
+            }
+            String c = (String) Column.convertObject(leftValue, Types.VARCHAR);
+            return likeObject.compare(session, c);
+        case ALL:
+        case ANY:
+            return null;
+        case IN:
+            return eArg2.testInCondition(session, leftValue);
+        case EXISTS:
+            if (!eArg.subQuery.isResolved) {
+                // 1 is already enough
+                Result r = eArg.subQuery.select.getResult(session, 1);
+                return r.rRoot == null ? Boolean.FALSE : Boolean.TRUE;
+            } else {
+                return subQuery.table.isEmpty(session) ? Boolean.FALSE : Boolean.TRUE;
+            }
+        case CASEWHEN:
+            leftValue = Column.convertObject(leftValue, Types.BOOLEAN);
+            boolean test = ((Boolean) leftValue).booleanValue();
+            Object result = test ? ((Object[]) rightValue)[0] : ((Object[]) rightValue)[1];
+            return Column.convertObject(result, dataType);
+        case ALTERNATIVE:
+            leftValue = Column.convertObject(leftValue, dataType);
+            rightValue = Column.convertObject(rightValue, dataType);
+            Object[] objectPair = new Object[2];
+            objectPair[0] = leftValue;
+            objectPair[1] = rightValue;
+            return objectPair;
+        case FUNCTION:
+            return function.getAggregatedValue(session, currValue);
+    }
+    // handle comparisons
+    if (isCompare(exprType)) {
+        if (eArg2.exprType == Expression.ANY || eArg2.exprType == Expression.ALL) {
+            return testAnyAllCondition(session, leftValue);
+        }
+        return compareValues(session, leftValue, rightValue);
+    }
+    // handle arithmetic and concat operations
+    if (leftValue != null) {
+        leftValue = Column.convertObject(leftValue, dataType);
+    }
+    if (rightValue != null) {
+        rightValue = Column.convertObject(rightValue, dataType);
+    }
+    switch(exprType) {
+        case ADD:
+            return Column.add(leftValue, rightValue, dataType);
+        case SUBTRACT:
+            return Column.subtract(leftValue, rightValue, dataType);
+        case MULTIPLY:
+            return Column.multiply(leftValue, rightValue, dataType);
+        case DIVIDE:
+            return Column.divide(leftValue, rightValue, dataType);
+        case CONCAT:
+            return Column.concat(leftValue, rightValue);
+        default:
+            throw Trace.error(Trace.NEED_AGGREGATE, this.describe(session));
+    }
+}

@@ -1,0 +1,118 @@
+public java.sql.ResultSet executeQuery(String sql) throws SQLException {
+    checkClosed();
+    MySQLConnection locallyScopedConn = this.connection;
+    synchronized (locallyScopedConn.getMutex()) {
+        this.retrieveGeneratedKeys = false;
+        resetCancelledState();
+        checkNullOrEmptyQuery(sql);
+        boolean doStreaming = createStreamingResultSet();
+        if (doStreaming && this.connection.getNetTimeoutForStreamingResults() > 0) {
+            executeSimpleNonQuery(locallyScopedConn, "SET net_write_timeout=" + this.connection.getNetTimeoutForStreamingResults());
+        }
+        if (this.doEscapeProcessing) {
+            Object escapedSqlResult = EscapeProcessor.escapeSQL(sql, locallyScopedConn.serverSupportsConvertFn(), this.connection);
+            if (escapedSqlResult instanceof String) {
+                sql = (String) escapedSqlResult;
+            } else {
+                sql = ((EscapeProcessorResult) escapedSqlResult).escapedSql;
+            }
+        }
+        char firstStatementChar = StringUtils.firstNonWsCharUc(sql, findStartOfStatement(sql));
+        if (sql.charAt(0) == '/') {
+            if (sql.startsWith(PING_MARKER)) {
+                doPingInstead();
+                return this.results;
+            }
+        }
+        checkForDml(sql, firstStatementChar);
+        if (this.results != null) {
+            if (!locallyScopedConn.getHoldResultsOpenOverStatementClose()) {
+                this.results.realClose(false);
+            }
+        }
+        CachedResultSetMetaData cachedMetaData = null;
+        if (useServerFetch()) {
+            this.results = createResultSetUsingServerFetch(sql);
+            return this.results;
+        }
+        CancelTask timeoutTask = null;
+        String oldCatalog = null;
+        try {
+            if (locallyScopedConn.getEnableQueryTimeouts() && this.timeoutInMillis != 0 && locallyScopedConn.versionMeetsMinimum(5, 0, 0)) {
+                timeoutTask = new CancelTask(this);
+                locallyScopedConn.getCancelTimer().schedule(timeoutTask, this.timeoutInMillis);
+            }
+            if (!locallyScopedConn.getCatalog().equals(this.currentCatalog)) {
+                oldCatalog = locallyScopedConn.getCatalog();
+                locallyScopedConn.setCatalog(this.currentCatalog);
+            }
+            // 
+            // Check if we have cached metadata for this query...
+            // 
+            Field[] cachedFields = null;
+            if (locallyScopedConn.getCacheResultSetMetadata()) {
+                cachedMetaData = locallyScopedConn.getCachedMetaData(sql);
+                if (cachedMetaData != null) {
+                    cachedFields = cachedMetaData.fields;
+                }
+            }
+            if (locallyScopedConn.useMaxRows()) {
+                // on the connection
+                if (StringUtils.indexOfIgnoreCase(sql, "LIMIT") != -1) {
+                    // $NON-NLS-1$
+                    this.results = locallyScopedConn.execSQL(this, sql, this.maxRows, null, this.resultSetType, this.resultSetConcurrency, doStreaming, this.currentCatalog, cachedFields);
+                } else {
+                    if (this.maxRows <= 0) {
+                        executeSimpleNonQuery(locallyScopedConn, "SET OPTION SQL_SELECT_LIMIT=DEFAULT");
+                    } else {
+                        executeSimpleNonQuery(locallyScopedConn, "SET OPTION SQL_SELECT_LIMIT=" + this.maxRows);
+                    }
+                    this.results = locallyScopedConn.execSQL(this, sql, -1, null, this.resultSetType, this.resultSetConcurrency, doStreaming, this.currentCatalog, cachedFields);
+                    if (oldCatalog != null) {
+                        locallyScopedConn.setCatalog(oldCatalog);
+                    }
+                }
+            } else {
+                this.results = locallyScopedConn.execSQL(this, sql, -1, null, this.resultSetType, this.resultSetConcurrency, doStreaming, this.currentCatalog, cachedFields);
+            }
+            if (timeoutTask != null) {
+                if (timeoutTask.caughtWhileCancelling != null) {
+                    throw timeoutTask.caughtWhileCancelling;
+                }
+                timeoutTask.cancel();
+                locallyScopedConn.getCancelTimer().purge();
+                timeoutTask = null;
+            }
+            synchronized (this.cancelTimeoutMutex) {
+                if (this.wasCancelled) {
+                    SQLException cause = null;
+                    if (this.wasCancelledByTimeout) {
+                        cause = new MySQLTimeoutException();
+                    } else {
+                        cause = new MySQLStatementCancelledException();
+                    }
+                    resetCancelledState();
+                    throw cause;
+                }
+            }
+        } finally {
+            if (timeoutTask != null) {
+                timeoutTask.cancel();
+                locallyScopedConn.getCancelTimer().purge();
+            }
+            if (oldCatalog != null) {
+                locallyScopedConn.setCatalog(oldCatalog);
+            }
+        }
+        this.lastInsertId = this.results.getUpdateID();
+        if (cachedMetaData != null) {
+            locallyScopedConn.initializeResultsMetadataFromCache(sql, cachedMetaData, this.results);
+        } else {
+            if (this.connection.getCacheResultSetMetadata()) {
+                locallyScopedConn.initializeResultsMetadataFromCache(sql, null, /* will be created */
+                this.results);
+            }
+        }
+        return this.results;
+    }
+}

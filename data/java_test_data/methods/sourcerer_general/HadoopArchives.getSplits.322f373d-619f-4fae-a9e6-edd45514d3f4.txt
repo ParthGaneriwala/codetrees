@@ -1,0 +1,49 @@
+public InputSplit[] getSplits(JobConf jconf, int numSplits) throws IOException {
+    String srcfilelist = jconf.get(SRC_LIST_LABEL, "");
+    if ("".equals(srcfilelist)) {
+        throw new IOException("Unable to get the " + "src file for archive generation.");
+    }
+    long totalSize = jconf.getLong(TOTAL_SIZE_LABEL, -1);
+    if (totalSize == -1) {
+        throw new IOException("Invalid size of files to archive");
+    }
+    // we should be safe since this is set by our own code
+    Path src = new Path(srcfilelist);
+    FileSystem fs = src.getFileSystem(jconf);
+    FileStatus fstatus = fs.getFileStatus(src);
+    ArrayList<FileSplit> splits = new ArrayList<FileSplit>(numSplits);
+    LongWritable key = new LongWritable();
+    Text value = new Text();
+    SequenceFile.Reader reader = null;
+    // the remaining bytes in the file split
+    long remaining = fstatus.getLen();
+    // the count of sizes calculated till now
+    long currentCount = 0L;
+    // the endposition of the split
+    long lastPos = 0L;
+    // the start position of the split
+    long startPos = 0L;
+    long targetSize = totalSize / numSplits;
+    // have equals sized data to read and write to.
+    try {
+        reader = new SequenceFile.Reader(fs, src, jconf);
+        while (reader.next(key, value)) {
+            if (currentCount + key.get() > targetSize && currentCount != 0) {
+                long size = lastPos - startPos;
+                splits.add(new FileSplit(src, startPos, size, (String[]) null));
+                remaining = remaining - size;
+                startPos = lastPos;
+                currentCount = 0L;
+            }
+            currentCount += key.get();
+            lastPos = reader.getPosition();
+        }
+        // the remaining not equal to the target size.
+        if (remaining != 0) {
+            splits.add(new FileSplit(src, startPos, remaining, (String[]) null));
+        }
+    } finally {
+        reader.close();
+    }
+    return splits.toArray(new FileSplit[splits.size()]);
+}

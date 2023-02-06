@@ -1,0 +1,87 @@
+private Node buildTreeRecursively(DataSet dataSet, int level) throws Exception {
+    Node resultNode = null;
+    Entry[] entries = new Entry[maxFanout];
+    int count = 0;
+    // case 1: if size is too small: create leaf node
+    if (dataSet.size() <= maxFanout) {
+        // create a kernel estimator for each object and insert it into the leaf node
+        for (DataObject dataObject : dataSet) {
+            // fill entry using the current 'dataObject'
+            entries[count] = new Entry(dataSet.getNrOfDimensions());
+            entries[count].add(new Entry(dataObject.getNrOfDimensions(), new ClusKernel(dataObject.getFeatures(), dataObject.getFeatures().length), 0));
+            count++;
+        }
+    // else split DataSet
+    } else {
+        DataSet[] subSets = splitDataSetUsingEM(dataSet, maxFanout);
+        // case 2: if the data set could not be split, we insert all objects into a new leaf node
+        if (subSets.length == 1) {
+            // force all objects into #maxFanout entries
+            for (DataObject dataObject : dataSet) {
+                Entry newEntry = new Entry(dataObject.getNrOfDimensions(), new ClusKernel(dataObject.getFeatures(), dataObject.getFeatures().length), 0);
+                if (count < maxFanout) {
+                    // fill entry using the current 'dataObject'
+                    entries[count] = new Entry(dataSet.getNrOfDimensions());
+                    entries[count].add(newEntry);
+                } else {
+                    // rather than [count % maxFanout] merge it to the closest existing entry
+                    double tmpDist, minDist = Double.MIN_VALUE;
+                    int closestEntry = 0;
+                    for (int i = 0; i < entries.length; i++) {
+                        tmpDist = entries[i].calcDistance(newEntry);
+                        if (tmpDist < minDist) {
+                            minDist = tmpDist;
+                            closestEntry = i;
+                        }
+                    }
+                    entries[closestEntry].add(newEntry);
+                }
+                count++;
+            }
+        } else {
+            // create new nodes from subsets recursively
+            Node[] newChildNodes = new Node[subSets.length];
+            for (int i = 0; i < newChildNodes.length; i++) {
+                if (subSets[i].size() > 1)
+                    newChildNodes[i] = buildTreeRecursively(subSets[i], level + 1);
+                else
+                    newChildNodes[i] = null;
+            }
+            // add child nodes (i.e. the corresponding entries) to the result node
+            for (int i = 0; i < maxFanout; i++) {
+                if (i < newChildNodes.length) {
+                    if (newChildNodes[i] == null) {
+                        // subSets[i].size() is either 1 or 0, i.e.
+                        if (subSets[i].size() == 0) {
+                            entries[i] = new Entry(dataSet.getNrOfDimensions());
+                        } else {
+                            // fill entry using the one dataObject subSets[i].getObject(0)
+                            entries[i] = new Entry(dataSet.getNrOfDimensions());
+                            entries[i].add(new Entry(subSets[i].getObject(0).getNrOfDimensions(), new ClusKernel(subSets[i].getObject(0).getFeatures(), subSets[i].getObject(0).getFeatures().length), 0));
+                        }
+                    } else {
+                        // fill entry using newChildNodes[i]
+                        entries[i] = new Entry(dataSet.getNrOfDimensions());
+                        entries[i].setChild(newChildNodes[i]);
+                        for (Entry e : newChildNodes[i].getEntries()) {
+                            entries[i].add(e);
+                        }
+                    }
+                } else {
+                    entries[i] = new Entry(dataSet.getNrOfDimensions());
+                }
+                count++;
+            }
+        }
+    }
+    // create remaining entries as empty entries
+    for (int i = count; i < maxFanout; i++) {
+        entries[i] = new Entry(dataSet.getNrOfDimensions());
+    }
+    // and add them all to the resulting node
+    resultNode = new Node(dataSet.getNrOfDimensions(), level);
+    for (Entry e : entries) {
+        resultNode.addEntry(e, 0);
+    }
+    return resultNode;
+}

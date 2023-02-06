@@ -1,0 +1,72 @@
+@Override
+public void run() {
+    String[] buffer = new String[LINES_PER_BATCH];
+    while (true) {
+        int count = 0;
+        lock.lock();
+        Worker prevWorker = lastWorker;
+        lastWorker = this;
+        nextLine = null;
+        if (!isDone) {
+            for (; count < LINES_PER_BATCH; ++count) {
+                String line = null;
+                try {
+                    line = input.readLine();
+                } catch (IOException e) {
+                }
+                if (line == null) {
+                    isDone = true;
+                    break;
+                }
+                buffer[count] = line;
+            }
+        }
+        lock.unlock();
+        if (count == 0) {
+            if (mergeLines && prevWorker != null) {
+                prevWorker.nextLine = new long[0];
+                synchronized (prevWorker) {
+                    notifyAll();
+                }
+            }
+            break;
+        }
+        long[] prevLine = null;
+        for (int i = 0; i < count; ++i) {
+            long[] tuples = parser.parseSentence(buffer[i]);
+            if (mergeLines) {
+                if (prevLine == null) {
+                    // send to the previous worker
+                    if (prevWorker != null) {
+                        prevWorker.nextLine = tuples;
+                        synchronized (prevWorker) {
+                            prevWorker.notifyAll();
+                        }
+                    }
+                } else {
+                    mergeLines(prevLine, tuples);
+                }
+            }
+            callback.process(tuples);
+            prevLine = tuples;
+        }
+        if (mergeLines) {
+            if (prevLine != null) {
+                if (nextLine == null) {
+                    synchronized (this) {
+                        // wait for the next worker to set the nextLine
+                        while (nextLine == null) {
+                            try {
+                                wait();
+                            } catch (InterruptedException e) {
+                            }
+                        }
+                    }
+                }
+                if (nextLine.length > 0) {
+                    mergeLines(prevLine, nextLine);
+                }
+            }
+        }
+    }
+}

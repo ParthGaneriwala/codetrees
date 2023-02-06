@@ -1,0 +1,102 @@
+@Override
+public void trainOnInstanceImpl(MultiLabelInstance instance) {
+    int numOutputs = instance.numOutputAttributes();
+    if (!hasStarted) {
+        hasStarted = true;
+        numericIndices = new LinkedList<Integer>();
+        // Initialize numericAttributesIndex
+        for (int i = 0; i < instance.numInputAttributes(); i++) if (instance.inputAttribute(i).isNumeric())
+            numericIndices.add(i);
+        int numInputs = numericIndices.size();
+        inAttrSum = new double[numInputs];
+        inAttrSquaredSum = new double[numInputs];
+        outAttrSum = new double[numOutputs];
+        outAttrSquaredSum = new double[numOutputs];
+        layer1Weights = new double[numInputs + 1][numOutputs];
+        layer2Weights = new double[numOutputs + 1][numOutputs];
+        /*
+			 * Initialize first layer randomly uniform between -1 and 1
+			 * Initialize second layer such that the weights between
+			 * correspondent outputs are 1 and the remaining are 0
+			 */
+        for (int j = 0; j < numOutputs; j++) {
+            // Iterator<Integer> it=numericIndices.iterator();
+            for (int i = 0; i < numInputs + 1; i++) // while(it.hasNext())
+            layer1Weights[i][j] = 2 * this.classifierRandom.nextDouble() - 1;
+            layer2Weights[j][j] = 1.0;
+        }
+    /*	for (int i=0; i<numOutputs+1; i++)
+				for (int j=0; j<numOutputs; j++)
+					layer2Weights[i][j]= 2 * this.classifierRandom.nextDouble() - 1;*/
+    }
+    /*
+		 * Update statistics
+		 */
+    int numInputs = numericIndices.size();
+    // Update input statistics
+    double w = instance.weight();
+    count += w;
+    Iterator<Integer> it = numericIndices.iterator();
+    int ct = 0;
+    while (it.hasNext()) {
+        double value = instance.valueInputAttribute(it.next());
+        inAttrSum[ct] += value * w;
+        inAttrSquaredSum[ct] += value * value * w;
+        ct++;
+    }
+    // Update  output statistics
+    for (int i = 0; i < numOutputs; i++) {
+        double value = instance.valueOutputAttribute(i);
+        outAttrSum[i] += value * w;
+        outAttrSquaredSum[i] += value * value * w;
+    }
+    /*
+		 * Learn new weights
+		 */
+    // predict outputs
+    double[] normInputs = getNormalizedInput(instance);
+    // 1st Layer
+    double[] firstLayerOutput = predict1stLayer(normInputs);
+    // 2nd Layer
+    double[] secondLayerOutput = null;
+    if (!skipStackingOption.isSet()) {
+        secondLayerOutput = predict2ndLayer(firstLayerOutput);
+    }
+    if (!constantLearningRatioDecayOption.isSet()) {
+        currentLearningRate = learningRatioOption.getValue() / (1 + count * this.learningRateDecayOption.getValue());
+    }
+    // update weights
+    // 1st Layer
+    double[] normOutputs = getNormalizedOutput(instance);
+    for (int j = 0; j < numOutputs; j++) {
+        double delta = normOutputs[j] - firstLayerOutput[j];
+        double sumLayer = 0;
+        for (int i = 0; i < numInputs; i++) {
+            layer1Weights[i][j] += currentLearningRate * delta * normInputs[i] * instance.weight();
+            sumLayer += Math.abs(layer1Weights[i][j]);
+        }
+        layer1Weights[numInputs][j] += currentLearningRate * delta * instance.weight();
+        sumLayer += Math.abs(layer1Weights[numInputs][j]);
+        if (sumLayer > (numInputs)) {
+            for (int i = 0; i < (numInputs + 1); i++) layer1Weights[i][j] /= sumLayer;
+        }
+    }
+    if (!skipStackingOption.isSet()) {
+        // update weights
+        // 2nd Layer
+        double learningRate2ndLayer = learningRatio2ndLayerOption.getValue();
+        for (int j = 0; j < numOutputs; j++) {
+            double delta = normOutputs[j] - secondLayerOutput[j];
+            double sumLayer = 0;
+            for (int i = 0; i < numOutputs; i++) {
+                layer2Weights[i][j] += learningRate2ndLayer * delta * firstLayerOutput[i] * instance.weight();
+                sumLayer += Math.abs(layer2Weights[i][j]);
+            }
+            layer2Weights[numOutputs][j] += learningRate2ndLayer * delta * instance.weight();
+            sumLayer += Math.abs(layer2Weights[numOutputs][j]);
+            if (sumLayer > (numOutputs)) {
+                for (int i = 0; i < (numOutputs + 1); i++) layer2Weights[i][j] /= sumLayer;
+            }
+        }
+    }
+}

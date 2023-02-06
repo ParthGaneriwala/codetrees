@@ -1,0 +1,131 @@
+public List createSpecializedGraphs(String graphName, Graph requestedProperties) {
+    /*
+		 * create the specialized graphs for the new graph. this includes
+		 * updating the database for the new graph (allocating a new graph
+		 * identifier, updating the jena system tables and creating tables, if
+		 * necessary. this should be done atomically to avoid corrupting the
+		 * database but a single transaction is not sufficient because some
+		 * database engines (e.g., oracle) require create table statements to
+		 * run as a separate transaction, i.e., a create table statement in the
+		 * middle of a group of updates will cause an automatic commit of the
+		 * updates prior to the create table statement.
+		 * 
+		 * fortunately, we can run most of the updates in a single transaction.
+		 * however, allocation of the graph indentifier must be done prior to
+		 * creating the statement tables. so, if any subsequent operation fails,
+		 * we must run a compensating transaction to deallocate the graph
+		 * identifier.
+		 * 
+		 * because of the above, we assume that there is no active transaction
+		 * when this routine is called.
+		 */
+    // String graphName = graphProperties.getName();
+    String stmtTbl = null;
+    String reifTbl = null;
+    String dbSchema = STORE_WITH_MODEL;
+    boolean didGraphIdAlloc = false;
+    boolean didTableCreate = false;
+    String errMsg = null;
+    DBPropGraph graphProperties = null;
+    SpecializedGraph sysGraph = getSystemSpecializedGraph(false);
+    if (xactOp(xactIsActive))
+        throw new RDFRDBException("Cannot create graph while transaction is active.\n" + "Commit or abort transaction before creating graph");
+    boolean autoOn = xactOp(xactAutoOff);
+    // bogus initialization to make java happy
+    int graphId = -1;
+    try {
+        xactOp(xactBegin);
+        graphId = graphIdAlloc(graphName);
+        didGraphIdAlloc = true;
+        xactOp(xactCommit);
+        xactOp(xactBegin);
+        boolean useDefault = false;
+        // 2) a schema is specified and it is the default (unnamed) graph
+        if (((dbSchema == null) && graphName.equals(GraphRDB.DEFAULT))) {
+            useDefault = true;
+            // default graph should use default
+            dbSchema = DEFAULT_PROPS;
+        // tables
+        }
+        // }
+        if (dbSchema != null) {
+            DBPropGraph schProp = DBPropGraph.findPropGraphByName(sysGraph, dbSchema);
+            if (schProp != null) {
+                reifTbl = schProp.getReifTable();
+                stmtTbl = schProp.getStmtTable();
+            }
+            if (((reifTbl == null) || (stmtTbl == null)) && (useDefault == false))
+                // schema
+                throw new RDFRDBException("Creating graph " + graphName + ": referenced schema not found: " + dbSchema);
+        }
+        if ((reifTbl == null) || (stmtTbl == null)) {
+            didTableCreate = true;
+            reifTbl = createTable(graphId, true);
+            stmtTbl = createTable(graphId, false);
+            if ((reifTbl == null) || (stmtTbl == null))
+                throw new RDFRDBException("Creating graph " + graphName + ": cannot create tables");
+        }
+        // may not be needed but it doesn't hurt
+        xactOp(xactCommit);
+    } catch (Exception e) {
+        errMsg = e.toString();
+    }
+    if (errMsg == null)
+        try {
+            xactOp(xactBegin);
+            graphProperties = new DBPropGraph(sysGraph, graphName, requestedProperties);
+            graphProperties.addGraphId(graphId);
+            graphProperties.addStmtTable(stmtTbl);
+            graphProperties.addReifTable(reifTbl);
+            DBPropDatabase dbprop = new DBPropDatabase(getSystemSpecializedGraph(true));
+            dbprop.addGraph(graphProperties);
+            // Add the reifier first
+            DBPropPSet pSetReifier = new DBPropPSet(m_sysProperties, m_psetReifierClassName, reifTbl);
+            DBPropLSet lSetReifier = new DBPropLSet(m_sysProperties, "LSET_" + graphProperties.getName() + "_REIFIER", m_lsetReifierClassName);
+            lSetReifier.setPSet(pSetReifier);
+            graphProperties.addLSet(lSetReifier);
+            // Now add support for all non-reified triples
+            DBPropPSet pSet = new DBPropPSet(m_sysProperties, m_psetClassName, stmtTbl);
+            DBPropLSet lSet = new DBPropLSet(m_sysProperties, "LSET_" + graphProperties.getName(), m_lsetClassName);
+            lSet.setPSet(pSet);
+            graphProperties.addLSet(lSet);
+            xactOp(xactCommit);
+            if (autoOn)
+                xactOp(xactAutoOn);
+        } catch (Exception e) {
+            errMsg = e.toString();
+        }
+    if (errMsg == null)
+        return recreateSpecializedGraphs(graphProperties);
+    else {
+        // maybe not needed but doesn't hurt
+        xactOp(xactCommit);
+        xactOp(xactBegin);
+        try {
+            // clean-up
+            if (didGraphIdAlloc) {
+                graphIdDealloc(graphId);
+            }
+        } catch (Exception e) {
+        }
+        if (didTableCreate) {
+            // the order of creation above.
+            if (reifTbl != null)
+                try {
+                    deleteTable(reifTbl);
+                } catch (Exception e) {
+                }
+            ;
+            if (stmtTbl != null)
+                try {
+                    deleteTable(stmtTbl);
+                } catch (Exception e) {
+                }
+            ;
+        }
+        xactOp(xactCommit);
+        if (autoOn)
+            xactOp(xactAutoOn);
+        return null;
+    }
+}

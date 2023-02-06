@@ -1,0 +1,176 @@
+protected void processExpression(Expression node) throws JavaModelException {
+    if (node == null)
+        return;
+    switch(node.getNodeType()) {
+        case ASTNode.SIMPLE_NAME:
+        case ASTNode.QUALIFIED_NAME:
+            {
+                final Name name = (Name) node;
+                if (name.resolveBinding().getJavaElement() == null)
+                    throw new DefinitelyNotEnumerizableException(Messages.ASTNodeProcessor_NonEnumerizableTypeEncountered, node);
+                else {
+                    final IJavaElement elem = name.resolveBinding().getJavaElement();
+                    if (elem.isReadOnly() || name.resolveBoxing())
+                        throw new DefinitelyNotEnumerizableException(Messages.ASTNodeProcessor_SourceNotPresent, node);
+                    if (name.resolveTypeBinding().isEqualTo(// $NON-NLS-1$
+                    node.getAST().resolveWellKnownType("java.lang.Object")))
+                        throw new NonEnumerizableASTException(Messages.ASTNodeProcessor_IllegalArrayUpcast, name);
+                    this.found.add(elem);
+                }
+                break;
+            }
+        case ASTNode.ARRAY_ACCESS:
+            {
+                final ArrayAccess access = (ArrayAccess) node;
+                this.processExpression(access.getArray());
+                break;
+            }
+        case ASTNode.ARRAY_CREATION:
+            {
+                final ArrayCreation creation = (ArrayCreation) node;
+                this.processExpression(creation.getInitializer());
+                break;
+            }
+        case ASTNode.ARRAY_INITIALIZER:
+            {
+                final ArrayInitializer init = (ArrayInitializer) node;
+                for (final Iterator it = init.expressions().iterator(); it.hasNext(); ) {
+                    final Expression exp = (Expression) it.next();
+                    this.processExpression(exp);
+                }
+                break;
+            }
+        case ASTNode.ASSIGNMENT:
+            {
+                final Assignment assignment = (Assignment) node;
+                if (assignment.getOperator() == Assignment.Operator.ASSIGN) {
+                    this.processExpression(assignment.getLeftHandSide());
+                    this.processExpression(assignment.getRightHandSide());
+                } else if (!Util.isSuspiciousAssignmentOperator(assignment.getOperator()))
+                    throw new DefinitelyNotEnumerizableOperationException(Messages.ASTNodeProcessor_IllegalAssignmentExpression, assignment.getOperator(), node);
+                else
+                    throw new NonEnumerizableOperationException(Messages.ASTNodeProcessor_IllegalAssignmentExpression, assignment.getOperator(), node);
+                break;
+            }
+        case ASTNode.CONDITIONAL_EXPRESSION:
+            {
+                final ConditionalExpression ce = (ConditionalExpression) node;
+                this.processExpression(ce.getThenExpression());
+                this.processExpression(ce.getElseExpression());
+                break;
+            }
+        case ASTNode.FIELD_ACCESS:
+            {
+                final FieldAccess fieldAccess = (FieldAccess) node;
+                if (fieldAccess.resolveFieldBinding().getJavaElement() == null)
+                    throw new DefinitelyNotEnumerizableException(Messages.ASTNodeProcessor_NonEnumerizableTypeEncountered, node);
+                else {
+                    final IJavaElement elem = fieldAccess.resolveFieldBinding().getJavaElement();
+                    if (elem.isReadOnly() || fieldAccess.resolveBoxing())
+                        throw new DefinitelyNotEnumerizableException(Messages.ASTNodeProcessor_SourceNotPresent, node);
+                    if (fieldAccess.resolveTypeBinding().isEqualTo(// $NON-NLS-1$
+                    node.getAST().resolveWellKnownType("java.lang.Object")))
+                        throw new NonEnumerizableASTException(Messages.ASTNodeProcessor_IllegalArrayUpcast, fieldAccess);
+                    this.found.add(elem);
+                }
+                break;
+            }
+        case ASTNode.INFIX_EXPRESSION:
+            {
+                final InfixExpression ie = (InfixExpression) node;
+                final InfixExpression.Operator op = ie.getOperator();
+                if (Util.isLegalInfixOperator(op)) {
+                    if (Util.inNeedOfTransformation(op)) {
+                        final ISourceRange range = new SourceRange(ie.getStartPosition(), ie.getLength());
+                        this.legalEncounteredInfixExpressionSourceLocations.add(range);
+                    }
+                    this.processExpression(ie.getLeftOperand());
+                    this.processExpression(ie.getRightOperand());
+                } else if (!Util.isSuspiciousInfixOperator(op))
+                    throw new DefinitelyNotEnumerizableOperationException(Messages.ASTNodeProcessor_IllegalInfixExpression, op, node);
+                else
+                    throw new NonEnumerizableOperationException(Messages.ASTNodeProcessor_IllegalInfixExpression, op, node);
+                break;
+            }
+        case ASTNode.METHOD_INVOCATION:
+            {
+                final MethodInvocation m = (MethodInvocation) node;
+                final IMethod meth = (IMethod) m.resolveMethodBinding().getJavaElement();
+                final IMethod top = Util.getTopMostSourceMethod(meth, this.monitor);
+                if (top == null)
+                    throw new DefinitelyNotEnumerizableException(Messages.ASTNodeProcessor_SourceNotPresent, node);
+                else {
+                    if (top.isReadOnly())
+                        throw new DefinitelyNotEnumerizableException(Messages.ASTNodeProcessor_SourceNotPresent, node);
+                    this.found.add(top);
+                }
+                break;
+            }
+        case ASTNode.PARENTHESIZED_EXPRESSION:
+            {
+                final ParenthesizedExpression pe = (ParenthesizedExpression) node;
+                this.processExpression(pe.getExpression());
+                break;
+            }
+        case ASTNode.SUPER_FIELD_ACCESS:
+            {
+                final SuperFieldAccess superFieldAccess = (SuperFieldAccess) node;
+                final IJavaElement elem = superFieldAccess.resolveFieldBinding().getJavaElement();
+                if (elem.isReadOnly() || superFieldAccess.resolveBoxing())
+                    throw new DefinitelyNotEnumerizableException(Messages.ASTNodeProcessor_SourceNotPresent, node);
+                if (superFieldAccess.resolveTypeBinding().isEqualTo(// $NON-NLS-1$
+                node.getAST().resolveWellKnownType("java.lang.Object")))
+                    throw new NonEnumerizableASTException(Messages.ASTNodeProcessor_IllegalArrayUpcast, superFieldAccess);
+                this.found.add(elem);
+                break;
+            }
+        case ASTNode.SUPER_METHOD_INVOCATION:
+            {
+                final SuperMethodInvocation sm = (SuperMethodInvocation) node;
+                final IMethod meth = (IMethod) sm.resolveMethodBinding().getJavaElement();
+                final IMethod top = Util.getTopMostSourceMethod(meth, this.monitor);
+                if (top == null)
+                    throw new DefinitelyNotEnumerizableException(Messages.ASTNodeProcessor_SourceNotPresent, node);
+                else {
+                    if (top.isReadOnly())
+                        throw new DefinitelyNotEnumerizableException(Messages.ASTNodeProcessor_SourceNotPresent, node);
+                    this.found.add(top);
+                }
+                break;
+            }
+        case ASTNode.VARIABLE_DECLARATION_EXPRESSION:
+            {
+                final VariableDeclarationExpression varDec = (VariableDeclarationExpression) node;
+                for (final Iterator it = varDec.fragments().iterator(); it.hasNext(); ) {
+                    final VariableDeclarationFragment vdf = (VariableDeclarationFragment) it.next();
+                    final IJavaElement elem = vdf.resolveBinding().getJavaElement();
+                    if (elem.isReadOnly() || vdf.getName().resolveBoxing())
+                        throw new DefinitelyNotEnumerizableException(Messages.ASTNodeProcessor_SourceNotPresent, vdf);
+                    if (vdf.resolveBinding().getType().isEqualTo(// $NON-NLS-1$
+                    node.getAST().resolveWellKnownType("java.lang.Object")))
+                        throw new NonEnumerizableASTException(Messages.ASTNodeProcessor_IllegalArrayUpcast, vdf);
+                    this.found.add(elem);
+                }
+                break;
+            }
+        case ASTNode.CAST_EXPRESSION:
+            {
+                final CastExpression cast = (CastExpression) node;
+                throw new NonEnumerizableCastExpression(Messages.ASTNodeProcessor_IllegalNodeContext, node, cast.getExpression().resolveTypeBinding(), cast.getType().resolveBinding());
+            }
+        case ASTNode.ENUM_CONSTANT_DECLARATION:
+        case ASTNode.IF_STATEMENT:
+        case ASTNode.BOOLEAN_LITERAL:
+        case ASTNode.NUMBER_LITERAL:
+        case ASTNode.CHARACTER_LITERAL:
+        case ASTNode.POSTFIX_EXPRESSION:
+        case ASTNode.PREFIX_EXPRESSION:
+            {
+                throw new DefinitelyNotEnumerizableException(Messages.ASTNodeProcessor_IllegalNodeContext, node);
+            }
+        default:
+            {
+                throw new NonEnumerizableASTException(Messages.ASTNodeProcessor_IllegalExpression, node);
+            }
+    }
+}

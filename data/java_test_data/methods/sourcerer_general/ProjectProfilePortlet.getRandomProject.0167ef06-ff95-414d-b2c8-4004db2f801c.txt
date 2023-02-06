@@ -1,0 +1,92 @@
+private Project getRandomProject(RenderRequest request, Connection db) throws SQLException {
+    Project randomProject = null;
+    HashMap<String, String> randomProjectPreference = getRandomProjectPreferences(request);
+    if (randomProjectPreference != null) {
+        String portletKey = PortalUtils.getPortletUniqueKey(request);
+        // Determine if the record for the key exists for today in the database
+        ProjectFeaturedListingList projectFeaturedListingList = new ProjectFeaturedListingList();
+        projectFeaturedListingList.setInstanceId(PortalUtils.getInstance(request).getId());
+        projectFeaturedListingList.setPortletKey(portletKey);
+        projectFeaturedListingList.setFeaturedDate(new Timestamp(System.currentTimeMillis()));
+        projectFeaturedListingList.buildList(db);
+        if (projectFeaturedListingList.size() == 1) {
+            // if it exists load the project from projectUtils
+            randomProject = ProjectUtils.loadProject(projectFeaturedListingList.get(0).getProjectId());
+        } else {
+            // if record does not exist, fetch the record from projectList based on randomProjectPreference
+            // Need to take the preference of not having been viewed in the last x number of days
+            String category = randomProjectPreference.get(PREF_CATEGORY);
+            String publicOnly = randomProjectPreference.get(PREF_PUBLIC_ONLY);
+            String approvedOnly = randomProjectPreference.get(PREF_APPROVED_ONLY);
+            String openProjectsOnly = randomProjectPreference.get(PREF_OPEN_PROJECTS_ONLY);
+            String minimumAverageRating = randomProjectPreference.get(PREF_MINIMUM_AVERAGE_RATING);
+            String daysWithoutBeingFeatured = randomProjectPreference.get(PREF_DAYS_WITHOUT_BEING_FEATURED);
+            ProjectList projectList = new ProjectList();
+            projectList.setInstanceId(PortalUtils.getInstance(request).getId());
+            // get categoryId for the provided category
+            if (category != null) {
+                ProjectCategoryList categories = new ProjectCategoryList();
+                categories.setEnabled(true);
+                categories.setTopLevelOnly(true);
+                categories.setCategoryDescriptionLowerCase(category.toLowerCase());
+                categories.buildList(db);
+                if (categories.size() > 0) {
+                    projectList.setCategoryId(categories.get(0).getId());
+                }
+            }
+            // get the list of projects to exclude as they have been featured in the previously specified number of days
+            if (daysWithoutBeingFeatured != null && StringUtils.isNumber(daysWithoutBeingFeatured)) {
+                projectFeaturedListingList = new ProjectFeaturedListingList();
+                projectFeaturedListingList.setPortletKey(portletKey);
+                projectFeaturedListingList.setFeaturedSinceDate(new Timestamp(System.currentTimeMillis() - 1000L * 60 * 60 * 24 * Integer.parseInt(daysWithoutBeingFeatured)));
+                projectFeaturedListingList.buildList(db);
+                if (projectFeaturedListingList.size() > 0) {
+                    StringBuffer excludeProjectIdsStringBuffer = new StringBuffer();
+                    for (ProjectFeaturedListing projectFeaturedListing : projectFeaturedListingList) {
+                        excludeProjectIdsStringBuffer.append(projectFeaturedListing.getProjectId());
+                        excludeProjectIdsStringBuffer.append(",");
+                    }
+                    projectList.setExcludeProjectIdsString(excludeProjectIdsStringBuffer.toString());
+                }
+            }
+            // Determine which projects can be shown
+            if ("true".equals(publicOnly)) {
+                if (PortalUtils.canShowSensitiveData(request)) {
+                    // Limit the data to a participant
+                    projectList.setForParticipant(Constants.TRUE);
+                } else {
+                    // Use the most generic settings
+                    projectList.setPublicOnly(true);
+                }
+            }
+            if (approvedOnly != null) {
+                projectList.setApprovedOnly("true".equals(approvedOnly));
+            }
+            if (openProjectsOnly != null) {
+                projectList.setOpenProjectsOnly("true".equals(openProjectsOnly));
+            }
+            if (minimumAverageRating != null) {
+                projectList.setMinimumAverageRating(minimumAverageRating);
+            }
+            // Leave off the member based ones due to exposing images and such
+            // @todo... remove this after making sure the portlet doesn't show anything it's not supposed to
+            projectList.setRequiresMembership(false);
+            PagedListInfo randomProjectListInfo = PortalUtils.getPagedListInfo(request, "randomProjectListInfo");
+            // fetch a random project based on preference from the database
+            randomProjectListInfo.setRandomOrder(true);
+            randomProjectListInfo.setItemsPerPage(1);
+            projectList.setPagedListInfo(randomProjectListInfo);
+            projectList.buildList(db);
+            // load the project and the preference in the database
+            if (projectList.size() > 0) {
+                randomProject = ProjectUtils.loadProject(projectList.get(0).getId());
+                ProjectFeaturedListing projectFeaturedListing = new ProjectFeaturedListing();
+                projectFeaturedListing.setPortletKey(portletKey);
+                projectFeaturedListing.setProjectId(randomProject.getId());
+                projectFeaturedListing.setFeaturedDate(new Timestamp(System.currentTimeMillis()));
+                projectFeaturedListing.insert(db);
+            }
+        }
+    }
+    return randomProject;
+}

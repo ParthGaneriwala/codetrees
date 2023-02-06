@@ -1,0 +1,60 @@
+public String executeCommandSave(ActionContext context) {
+    Connection db = null;
+    int resultCount = 0;
+    boolean recordInserted = false;
+    try {
+        db = this.getConnection(context);
+        // Verify the user has access to the project
+        String projectId = context.getRequest().getParameter("pid");
+        Project thisProject = retrieveAuthorizedProject(Integer.parseInt(projectId), context);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-lists-modify")) {
+            return "PermissionError";
+        }
+        context.getRequest().setAttribute("project", thisProject);
+        // Process the list item
+        Task thisTask = (Task) context.getFormBean();
+        boolean newTask = (thisTask.getId() == -1);
+        if (newTask) {
+            thisTask.setEnteredBy(getUserId(context));
+        }
+        thisTask.setModifiedBy(getUserId(context));
+        thisTask.setProjectId(thisProject.getId());
+        // Verify the specified category is in the same project
+        TaskCategoryList list = new TaskCategoryList();
+        list.setProjectId(thisProject.getId());
+        list.setCategoryId(thisTask.getCategoryId());
+        list.buildList(db);
+        if (list.size() == 0) {
+            return "PermissionError";
+        }
+        context.getRequest().setAttribute("category", list.get(0));
+        // Insert or update...
+        if (newTask) {
+            recordInserted = thisTask.insert(db);
+            if (recordInserted) {
+                indexAddItem(context, thisTask);
+            }
+        } else {
+            resultCount = thisTask.update(db);
+            indexAddItem(context, thisTask);
+        }
+        if (!recordInserted && resultCount < 1) {
+            processErrors(context, thisTask.getErrors());
+        }
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return ("SystemError");
+    } finally {
+        this.freeConnection(context, db);
+    }
+    if (recordInserted) {
+        if ("true".equals(context.getRequest().getParameter("donew"))) {
+            context.getRequest().removeAttribute("Task");
+            return (executeCommandAdd(context));
+        }
+    }
+    if (recordInserted || resultCount == 1) {
+        return ("SaveOK");
+    }
+    return executeCommandAdd(context);
+}

@@ -1,0 +1,49 @@
+@RolesAllowed(Sec.ROLE_GOD)
+public void overrideSmtpServer(String host) {
+    if (this.mailConfig != null)
+        throw new IllegalStateException("Smtp server override already in effect");
+    // If there was a port, separate the two
+    String port = null;
+    int colon = host.indexOf(':');
+    if (colon > 0) {
+        port = host.substring(colon + 1);
+        host = host.substring(0, colon);
+    }
+    MailServiceMBean mailService = this.getMailService();
+    this.mailConfig = mailService.getConfiguration();
+    // Note we are now using JDOM elements
+    DOMBuilder builder = new DOMBuilder();
+    Element config = builder.build(this.mailConfig);
+    // Remove any existing host or port
+    Iterator<?> it = config.getChildren("property").iterator();
+    while (it.hasNext()) {
+        Element prop = (Element) it.next();
+        String name = prop.getAttributeValue("name");
+        if (name.equals("mail.smtp.host") || name.equals("mail.smtp.port"))
+            it.remove();
+    }
+    // Add host (and maybe port) back with override
+    Element hostProp = new Element("property");
+    hostProp.setAttribute("name", "mail.smtp.host");
+    hostProp.setAttribute("value", host);
+    config.addContent(hostProp);
+    if (port != null) {
+        Element portProp = new Element("property");
+        portProp.setAttribute("name", "mail.smtp.port");
+        portProp.setAttribute("value", port);
+        config.addContent(portProp);
+    }
+    if (log.isInfoEnabled()) {
+        XMLOutputter out = new XMLOutputter();
+        log.info("Updated mail config is:  " + out.outputString(config));
+    }
+    try {
+        DOMOutputter outputter = new DOMOutputter();
+        Document doc = config.getDocument();
+        mailService.stop();
+        mailService.setConfiguration(outputter.output(doc).getDocumentElement());
+        mailService.start();
+    } catch (Exception ex) {
+        throw new EJBException(ex);
+    }
+}

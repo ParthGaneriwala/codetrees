@@ -1,0 +1,60 @@
+public void run() {
+    String input = pair.getSecond().getSentence();
+    int silenceCount = 0;
+    if (silence_re != null) {
+        Matcher match = silence_re.matcher(input);
+        while (match.find()) {
+            ++silenceCount;
+        }
+        match.reset();
+        input = match.replaceAll(" ");
+    }
+    if (tokenize) {
+        String[] words = tokenizer.tokenize(input);
+        StringBuilder sb = new StringBuilder();
+        if (words.length > 0) {
+            sb.append(words[0]);
+            for (int i = 1; i < words.length; ++i) {
+                sb.append(' ');
+                sb.append(words[i]);
+            }
+            input = sb.toString();
+        }
+    }
+    long[][] sentences = parser.parseMultiSentence(input);
+    double totalLogProb = 0;
+    for (long[] sentence : sentences) {
+        double logProb;
+        if (opts.ngram) {
+            byte order = forest.getOrder();
+            logProb = 0;
+            int numStartTuples = parser.getStartTuples() == null ? 0 : parser.getStartTuples().length;
+            // randomize ngram order for better concurrency
+            short[] positions = new short[sentence.length - numStartTuples];
+            for (short i = 0; i < positions.length; ++i) {
+                positions[i] = (short) (i + numStartTuples);
+            }
+            RandomUtil.shuffleArray(positions);
+            for (short i : positions) {
+                long[] ngram = Arrays.copyOfRange(sentence, Math.max(0, i - order + 1), i + 1);
+                double prob = marginalizer.getNgramProbability(ngram);
+                logProb += prob;
+            }
+        } else {
+            logProb = forest.getDecoder().newEvaluateSentence(headTrellisNode, sentence, opts.useConstraints);
+        // logProb = forest.getDecoder().evaluateSentence(sentence, opts.useConstraints);
+        }
+        // double logProb = forest.getDecoder().evaluateSentence(sentence, opts.useConstraints);
+        totalLogProb += logProb;
+    }
+    if (silence_re != null) {
+        totalLogProb += silenceCount * opts.silencePenalty;
+    }
+    pair.getSecond().setLmScore(totalLogProb);
+    sequencer.putItem(pair);
+    if (opts.meminfo) {
+        MemoryUsage memuse = memoryBean.getHeapMemoryUsage();
+        System.out.printf("MEMUSE: after evaluating sentence %s: %dM/%dM\n", pair.getFirst().toString(), memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+        System.out.println("STATS: " + forest.getDecoder().getStatistics());
+    }
+}

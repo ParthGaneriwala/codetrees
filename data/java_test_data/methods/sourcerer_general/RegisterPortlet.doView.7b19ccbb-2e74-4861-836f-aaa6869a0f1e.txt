@@ -1,0 +1,96 @@
+public void doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    // Example URLs
+    // --> /page/register
+    // --> /page/register/invited/data value
+    // --> /page/register/confirm
+    // --> /page/register/thanks
+    // Determine which step of the process the user is on
+    // A capability of the portal url
+    String view = PortalUtils.getPageView(request);
+    // Declare the default view
+    String defaultView = VIEW_PAGE_FORM;
+    try {
+        // Setup prefs
+        ApplicationPrefs prefs = PortalUtils.getApplicationPrefs(request);
+        boolean showLicense = "true".equals(prefs.get(ApplicationPrefs.SHOW_TERMS_AND_CONDITIONS));
+        boolean invitationOnly = false;
+        if ("false".equals(prefs.get("REGISTER"))) {
+            invitationOnly = true;
+        }
+        // Check Captcha status
+        String captchaPassed = (String) request.getPortletSession().getAttribute("TE-REGISTER-CAPTCHA-PASSED");
+        if (captchaPassed != null) {
+            request.setAttribute(CAPTCHA_PASSED, captchaPassed);
+        }
+        // Step through the registration process
+        if (view == null) {
+            // Show the form (user might have hit back button)
+            RegisterBean bean = (RegisterBean) request.getPortletSession().getAttribute(REGISTER_BEAN);
+            request.getPortletSession().removeAttribute(REGISTER_BEAN);
+            if (bean == null) {
+                bean = new RegisterBean();
+            }
+            if (bean.hasErrors()) {
+                PortalUtils.processErrors(request, bean.getErrors());
+            }
+            request.setAttribute(REGISTER_BEAN, bean);
+            request.setAttribute(SHOW_TERMS_AND_CONDITIONS, String.valueOf(showLicense));
+            if (invitationOnly && !StringUtils.hasText(bean.getData())) {
+                defaultView = VIEW_PAGE_CLOSED;
+            }
+        } else if ("invited".equals(view)) {
+            // Check for the coded data that was generated during the invite
+            // as a pageParameter, the parameter cannot contain a / so a | is used
+            String codedData = StringUtils.replace(PortalUtils.getPageParameter(request), "|", "/");
+            // Decode the user id
+            Key key = PortalUtils.getApplicationKey(request);
+            if (key == null) {
+                LOG.error("Key was not found.");
+            }
+            String data = PrivateString.decrypt(key, codedData);
+            if (data != null) {
+                int userId = retrieveUserId(data);
+                // Auto-populate if user was invited
+                LOG.debug("Invited user: " + userId);
+                User thisUser = UserUtils.loadUser(userId);
+                RegisterBean bean = new RegisterBean();
+                bean.setEmail(thisUser.getEmail());
+                bean.setNameFirst(thisUser.getFirstName());
+                bean.setNameLast(thisUser.getLastName());
+                bean.setData(codedData);
+                request.setAttribute(REGISTER_BEAN, bean);
+                request.setAttribute(SHOW_TERMS_AND_CONDITIONS, String.valueOf(showLicense));
+            } else {
+                if (invitationOnly) {
+                    defaultView = VIEW_PAGE_CLOSED;
+                }
+            }
+        } else if ("verify".equals(view)) {
+            defaultView = VIEW_PAGE_VERIFY_DETAILS;
+            // Process the bean for the request
+            RegisterBean bean = (RegisterBean) request.getPortletSession().getAttribute(REGISTER_BEAN);
+            request.getPortletSession().removeAttribute(REGISTER_BEAN);
+            request.setAttribute(REGISTER_BEAN, bean);
+            if (invitationOnly && !StringUtils.hasText(bean.getData())) {
+                defaultView = VIEW_PAGE_CLOSED;
+            }
+        } else if ("thanks".equals(view)) {
+            defaultView = VIEW_PAGE_THANKS;
+            RegisterBean bean = (RegisterBean) request.getPortletSession().getAttribute(REGISTER_BEAN);
+            request.getPortletSession().removeAttribute(REGISTER_BEAN);
+            request.getPortletSession().removeAttribute(CAPTCHA_PASSED);
+            request.setAttribute(REGISTER_BEAN, bean);
+            if (invitationOnly && !StringUtils.hasText(bean.getData())) {
+                defaultView = VIEW_PAGE_CLOSED;
+            }
+        }
+        // JSP view
+        PortletContext context = getPortletContext();
+        PortletRequestDispatcher requestDispatcher = context.getRequestDispatcher(defaultView);
+        requestDispatcher.include(request, response);
+    } catch (Exception e) {
+        LOG.debug("JSP: " + defaultView);
+        LOG.error("Error for view: " + view, e);
+        throw new PortletException(e.getMessage());
+    }
+}

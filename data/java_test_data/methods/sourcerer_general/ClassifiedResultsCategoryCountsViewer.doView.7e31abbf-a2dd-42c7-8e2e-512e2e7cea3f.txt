@@ -1,0 +1,86 @@
+public String doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    try {
+        String defaultView = VIEW_PAGE1;
+        String query = PortalUtils.getQueryParameter(request, "query");
+        String location = PortalUtils.getQueryParameter(request, "location");
+        // Use a search bean to validate the search input
+        SearchBean search = new SearchBean();
+        search.setQuery(query);
+        search.setLocation(location);
+        search.parseQuery();
+        if (!search.isValid()) {
+            if (StringUtils.hasText(query)) {
+                return "SearchERROR";
+            }
+        }
+        // Set global preferences
+        ProjectCategoryList categoriesToShow = null;
+        ProjectCategoryList categories = (ProjectCategoryList) request.getAttribute(Constants.REQUEST_TAB_CATEGORY_LIST);
+        String categoriesToInclude = request.getPreferences().getValue(PREF_INCLUDE_CATEGORIES, null);
+        if (categoriesToInclude != null) {
+            categoriesToShow = new ProjectCategoryList();
+            String[] categoryArray = categoriesToInclude.split(",");
+            for (String thisCategory : categoryArray) {
+                ProjectCategory specifiedCategory = categories.getFromValue(thisCategory.trim());
+                if (specifiedCategory != null) {
+                    categoriesToShow.add(specifiedCategory);
+                }
+            }
+        } else {
+            categoriesToShow = (ProjectCategoryList) categories.clone();
+        }
+        String pageURL = request.getPreferences().getValue(PREF_PAGE_URL, null);
+        if (StringUtils.hasText(pageURL)) {
+            request.setAttribute(PAGE_URL, pageURL);
+        }
+        String classifiedCategoryName = PortalUtils.getPageParameter(request);
+        if (StringUtils.hasText(classifiedCategoryName)) {
+            request.setAttribute(NORMALIZED_CATEGORYNAME, ClassifiedCategory.getNormalizedCategoryName(classifiedCategoryName));
+        }
+        String chosenCategory = PortalUtils.getPageView(request);
+        if (StringUtils.hasText(chosenCategory)) {
+            request.setAttribute(CHOSEN_CATEGORY, chosenCategory);
+        }
+        request.setAttribute(SORT_ORDER, PortalUtils.getQueryParameter(request, "sort"));
+        request.setAttribute(QUERY, PortalUtils.getQueryParameter(request, "query"));
+        request.setAttribute(LOCATION, PortalUtils.getQueryParameter(request, "location"));
+        int total = 0;
+        LinkedHashMap<ProjectCategory, Integer> classifiedCountMap = new LinkedHashMap<ProjectCategory, Integer>();
+        Timestamp currentTimestamp = new Timestamp(System.currentTimeMillis());
+        SimpleDateFormat formatter = new SimpleDateFormat("yyyyMMdd");
+        // Determine the database connection to use
+        Connection db = PortalUtils.useConnection(request);
+        for (ProjectCategory category : categoriesToShow) {
+            // Retrieve the user's allowed projects
+            String projectListings = SearchUtils.generateValidProjects(db, PortalUtils.getUser(request).getId(), -1, category.getId());
+            // Generate a valid data query string
+            String dataQueryString = SearchUtils.generateDataQueryString(search, PortalUtils.getUser(request).getId(), PortalUtils.getInstance(request).getId(), projectListings);
+            dataQueryString += " AND (type:classifieds) ";
+            // Fetch only those that are published.
+            dataQueryString += " AND published:[20030101 TO " + String.valueOf(formatter.format(currentTimestamp) + "]");
+            // Fetch only those that have not expired
+            dataQueryString += " AND NOT (expired:{20030101 TO " + String.valueOf(formatter.format(currentTimestamp) + "})");
+            // Fetch only promotions in this instanceId
+            if (PortalUtils.getInstance(request).getId() != -1) {
+                dataQueryString += " AND (instanceId:" + PortalUtils.getInstance(request).getId() + ")";
+            }
+            if (category.getId() != -1) {
+                dataQueryString += " AND (projectCategoryId:" + category.getId() + ") ";
+            }
+            IndexerQueryResultList queryResultList = new IndexerQueryResultList();
+            queryResultList.setQueryIndexType(Constants.INDEXER_FULL);
+            queryResultList.setQueryString(dataQueryString);
+            IIndexerSearch searcher = SearchUtils.retrieveSearcher(Constants.INDEXER_FULL);
+            searcher.search(queryResultList);
+            classifiedCountMap.put(category, queryResultList.size());
+            total = total + queryResultList.size();
+        }
+        request.setAttribute(CLASSIFIEDS_COUNTS_MAP, classifiedCountMap);
+        request.setAttribute(TOTAL, String.valueOf(total));
+        // JSP view
+        return defaultView;
+    } catch (Exception e) {
+        e.printStackTrace();
+        throw new PortletException(e);
+    }
+}

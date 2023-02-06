@@ -1,0 +1,88 @@
+private final Buffer reuseAndReadPacket(Buffer reuse, int existingPacketLength) throws SQLException {
+    try {
+        reuse.setWasMultiPacket(false);
+        int packetLength = 0;
+        if (existingPacketLength == -1) {
+            int lengthRead = readFully(this.mysqlInput, this.packetHeaderBuf, 0, 4);
+            if (lengthRead < 4) {
+                forceClose();
+                // $NON-NLS-1$
+                throw new IOException(Messages.getString("MysqlIO.43"));
+            }
+            packetLength = (this.packetHeaderBuf[0] & 0xff) + ((this.packetHeaderBuf[1] & 0xff) << 8) + ((this.packetHeaderBuf[2] & 0xff) << 16);
+        } else {
+            packetLength = existingPacketLength;
+        }
+        if (this.traceProtocol) {
+            StringBuffer traceMessageBuf = new StringBuffer();
+            // $NON-NLS-1$
+            traceMessageBuf.append(Messages.getString("MysqlIO.44"));
+            traceMessageBuf.append(packetLength);
+            // $NON-NLS-1$
+            traceMessageBuf.append(Messages.getString("MysqlIO.45"));
+            traceMessageBuf.append(StringUtils.dumpAsHex(this.packetHeaderBuf, 4));
+            this.connection.getLog().logTrace(traceMessageBuf.toString());
+        }
+        byte multiPacketSeq = this.packetHeaderBuf[3];
+        if (!this.packetSequenceReset) {
+            if (this.enablePacketDebug && this.checkPacketSequence) {
+                checkPacketSequencing(multiPacketSeq);
+            }
+        } else {
+            this.packetSequenceReset = false;
+        }
+        this.readPacketSequence = multiPacketSeq;
+        // Set the Buffer to it's original state
+        reuse.setPosition(0);
+        // used as the buffer
+        if (reuse.getByteBuffer().length <= packetLength) {
+            reuse.setByteBuffer(new byte[packetLength + 1]);
+        }
+        // Set the new length
+        reuse.setBufLength(packetLength);
+        // Read the data from the server
+        int numBytesRead = readFully(this.mysqlInput, reuse.getByteBuffer(), 0, packetLength);
+        if (numBytesRead != packetLength) {
+            throw new IOException("Short read, expected " + packetLength + " bytes, only read " + numBytesRead);
+        }
+        if (this.traceProtocol) {
+            StringBuffer traceMessageBuf = new StringBuffer();
+            // $NON-NLS-1$
+            traceMessageBuf.append(Messages.getString("MysqlIO.46"));
+            traceMessageBuf.append(getPacketDumpToLog(reuse, packetLength));
+            this.connection.getLog().logTrace(traceMessageBuf.toString());
+        }
+        if (this.enablePacketDebug) {
+            enqueuePacketForDebugging(false, true, 0, this.packetHeaderBuf, reuse);
+        }
+        boolean isMultiPacket = false;
+        if (packetLength == this.maxThreeBytes) {
+            reuse.setPosition(this.maxThreeBytes);
+            int packetEndPoint = packetLength;
+            // it's multi-packet
+            isMultiPacket = true;
+            packetLength = readRemainingMultiPackets(reuse, multiPacketSeq, packetEndPoint);
+        }
+        if (!isMultiPacket) {
+            // Null-termination
+            reuse.getByteBuffer()[packetLength] = 0;
+        }
+        if (this.connection.getMaintainTimeStats()) {
+            this.lastPacketReceivedTimeMs = System.currentTimeMillis();
+        }
+        return reuse;
+    } catch (IOException ioEx) {
+        throw SQLError.createCommunicationsException(this.connection, this.lastPacketSentTimeMs, this.lastPacketReceivedTimeMs, ioEx, getExceptionInterceptor());
+    } catch (OutOfMemoryError oom) {
+        try {
+            // _Try_ this
+            clearInputStream();
+        } finally {
+            try {
+                this.connection.realClose(false, false, true, oom);
+            } finally {
+                throw oom;
+            }
+        }
+    }
+}

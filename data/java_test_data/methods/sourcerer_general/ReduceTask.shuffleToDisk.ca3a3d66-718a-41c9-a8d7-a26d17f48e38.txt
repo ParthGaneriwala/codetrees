@@ -1,0 +1,49 @@
+private MapOutput shuffleToDisk(MapOutputLocation mapOutputLoc, InputStream input, Path filename, long mapOutputLength) throws IOException {
+    // Find out a suitable location for the output on local-filesystem
+    Path localFilename = lDirAlloc.getLocalPathForWrite(filename.toUri().getPath(), mapOutputLength, conf);
+    MapOutput mapOutput = new MapOutput(mapOutputLoc.getTaskId(), mapOutputLoc.getTaskAttemptId(), conf, localFileSys.makeQualified(localFilename), mapOutputLength);
+    // Copy data to local-disk
+    OutputStream output = null;
+    long bytesRead = 0;
+    try {
+        output = rfs.create(localFilename);
+        byte[] buf = new byte[64 * 1024];
+        int n = input.read(buf, 0, buf.length);
+        while (n > 0) {
+            bytesRead += n;
+            shuffleClientMetrics.inputBytes(n);
+            output.write(buf, 0, n);
+            // indicate we're making progress
+            reporter.progress();
+            n = input.read(buf, 0, buf.length);
+        }
+        LOG.info("Read " + bytesRead + " bytes from map-output for " + mapOutputLoc.getTaskAttemptId());
+        output.close();
+        input.close();
+    } catch (IOException ioe) {
+        LOG.info("Failed to shuffle from " + mapOutputLoc.getTaskAttemptId(), ioe);
+        // Discard the map-output
+        try {
+            mapOutput.discard();
+        } catch (IOException ignored) {
+            LOG.info("Failed to discard map-output from " + mapOutputLoc.getTaskAttemptId(), ignored);
+        }
+        mapOutput = null;
+        // Close the streams
+        IOUtils.cleanup(LOG, input, output);
+        // Re-throw
+        throw ioe;
+    }
+    // Sanity check
+    if (bytesRead != mapOutputLength) {
+        try {
+            mapOutput.discard();
+        } catch (Throwable th) {
+            // IGNORED because we are cleaning up
+            LOG.info("Failed to discard map-output from " + mapOutputLoc.getTaskAttemptId(), th);
+        }
+        mapOutput = null;
+        throw new IOException("Incomplete map output received for " + mapOutputLoc.getTaskAttemptId() + " from " + mapOutputLoc.getOutputLocation() + " (" + bytesRead + " instead of " + mapOutputLength + ")");
+    }
+    return mapOutput;
+}

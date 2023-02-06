@@ -1,0 +1,67 @@
+private int getMapCompletionEvents(IntWritable fromEventId, HashMap<String, List<MapOutputLocation>> mapLocations, List<String> hostsList) throws IOException {
+    long currentTime = System.currentTimeMillis();
+    long pollTime = lastPollTime + MIN_POLL_INTERVAL;
+    int numNewMaps = 0;
+    while (currentTime < pollTime) {
+        try {
+            Thread.sleep(pollTime - currentTime);
+        }// IGNORE
+         catch (InterruptedException ie) {
+        }
+        currentTime = System.currentTimeMillis();
+    }
+    MapTaskCompletionEventsUpdate update = umbilical.getMapCompletionEvents(reduceTask.getJobID(), fromEventId.get(), MAX_EVENTS_TO_FETCH, reduceTask.getTaskID());
+    TaskCompletionEvent[] events = update.getMapTaskCompletionEvents();
+    // the events index
+    if (update.shouldReset()) {
+        fromEventId.set(0);
+        // clear the obsolete map
+        obsoleteMapIds.clear();
+    }
+    // Note the last successful poll time-stamp
+    lastPollTime = currentTime;
+    // Update the last seen event ID
+    fromEventId.set(fromEventId.get() + events.length);
+    // outputs at all.
+    for (TaskCompletionEvent event : events) {
+        switch(event.getTaskStatus()) {
+            case SUCCEEDED:
+                {
+                    URI u = URI.create(event.getTaskTrackerHttp());
+                    String host = u.getHost();
+                    TaskAttemptID taskId = event.getTaskAttemptId();
+                    int duration = event.getTaskRunTime();
+                    if (duration > maxMapRuntime) {
+                        maxMapRuntime = duration;
+                        // adjust max-fetch-retries based on max-map-run-time
+                        maxFetchRetriesPerMap = Math.max(MIN_FETCH_RETRIES_PER_MAP, getClosestPowerOf2((maxMapRuntime / BACKOFF_INIT) + 1));
+                    }
+                    URL mapOutputLocation = new URL(event.getTaskTrackerHttp() + "/mapOutput?job=" + taskId.getJobID() + "&map=" + taskId + "&reduce=" + getPartition());
+                    List<MapOutputLocation> loc = mapLocations.get(host);
+                    if (loc == null) {
+                        loc = new LinkedList<MapOutputLocation>();
+                        mapLocations.put(host, loc);
+                        hostsList.add(host);
+                    }
+                    loc.add(new MapOutputLocation(taskId, host, mapOutputLocation));
+                    numNewMaps++;
+                }
+                break;
+            case FAILED:
+            case KILLED:
+            case OBSOLETE:
+                {
+                    obsoleteMapIds.add(event.getTaskAttemptId());
+                    LOG.info("Ignoring obsolete output of " + event.getTaskStatus() + " map-task: '" + event.getTaskAttemptId() + "'");
+                }
+                break;
+            case TIPFAILED:
+                {
+                    copiedMapOutputs.add(event.getTaskAttemptId().getTaskID());
+                    LOG.info("Ignoring output of failed map TIP: '" + event.getTaskAttemptId() + "'");
+                }
+                break;
+        }
+    }
+    return numNewMaps;
+}

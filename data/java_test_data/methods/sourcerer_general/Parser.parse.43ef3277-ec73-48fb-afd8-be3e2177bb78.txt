@@ -1,0 +1,55 @@
+private ScriptOrFnNode parse() throws IOException {
+    this.decompiler = createDecompiler(compilerEnv);
+    this.nf = new IRFactory(this);
+    currentScriptOrFn = nf.createScript();
+    int sourceStartOffset = decompiler.getCurrentOffset();
+    this.encodedSource = null;
+    decompiler.addToken(Token.SCRIPT);
+    this.currentFlaggedToken = Token.EOF;
+    this.syntaxErrorCount = 0;
+    // line number where source starts
+    int baseLineno = ts.getLineno();
+    /* so we have something to add nodes to until
+         * we've collected all the source */
+    Node pn = nf.createLeaf(Token.BLOCK);
+    try {
+        for (; ; ) {
+            int tt = peekToken();
+            if (tt <= Token.EOF) {
+                break;
+            }
+            Node n;
+            if (tt == Token.FUNCTION) {
+                consumeToken();
+                try {
+                    n = function(calledByCompileFunction ? FunctionNode.FUNCTION_EXPRESSION : FunctionNode.FUNCTION_STATEMENT);
+                } catch (ParserException e) {
+                    break;
+                }
+            } else {
+                n = statement();
+            }
+            nf.addChildToBack(pn, n);
+        }
+    } catch (StackOverflowError ex) {
+        String msg = ScriptRuntime.getMessage0("msg.too.deep.parser.recursion");
+        throw Context.reportRuntimeError(msg, sourceURI, ts.getLineno(), null, 0);
+    }
+    if (this.syntaxErrorCount != 0) {
+        String msg = String.valueOf(this.syntaxErrorCount);
+        msg = ScriptRuntime.getMessage1("msg.got.syntax.errors", msg);
+        throw errorReporter.runtimeError(msg, sourceURI, baseLineno, null, 0);
+    }
+    currentScriptOrFn.setSourceName(sourceURI);
+    currentScriptOrFn.setBaseLineno(baseLineno);
+    currentScriptOrFn.setEndLineno(ts.getLineno());
+    int sourceEndOffset = decompiler.getCurrentOffset();
+    currentScriptOrFn.setEncodedSourceBounds(sourceStartOffset, sourceEndOffset);
+    nf.initScript(currentScriptOrFn, pn);
+    if (compilerEnv.isGeneratingSource()) {
+        encodedSource = decompiler.getEncodedSource();
+    }
+    // It helps GC
+    this.decompiler = null;
+    return currentScriptOrFn;
+}

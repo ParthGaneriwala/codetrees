@@ -1,0 +1,85 @@
+private void buildAssociations(Object source) throws Exception {
+    Instances data = null;
+    Capabilities capabilities = getCapabilities();
+    boolean arffLoader = false;
+    boolean breakOnNext = false;
+    if (source instanceof weka.core.converters.ArffLoader) {
+        data = ((weka.core.converters.ArffLoader) source).getStructure();
+        capabilities.setMinimumNumberInstances(0);
+        arffLoader = true;
+    } else {
+        data = (Instances) source;
+    }
+    // can we handle the data?
+    capabilities.testWithFail(data);
+    // can only do this if we are not reading the data incrementally
+    if (m_transactionsMustContain.length() > 0 && (source instanceof Instances)) {
+        data = parseTransactionsMustContain(data);
+        getCapabilities().testWithFail(data);
+    }
+    ArrayList<Item> rulesMustContain = null;
+    if (m_rulesMustContain.length() > 0) {
+        rulesMustContain = parseRulesMustContain(data);
+    }
+    ArrayList<BinaryItem> singletons = getSingletons(source);
+    int upperBoundMinSuppAsInstances = (m_upperBoundMinSupport > 1) ? (int) m_upperBoundMinSupport : (int) Math.ceil(m_upperBoundMinSupport * m_numInstances);
+    int lowerBoundMinSuppAsInstances = (m_lowerBoundMinSupport > 1) ? (int) m_lowerBoundMinSupport : (int) Math.ceil(m_lowerBoundMinSupport * m_numInstances);
+    double lowerBoundMinSuppAsFraction = (m_lowerBoundMinSupport > 1) ? m_lowerBoundMinSupport / m_numInstances : m_lowerBoundMinSupport;
+    double deltaAsFraction = (m_delta > 1) ? m_delta / m_numInstances : m_delta;
+    // double currentSupport = upperBoundMinSuppAsFraction;
+    double currentSupport = 1.0;
+    if (m_findAllRulesForSupportLevel) {
+        currentSupport = lowerBoundMinSuppAsFraction;
+    }
+    do {
+        if (arffLoader) {
+            ((weka.core.converters.ArffLoader) source).reset();
+        }
+        int currentSupportAsInstances = (currentSupport > 1) ? (int) currentSupport : (int) Math.ceil(currentSupport * m_numInstances);
+        // build the FPTree
+        if (arffLoader) {
+            System.err.println("Building FP-tree...");
+        }
+        FPTreeRoot tree = buildFPTree(singletons, source, currentSupportAsInstances);
+        FrequentItemSets largeItemSets = new FrequentItemSets(m_numInstances);
+        if (arffLoader) {
+            System.err.println("Mining tree for min supp " + currentSupport);
+        }
+        // mine the tree
+        FrequentBinaryItemSet conditionalItems = new FrequentBinaryItemSet(new ArrayList<BinaryItem>(), 0);
+        mineTree(tree, largeItemSets, 0, conditionalItems, currentSupportAsInstances);
+        m_largeItemSets = largeItemSets;
+        if (arffLoader) {
+            System.err.println("Number of large item sets: " + m_largeItemSets.size());
+        }
+        // save memory
+        tree = null;
+        m_rules = generateRulesBruteForce(m_largeItemSets, m_metric, m_metricThreshold, upperBoundMinSuppAsInstances, lowerBoundMinSuppAsInstances, m_numInstances);
+        if (arffLoader) {
+            System.err.println("Number of rules found " + m_rules.size());
+        }
+        if (rulesMustContain != null && rulesMustContain.size() > 0) {
+            m_rules = pruneRules(m_rules, rulesMustContain, m_mustContainOR);
+        }
+        if (!m_findAllRulesForSupportLevel) {
+            if (breakOnNext) {
+                break;
+            }
+            currentSupport -= deltaAsFraction;
+            // " lowBoundAsFrac " + lowerBoundMinSuppAsFraction);
+            if (currentSupport < lowerBoundMinSuppAsFraction) {
+                if (currentSupport + deltaAsFraction > lowerBoundMinSuppAsFraction) {
+                    // ensure that the lower bound does get evaluated
+                    currentSupport = lowerBoundMinSuppAsFraction;
+                    breakOnNext = true;
+                } else {
+                    break;
+                }
+            }
+        } else {
+            // with a minimum support + metric
+            break;
+        }
+    } while (m_rules.size() < m_numRulesToFind);
+    Collections.sort(m_rules);
+}

@@ -1,0 +1,116 @@
+private void calculateMatching() {
+    /**
+     * found cluster frequencies
+     */
+    int[][] mapFC = new int[numFClusters][numGT0Classes];
+    /**
+     * ground truth cluster frequencies
+     */
+    int[][] mapGT = new int[numGT0Classes][numGT0Classes];
+    int[] sumsFC = new int[numFClusters];
+    // calculate fuzzy mapping from
+    pointInclusionProbFC = new double[numPoints][numFClusters];
+    for (int p = 0; p < numPoints; p++) {
+        CMMPoint cmdp = gtAnalysis.getPoint(p);
+        // found cluster frequencies
+        for (int fc = 0; fc < numFClusters; fc++) {
+            Cluster cl = clustering.get(fc);
+            pointInclusionProbFC[p][fc] = cl.getInclusionProbability(cmdp);
+            if (pointInclusionProbFC[p][fc] >= pointInclusionProbThreshold) {
+                // make sure we don't count points twice that are contained in two merged clusters
+                if (cmdp.isNoise())
+                    continue;
+                mapFC[fc][cmdp.workclass()]++;
+                sumsFC[fc]++;
+            }
+        }
+        // ground truth cluster frequencies
+        if (!cmdp.isNoise()) {
+            for (int hc = 0; hc < numGT0Classes; hc++) {
+                if (hc == cmdp.workclass()) {
+                    mapGT[hc][hc]++;
+                } else {
+                    if (gtAnalysis.getGT0Cluster(hc).getInclusionProbability(cmdp) >= 1) {
+                        mapGT[hc][cmdp.workclass()]++;
+                    }
+                }
+            }
+        }
+    }
+    // assign each found cluster to a hidden cluster
+    matchMap = new int[numFClusters];
+    for (int fc = 0; fc < numFClusters; fc++) {
+        int matchIndex = -1;
+        // check if we only have one entry anyway
+        for (int hc0 = 0; hc0 < numGT0Classes; hc0++) {
+            if (mapFC[fc][hc0] != 0) {
+                if (matchIndex == -1)
+                    matchIndex = hc0;
+                else {
+                    matchIndex = -1;
+                    break;
+                }
+            }
+        }
+        // more then one entry, so look for most similar frequency profile
+        int minDiff = Integer.MAX_VALUE;
+        if (sumsFC[fc] != 0 && matchIndex == -1) {
+            ArrayList<Integer> fitCandidates = new ArrayList<Integer>();
+            for (int hc0 = 0; hc0 < numGT0Classes; hc0++) {
+                int errDiff = 0;
+                for (int hc1 = 0; hc1 < numGT0Classes; hc1++) {
+                    // fc profile doesn't fit into current hc profile
+                    double freq_diff = mapFC[fc][hc1] - mapGT[hc0][hc1];
+                    if (freq_diff > 0) {
+                        errDiff += freq_diff;
+                    }
+                }
+                if (errDiff == 0) {
+                    fitCandidates.add(hc0);
+                }
+                if (errDiff < minDiff) {
+                    minDiff = errDiff;
+                    matchIndex = hc0;
+                }
+                if (debug) {
+                // System.out.println("FC"+fc+"("+Arrays.toString(mapFC[fc])+") - HC0_"+hc0+"("+Arrays.toString(mapGT[hc0])+"):"+errDiff);
+                }
+            }
+            // if we have multiple fit candidates, use majority vote of corresponding classes
+            if (fitCandidates.size() != 0) {
+                int bestGTfit = fitCandidates.get(0);
+                for (int i = 1; i < fitCandidates.size(); i++) {
+                    int GTfit = fitCandidates.get(i);
+                    if (mapFC[fc][GTfit] > mapFC[fc][bestGTfit])
+                        bestGTfit = fitCandidates.get(i);
+                }
+                matchIndex = bestGTfit;
+            }
+        }
+        matchMap[fc] = matchIndex;
+        int realMatch = -1;
+        if (matchIndex == -1) {
+            if (debug)
+                System.out.println("No cluster match: needs to be implemented?");
+        } else {
+            realMatch = gtAnalysis.getGT0Cluster(matchMap[fc]).getLabel();
+        }
+        clustering.get(fc).setMeasureValue("CMM Match", "C" + realMatch);
+        clustering.get(fc).setMeasureValue("CMM Workclass", "C" + matchMap[fc]);
+    }
+    // print matching table
+    if (debug) {
+        for (int i = 0; i < numFClusters; i++) {
+            System.out.print("C" + ((int) clustering.get(i).getId()) + " N:" + ((int) clustering.get(i).getWeight()) + "  |  ");
+            for (int j = 0; j < numGT0Classes; j++) {
+                System.out.print(mapFC[i][j] + " ");
+            }
+            System.out.print(" = " + sumsFC[i] + " | ");
+            String match = "-";
+            if (matchMap[i] != -1) {
+                match = Integer.toString(gtAnalysis.getGT0Cluster(matchMap[i]).getLabel());
+            }
+            System.out.println(" --> " + match + "(work:" + matchMap[i] + ")");
+        }
+    }
+}

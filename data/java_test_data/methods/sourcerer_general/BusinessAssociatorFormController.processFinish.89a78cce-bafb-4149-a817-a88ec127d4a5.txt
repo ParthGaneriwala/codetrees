@@ -1,0 +1,137 @@
+@Override
+protected ModelAndView processFinish(HttpServletRequest request, HttpServletResponse response, Object command, BindException exception) throws Exception {
+    BusinessAssociatorView associatorView = (BusinessAssociatorView) command;
+    Complaint complaint = (Complaint) WebUtils.getSessionAttribute(request, "initialcomplaint");
+    if (associatorView.getBusiness().getId() == null || associatorView.getBusiness().getId().equals("")) {
+        logger.debug("=======>BEGIN ASSOCIATING A NEW BUSINESS<=======");
+        if (associatorView.getBusiness().getBusinessCatLkp().getId() == null) {
+            associatorView.getBusiness().setBusinessCatLkp(new BusinessCatLkp(optionsBeanManager.findById(Constants.BUS_CAT_BEAN, associatorView.getBusinessCategoryId())));
+        }
+        Business newBusiness = associatorView.getBusiness();
+        /*
+			 * Business newBusiness = new Business(
+			 * associatorView.getBusinessCatLkp(), true,
+			 * associatorView.getCountyLkp(), new StateLkp("OR", "Oregon"),
+			 * associatorView.getBusinessName(),
+			 * associatorView.getBusinessOwner(),
+			 * associatorView.getBusinessOwnerTitle(),
+			 * associatorView.getBusinessOwnerPhone(),
+			 * associatorView.getBusinessOwnerEmail(),
+			 * associatorView.getBusinessAddress1(),
+			 * associatorView.getBusinessAddress2(),
+			 * associatorView.getBusinessCity(),
+			 * associatorView.getBusinessZip(),
+			 * associatorView.getBusinessZipExt(),
+			 * associatorView.getBusinessState(),
+			 * associatorView.getBusinessPhone(),
+			 * associatorView.getBusinessPhoneExt(),
+			 * associatorView.getContactName(),
+			 * associatorView.getContactEmail(), null);
+			 */
+        logger.debug("=======>Did we get the zip? " + associatorView.getBusiness().getAddress().getPostalCode());
+        logger.debug("name: " + associatorView.getBusiness().getBusinessName());
+        logger.debug("getBusinessAddress1: " + associatorView.getBusiness().getAddress().getAddress1());
+        logger.debug("getBusinessCity: " + associatorView.getBusiness().getAddress().getCity());
+        logger.debug("getBusinessState: " + associatorView.getBusiness().getAddress().getStateId());
+        logger.debug("getBusinessZip: " + associatorView.getBusiness().getAddress().getPostalCode());
+        logger.debug("getStateLkp: " + associatorView.getBusiness().getAddress().getStateId());
+        logger.debug("getCountyLkp: " + associatorView.getBusiness().getAddress().getCountyId());
+        logger.debug("active: " + associatorView.getBusiness().isActive());
+        logger.debug("parentcontact: " + associatorView.getBusiness().isParentAsContact());
+        logger.debug("And now from the business: " + newBusiness.toString());
+        logger.debug("Now to save the business and do the logic...");
+        Business business = businessManager.save(newBusiness);
+        // process: if complaint is set to non-actionable:
+        if (!associatorView.isActionable()) {
+            complaint.setActionable(false);
+            complaint.setFirstValidComplaint(false);
+            // status='Valid Exempt Complaint'
+            if (associatorView.getNonActionableId() == 1) {
+                complaint.setComplaintStatusId(Long.valueOf(14));
+            }
+            // Complaint'
+            if (associatorView.getNonActionableId() == 2) {
+                complaint.setComplaintStatusId(Long.valueOf(13));
+            }
+        // Note: no grace period for first complaint/new Business
+        }
+        // process: if complaint is set to actionable
+        if (associatorView.isActionable()) {
+            complaint.setNatureOfComplaintId(associatorView.getNatureOfComplaintId());
+            complaint.setActionable(true);
+            complaint.setFirstValidComplaint(true);
+        }
+        complaint.setBusiness(business);
+        complaintManager.save(complaint);
+        business.addComplaint(complaint);
+        logger.debug("COMPLAINT SAVED FOR NEW BUSINESS: " + business.getBusinessName());
+        logger.debug("====>END ASSOCIATING A NEW BUSINESS<====");
+    } else {
+        logger.debug("BEGIN ASSOCIATING AN EXISTING BUSINESS!!!");
+        Business business = businessManager.get(associatorView.getBusiness().getId());
+        logger.debug("here is the existing business: " + business.getBusinessName());
+        // the following are values that may have changed and/or added
+        // during the wizard
+        business.setContactName(associatorView.getBusiness().getContactName());
+        business.setContactName(associatorView.getBusiness().getContactName());
+        business.setContactEmail(associatorView.getBusiness().getContactEmail());
+        business.setContactTitle(associatorView.getBusiness().getContactTitle());
+        business.setBusinessPhoneExt(associatorView.getBusiness().getBusinessPhoneExt());
+        if (!associatorView.isActionable()) {
+            if (associatorView.getNonActionableId() == 3) {
+                // if non-actionableReason='Grace Period', set status='Grace
+                // Period'
+                complaint.setComplaintStatusId(Long.valueOf(3));
+                complaint.setActionable(false);
+            }
+            if (associatorView.getNonActionableId() == 1) {
+                // if non-actionableReason='Exempt Business', set
+                // status='Valid Exempt Complaint'
+                complaint.setComplaintStatusId(Long.valueOf(14));
+                complaint.setActionable(false);
+            }
+            if (associatorView.getNonActionableId() == 2) {
+                // if non-actionableReason='Not Valid', set status='InValid
+                // Complaint'
+                complaint.setComplaintStatusId(Long.valueOf(13));
+                complaint.setActionable(false);
+            }
+        }
+        if (associatorView.isActionable()) {
+            complaint.setNatureOfComplaintId(associatorView.getNatureOfComplaintId());
+            // get list of existing complaints for business
+            List<Complaint> complaints = business.getComplaints();
+            logger.debug("=================Existing Business Complaints=====================");
+            logger.debug("complaint list size: " + complaints.size());
+            if (complaints.size() == 0) {
+                complaint.setActionable(true);
+                complaint.setFirstValidComplaint(true);
+                complaint.setComplaintStatusId(Long.valueOf(1));
+            } else {
+                // complaints
+                for (Complaint existing : complaints) {
+                    logger.debug("===>is business first valid? " + existing.isFirstValidComplaint());
+                    if (existing.isFirstValidComplaint()) {
+                        complaint.setComplaintStatusId(Long.valueOf(4));
+                        complaint.setActionable(true);
+                        complaint.setFirstValidComplaint(false);
+                        break;
+                    } else {
+                        complaint.setComplaintStatusId(Long.valueOf(1));
+                        complaint.setActionable(true);
+                        complaint.setFirstValidComplaint(true);
+                    }
+                }
+            }
+            logger.debug("=============End Existing Business Complaints=====================");
+        }
+        complaint.setBusiness(business);
+        Complaint c = complaintManager.save(complaint);
+        logger.debug("SAVED COMPLAINT: " + c.getId());
+        business.addComplaint(c);
+        businessManager.save(business);
+        logger.debug("SAVED EXISTING BUSINESS  " + business.getBusinessName());
+    }
+    cleanSession(request);
+    return new ModelAndView(getSuccessView());
+}

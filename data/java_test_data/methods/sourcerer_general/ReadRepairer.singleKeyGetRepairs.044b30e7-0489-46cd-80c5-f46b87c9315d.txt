@@ -1,0 +1,69 @@
+private List<NodeValue<K, V>> singleKeyGetRepairs(List<NodeValue<K, V>> nodeValues) {
+    int size = nodeValues.size();
+    if (size <= 1)
+        return Collections.emptyList();
+    // A list of obsolete nodes that need to be repaired
+    Set<Integer> obsolete = new HashSet<Integer>(3);
+    // A Map of Version=>NodeValues that contains the current best estimate
+    // of the set of current versions
+    // and the nodes containing them
+    Multimap<Version, NodeValue<K, V>> concurrents = HashMultimap.create();
+    concurrents.put(nodeValues.get(0).getVersion(), nodeValues.get(0));
+    // check each value against the current set of most current versions
+    for (int i = 1; i < nodeValues.size(); i++) {
+        NodeValue<K, V> curr = nodeValues.get(i);
+        boolean concurrentToAll = true;
+        Set<Version> versions = new HashSet<Version>(concurrents.keySet());
+        for (Version concurrentVersion : versions) {
+            // future updating and move on
+            if (curr.getVersion().equals(concurrentVersion)) {
+                concurrents.put(curr.getVersion(), curr);
+                break;
+            }
+            // Check the ordering of the current value
+            Occured occured = curr.getVersion().compare(concurrentVersion);
+            if (occured == Occured.BEFORE) {
+                // This value is obsolete! Stop checking against other
+                // values...
+                obsolete.add(curr.getNodeId());
+                concurrentToAll = false;
+                break;
+            } else if (occured == Occured.AFTER) {
+                // should replace it
+                for (NodeValue<K, V> v : concurrents.get(concurrentVersion)) obsolete.add(v.getNodeId());
+                concurrents.removeAll(concurrentVersion);
+                concurrentToAll = false;
+                concurrents.put(curr.getVersion(), curr);
+            }
+        }
+        // to the concurrent set
+        if (concurrentToAll)
+            concurrents.put(curr.getVersion(), curr);
+    }
+    // Construct the list of repairs
+    List<NodeValue<K, V>> repairs = new ArrayList<NodeValue<K, V>>(3);
+    for (Integer id : obsolete) {
+        // repair all obsolete nodes
+        for (Version v : concurrents.keySet()) {
+            NodeValue<K, V> concurrent = concurrents.get(v).iterator().next();
+            NodeValue<K, V> repair = new NodeValue<K, V>(id, concurrent.getKey(), concurrent.getVersioned());
+            repairs.add(repair);
+        }
+    }
+    if (concurrents.size() > 1) {
+        // if there are more then one concurrent versions on different
+        // nodes,
+        // we should repair so all have the same set of values
+        Set<NodeValue<K, V>> existing = new HashSet<NodeValue<K, V>>(repairs);
+        for (NodeValue<K, V> entry1 : concurrents.values()) {
+            for (NodeValue<K, V> entry2 : concurrents.values()) {
+                if (!entry1.getVersion().equals(entry2.getVersion())) {
+                    NodeValue<K, V> repair = new NodeValue<K, V>(entry1.getNodeId(), entry2.getKey(), entry2.getVersioned());
+                    if (!existing.contains(repair))
+                        repairs.add(repair);
+                }
+            }
+        }
+    }
+    return repairs;
+}

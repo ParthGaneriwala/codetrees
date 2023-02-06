@@ -1,0 +1,81 @@
+public static void main(String[] args) throws IOException {
+    String version = "NameNodeBenchmark.0.3";
+    System.out.println(version);
+    int bytesPerChecksum = -1;
+    String usage = "Usage: nnbench " + "  -operation <one of createWrite, openRead, rename, or delete> " + "  -baseDir <base output/input DFS path> " + "  -startTime <time to start, given in seconds from the epoch> " + "  -numFiles <number of files to create> " + "  -blocksPerFile <number of blocks to create per file> " + "  [-bytesPerBlock <number of bytes to write to each block, default is 1>] " + "  [-bytesPerChecksum <value for io.bytes.per.checksum>]" + "Note: bytesPerBlock MUST be a multiple of bytesPerChecksum";
+    String operation = null;
+    for (int i = 0; i < args.length; i++) {
+        // parse command line
+        if (args[i].equals("-baseDir")) {
+            baseDir = new Path(args[++i]);
+        } else if (args[i].equals("-numFiles")) {
+            numFiles = Integer.parseInt(args[++i]);
+        } else if (args[i].equals("-blocksPerFile")) {
+            blocksPerFile = Integer.parseInt(args[++i]);
+        } else if (args[i].equals("-bytesPerBlock")) {
+            bytesPerBlock = Long.parseLong(args[++i]);
+        } else if (args[i].equals("-bytesPerChecksum")) {
+            bytesPerChecksum = Integer.parseInt(args[++i]);
+        } else if (args[i].equals("-startTime")) {
+            startTime = Long.parseLong(args[++i]) * 1000;
+        } else if (args[i].equals("-operation")) {
+            operation = args[++i];
+        } else {
+            System.out.println(usage);
+            System.exit(-1);
+        }
+    }
+    bytesPerFile = bytesPerBlock * blocksPerFile;
+    JobConf jobConf = new JobConf(new Configuration(), NNBench.class);
+    if (bytesPerChecksum < 0) {
+        // if it is not set in cmdline
+        bytesPerChecksum = jobConf.getInt("io.bytes.per.checksum", 512);
+    }
+    jobConf.set("io.bytes.per.checksum", Integer.toString(bytesPerChecksum));
+    System.out.println("Inputs: ");
+    System.out.println("   operation: " + operation);
+    System.out.println("   baseDir: " + baseDir);
+    System.out.println("   startTime: " + startTime);
+    System.out.println("   numFiles: " + numFiles);
+    System.out.println("   blocksPerFile: " + blocksPerFile);
+    System.out.println("   bytesPerBlock: " + bytesPerBlock);
+    System.out.println("   bytesPerChecksum: " + bytesPerChecksum);
+    if (// verify args
+    operation == null || baseDir == null || numFiles < 1 || blocksPerFile < 1 || bytesPerBlock < 0 || bytesPerBlock % bytesPerChecksum != 0) {
+        System.err.println(usage);
+        System.exit(-1);
+    }
+    fileSys = FileSystem.get(jobConf);
+    uniqueId = java.net.InetAddress.getLocalHost().getHostName();
+    taskDir = new Path(baseDir, uniqueId);
+    // initialize buffer used for writing/reading file
+    buffer = new byte[(int) Math.min(bytesPerFile, 32768L)];
+    Date execTime;
+    Date endTime;
+    long duration;
+    int exceptions = 0;
+    // wait for coordinated start time
+    barrier();
+    execTime = new Date();
+    System.out.println("Job started: " + startTime);
+    if (operation.equals("createWrite")) {
+        if (!fileSys.mkdirs(taskDir)) {
+            throw new IOException("Mkdirs failed to create " + taskDir.toString());
+        }
+        exceptions = createWrite();
+    } else if (operation.equals("openRead")) {
+        exceptions = openRead();
+    } else if (operation.equals("rename")) {
+        exceptions = rename();
+    } else if (operation.equals("delete")) {
+        exceptions = delete();
+    } else {
+        System.err.println(usage);
+        System.exit(-1);
+    }
+    endTime = new Date();
+    System.out.println("Job ended: " + endTime);
+    duration = (endTime.getTime() - execTime.getTime()) / 1000;
+    System.out.println("The " + operation + " job took " + duration + " seconds.");
+    System.out.println("The job recorded " + exceptions + " exceptions.");
+}

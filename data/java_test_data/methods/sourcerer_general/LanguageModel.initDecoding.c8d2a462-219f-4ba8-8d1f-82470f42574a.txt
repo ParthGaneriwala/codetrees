@@ -1,0 +1,99 @@
+public static List<LanguageModel> initDecoding(final LMDecodingOptions opts) throws IOException, ClassNotFoundException, DatabaseException {
+    Experiment.initialize(opts.config);
+    Experiment experiment = Experiment.getInstance();
+    experiment.setDebugDecoder(opts.debug);
+    JobManager.initialize(opts.jobs);
+    Thread thread = new Thread(JobManager.getInstance(), "Job Manager");
+    thread.setDaemon(true);
+    thread.start();
+    JobManager manager = JobManager.getInstance();
+    experiment.buildPrefixes();
+    experiment.buildWordPrefixes();
+    final ForestModel forest = experiment.getForest(opts.forest);
+    Experiment.Files files = experiment.getFiles();
+    // LinkedList<LanguageModel> LMs = new LinkedList<LanguageModel>();
+    // load the chain of LMs
+    /*
+		{
+			LanguageModel boLM = forest;
+			while(true) {
+				// make the list of LMs in reverse order 
+				LMs.addFirst(boLM);
+				if (boLM.getBackoffLM() == null) break;
+				boLM = experiment.getLM(boLM.getBackoffLM());
+			}
+		}
+		*/
+    AbstractProbTreeStorage storage = null;
+    JobGroup group = manager.createJobGroup("init");
+    switch(opts.storage) {
+        case COMPACT:
+            {
+                final CompactProbTreeStorage compactStorage = new CompactProbTreeStorage(0);
+                final InterpolatingProbTreeStorage interpolatingStorage = new InterpolatingProbTreeStorage(compactStorage);
+                interpolatingStorage.setCacheSize(100000);
+                storage = interpolatingStorage;
+                for (final LanguageModel _lm : forest.getModels()) {
+                    // if (opts.dontOpenCurrentLMStorage && _lm == lm) continue;
+                    Runnable run2 = new Runnable() {
+
+                        @Override
+                        public void run() {
+                            compactStorage.openForReading(_lm.getIdNum());
+                        }
+                    };
+                    manager.addJob(group, new Job(run2, _lm.getId()));
+                }
+            }
+            break;
+        case REMOTE:
+            {
+                InetSocketAddress address = new InetSocketAddress(InetAddress.getByName(opts.host), opts.port);
+                ClientStorageConnection connection = new ClientStorageConnection(address);
+                Timer timer = new Timer(true);
+                long interval = ClientStorageConnection.ClientMonitor.INTERVAL;
+                timer.scheduleAtFixedRate(new ClientStorageConnection.ClientMonitor(connection), interval, interval);
+                ClientProbTreeStorage remoteStorage = new ClientProbTreeStorage(connection);
+                int hardCacheSize = (int) (3000 * Math.pow(4.0, forest.getOrder()));
+                hardCacheSize /= 2;
+                storage = new CachedProbTreeStorage(remoteStorage, hardCacheSize, hardCacheSize * 2);
+            }
+            break;
+        case BDB:
+            {
+                Environment env = BDBProbTreeStorage.createEnvironment(files.getDb(), false);
+                BDBProbTreeStorage dbStorage = new BDBProbTreeStorage(env);
+                InterpolatingProbTreeStorage interpolatingStorage = new InterpolatingProbTreeStorage(dbStorage);
+                interpolatingStorage.setCacheSize(100000);
+                storage = interpolatingStorage;
+                for (final LanguageModel _lm : forest.getModels()) {
+                    // if (opts.dontOpenCurrentLMStorage && _lm == lm) continue;
+                    dbStorage.open(_lm.getId(), _lm.getIdNum(), false);
+                }
+            }
+            break;
+    }
+    for (final LanguageModel _lm : forest.getModels()) {
+        Runnable run1 = new Runnable() {
+
+            @Override
+            public void run() {
+                _lm.getHistoryTree();
+            // if (opts.dontOpenCurrentLMStorage && _lm == lm) return;
+            // _lm.getDecoder().setStorage(_storage);
+            }
+        };
+        manager.addJob(group, new Job(run1, _lm.getId()));
+    // run1.run();
+    }
+    group.join();
+    forest.getDecoder().setStorage(storage);
+    if (opts.coarseThreshold > 0) {
+        Decoder.USE_COARSE_AND_FINE = true;
+        Decoder.COARSE_THRESHOLD = opts.coarseThreshold;
+    }
+    DecoderCompactProbTree emptyTree = DecoderCompactProbTree.constructEmptyTree(Experiment.getInstance().getHFT().getTree());
+    DecoderCompactProbTree.setEmptyTree(emptyTree);
+    experiment.closeXML();
+    return forest.getModels();
+}

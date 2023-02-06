@@ -1,0 +1,71 @@
+private static Set<List<Event>> splitByBinding(TracePattern tp, List<Event> trace) {
+    Map<String, Set<Integer>> variableToAllBindings = new HashMap<String, Set<Integer>>();
+    for (Event event : trace) {
+        Map<String, Integer> binding = event.getVariableBinding();
+        for (Entry<String, Integer> entry : binding.entrySet()) {
+            String var = entry.getKey();
+            Integer objectId = entry.getValue();
+            Set<Integer> allBindings = variableToAllBindings.get(var);
+            if (allBindings == null) {
+                allBindings = new HashSet<Integer>();
+                variableToAllBindings.put(var, allBindings);
+            }
+            allBindings.add(objectId);
+        }
+    }
+    PathInfoFinder pathInfoFinder = new PathInfoFinder(tp);
+    Set<PathInfo> pathInfos = pathInfoFinder.getPathInfos();
+    Collection<String> formals = tp.getFormals();
+    List<Event> filtered = new LinkedList<Event>(trace);
+    for (String var : formals) {
+        Set<Integer> allBindings = variableToAllBindings.get(var);
+        for (Integer objectId : allBindings) {
+            Set<String> symbolsForObject = new HashSet<String>();
+            for (Event e : trace) {
+                if (e.canBindTo(var, objectId)) {
+                    symbolsForObject.add(e.getSymbol());
+                    if (symbolsForObject.size() == tp.getSymbols().size()) {
+                        break;
+                    }
+                }
+            }
+            boolean passesOrphanShadowCheck = false;
+            for (PathInfo pathInfo : pathInfos) {
+                Set<String> dominatingLabels = new HashSet<String>(pathInfo.getDominatingLabels());
+                if (symbolsForObject.containsAll(dominatingLabels)) {
+                    passesOrphanShadowCheck = true;
+                }
+            }
+            if (!passesOrphanShadowCheck) {
+                for (Iterator<Event> iterator = filtered.iterator(); iterator.hasNext(); ) {
+                    Event ev = iterator.next();
+                    Integer integer = ev.variableToObjectID.get(var);
+                    if (integer != null && integer.equals(objectId)) {
+                        iterator.remove();
+                    }
+                }
+            }
+        }
+    }
+    List<String> certainlyBoundVars = new ArrayList<String>(tp.getFormals());
+    for (SMNode finalState : tp.getStateMachine().getFinalStates()) {
+        LinkedHashSet<String> boundVars = finalState.boundVars;
+        certainlyBoundVars.retainAll(boundVars);
+    }
+    Set<Map<String, Integer>> fullBindings = new HashSet<Map<String, Integer>>();
+    doIt(certainlyBoundVars, 0, new HashMap<String, Integer>(), variableToAllBindings, fullBindings);
+    Set<List<Event>> groundTraces = new HashSet<List<Event>>();
+    for (Map<String, Integer> binding : fullBindings) {
+        List<Event> groundTrace = new ArrayList<Event>();
+        for (Event e : trace) {
+            for (Entry<String, Integer> entry : binding.entrySet()) {
+                if (e.canBindTo(entry.getKey(), entry.getValue())) {
+                    groundTrace.add(e);
+                }
+            }
+        }
+        if (!groundTrace.isEmpty())
+            groundTraces.add(groundTrace);
+    }
+    return groundTraces;
+}

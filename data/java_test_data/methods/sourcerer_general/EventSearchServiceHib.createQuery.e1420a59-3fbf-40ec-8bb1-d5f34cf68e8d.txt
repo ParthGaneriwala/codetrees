@@ -1,0 +1,66 @@
+private SQLQuery createQuery(String prefix, Geometry boundingBox, SearchParams params) {
+    StringBuffer select = new StringBuffer(prefix).append(SQL_SELECT_STUB);
+    // always join on time, so we can order by time
+    select.append(SQL_TIME_JOIN);
+    StringBuffer clause = new StringBuffer();
+    boolean hasConjuncted = false;
+    if (params.getVisibility() == Visibility.NORMAL) {
+        hasConjuncted = addClause(hasConjuncted, clause, SQL_VISIBLE_CLAUSE);
+    } else if (params.getVisibility() == Visibility.HIDDEN) {
+        hasConjuncted = addClause(hasConjuncted, clause, SQL_HIDDEN_CLAUSE);
+    } else if (params.getVisibility() == Visibility.FLAGGED) {
+        hasConjuncted = addClause(hasConjuncted, clause, SQL_FLAGGED_CLAUSE);
+    }
+    if (!StringUtils.isEmpty(params.getTextFilter())) {
+        select.append(SQL_SEARCH_JOIN);
+        hasConjuncted = addClause(hasConjuncted, clause, SQL_MATCH_CLAUSE);
+    }
+    if (boundingBox != null) {
+        select.append(SQL_GEO_JOIN);
+        hasConjuncted = addClause(hasConjuncted, clause, SQL_MBRWITHIN_CLAUSE);
+    }
+    if (params.getTimeRange() != null) {
+        if (params.isIncludeTimeRangeOverlaps()) {
+            addClause(hasConjuncted, clause, SQL_TIMERANGE_CLAUSE);
+        } else {
+            addClause(hasConjuncted, clause, SQL_TIMERANGE_EXCLUDE_OVERLAPS_CLAUSE);
+        }
+    }
+    if (!StringUtils.isEmpty(params.getUserTag())) {
+        // special case for empty tags
+        if (!UNTAGGED.equals(params.getUserTag())) {
+            select.append(SQL_TAG_JOIN);
+            hasConjuncted = addClause(hasConjuncted, clause, SQL_TAG_CLAUSE);
+        } else {
+            select.append(SQL_TAG_EMPTY_JOIN);
+            hasConjuncted = addClause(hasConjuncted, clause, SQL_TAG_EMPTY_CLAUSE);
+        }
+    }
+    if (!StringUtils.isEmpty(params.getCatalog())) {
+        hasConjuncted = addClause(hasConjuncted, clause, SQL_CATALOG_CLAUSE);
+    }
+    clause.append(SQL_ORDER_CLAUSE);
+    select.append(clause);
+    // Note: Hibernate always uses prepared statements
+    SQLQuery sqlQuery = this.sessionFactory.getCurrentSession().createSQLQuery(select.toString());
+    if (boundingBox != null) {
+        sqlQuery.setString(PARAM_GEOM_TEXT, boundingBox.toText());
+    }
+    if (!StringUtils.isEmpty(params.getTextFilter())) {
+        sqlQuery.setString(PARAM_SEARCH_TEXT, params.getTextFilter());
+    }
+    if (!StringUtils.isEmpty(params.getUserTag())) {
+        // special case for empty tags
+        if (!UNTAGGED.equals(params.getUserTag())) {
+            sqlQuery.setString(PARAM_TAG, StringUtils.trim(params.getUserTag()));
+        }
+    }
+    if (!StringUtils.isEmpty(params.getCatalog())) {
+        sqlQuery.setString(PARAM_CATALOG, StringUtils.trim(params.getCatalog()));
+    }
+    if (params.getTimeRange() != null) {
+        sqlQuery.setBigInteger(PARAM_EARLIEST, BigInteger.valueOf(params.getTimeRange().getBegin().getDate().getTime()));
+        sqlQuery.setBigInteger(PARAM_LATEST, BigInteger.valueOf(params.getTimeRange().getEnd().getDate().getTime()));
+    }
+    return sqlQuery;
+}

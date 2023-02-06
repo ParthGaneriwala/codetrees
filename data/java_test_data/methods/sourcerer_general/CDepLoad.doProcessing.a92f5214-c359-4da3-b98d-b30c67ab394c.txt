@@ -1,0 +1,121 @@
+public void doProcessing() throws IOException, StoreException {
+    LOG.info("Starting Processing of " + classes.size() + " Classes");
+    Runtime runtime = Runtime.getRuntime();
+    LOG.info("Memory State: " + (runtime.totalMemory() - runtime.freeMemory()) + " used.");
+    PackageInfo[] rootPackages = packageManager.getRootPackages();
+    for (int i = 0; i < rootPackages.length; i++) {
+        LOG.debug("Loading root package: " + rootPackages[i].getPackageName());
+        PackageInfo rootPackage = rootPackages[i];
+        processPackages(rootPackage);
+    }
+    storeManager.buildPackageTree();
+    LOG.info("I1 Memory State: " + (runtime.totalMemory() - runtime.freeMemory()) + " used.");
+    Iterator iter = classes.iterator();
+    while (iter.hasNext()) {
+        ClassInfo classDep = (ClassInfo) iter.next();
+        if (false && LOG.isDebugEnabled()) {
+            LOG.debug("PKG: " + classDep.getPackageInfo().getPackageName() + "(" + classDep.getPackageInfo().getPackageId() + ")");
+            LOG.debug("CLASS: " + classDep.getClassName() + " - " + classDep.getSuperClassName() + " at " + classDep.getImportLocation());
+            Iterator implIter = classDep.getImplementsClasses();
+            while (implIter.hasNext()) {
+                LOG.debug("    IMPL: " + implIter.next());
+            }
+            Iterator ccIter = classDep.getClassCalls();
+            while (ccIter.hasNext()) {
+                LOG.debug("    CALL: " + ccIter.next());
+            }
+            Iterator mIter = classDep.getMethods();
+            while (mIter.hasNext()) {
+                MethodInfo methodDep = (MethodInfo) mIter.next();
+                LOG.debug("  METHOD: " + methodDep.getName() + methodDep.getSignature());
+                Iterator mcIter = methodDep.getMethodCalls();
+                while (mcIter.hasNext()) {
+                    MethodInfo.MethodCallInfo methodCallInfo = (MethodInfo.MethodCallInfo) mcIter.next();
+                    LOG.debug("    INVOKES: " + methodCallInfo.callClass + "." + methodCallInfo.method + methodCallInfo.signature);
+                }
+            }
+        }
+        /* Iteration 1 - add all classes with no parent class and it's methods, remove methods that have no calls */
+        int importLocationId = storeManager.setImportLocation(classDep.getImportLocation());
+        if (classDep.getSuperClassName() == null) {
+            Integer packageId = null;
+            if (classDep.getPackageInfo() != null)
+                packageId = new Integer(classDep.getPackageInfo().getPackageId());
+            int classId = storeManager.setClass(classDep.getClassName(), packageId, Boolean.valueOf(classDep.isInterface()), Boolean.valueOf(classDep.isInner()), null, new Integer(importLocationId));
+            classDep.setClassId(classId);
+            Iterator mIter = classDep.getMethods();
+            while (mIter.hasNext()) {
+                MethodInfo methodDep = (MethodInfo) mIter.next();
+                int methodId = storeManager.setMethod(classId, methodDep.getName(), methodDep.getSignature());
+                methodDep.setMethodId(methodId);
+                if (!methodDep.hasMethodCalls()) {
+                    mIter.remove();
+                }
+            }
+        }
+    }
+    LOG.info("I2 Memory State: " + (runtime.totalMemory() - runtime.freeMemory()) + " used.");
+    /* Iteration 2 - add remaining classes, create parent classes if not existing */
+    iter = classes.iterator();
+    while (iter.hasNext()) {
+        ClassInfo classDep = (ClassInfo) iter.next();
+        int importLocationId = storeManager.setImportLocation(classDep.getImportLocation());
+        if (classDep.getClassId() == 0) {
+            int parentId = storeManager.setUnknownClass(classDep.getSuperClassName(), packageManager.getPackageId(classDep.getSuperClassName()));
+            Integer packageId = null;
+            if (classDep.getPackageInfo() != null)
+                packageId = new Integer(classDep.getPackageInfo().getPackageId());
+            int classId = storeManager.setClass(classDep.getClassName(), packageId, Boolean.valueOf(classDep.isInterface()), Boolean.valueOf(classDep.isInner()), new Integer(parentId), new Integer(importLocationId));
+            classDep.setClassId(classId);
+            Iterator mIter = classDep.getMethods();
+            while (mIter.hasNext()) {
+                MethodInfo methodDep = (MethodInfo) mIter.next();
+                int methodId = storeManager.setMethod(classId, methodDep.getName(), methodDep.getSignature());
+                methodDep.setMethodId(methodId);
+                if (!methodDep.hasMethodCalls()) {
+                    mIter.remove();
+                }
+            }
+        }
+    }
+    LOG.info("I3 Memory State: " + (runtime.totalMemory() - runtime.freeMemory()) + " used.");
+    /* Iteration 3 - add implements classes, class calls, create method calls records */
+    iter = classes.iterator();
+    while (iter.hasNext()) {
+        ClassInfo classDep = (ClassInfo) iter.next();
+        if (classDep.hasImplementsClasses()) {
+            Iterator icIter = classDep.getImplementsClasses();
+            while (icIter.hasNext()) {
+                String s = (String) icIter.next();
+                int ifaceId = storeManager.setUnknownClass(s, packageManager.getPackageId(s));
+                storeManager.setClassImplements(classDep.getClassId(), ifaceId);
+            }
+            Iterator ccIter = classDep.getClassCalls();
+            while (ccIter.hasNext()) {
+                String s = (String) ccIter.next();
+                int caleeClassId = storeManager.setUnknownClass(s, packageManager.getPackageId(s));
+                storeManager.setClassCall(classDep.getClassId(), caleeClassId);
+            }
+        }
+        Iterator mIter = classDep.getMethods();
+        while (mIter.hasNext()) {
+            MethodInfo methodDep = (MethodInfo) mIter.next();
+            Iterator mcIter = methodDep.getMethodCalls();
+            while (mcIter.hasNext()) {
+                MethodInfo.MethodCallInfo methodCallInfo = (MethodInfo.MethodCallInfo) mcIter.next();
+                int caleeClassId = storeManager.setUnknownClass(methodCallInfo.callClass, packageManager.getPackageId(methodCallInfo.callClass));
+                int caleeMethodId = storeManager.setMethod(caleeClassId, methodCallInfo.method, methodCallInfo.signature);
+                // if (caleeMethodId == -1)
+                // {
+                // storeManager.setClassCall(classDep.getClassId(), caleeClassId);
+                // } else {
+                storeManager.setMethodCall(methodDep.getMethodId(), caleeMethodId);
+            // }
+            }
+        }
+        iter.remove();
+    }
+    LOG.info("END Memory State: " + (runtime.totalMemory() - runtime.freeMemory()) + " used.");
+    storeManager.shutdown();
+    LOG.info("Succeeded!");
+}

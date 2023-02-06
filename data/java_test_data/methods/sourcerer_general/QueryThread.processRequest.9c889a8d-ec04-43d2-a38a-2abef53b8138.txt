@@ -1,0 +1,73 @@
+private void processRequest() throws IOException {
+    InputStreamReader inStreamReader = new InputStreamReader(sock.getInputStream());
+    BufferedReader request = new BufferedReader(inStreamReader);
+    DataOutputStream out = new DataOutputStream(sock.getOutputStream());
+    try {
+        // request line, e.g., GET /index.html HTML/1.1
+        StringTokenizer request_tokens = new StringTokenizer(request.readLine());
+        String method = request_tokens.nextToken();
+        String[] pathAndQuery = request_tokens.nextToken().split("\\?", 2);
+        String path = pathAndQuery[0];
+        String query = "";
+        String queryTerm = "";
+        if (pathAndQuery.length > 1) {
+            query = pathAndQuery[1];
+            String[] queryParts = query.split("=");
+            queryTerm = queryParts[1];
+        }
+        String protocol = request_tokens.nextToken();
+        // headers, e.g., blah-blah: Blah blah blah
+        HashMap<String, String> headers = new HashMap<String, String>();
+        String nextLine = request.readLine();
+        while (!nextLine.equals("")) {
+            StringTokenizer header_parts = new StringTokenizer(nextLine, ":");
+            headers.put(header_parts.nextToken().trim(), header_parts.nextToken().trim());
+            nextLine = request.readLine();
+        }
+        // print request
+        System.out.println(method + " " + path + " " + query);
+        WordEntry result = null;
+        // construct response
+        if (queryTerm != null && queryTerm != "") {
+            PastryApp pastryApp = P2PCache.pastryApp;
+            Id keywordId = pastryApp.factory.getIdFromBytes(queryTerm.getBytes());
+            pastryApp.sendQueryMessage(keywordId, queryTerm);
+            synchronized (pastryApp.dropbox) {
+                if (pastryApp.dropbox.get("result") == null) {
+                    pastryApp.dropbox.wait();
+                }
+                result = pastryApp.dropbox.get("result");
+                pastryApp.dropbox.put("result", null);
+            }
+        }
+        String xmlresponse = "<results>";
+        if (result != null) {
+            // idf = total docs / num docs containing term
+            double idf = Math.log(P2PCache.urlIndex.size() / ((double) result.getURLs().size()));
+            for (String s : result.getURLs().keySet()) {
+                // tf grabbed from inverted index
+                double tf = result.getURLs().get(s);
+                xmlresponse += "<result>" + "<url>" + s + "</url>" + "<tf-idf>" + (tf * idf) + "</tf-idf>" + "<pagerank>" + P2PCache.getPageRank(s) + "</pagerank>" + "</result>";
+            }
+        }
+        xmlresponse += "</results>";
+        String responseCode = "HTTP/1.0 200 OK";
+        out.writeBytes(responseCode);
+        out.write(EOL);
+        out.writeBytes("Content-Type: text/html; charset=UTF-8");
+        out.writeBytes("Connection: close");
+        out.write(EOL);
+        out.write(EOL);
+        out.writeBytes(xmlresponse);
+        out.write(EOL);
+        out.write(EOL);
+    } catch (Exception e) {
+        e.printStackTrace();
+        return;
+    }
+    request.close();
+    out.flush();
+    out.close();
+    sock.close();
+    return;
+}

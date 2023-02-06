@@ -1,0 +1,222 @@
+protected void startAttributeSelection() {
+    if (m_RunThread == null) {
+        m_StartBut.setEnabled(false);
+        m_StopBut.setEnabled(true);
+        m_RunThread = new Thread() {
+
+            @Override
+            public void run() {
+                m_AEEPanel.addToHistory();
+                m_ASEPanel.addToHistory();
+                // Copy the current state of things
+                m_Log.statusMessage("Setting up...");
+                Instances inst = new Instances(m_Instances);
+                int testMode = 0;
+                int numFolds = 10;
+                int seed = 1;
+                int classIndex = m_ClassCombo.getSelectedIndex() - 1;
+                ASEvaluation evaluator = (ASEvaluation) m_AttributeEvaluatorEditor.getValue();
+                ASSearch search = (ASSearch) m_AttributeSearchEditor.getValue();
+                StringBuffer outBuff = new StringBuffer();
+                String name = (new SimpleDateFormat("HH:mm:ss - ")).format(new Date());
+                String sname = search.getClass().getName();
+                if (sname.startsWith("weka.attributeSelection.")) {
+                    name += sname.substring("weka.attributeSelection.".length());
+                } else {
+                    name += sname;
+                }
+                String ename = evaluator.getClass().getName();
+                if (ename.startsWith("weka.attributeSelection.")) {
+                    name += (" + " + ename.substring("weka.attributeSelection.".length()));
+                } else {
+                    name += (" + " + ename);
+                }
+                // assemble commands
+                String cmd;
+                String cmdFilter;
+                String cmdClassifier;
+                // 1. attribute selection command
+                Vector<String> list = new Vector<String>();
+                list.add("-s");
+                if (search instanceof OptionHandler) {
+                    list.add(sname + " " + Utils.joinOptions(((OptionHandler) search).getOptions()));
+                } else {
+                    list.add(sname);
+                }
+                if (evaluator instanceof OptionHandler) {
+                    String[] opt = ((OptionHandler) evaluator).getOptions();
+                    for (String element : opt) {
+                        list.add(element);
+                    }
+                }
+                cmd = ename + " " + Utils.joinOptions(list.toArray(new String[list.size()]));
+                // 2. filter command
+                weka.filters.supervised.attribute.AttributeSelection filter = new weka.filters.supervised.attribute.AttributeSelection();
+                filter.setEvaluator((ASEvaluation) m_AttributeEvaluatorEditor.getValue());
+                filter.setSearch((ASSearch) m_AttributeSearchEditor.getValue());
+                cmdFilter = filter.getClass().getName() + " " + Utils.joinOptions(((OptionHandler) filter).getOptions());
+                // 3. meta-classifier command
+                weka.classifiers.meta.AttributeSelectedClassifier cls = new weka.classifiers.meta.AttributeSelectedClassifier();
+                cls.setEvaluator((ASEvaluation) m_AttributeEvaluatorEditor.getValue());
+                cls.setSearch((ASSearch) m_AttributeSearchEditor.getValue());
+                cmdClassifier = cls.getClass().getName() + " " + Utils.joinOptions(cls.getOptions());
+                AttributeSelection eval = null;
+                try {
+                    if (m_CVBut.isSelected()) {
+                        testMode = 1;
+                        numFolds = Integer.parseInt(m_CVText.getText());
+                        seed = Integer.parseInt(m_SeedText.getText());
+                        if (numFolds <= 1) {
+                            throw new Exception("Number of folds must be greater than 1");
+                        }
+                    }
+                    if (classIndex >= 0) {
+                        inst.setClassIndex(classIndex);
+                    }
+                    // Output some header information
+                    m_Log.logMessage("Started " + ename);
+                    m_Log.logMessage("Command: " + cmd);
+                    m_Log.logMessage("Filter command: " + cmdFilter);
+                    m_Log.logMessage("Meta-classifier command: " + cmdClassifier);
+                    if (m_Log instanceof TaskLogger) {
+                        ((TaskLogger) m_Log).taskStarted();
+                    }
+                    outBuff.append("=== Run information ===\n\n");
+                    outBuff.append("Evaluator:    " + ename);
+                    if (evaluator instanceof OptionHandler) {
+                        String[] o = ((OptionHandler) evaluator).getOptions();
+                        outBuff.append(" " + Utils.joinOptions(o));
+                    }
+                    outBuff.append("\nSearch:       " + sname);
+                    if (search instanceof OptionHandler) {
+                        String[] o = ((OptionHandler) search).getOptions();
+                        outBuff.append(" " + Utils.joinOptions(o));
+                    }
+                    outBuff.append("\n");
+                    outBuff.append("Relation:     " + inst.relationName() + '\n');
+                    outBuff.append("Instances:    " + inst.numInstances() + '\n');
+                    outBuff.append("Attributes:   " + inst.numAttributes() + '\n');
+                    if (inst.numAttributes() < 100) {
+                        for (int i = 0; i < inst.numAttributes(); i++) {
+                            outBuff.append("              " + inst.attribute(i).name() + '\n');
+                        }
+                    } else {
+                        outBuff.append("              [list of attributes omitted]\n");
+                    }
+                    outBuff.append("Evaluation mode:    ");
+                    switch(testMode) {
+                        case // select using all training
+                        0:
+                            outBuff.append("evaluate on all training data\n");
+                            break;
+                        case // CV mode
+                        1:
+                            outBuff.append("" + numFolds + "-fold cross-validation\n");
+                            break;
+                    }
+                    outBuff.append("\n");
+                    m_History.addResult(name, outBuff);
+                    m_History.setSingle(name);
+                    // Do the feature selection and output the results.
+                    m_Log.statusMessage("Doing feature selection...");
+                    m_History.updateResult(name);
+                    eval = new AttributeSelection();
+                    eval.setEvaluator(evaluator);
+                    eval.setSearch(search);
+                    eval.setFolds(numFolds);
+                    eval.setSeed(seed);
+                    if (testMode == 1) {
+                        eval.setXval(true);
+                    }
+                    switch(testMode) {
+                        case // select using training
+                        0:
+                            m_Log.statusMessage("Evaluating on training data...");
+                            eval.SelectAttributes(inst);
+                            break;
+                        case // CV mode
+                        1:
+                            m_Log.statusMessage("Randomizing instances...");
+                            Random random = new Random(seed);
+                            inst.randomize(random);
+                            if (inst.attribute(classIndex).isNominal()) {
+                                m_Log.statusMessage("Stratifying instances...");
+                                inst.stratify(numFolds);
+                            }
+                            for (int fold = 0; fold < numFolds; fold++) {
+                                m_Log.statusMessage("Creating splits for fold " + (fold + 1) + "...");
+                                Instances train = inst.trainCV(numFolds, fold, random);
+                                m_Log.statusMessage("Selecting attributes using all but fold " + (fold + 1) + "...");
+                                eval.selectAttributesCVSplit(train);
+                            }
+                            break;
+                        default:
+                            throw new Exception("Test mode not implemented");
+                    }
+                    if (testMode == 0) {
+                        outBuff.append(eval.toResultsString());
+                    } else {
+                        outBuff.append(eval.CVResultsString());
+                    }
+                    outBuff.append("\n");
+                    m_History.updateResult(name);
+                    m_Log.logMessage("Finished " + ename + " " + sname);
+                    m_Log.statusMessage("OK");
+                } catch (Exception ex) {
+                    m_Log.logMessage(ex.getMessage());
+                    m_Log.statusMessage("See error log");
+                } finally {
+                    ArrayList<Object> vv = new ArrayList<Object>();
+                    Vector<Object> configHolder = new Vector<Object>();
+                    try {
+                        ASEvaluation eval_copy = evaluator.getClass().newInstance();
+                        if (evaluator instanceof OptionHandler) {
+                            ((OptionHandler) eval_copy).setOptions(((OptionHandler) evaluator).getOptions());
+                        }
+                        ASSearch search_copy = search.getClass().newInstance();
+                        if (search instanceof OptionHandler) {
+                            ((OptionHandler) search_copy).setOptions(((OptionHandler) search).getOptions());
+                        }
+                        configHolder.add(eval_copy);
+                        configHolder.add(search_copy);
+                    } catch (Exception ex) {
+                        configHolder.add(evaluator);
+                        configHolder.add(search);
+                    }
+                    vv.add(configHolder);
+                    if (evaluator instanceof AttributeTransformer) {
+                        try {
+                            Instances transformed = ((AttributeTransformer) evaluator).transformedData(inst);
+                            transformed.setRelationName("AT: " + transformed.relationName());
+                            vv.add(transformed);
+                            m_History.addObject(name, vv);
+                        } catch (Exception ex) {
+                            System.err.println(ex);
+                            ex.printStackTrace();
+                        }
+                    } else if (testMode == 0) {
+                        try {
+                            Instances reducedInst = eval.reduceDimensionality(inst);
+                            vv.add(reducedInst);
+                            m_History.addObject(name, vv);
+                        } catch (Exception ex) {
+                            ex.printStackTrace();
+                        }
+                    }
+                    if (isInterrupted()) {
+                        m_Log.logMessage("Interrupted " + ename + " " + sname);
+                        m_Log.statusMessage("See error log");
+                    }
+                    m_RunThread = null;
+                    m_StartBut.setEnabled(true);
+                    m_StopBut.setEnabled(false);
+                    if (m_Log instanceof TaskLogger) {
+                        ((TaskLogger) m_Log).taskFinished();
+                    }
+                }
+            }
+        };
+        m_RunThread.setPriority(Thread.MIN_PRIORITY);
+        m_RunThread.start();
+    }
+}

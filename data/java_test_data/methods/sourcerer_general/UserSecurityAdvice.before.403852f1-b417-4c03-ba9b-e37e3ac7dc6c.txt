@@ -1,0 +1,60 @@
+public void before(Method method, Object[] args, Object target) throws Throwable {
+    SecurityContext ctx = SecurityContextHolder.getContext();
+    if (ctx.getAuthentication() != null) {
+        Authentication auth = ctx.getAuthentication();
+        boolean administrator = false;
+        GrantedAuthority[] roles = auth.getAuthorities();
+        for (int i = 0; i < roles.length; i++) {
+            if (roles[i].getAuthority().equals(Constants.ADMIN_ROLE)) {
+                administrator = true;
+                break;
+            }
+        }
+        User user = (User) args[0];
+        String username = user.getUsername();
+        String currentUser;
+        if (auth.getPrincipal() instanceof UserDetails) {
+            currentUser = ((UserDetails) auth.getPrincipal()).getUsername();
+        } else {
+            currentUser = String.valueOf(auth.getPrincipal());
+        }
+        if (username != null && !username.equals(currentUser)) {
+            AuthenticationTrustResolver resolver = new AuthenticationTrustResolverImpl();
+            // allow new users to signup - this is OK b/c Signup doesn't allow setting of roles
+            boolean signupUser = resolver.isAnonymous(auth);
+            if (!signupUser) {
+                if (log.isDebugEnabled()) {
+                    log.debug("Verifying that '" + currentUser + "' can modify '" + username + "'");
+                }
+                if (!administrator) {
+                    log.warn("Access Denied: '" + currentUser + "' tried to modify '" + username + "'!");
+                    throw new AccessDeniedException(ACCESS_DENIED);
+                }
+            } else {
+                if (log.isDebugEnabled()) {
+                    log.debug("Registering new user '" + username + "'");
+                }
+            }
+        } else // don't allow users with "user" role to upgrade to "admin" role
+        if (username != null && username.equalsIgnoreCase(currentUser) && !administrator) {
+            // get the list of roles the user is trying add
+            Set userRoles = new HashSet();
+            if (user.getRoles() != null) {
+                for (Iterator it = user.getRoles().iterator(); it.hasNext(); ) {
+                    Role role = (Role) it.next();
+                    userRoles.add(role.getName());
+                }
+            }
+            // get the list of roles the user currently has
+            Set authorizedRoles = new HashSet();
+            for (int i = 0; i < roles.length; i++) {
+                authorizedRoles.add(roles[i].getAuthority());
+            }
+            // users aren't allowed to change their roles
+            if (!CollectionUtils.isEqualCollection(userRoles, authorizedRoles)) {
+                log.warn("Access Denied: '" + currentUser + "' tried to change their role(s)!");
+                throw new AccessDeniedException(ACCESS_DENIED);
+            }
+        }
+    }
+}

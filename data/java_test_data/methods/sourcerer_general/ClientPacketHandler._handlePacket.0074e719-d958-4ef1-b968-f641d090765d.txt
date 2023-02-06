@@ -1,0 +1,72 @@
+private Packet[] _handlePacket(CPacket p) throws PacketFormatException {
+    List<Packet> packetList = new ArrayList<Packet>();
+    // device name packet
+    // packetList.add(Packet.createClientPacket(Packet.PKT_CLIENT_DEVICE_ID, p.getDeviceId()));
+    CPayload payload = p.getPayload(true);
+    switch(p.command) {
+        case CPacket.CMD_REGISTER:
+            {
+                // send deviceID to DMTP server
+                packetList.add(Packet.createClientPacket(Packet.PKT_CLIENT_ACCOUNT_ID, this.packet.getDeviceId()));
+                packetList.add(Packet.createClientPacket(Packet.PKT_CLIENT_DEVICE_ID, this.packet.getDeviceId()));
+                this.packetQueue.add(CPacket.createClientRegisterPacket());
+            }
+            break;
+        case CPacket.CMD_LOCATION:
+            {
+                // pass key
+                // 0xff
+                int passKey = payload.readByte(23) & 0xff ^ 0x55 ^ 0x36;
+                // status
+                int status = payload.readByte(0) & 0xff ^ passKey;
+                // status2
+                byte[] status2 = payload.readBytes(24, 4);
+                // datetime
+                Calendar time = Calendar.getInstance();
+                time.set(Calendar.DAY_OF_MONTH, Integer.parseInt(Integer.toHexString(payload.readByte(17) & 0xff ^ passKey ^ 0x47)));
+                time.set(Calendar.MONTH, Integer.parseInt(Integer.toHexString(payload.readByte(18) & 0xff ^ passKey ^ 0x47)) - 1);
+                time.set(Calendar.HOUR_OF_DAY, Integer.parseInt(Integer.toHexString(payload.readByte(19) & 0xff ^ passKey ^ 0x47)));
+                String minute = Integer.toHexString((int) payload.readByte(20) & 0xff ^ passKey ^ 0x47);
+                time.set(Calendar.MINUTE, Integer.parseInt(minute));
+                time.set(Calendar.SECOND, Integer.parseInt(Integer.toHexString((int) payload.readByte(21) & 0xff ^ passKey ^ 0x47)));
+                // latitude
+                int tmp = (passKey & 0xF0) | ((Integer.parseInt(minute, 16) & 0xF0) >> 4);
+                double latitude = Integer.parseInt(Integer.toHexString(payload.readByte(1) & 0xff ^ tmp));
+                int tmp1 = 0;
+                for (int i = 1; i < 4; i++) {
+                    tmp1 *= 100;
+                    tmp1 += Integer.parseInt(Integer.toHexString(payload.readByte(i + 1) & 0xff ^ tmp));
+                }
+                latitude += new BigDecimal((double) tmp1 / 600000).setScale(6, RoundingMode.HALF_UP).doubleValue();
+                // longitude
+                tmp = ((passKey & 0x0F) << 4) | (Integer.parseInt(minute, 16) & 0x0F);
+                double longitude = Integer.parseInt(Integer.toHexString(payload.readByte(5) & 0xff ^ tmp));
+                if ((status2[1] & 0x80) != 0) {
+                    longitude += 100;
+                }
+                tmp1 = 0;
+                for (int i = 1; i < 4; i++) {
+                    tmp1 *= 100;
+                    tmp1 += Integer.parseInt(Integer.toHexString(payload.readByte(i + 5) & 0xff ^ tmp));
+                }
+                longitude += new BigDecimal((double) tmp1 / 600000).setScale(6, RoundingMode.HALF_UP).doubleValue();
+                // speed
+                int speed = (int) ((double) (Integer.parseInt(Integer.toHexString(payload.readByte(9) & 0xff ^ passKey)) * 100 + Integer.parseInt(Integer.toHexString(payload.readByte(10) & 0xff ^ passKey))) * 0.1852 + 0.5);
+                if (speed > 250)
+                    speed = 0;
+                // azimuth
+                int direction = (int) ((double) Integer.parseInt(Integer.toHexString(payload.readByte(11) & 0xff ^ passKey)) * 100 + Integer.parseInt(Integer.toHexString(payload.readByte(12) & 0xff ^ passKey)) / 10);
+                GeoEvent geoEvent = new GeoEvent();
+                geoEvent.setLatitude(latitude);
+                geoEvent.setLongitude(longitude);
+                geoEvent.setSpeedKPH(speed);
+                geoEvent.setTimestamp(time.getTimeInMillis() / 1000);
+                packetList.add(Packet.createClientEventPacket(geoEvent, null));
+                System.out.println(time.getTime());
+            }
+            break;
+        default:
+            throw new PacketFormatException("Unsupported command " + StringTools.toHexString(p.command));
+    }
+    return packetList.toArray(new Packet[packetList.size()]);
+}

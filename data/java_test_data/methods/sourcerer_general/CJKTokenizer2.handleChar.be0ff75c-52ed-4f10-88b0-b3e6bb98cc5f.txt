@@ -1,0 +1,110 @@
+public void handleChar(CharInfo c) throws IOException {
+    // 文字をバッファに追加
+    addToBuffer(c);
+    // 現在のトークンタイプによって分岐
+    if (type == null) {
+        // 文字種によって、トークンタイプを決定。
+        if (c.type == CHARTYPE_SINGLE) {
+            // singleトークンのスキャンに移行
+            changeTokenType(TOKENTYPE_SINGLE);
+            incrementTokenLength();
+        } else if (c.type == CHARTYPE_DOUBLE) {
+            // doubleトークンのスキャンに移行
+            changeTokenType(TOKENTYPE_DOUBLE);
+            incrementTokenLength();
+            // unigramなら、直ちに終了状態に移行
+            if (getNgram() == 1) {
+                setComplete();
+            }
+        } else if (c.type == CHARTYPE_SYMBOL) {
+            // nullトークンのスキャンに移行
+            changeTokenType(TOKENTYPE_NULL);
+            incrementTokenLength();
+        } else {
+            // ストリームの終わり。
+            // 終了状態に移行
+            setComplete();
+        }
+    } else if (type == TOKENTYPE_SINGLE) {
+        // 現在スキャン中のトークンはsingle。
+        if (c.type == CHARTYPE_SINGLE) {
+            // ラテン文字
+            incrementTokenLength();
+            // バッファに空きがなくなった場合、一旦トークンとして切り出す。
+            if (isBufferFull()) {
+                setComplete();
+            }
+        } else {
+            // CJK文字、記号・空白、EOSの場合は、
+            // 読んだ文字をストリームに戻し、
+            // 直前までのbuffer内容をtokenとして切り出す。
+            setComplete();
+            setPushbackSize(1);
+        }
+    } else if (type == TOKENTYPE_DOUBLE) {
+        // ここに来た時点で、bufferには1文字分CJK文字が入っている。
+        if (c.type == CHARTYPE_SINGLE) {
+            if (getPrevType() == TOKENTYPE_DOUBLE) {
+                // 前のトークンがdoubleであるなら、
+                // 現在のbuffer内容を捨て、そのまま次のsingleトークンの
+                // スキャンに移行。
+                changeTokenType(TOKENTYPE_SINGLE);
+                incrementTokenLength();
+            } else {
+                // 前のトークンがdoubleでないなら、
+                // ここでトークンを切り出す。
+                setComplete();
+                setPushbackSize(1);
+            }
+        } else if (c.type == CHARTYPE_DOUBLE) {
+            // CJK文字
+            // buffer内の文字数がngram以上になった場合は、
+            // 現在のbufferをtokenとして切り出すと共に、
+            // 1文字残してbuffer内容をpushback。
+            incrementTokenLength();
+            if (isNgramComplete()) {
+                setComplete();
+                setPushbackSize(getReadLength() - 1);
+            }
+        } else if (c.type == CHARTYPE_SYMBOL) {
+            // 記号
+            if (prevType == TOKENTYPE_DOUBLE) {
+                // 前のトークンがDOUBLEであるなら、
+                // 現在のbuffer内容を捨て、次のNULLトークンのスキャンに移行。
+                changeTokenType(TOKENTYPE_NULL);
+                incrementTokenLength();
+            } else {
+                // 前のトークンがdoubleでないなら、
+                // ここでトークンを切り出す。
+                setComplete();
+                setPushbackSize(1);
+            }
+        } else {
+            // EOS
+            if (prevType == TOKENTYPE_DOUBLE) {
+                changeTokenType(null);
+                setComplete();
+            } else {
+                setComplete();
+                setPushbackSize(1);
+            }
+        }
+    } else if (type == TOKENTYPE_NULL) {
+        // 現在スキャン中のトークンはnull。
+        if (c.type == CHARTYPE_SYMBOL) {
+            // 記号・空白
+            incrementTokenLength();
+            // バッファに空きがなくなった場合、一旦トークンとして切り出す。
+            if (isBufferFull()) {
+                setComplete();
+            }
+        } else {
+            // ラテン文字、CJK文字、EOSの場合、
+            // 直前までのバッファ内容をトークンとして切り出す。
+            setComplete();
+            setPushbackSize(1);
+        }
+    } else {
+        throw new IOException("Illegal state.");
+    }
+}

@@ -1,0 +1,40 @@
+public void initialize(final File dataDir) throws IOException, DatabaseException, DatabaseException {
+    this.dataDir = dataDir;
+    OnDiskTrainingDataNodeWriter.setTempDir(dataDir);
+    EnvironmentConfig envConf = new EnvironmentConfig();
+    envConf.setAllowCreate(true);
+    envConf.setSharedCache(true);
+    envConf.setTransactional(false);
+    envConf.setReadOnly(false);
+    envConf.setCachePercent(20);
+    envConf.setConfigParam("je.log.fileMax", Integer.toString(100 * 1024 * 1024));
+    File dir = new File(dataDir, "db");
+    if (!dir.isDirectory()) {
+        dir.mkdirs();
+    }
+    env = new Environment(dir, envConf);
+    // contextClusterStorage = new ContextClusterStorage(env);
+    // parentNodeDataStorage = new BDBActiveNodeStorage<ParentNodeData>(env);
+    wordsToPruneStorage = new BDBActiveNodeStorage<HashSet<Long>>(env);
+    final Experiment.Files files = Experiment.getInstance().getFiles();
+    JobManager manager = JobManager.getInstance();
+    JobGroup group = manager.createJobGroup("level 0");
+    nrDataFiles = files.getInterpolateData().size();
+    // prepare data that with non-reduced futures for population
+    Runnable run = new Runnable() {
+
+        @Override
+        public void run() {
+            try {
+                for (int split = 0; split < nrDataFiles; ++split) {
+                    final String[] filenames = files.getInterpolateDataFiles(split);
+                    TrainingDataUtil.combineAndReduceContext(filenames, new File(dataDir, makeDataFilename(0, split, true)).getAbsolutePath(), lm.getOvertOrder(), lm.getHiddenOrder(), lm.getHistoryTree().getPayload().clusterid, null);
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    };
+    manager.addJob(group, new Job(run, "prepare full data"));
+    group.join();
+}

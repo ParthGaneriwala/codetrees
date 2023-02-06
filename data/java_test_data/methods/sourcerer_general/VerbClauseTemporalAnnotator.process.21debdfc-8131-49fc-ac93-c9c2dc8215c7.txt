@@ -1,0 +1,68 @@
+public void process(JCas jCas) throws AnalysisEngineProcessException {
+    int docEnd = jCas.getDocumentText().length();
+    // collect TLINKs if necessary
+    Map<String, TemporalLink> tlinks = null;
+    if (this.isTraining()) {
+        tlinks = this.getTemporalLinks(jCas);
+    }
+    // look for verb-clause pairs in each sentence in the document
+    for (Sentence sentence : JCasUtil.select(jCas, Sentence.class)) {
+        TopTreebankNode tree = AnnotationUtil.selectFirstMatching(jCas, TopTreebankNode.class, sentence);
+        if (tree == null) {
+            String fmt = "missing syntactic parse for sentence: %s";
+            String msg = String.format(fmt, sentence.getCoveredText());
+            this.getContext().getLogger().log(Level.WARNING, msg);
+            continue;
+        }
+        // iterate over all verb-clause pairs
+        List<TreebankNodeLink> links = new ArrayList<TreebankNodeLink>();
+        this.collectVerbClausePairs(tree, links);
+        for (TreebankNodeLink link : links) {
+            Token sourceToken = JCasUtil.selectCovered(jCas, Token.class, link.source).get(0);
+            Token targetToken = JCasUtil.selectCovered(jCas, Token.class, link.target).get(0);
+            int firstEnd = Math.min(sourceToken.getEnd(), targetToken.getEnd());
+            int lastBegin = Math.max(sourceToken.getBegin(), targetToken.getBegin());
+            // create an instance and populate it with features
+            Instance<String> instance = new Instance<String>();
+            for (SimpleFeatureExtractor extractor : this.sourceFeatureExtractors) {
+                instance.addAll(extractor.extract(jCas, sourceToken));
+            }
+            for (SimpleFeatureExtractor extractor : this.targetFeatureExtractors) {
+                instance.addAll(extractor.extract(jCas, targetToken));
+            }
+            Annotation windowAnnotation = new Annotation(jCas, firstEnd, lastBegin);
+            for (SimpleFeatureExtractor extractor : this.betweenAnchorsFeatureExtractors) {
+                instance.addAll(extractor.extract(jCas, windowAnnotation));
+            }
+            instance.addAll(this.pathExtractor.extract(jCas, link.source, link.target));
+            // find source and target anchors if they're available
+            Anchor source = AnnotationUtil.selectFirstMatching(jCas, Anchor.class, link.source);
+            Anchor target = AnnotationUtil.selectFirstMatching(jCas, Anchor.class, link.target);
+            // TLINK
+            if (this.isTraining()) {
+                if (source != null && target != null) {
+                    String key = String.format("%s:%s", source.getId(), target.getId());
+                    TemporalLink tlink = tlinks.remove(key);
+                    if (tlink != null) {
+                        instance.setOutcome(tlink.getRelationType());
+                        this.dataWriter.write(instance);
+                    }
+                }
+            } else // if we're classifying create new TLINKs from the
+            // classification outcomes
+            {
+                source = this.getOrCreateEvent(jCas, source, link.source);
+                target = this.getOrCreateEvent(jCas, target, link.target);
+                // only create TLINKs for events that exist (or were created, if requested)
+                if (source != null && target != null) {
+                    String relationType = this.classifier.classify(instance.getFeatures());
+                    TemporalLink tlink = new TemporalLink(jCas, docEnd, docEnd);
+                    tlink.setSource(source);
+                    tlink.setTarget(target);
+                    tlink.setRelationType(relationType);
+                    tlink.addToIndexes();
+                }
+            }
+        }
+    }
+}

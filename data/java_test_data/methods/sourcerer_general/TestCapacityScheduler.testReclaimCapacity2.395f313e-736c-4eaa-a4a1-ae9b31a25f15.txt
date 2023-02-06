@@ -1,0 +1,53 @@
+public void testReclaimCapacity2() throws Exception {
+    // set up some queues
+    String[] qs = { "default", "q2", "q3", "q4" };
+    taskTrackerManager.addQueues(qs);
+    resConf = new FakeResourceManagerConf();
+    ArrayList<FakeQueueInfo> queues = new ArrayList<FakeQueueInfo>();
+    queues.add(new FakeQueueInfo("default", 50.0f, 1000000, true, 25));
+    queues.add(new FakeQueueInfo("q2", 20.0f, 1000000, true, 25));
+    queues.add(new FakeQueueInfo("q3", 20.0f, 1000000, true, 25));
+    queues.add(new FakeQueueInfo("q4", 10.0f, 1000000, true, 25));
+    resConf.setFakeQueues(queues);
+    scheduler.setResourceManagerConf(resConf);
+    scheduler.start();
+    // add some more TTs so our total map capacity is 10
+    taskTrackerManager.addTaskTracker("tt3");
+    taskTrackerManager.addTaskTracker("tt4");
+    taskTrackerManager.addTaskTracker("tt5");
+    // q2 has nothing running, default is under cap, q3 and q4 are over cap
+    FakeJobInProgress j1 = submitJobAndInit(JobStatus.PREP, 2, 2, null, "u1");
+    checkAssignment("tt1", "attempt_test_0001_m_000001_0 on tt1");
+    FakeJobInProgress j2 = submitJobAndInit(JobStatus.PREP, 10, 10, "q3", "u1");
+    checkAssignment("tt1", "attempt_test_0002_m_000001_0 on tt1");
+    FakeJobInProgress j3 = submitJobAndInit(JobStatus.PREP, 10, 10, "q4", "u1");
+    checkAssignment("tt2", "attempt_test_0003_m_000001_0 on tt2");
+    checkAssignment("tt2", "attempt_test_0001_m_000002_0 on tt2");
+    checkAssignment("tt3", "attempt_test_0002_m_000002_0 on tt3");
+    checkAssignment("tt3", "attempt_test_0002_m_000003_0 on tt3");
+    checkAssignment("tt4", "attempt_test_0003_m_000002_0 on tt4");
+    checkAssignment("tt4", "attempt_test_0002_m_000004_0 on tt4");
+    checkAssignment("tt5", "attempt_test_0002_m_000005_0 on tt5");
+    checkAssignment("tt5", "attempt_test_0003_m_000003_0 on tt5");
+    // at this point, q3 is running 5 tasks (with a cap of 2), q4 is
+    // running 3 tasks (with a cap of 1).
+    // If we submit a job to 'default', we need to get 3 slots back.
+    FakeJobInProgress j4 = submitJob(JobStatus.PREP, 10, 10, null, "u1");
+    // update our structures
+    scheduler.updateQSIInfo();
+    // get scheduler to notice that q2 needs to reclaim
+    scheduler.reclaimCapacity();
+    // our queue reclaim time is 1000s, heartbeat interval is 5 sec, so
+    // we start reclaiming when 15 secs are left.
+    clock.advance(400000);
+    scheduler.reclaimCapacity();
+    // nothing should have happened
+    assertEquals(j2.runningMapTasks, 5);
+    assertEquals(j3.runningMapTasks, 3);
+    // 3 tasks to kill, 5 running over cap. q3 should give up 3*3/5 = 2 slots.
+    // q4 should give up 2*3/5 = 1 slot.
+    clock.advance(200000);
+    scheduler.reclaimCapacity();
+    assertEquals(j2.runningMapTasks, 3);
+    assertEquals(j3.runningMapTasks, 2);
+}

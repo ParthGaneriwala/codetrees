@@ -1,0 +1,53 @@
+public synchronized void cache(GISDatum datum) {
+    // Gets the rectangle of the region and the resolution
+    GeoRectangle rectangle = datum.getRectangle().getRectangle();
+    Double resolution = datum.getRectangle().getResolution();
+    PreparedStatement statement = null;
+    ObjectOutputStream output = null;
+    ByteArrayInputStream input = null;
+    Database db = new Database();
+    try {
+        // gets the memory size of the data
+        ByteArrayOutputStream bytesOutput = new ByteArrayOutputStream(datum.getMemorySize());
+        output = new ObjectOutputStream(bytesOutput);
+        output.writeObject(datum);
+        // prepares a string of my sql commands to insert the data in the
+        // correct cache tables
+        statement = db.prepareStatement("INSERT INTO Cache" + " (minLat, maxLat, minLong, maxLong, resolution," + " source, layer, datum, datumSize, expiration, lastUsed)" + " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())");
+        statement.setDouble(1, rectangle.getMinimumLatitude());
+        statement.setDouble(2, rectangle.getMaximumLatitude());
+        statement.setDouble(3, rectangle.getMinimumLongitude());
+        statement.setDouble(4, rectangle.getMaximumLongitude());
+        statement.setObject(5, resolution, Types.DOUBLE);
+        statement.setString(6, datum.getSource());
+        statement.setString(7, datum.getLayer());
+        input = new ByteArrayInputStream(bytesOutput.toByteArray());
+        statement.setBinaryStream(8, input, bytesOutput.toByteArray().length);
+        statement.setInt(9, bytesOutput.toByteArray().length);
+        statement.setObject(10, convert(datum.getExpiration()), Types.TIME);
+        statement.executeUpdate();
+        mSizeUsed += bytesOutput.toByteArray().length + ROW_DISC_SIZE;
+    } catch (SQLException err) {
+        log(err);
+        purgeExpired();
+        return;
+    } catch (IOException err) {
+        log(err);
+        return;
+    } catch (DatabaseException e) {
+        // TODO Auto-generated catch block
+        e.printStackTrace();
+    } finally {
+        closeStatement(statement);
+        closeConnection(db);
+        try {
+            if (input != null)
+                input.close();
+            if (output != null)
+                output.close();
+        } catch (IOException err) {
+            log(err);
+        }
+    }
+    checkSizeUsed();
+}

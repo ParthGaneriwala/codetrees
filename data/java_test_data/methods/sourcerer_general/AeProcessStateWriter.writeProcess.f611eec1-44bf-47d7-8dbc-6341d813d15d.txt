@@ -1,0 +1,45 @@
+protected int writeProcess(IAeProcessStateConnection aConnection, IAeBusinessProcess aProcess, AeLongSet aCompletedJournalIds, AeLongSet aCompletedTransmissionIds, IAeProcessLogEntry aLogEntry) throws AeBusinessProcessException {
+    // Get a process snapshot.
+    IAeProcessSnapshot snapshot = aProcess.getProcessSnapshot();
+    // Save the process state.
+    AeFastDocument processDocument = snapshot.serializeProcess(true);
+    int processState = aProcess.getProcessState();
+    int processStateReason = aProcess.getProcessStateReason();
+    Date startDate = aProcess.getStartDate();
+    Date endDate = aProcess.getEndDate();
+    int pendingInvokesCount = snapshot.getPendingInvokes().size();
+    aConnection.saveProcess(processDocument, processState, processStateReason, startDate, endDate, pendingInvokesCount);
+    // Build the set of live variables for
+    // IAeProcessStateConnection#trimStoredVariables.
+    IAeLocationVersionSet liveSet = new AeLocationVersionSet();
+    // Iterate through all live variable location paths.
+    for (Iterator i = snapshot.getVariableLocationPaths().iterator(); i.hasNext(); ) {
+        String locationPath = (String) i.next();
+        int locationId = aProcess.getLocationId(locationPath);
+        Set versionNumbers = snapshot.getVariableVersionNumbers(locationPath);
+        // Iterate through all version numbers for this location path.
+        for (Iterator j = versionNumbers.iterator(); j.hasNext(); ) {
+            int versionNumber = ((Number) j.next()).intValue();
+            liveSet.add(locationId, versionNumber);
+            IAeVariable variable = snapshot.getVariable(locationPath, versionNumber);
+            if ((variable.hasData() || variable.hasAttachments()) && !aConnection.isStoredVariable(locationId, versionNumber)) {
+                AeFastDocument variableDocument = snapshot.serializeVariable(variable);
+                aConnection.saveVariable(aProcess, variable, variableDocument);
+            }
+        }
+    }
+    // Trim the set of stored variables to those that are live now.
+    aConnection.trimStoredVariables(liveSet);
+    // Save new persistent log data.
+    aConnection.saveLog(aLogEntry);
+    // Remove journal entries that have been incorporated into the process
+    // state.
+    aConnection.removeJournalEntries(aCompletedJournalIds);
+    // Remove completed transmission ids.
+    try {
+        AeEngineFactory.getTransmissionTracker().remove(aCompletedTransmissionIds);
+    } catch (Exception e) {
+        throw new AeBusinessProcessException(e.getMessage(), e);
+    }
+    return pendingInvokesCount;
+}

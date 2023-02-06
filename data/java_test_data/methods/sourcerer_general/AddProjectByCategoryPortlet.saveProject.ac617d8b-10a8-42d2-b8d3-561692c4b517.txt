@@ -1,0 +1,150 @@
+private Project saveProject(ActionRequest request) throws Exception {
+    Connection db = PortalUtils.useConnection(request);
+    // Populate the project information
+    Project project = new Project();
+    PortalUtils.populateObject(project, request);
+    // Override some values not present in the form
+    if (project.getRequestDate() == null) {
+        project.setRequestDate(new Timestamp(System.currentTimeMillis()));
+    }
+    project.setGroupId(PortalUtils.getUser(request).getGroupId());
+    project.setEnteredBy(PortalUtils.getUser(request).getId());
+    project.setModifiedBy(PortalUtils.getUser(request).getId());
+    // Enforce any preferences
+    ProjectCategoryList categories = new ProjectCategoryList();
+    categories.setEnabled(true);
+    categories.setTopLevelOnly(true);
+    categories.buildList(db);
+    // A specific category is enforced on the project
+    String categoryValue = request.getPreferences().getValue(PREF_CATEGORY_NAME, null);
+    ProjectCategory category = null;
+    if (categoryValue != null) {
+        category = categories.getFromValue(categoryValue);
+        if (category != null) {
+            project.setCategoryId(category.getId());
+        } else {
+            return project;
+        }
+    }
+    String showShortDescription = request.getPreferences().getValue(SHOW_SHORT_DESCRIPTION, null);
+    if (!"true".equals(showShortDescription)) {
+        project.setShortDescription(project.getTitle());
+    }
+    // An option list of categories is presented and enforced
+    String allowedCategories = request.getPreferences().getValue(PREF_ALLOWED_CATEGORIES, null);
+    if (allowedCategories != null) {
+        boolean categoryFound = false;
+        String[] categoryArray = allowedCategories.split(",");
+        for (String thisCategory : categoryArray) {
+            ProjectCategory allowedCategory = categories.getFromValue(thisCategory.trim());
+            if (allowedCategory != null && project.getCategoryId() == allowedCategory.getId()) {
+                category = allowedCategory;
+                categoryFound = true;
+            }
+        }
+        if (!categoryFound) {
+            return project;
+        }
+    }
+    // check validity
+    if (!isValid(request, project)) {
+        return project;
+    }
+    project.setApproved(request.getPreferences().getValue(PREF_IS_APPROVED, "false"));
+    // Ask if the user wants to be the owner...
+    String showIsOwner = request.getPreferences().getValue(PREF_SHOW_IS_OWNER, "false");
+    if ("true".equals(showIsOwner)) {
+        if (project.getOwner() > -1) {
+            // They said yes because the field is set to their id
+            project.setOwner(PortalUtils.getUser(request).getId());
+        }
+    } else {
+        // Reset the owner field...
+        project.setOwner(-1);
+    }
+    // See if there is an override that forces the user to be the owner
+    if ("true".equals(request.getPreferences().getValue(PREF_ADD_USER_AS_OWNER, "false"))) {
+        project.setOwner(PortalUtils.getUser(request).getId());
+    }
+    if (project.getOwner() < -1) {
+        project.setOwner(-1);
+    }
+    // Determines if guests are allowed to see the project
+    project.getFeatures().setUpdateAllowGuests(true);
+    if ("false".equals(request.getPreferences().getValue(PREF_SHOW_ALLOW_GUESTS_OPTION, "false"))) {
+        project.getFeatures().setAllowGuests(request.getPreferences().getValue(PREF_ALLOW_GUESTS, "false"));
+    }
+    // Determines if guests are promoted to participant if they are logged in
+    project.getFeatures().setUpdateAllowParticipants(true);
+    if ("false".equals(request.getPreferences().getValue(PREF_SHOW_ALLOW_PARTICIPANTS_OPTION, "false"))) {
+        project.getFeatures().setAllowParticipants(request.getPreferences().getValue(PREF_ALLOW_PARTICIPANTS, "false"));
+    }
+    // Determines if membership is required to see any data besides the project details
+    project.getFeatures().setUpdateMembershipRequired(true);
+    if ("false".equals(request.getPreferences().getValue(PREF_SHOW_REQUIRES_MEMBERSHIP_OPTION, "false"))) {
+        project.getFeatures().setMembershipRequired(request.getPreferences().getValue(PREF_REQUIRES_MEMBERSHIP, "false"));
+    }
+    // RULE: If membership is required, downgrade allowing participants
+    if (project.getFeatures().getMembershipRequired() && project.getFeatures().getAllowParticipants()) {
+        project.getFeatures().setAllowParticipants(false);
+    }
+    // Override the guests option if the site is private
+    if (category.getSensitive()) {
+        if (project.getFeatures().getAllowGuests()) {
+            project.getFeatures().setAllowGuests(false);
+            project.getFeatures().setAllowParticipants(true);
+        }
+    }
+    // Set the instance id, if there is one
+    project.setInstanceId(PortalUtils.getInstance(request).getId());
+    // Insert the validated project
+    boolean recordInserted = project.insert(db);
+    if (recordInserted) {
+        // save image attachments if any
+        String showSingleAttachments = request.getPreferences().getValue(PREF_SHOW_SINGLE_IMAGE_ATTACHMENT, "false");
+        if ("true".equals(showSingleAttachments)) {
+            String attachmentList = request.getParameter("attachmentList");
+            project.insertLogo(db, PortalUtils.getUser(request).getId(), PortalUtils.getFileLibraryPath(request, "projects"), attachmentList);
+        }
+        // Index the new project
+        PortalUtils.indexAddItem(request, project);
+        // Set order and label for allowed modules
+        ProjectFeatures features = getFeaturesForProject(request);
+        if (features != null) {
+            features.setId(project.getId());
+            features.setModifiedBy(PortalUtils.getUser(request).getId());
+            features.update(db);
+        }
+        // Add the user to the project if specified...
+        int userId = PortalUtils.getUser(request).getId();
+        String userRole = null;
+        // Test for the role
+        userRole = request.getPreferences().getValue(PREF_ADD_USER_WITH_SPECIFIED_ROLE, null);
+        // If an owner, then use any specified owner's role (or drop back to specified role)
+        if (project.getOwner() == userId) {
+            userRole = request.getPreferences().getValue(PREF_ADD_USER_WITH_SPECIFIED_ROLE_IF_OWNER, userRole);
+        }
+        if (userRole != null) {
+            LookupList roleList = CacheUtils.getLookupList("lookup_project_role");
+            int newRowLevel = roleList.getIdFromValue(userRole);
+            if (newRowLevel == -1) {
+                LOG.error("Could not insert team member with role: " + userRole);
+            }
+            TeamMember thisMember = new TeamMember();
+            thisMember.setProjectId(project.getId());
+            thisMember.setUserId(userId);
+            thisMember.setUserLevel(newRowLevel);
+            thisMember.setNotification(true);
+            thisMember.setEmailUpdatesSchedule(TeamMember.EMAIL_DAILY);
+            thisMember.setEnteredBy(PortalUtils.getUser(request).getId());
+            thisMember.setModifiedBy(PortalUtils.getUser(request).getId());
+            thisMember.insert(db);
+        }
+        // Send to the rules engine for any additional workflow after reloading the project
+        project = ProjectUtils.loadProject(project.getId());
+        PortalUtils.processInsertHook(request, project);
+    } else {
+        LOG.debug("Listing was not added -- Form did not validate");
+    }
+    return project;
+}

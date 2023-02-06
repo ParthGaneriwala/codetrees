@@ -1,0 +1,57 @@
+@Override
+protected synchronized void writeChunk(byte[] b, int offset, int len, byte[] checksum) throws IOException {
+    checkOpen();
+    isClosed();
+    int cklen = checksum.length;
+    int bytesPerChecksum = this.checksum.getBytesPerChecksum();
+    if (len > bytesPerChecksum) {
+        throw new IOException("writeChunk() buffer size is " + len + " is larger than supported  bytesPerChecksum " + bytesPerChecksum);
+    }
+    if (checksum.length != this.checksum.getChecksumSize()) {
+        throw new IOException("writeChunk() checksum size is supposed to be " + this.checksum.getChecksumSize() + " but found to be " + checksum.length);
+    }
+    synchronized (dataQueue) {
+        // If queue is full, then wait till we can create  enough space
+        while (!closed && dataQueue.size() + ackQueue.size() > maxPackets) {
+            try {
+                dataQueue.wait();
+            } catch (InterruptedException e) {
+            }
+        }
+        isClosed();
+        if (currentPacket == null) {
+            currentPacket = new Packet(packetSize, chunksPerPacket, bytesCurBlock);
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("DFSClient writeChunk allocating new packet seqno=" + currentPacket.seqno + ", src=" + src + ", packetSize=" + packetSize + ", chunksPerPacket=" + chunksPerPacket + ", bytesCurBlock=" + bytesCurBlock);
+            }
+        }
+        currentPacket.writeChecksum(checksum, 0, cklen);
+        currentPacket.writeData(b, offset, len);
+        currentPacket.numChunks++;
+        bytesCurBlock += len;
+        // 
+        if (currentPacket.numChunks == currentPacket.maxChunks || bytesCurBlock == blockSize) {
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("DFSClient writeChunk packet full seqno=" + currentPacket.seqno + ", src=" + src + ", bytesCurBlock=" + bytesCurBlock + ", blockSize=" + blockSize + ", appendChunk=" + appendChunk);
+            }
+            // 
+            if (bytesCurBlock == blockSize) {
+                currentPacket.lastPacketInBlock = true;
+                bytesCurBlock = 0;
+                lastFlushOffset = -1;
+            }
+            dataQueue.addLast(currentPacket);
+            dataQueue.notifyAll();
+            currentPacket = null;
+            // crc chunks from now on.
+            if (appendChunk) {
+                appendChunk = false;
+                resetChecksumChunk(bytesPerChecksum);
+            }
+            int psize = Math.min((int) (blockSize - bytesCurBlock), writePacketSize);
+            computePacketChunkSize(psize, bytesPerChecksum);
+        }
+    }
+// LOG.debug("DFSClient writeChunk done length " + len +
+// " checksum length " + cklen);
+}

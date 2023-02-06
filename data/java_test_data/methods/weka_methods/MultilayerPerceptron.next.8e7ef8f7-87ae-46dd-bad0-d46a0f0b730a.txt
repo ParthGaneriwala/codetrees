@@ -1,0 +1,127 @@
+@Override
+public boolean next() throws Exception {
+    if (m_accepted || m_useDefaultModel || m_instances.numInstances() == 0) {
+        // Has user accepted the network already or do we need to use default model?
+        return false;
+    }
+    m_epoch++;
+    m_numItsPerformed++;
+    double right = 0;
+    for (int nob = numInVal; nob < m_instances.numInstances(); nob++) {
+        m_currentInstance = m_instances.instance(nob);
+        if (!m_currentInstance.classIsMissing()) {
+            // this is where the network updating (and training occurs, for the
+            // training set
+            resetNetwork();
+            calculateOutputs();
+            double tempRate = m_learningRate * m_currentInstance.weight();
+            if (m_decay) {
+                tempRate /= m_epoch;
+            }
+            right += (calculateErrors() / m_instances.numClasses()) * m_currentInstance.weight();
+            updateNetworkWeights(tempRate, m_momentum);
+        }
+    }
+    right /= totalWeight;
+    if (Double.isInfinite(right) || Double.isNaN(right)) {
+        if ((!m_reset) || (originalFormatData == null)) {
+            m_instances = null;
+            throw new Exception("Network cannot train. Try restarting with a smaller learning rate.");
+        } else {
+            // reset the network if possible
+            if (m_learningRate <= Utils.SMALL) {
+                throw new IllegalStateException("Learning rate got too small (" + m_learningRate + " <= " + Utils.SMALL + ")!");
+            }
+            // only used for when reset
+            double origRate = m_learningRate;
+            m_learningRate /= 2;
+            buildClassifier(originalFormatData);
+            m_learningRate = origRate;
+            return false;
+        }
+    }
+    // //////////////////////do validation testing if applicable
+    if (m_valSize != 0) {
+        right = 0;
+        if (valSet == null) {
+            throw new IllegalArgumentException("Trying to use validation set but validation set is null.");
+        }
+        for (int nob = 0; nob < valSet.numInstances(); nob++) {
+            m_currentInstance = valSet.instance(nob);
+            if (!m_currentInstance.classIsMissing()) {
+                // this is where the network updating occurs, for the validation set
+                resetNetwork();
+                calculateOutputs();
+                right += (calculateErrors() / valSet.numClasses()) * m_currentInstance.weight();
+            // note 'right' could be calculated here just using
+            // the calculate output values. This would be faster.
+            // be less modular
+            }
+        }
+        if (right < lastRight) {
+            if (right < bestError) {
+                bestError = right;
+                // save the network weights at this point
+                for (int noc = 0; noc < m_numClasses; noc++) {
+                    m_outputs[noc].saveWeights();
+                }
+                driftOff = 0;
+            }
+        } else {
+            driftOff++;
+        }
+        lastRight = right;
+        // if (driftOff > m_driftThreshold || m_epoch + 1 >= m_numEpochs) {
+        if (driftOff > m_driftThreshold || m_numItsPerformed + 1 >= m_numEpochs) {
+            for (int noc = 0; noc < m_numClasses; noc++) {
+                m_outputs[noc].restoreWeights();
+            }
+            m_accepted = true;
+        }
+        right /= totalValWeight;
+    }
+    m_error = right;
+    // shows what the neuralnet is upto if a gui exists.
+    updateDisplay();
+    // epoch, Such as if it is paused, if it is resumable etc...
+    if (m_gui) {
+        // while ((m_stopIt || (m_epoch >= m_numEpochs && m_valSize == 0)) && !m_accepted) {
+        while ((m_stopIt || (m_numItsPerformed >= m_numEpochs && m_valSize == 0)) && !m_accepted) {
+            m_stopIt = true;
+            m_stopped = true;
+            // if (m_epoch >= m_numEpochs && m_valSize == 0) {
+            if (m_numItsPerformed >= m_numEpochs && m_valSize == 0) {
+                m_controlPanel.m_startStop.setEnabled(false);
+            } else {
+                m_controlPanel.m_startStop.setEnabled(true);
+            }
+            m_controlPanel.m_startStop.setText("Start");
+            m_controlPanel.m_startStop.setActionCommand("Start");
+            m_controlPanel.m_changeEpochs.setEnabled(true);
+            m_controlPanel.m_changeLearning.setEnabled(true);
+            m_controlPanel.m_changeMomentum.setEnabled(true);
+            blocker(true);
+            if (m_numeric) {
+                setEndsToLinear();
+            }
+        }
+        m_controlPanel.m_changeEpochs.setEnabled(false);
+        m_controlPanel.m_changeLearning.setEnabled(false);
+        m_controlPanel.m_changeMomentum.setEnabled(false);
+        m_stopped = false;
+        // if the network has been accepted stop the training loop
+        if (m_accepted) {
+            return false;
+        }
+    }
+    if (m_accepted) {
+        return false;
+    }
+    // if (m_epoch < m_numEpochs) {
+    if (m_numItsPerformed < m_numEpochs) {
+        // We can keep iterating
+        return true;
+    } else {
+        return false;
+    }
+}

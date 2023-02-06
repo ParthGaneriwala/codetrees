@@ -1,0 +1,100 @@
+public Subject authenticate(Credential cred, Context ctx) throws AuthenticationFailedException {
+    if (authenticators == null || authenticators.length == 0) {
+        String msg = "No authentication provider configured for authentication service '" + serviceName + "'.";
+        // Audit the failure.
+        audit(Subject.SYSTEM, AuditSeverity.FAILURE, msg, ctx, null);
+        // throw an exception
+        throw new AuthenticationFailedException(msg);
+    }
+    if (cred == null || cred.getType() == null || cred.getCredentialObject() == null) {
+        String msg = "The credential or its owned object should not be null.";
+        // Audit the failure.
+        audit(Subject.SYSTEM, AuditSeverity.ERROR, msg, ctx, null);
+        // Then throw an exception
+        throw new AuthenticationFailedException(msg);
+    }
+    String type = cred.getType();
+    List<Authenticator> matchedAtns = atnsByCredType.get(type);
+    if (matchedAtns != null && matchedAtns.size() > 0) {
+        int size = matchedAtns.size();
+        Subject subject = null;
+        Context responseCtx = new DefaultContextImpl();
+        boolean succeed = false;
+        AuthenticationFailedException firstEx = null;
+        AuthenticationFailedException firstRequiredEx = null;
+        for (int i = 0; i < size; i++) {
+            AuthenticationFailedException ex = null;
+            Authenticator atn = matchedAtns.get(i);
+            AuthenticationFlag flag = atn.getFlag();
+            // Initialize audit context.
+            Context adtCtx = new DefaultContextImpl();
+            adtCtx.setAllAttributes(ctx);
+            adtCtx.setAttribute(new Attribute(AuditConstants.ATTR_PROVIDER_NAME, AttributeType.String, atn.getProviderName()));
+            adtCtx.setAttribute(new Attribute(AuditConstants.ATTR_AUTHENTICATION_FLAG, AttributeType.String, atn.getFlag().toString()));
+            adtCtx.setAttribute(new Attribute(AuditConstants.ATTR_CREDENTIAL_TYPE, AttributeType.String, atn.getSupportedCredentialType()));
+            // Start login, the logic is same with JAAS' implementation
+            try {
+                subject = new Subject(cred, atn, ctx);
+                responseCtx.setAllAttributes(subject);
+                succeed = true;
+                adtCtx.setAllAttributes(responseCtx);
+                audit(subject, AuditSeverity.SUCCESS, "Authentication succeeded.", adtCtx, null);
+                if (flag == AuthenticationFlag.Sufficient) {
+                    // current subject and directly return it.
+                    if (firstRequiredEx == null) {
+                        subject.setAllAttributes(responseCtx);
+                        return subject;
+                    }
+                }
+            } catch (ServiceException atnEx) {
+                succeed = false;
+                // Audit the failure.
+                audit(Subject.SYSTEM, AuditSeverity.FAILURE, "Authentication failed.", adtCtx, atnEx);
+                // Log the exception for debug
+                Logger logger = LogFactory.getLogger();
+                logger.warn("Authenticator '" + atn.getProviderName() + "' (" + flag.toString() + ") failed to authenticated user.", ex);
+                if (atnEx instanceof AuthenticationFailedException) {
+                    ex = (AuthenticationFailedException) atnEx;
+                } else // If there is error, we stop authenticating and throw the exception directly.
+                {
+                    throw new AuthenticationFailedException("Error occurs while authenticating user.", atnEx);
+                }
+                if (flag == AuthenticationFlag.Required) {
+                    // with other authenticators in the list.
+                    if (firstRequiredEx == null) {
+                        firstRequiredEx = ex;
+                    }
+                } else if (flag == AuthenticationFlag.Requisite) {
+                    // If not succeed, we directly throw the saved exception.
+                    throw firstRequiredEx == null ? ex : firstRequiredEx;
+                } else // Optional & Sufficient
+                {
+                    // If there is error, we save the first error.
+                    if (firstEx == null) {
+                        firstEx = ex;
+                    }
+                }
+            }
+        }
+        if (firstRequiredEx != null) {
+            // required exception.
+            throw firstRequiredEx;
+        } else if (!succeed && firstEx != null) {
+            // The last one is failed, return the first exception
+            throw firstEx;
+        } else {
+            // The last one is succeeded.
+            subject.setAllAttributes(responseCtx);
+            return subject;
+        }
+    } else {
+        String msg = "No matched authentication provider for credential type '" + type + "'.";
+        // Audit the failure.
+        Context adtCtx = new DefaultContextImpl();
+        adtCtx.setAllAttributes(ctx);
+        adtCtx.setAttribute(new Attribute(AuditConstants.ATTR_CREDENTIAL_TYPE, AttributeType.String, type));
+        audit(Subject.SYSTEM, AuditSeverity.FAILURE, msg, adtCtx, null);
+        // Throw an exception.
+        throw new AuthenticationFailedException(msg);
+    }
+}

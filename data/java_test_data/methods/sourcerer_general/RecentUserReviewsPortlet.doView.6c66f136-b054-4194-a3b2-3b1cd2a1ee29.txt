@@ -1,0 +1,99 @@
+public void doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    try {
+        String defaultView = VIEW_PAGE;
+        // Get global preferences
+        String categoryName = request.getPreferences().getValue(PREF_CATEGORY, "");
+        String title = request.getPreferences().getValue(PREF_TITLE, "");
+        String showProjectTitle = request.getPreferences().getValue(PREF_SHOW_PROJECT_TITLE, "false");
+        String showProjectCategory = request.getPreferences().getValue(PREF_SHOW_PROJECT_CATEGORY, "false");
+        String noOfReviewsToShow = request.getPreferences().getValue(PREF_NO_OF_REVIEWS_TO_SHOW, "-1");
+        // Get the user's reviews...
+        int userId = -1;
+        // Determine if a specified user's reviews should be used from prefs
+        String userProfileName = request.getPreferences().getValue(PREF_USER_PROFILE_NAME, null);
+        if (userProfileName != null) {
+            int projectId = ProjectUtils.retrieveProjectIdFromUniqueId(userProfileName);
+            if (projectId > -1) {
+                Project userProfileProject = ProjectUtils.loadProject(projectId);
+                if (userProfileProject.getProfile()) {
+                    userId = userProfileProject.getOwner();
+                }
+            }
+        }
+        // This portlet can consume data from other portlets so check that next
+        for (String event : PortalUtils.getDashboardPortlet(request).getConsumeDataEvents()) {
+            Project userProfileProject = (Project) PortalUtils.getGeneratedData(request, event);
+            if (userProfileProject != null) {
+                if (userProfileProject.getProfile()) {
+                    userId = userProfileProject.getOwner();
+                }
+            }
+        }
+        // Use the currently displaying project to determine the user Id (last check)
+        if (userId == -1) {
+            Project userProfileProject = PortalUtils.getProject(request);
+            if (userProfileProject != null) {
+                if (userProfileProject.getProfile()) {
+                    userId = userProfileProject.getOwner();
+                }
+            }
+        }
+        if (userId == -1) {
+            throw new PortletException("Portlet not configured... userId not found");
+        }
+        try {
+            Connection db = PortalUtils.useConnection(request);
+            User profileUser = UserUtils.loadUser(userId);
+            request.setAttribute(USER, profileUser);
+            // Limit the reviews to a specific category if specified
+            int categoryId = -1;
+            if (StringUtils.hasText(categoryName)) {
+                ProjectCategoryList categories = new ProjectCategoryList();
+                categories.setEnabled(true);
+                categories.setTopLevelOnly(true);
+                categories.buildList(db);
+                request.setAttribute(PROJECT_CATEGORY_LIST, categories);
+                categoryId = categories.getIdFromValue(categoryName);
+            }
+            // Use paged data for sorting
+            PagedListInfo pagedListInfo = new PagedListInfo();
+            pagedListInfo.setItemsPerPage(noOfReviewsToShow);
+            pagedListInfo.setColumnToSortBy("entered");
+            pagedListInfo.setSortOrder("desc");
+            request.setAttribute(PAGED_LIST_INFO, pagedListInfo);
+            // Reviews to show
+            ProjectRatingList projectRatingList = new ProjectRatingList();
+            projectRatingList.setPagedListInfo(pagedListInfo);
+            projectRatingList.setCategoryId(categoryId);
+            projectRatingList.setEnteredBy(userId);
+            projectRatingList.setLoadProject(true);
+            projectRatingList.setOpenProjectsOnly(true);
+            // Determine the permissions for viewing the portlet
+            if (PortalUtils.getDashboardPortlet(request).isCached()) {
+                // Use the most generic settings since this portlet is cached
+                User thisUser = UserUtils.createGuestUser();
+                projectRatingList.setGroupId(thisUser.getGroupId());
+                projectRatingList.setForUser(thisUser.getId());
+            } else {
+                // Use the current user's setting
+                User thisUser = PortalUtils.getUser(request);
+                projectRatingList.setGroupId(thisUser.getGroupId());
+                projectRatingList.setForUser(thisUser.getId());
+            }
+            projectRatingList.buildList(PortalUtils.useConnection(request));
+            request.setAttribute(PROJECT_RATING_LIST, projectRatingList);
+            // Display preferences...
+            request.setAttribute(TITLE, title);
+            request.setAttribute(SHOW_PROJECT_TITLE, showProjectTitle);
+            request.setAttribute(SHOW_PROJECT_CATEGORY, showProjectCategory);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        // JSP view
+        PortletContext context = getPortletContext();
+        PortletRequestDispatcher requestDispatcher = context.getRequestDispatcher(defaultView);
+        requestDispatcher.include(request, response);
+    } catch (Exception e) {
+        throw new PortletException(e.getMessage());
+    }
+}

@@ -1,0 +1,54 @@
+public boolean setMeetingStatus(Connection db, ActionRequest request, User user, int meetingStatus) throws SQLException {
+    MeetingAttendeeList meetingAttendeeList = new MeetingAttendeeList();
+    meetingAttendeeList.setMeetingId(meeting.getId());
+    meetingAttendeeList.buildList(db);
+    this.meetingAttendee = meetingAttendeeList.getMeetingAttendee(user);
+    if (meetingAttendee == null) {
+        return false;
+    }
+    meetingAttendee.setModifiedBy(meetingAttendee.getUserId());
+    if (action == DimDimUtils.ACTION_MEETING_APPROVE_JOIN) {
+        // check if meeting owner denied meeting request.
+        if (meetingStatus == MeetingAttendee.STATUS_DIMDIM_DECLINED) {
+            meetingAttendee.delete(db);
+            return true;
+        }
+        // if accepted then check if the user status is 'maybe'
+        if (meetingStatus == MeetingAttendee.STATUS_DIMDIM_ACCEPTED && meetingAttendee.getDimdimStatus() == MeetingAttendee.STATUS_DIMDIM_APPROVE_MAYBE) {
+            meetingStatus = MeetingAttendee.STATUS_DIMDIM_TENTATIVE;
+        }
+        meetingAttendee.setModifiedBy(meeting.getOwner());
+        // add attendee as team member
+        TeamMember member = project.getTeam().getTeamMember(meetingAttendee.getUserId());
+        if ((member == null || member.getId() == -1)) {
+            TeamMember thisMember = new TeamMember();
+            thisMember.setProjectId(meeting.getProjectId());
+            thisMember.setUserId(meetingAttendee.getUserId());
+            thisMember.setUserLevel(PortalUtils.getUserLevel(TeamMember.PARTICIPANT));
+            thisMember.setStatus(TeamMember.STATUS_ADDED);
+            thisMember.setEnteredBy(meeting.getOwner());
+            thisMember.setModifiedBy(meeting.getOwner());
+            String optionalMessage = "";
+            thisMember.setCustomInvitationMessage(optionalMessage);
+            if (thisMember.insert(db)) {
+                PortalUtils.processInsertHook(request, thisMember);
+            }
+        }
+    }
+    // set attendee status and update
+    meetingAttendee.setDimdimStatus(meetingStatus);
+    if (meetingAttendee.update(db) > 0) {
+        // call dimdim api to edit meeting
+        if (meeting.getIsDimdim() && action == DimDimUtils.ACTION_MEETING_APPROVE_JOIN) {
+            String attendeeIds = "";
+            for (MeetingAttendee thisAttendee : meetingAttendeeList) {
+                attendeeIds += thisAttendee.getUserId() + ", ";
+            }
+            attendeeIds = DimDimUtils.trimComma(attendeeIds);
+            populateMailUserList(null, null, null, attendeeIds);
+            DimDimUtils.processDimdimMeeting(this, null);
+        }
+        return true;
+    }
+    return false;
+}

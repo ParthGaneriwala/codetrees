@@ -1,0 +1,61 @@
+public int run(String[] args) throws Exception {
+    JobConf job = (JobConf) getConf();
+    ArrayList<String> otherArgs = new ArrayList<String>();
+    Sampler<K, V> sampler = null;
+    for (int i = 0; i < args.length; ++i) {
+        try {
+            if ("-r".equals(args[i])) {
+                job.setNumReduceTasks(Integer.parseInt(args[++i]));
+            } else if ("-inFormat".equals(args[i])) {
+                job.setInputFormat(Class.forName(args[++i]).asSubclass(InputFormat.class));
+            } else if ("-keyClass".equals(args[i])) {
+                job.setMapOutputKeyClass(Class.forName(args[++i]).asSubclass(WritableComparable.class));
+            } else if ("-splitSample".equals(args[i])) {
+                int numSamples = Integer.parseInt(args[++i]);
+                int maxSplits = Integer.parseInt(args[++i]);
+                if (0 >= maxSplits)
+                    maxSplits = Integer.MAX_VALUE;
+                sampler = new SplitSampler<K, V>(numSamples, maxSplits);
+            } else if ("-splitRandom".equals(args[i])) {
+                double pcnt = Double.parseDouble(args[++i]);
+                int numSamples = Integer.parseInt(args[++i]);
+                int maxSplits = Integer.parseInt(args[++i]);
+                if (0 >= maxSplits)
+                    maxSplits = Integer.MAX_VALUE;
+                sampler = new RandomSampler<K, V>(pcnt, numSamples, maxSplits);
+            } else if ("-splitInterval".equals(args[i])) {
+                double pcnt = Double.parseDouble(args[++i]);
+                int maxSplits = Integer.parseInt(args[++i]);
+                if (0 >= maxSplits)
+                    maxSplits = Integer.MAX_VALUE;
+                sampler = new IntervalSampler<K, V>(pcnt, maxSplits);
+            } else {
+                otherArgs.add(args[i]);
+            }
+        } catch (NumberFormatException except) {
+            System.out.println("ERROR: Integer expected instead of " + args[i]);
+            return printUsage();
+        } catch (ArrayIndexOutOfBoundsException except) {
+            System.out.println("ERROR: Required parameter missing from " + args[i - 1]);
+            return printUsage();
+        }
+    }
+    if (job.getNumReduceTasks() <= 1) {
+        System.err.println("Sampler requires more than one reducer");
+        return printUsage();
+    }
+    if (otherArgs.size() < 2) {
+        System.out.println("ERROR: Wrong number of parameters: ");
+        return printUsage();
+    }
+    if (null == sampler) {
+        sampler = new RandomSampler<K, V>(0.1, 10000, 10);
+    }
+    Path outf = new Path(otherArgs.remove(otherArgs.size() - 1));
+    TotalOrderPartitioner.setPartitionFile(job, outf);
+    for (String s : otherArgs) {
+        FileInputFormat.addInputPath(job, new Path(s));
+    }
+    InputSampler.<K, V>writePartitionFile(job, sampler);
+    return 0;
+}

@@ -1,0 +1,54 @@
+public int run(String[] argv) throws Exception {
+    JobConf job = new JobConf(getConf());
+    job.setJarByClass(GenericMRLoadGenerator.class);
+    job.setMapperClass(SampleMapper.class);
+    job.setReducerClass(SampleReducer.class);
+    if (!parseArgs(argv, job)) {
+        return -1;
+    }
+    if (null == FileOutputFormat.getOutputPath(job)) {
+        // No output dir? No writes
+        job.setOutputFormat(NullOutputFormat.class);
+    }
+    if (0 == FileInputFormat.getInputPaths(job).length) {
+        // No input dir? Generate random data
+        System.err.println("No input path; ignoring InputFormat");
+        confRandom(job);
+    } else if (null != job.getClass("mapred.indirect.input.format", null)) {
+        // specified IndirectInputFormat? Build src list
+        JobClient jClient = new JobClient(job);
+        Path sysdir = jClient.getSystemDir();
+        Random r = new Random();
+        Path indirInputFile = new Path(sysdir, Integer.toString(r.nextInt(Integer.MAX_VALUE), 36) + "_files");
+        job.set("mapred.indirect.input.file", indirInputFile.toString());
+        SequenceFile.Writer writer = SequenceFile.createWriter(sysdir.getFileSystem(job), job, indirInputFile, LongWritable.class, Text.class, SequenceFile.CompressionType.NONE);
+        try {
+            for (Path p : FileInputFormat.getInputPaths(job)) {
+                FileSystem fs = p.getFileSystem(job);
+                Stack<Path> pathstack = new Stack<Path>();
+                pathstack.push(p);
+                while (!pathstack.empty()) {
+                    for (FileStatus stat : fs.listStatus(pathstack.pop())) {
+                        if (stat.isDir()) {
+                            if (!stat.getPath().getName().startsWith("_")) {
+                                pathstack.push(stat.getPath());
+                            }
+                        } else {
+                            writer.sync();
+                            writer.append(new LongWritable(stat.getLen()), new Text(stat.getPath().toUri().toString()));
+                        }
+                    }
+                }
+            }
+        } finally {
+            writer.close();
+        }
+    }
+    Date startTime = new Date();
+    System.out.println("Job started: " + startTime);
+    JobClient.runJob(job);
+    Date endTime = new Date();
+    System.out.println("Job ended: " + endTime);
+    System.out.println("The job took " + (endTime.getTime() - startTime.getTime()) / 1000 + " seconds.");
+    return 0;
+}

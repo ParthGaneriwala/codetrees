@@ -1,0 +1,34 @@
+public static void main(String[] args) throws IOException {
+    OptionParser optParser = new OptionParser(Options.class);
+    final Options opts = (Options) optParser.parse(args, true);
+    if (opts.upper && opts.lower) {
+        System.err.println("Lowercase AND uppercase? doesn't sound right.");
+        return;
+    }
+    JobManager.initialize(opts.jobs);
+    Thread thread = new Thread(JobManager.getInstance(), "Job Manager");
+    thread.setDaemon(true);
+    thread.start();
+    Experiment.initialize(opts.config);
+    Experiment experiment = Experiment.getInstance();
+    final InputParser parser = new PlainInputParser(experiment.getTupleDescription());
+    final MemcachedClient memcached;
+    {
+        SockIOPool sockPool = SockIOPool.getInstance();
+        sockPool.setServers(new String[] { opts.memcached });
+        sockPool.setInitConn(JobManager.getInstance().getNumWorkers());
+        sockPool.initialize();
+        memcached = new MemcachedClient();
+        memcached.setPrimitiveAsString(false);
+        memcached.setSanitizeKeys(false);
+        memcached.setCompressEnable(false);
+    }
+    BufferedReader reader = IO.getReader(opts.input == null ? System.in : IO.getInputStream((opts.input)));
+    for (String line = reader.readLine(); line != null; line = reader.readLine()) {
+        Pair<long[], Double> pair = NgramMarginalization.readDumpedNgram(parser, line);
+        long[] ngram = pair.getFirst();
+        Double prob = pair.getSecond();
+        String ngramKey = NgramMarginalization.ngram2memcachedKey(ngram);
+        memcached.set(ngramKey, prob);
+    }
+}

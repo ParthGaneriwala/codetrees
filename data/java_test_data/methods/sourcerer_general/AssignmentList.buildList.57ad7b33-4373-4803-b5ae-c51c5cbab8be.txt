@@ -1,0 +1,71 @@
+public void buildList(Connection db) throws SQLException {
+    PreparedStatement pst = null;
+    ResultSet rs = null;
+    int items = -1;
+    StringBuffer sqlSelect = new StringBuffer();
+    StringBuffer sqlCount = new StringBuffer();
+    StringBuffer sqlFilter = new StringBuffer();
+    StringBuffer sqlOrder = new StringBuffer();
+    // Need to build a base SQL statement for counting records
+    sqlCount.append("SELECT COUNT(*) AS recordcount " + "FROM project_assignments a " + "WHERE assignment_id > -1 ");
+    createFilter(sqlFilter);
+    if (pagedListInfo != null) {
+        // Get the total number of records matching filter
+        pst = db.prepareStatement(sqlCount.toString() + sqlFilter.toString());
+        items = prepareFilter(pst);
+        rs = pst.executeQuery();
+        if (rs.next()) {
+            int maxRecords = rs.getInt("recordcount");
+            pagedListInfo.setMaxRecords(maxRecords);
+        }
+        rs.close();
+        pst.close();
+        // Determine the offset, based on the filter, for the first record to show
+        if (!pagedListInfo.getCurrentLetter().equals("")) {
+            pst = db.prepareStatement(sqlCount.toString() + sqlFilter.toString() + "AND lower(activity) < ? ");
+            items = prepareFilter(pst);
+            pst.setString(++items, pagedListInfo.getCurrentLetter().toLowerCase());
+            rs = pst.executeQuery();
+            if (rs.next()) {
+                int offsetCount = rs.getInt("recordcount");
+                pagedListInfo.setCurrentOffset(offsetCount);
+            }
+            rs.close();
+            pst.close();
+        }
+        // Determine column to sort by
+        pagedListInfo.setDefaultSort("due_date, assignment_id", null);
+        pagedListInfo.appendSqlTail(db, sqlOrder);
+    } else {
+        sqlOrder.append("ORDER BY due_date, assignment_id ");
+    }
+    // Need to build a base SQL statement for returning records
+    if (pagedListInfo != null) {
+        pagedListInfo.appendSqlSelectHead(db, sqlSelect);
+    } else {
+        sqlSelect.append("SELECT ");
+    }
+    sqlSelect.append("a.*, s.description as status, s.type as status_type, s.graphic as status_graphic, " + "loe_e.description as loe_estimated_type, loe_a.description as loe_actual_type " + "FROM project_assignments a " + " LEFT JOIN lookup_project_status s ON (a.status_id = s.code) " + " LEFT JOIN lookup_project_loe loe_e ON (a.estimated_loetype = loe_e.code) " + " LEFT JOIN lookup_project_loe loe_a ON (a.actual_loetype = loe_a.code) " + "WHERE assignment_id > -1 ");
+    pst = db.prepareStatement(sqlSelect.toString() + sqlFilter.toString() + sqlOrder.toString());
+    items = prepareFilter(pst);
+    rs = pst.executeQuery();
+    if (pagedListInfo != null) {
+        pagedListInfo.doManualOffset(db, rs);
+    }
+    int count = 0;
+    while (rs.next()) {
+        if (pagedListInfo != null && pagedListInfo.getItemsPerPage() > 0 && DatabaseUtils.getType(db) == DatabaseUtils.MSSQL && count >= pagedListInfo.getItemsPerPage()) {
+            break;
+        }
+        ++count;
+        Assignment thisAssignment = new Assignment(rs);
+        this.add(thisAssignment);
+    }
+    rs.close();
+    pst.close();
+    // Build resources
+    for (Assignment thisAssignment : this) {
+        thisAssignment.buildAssignedUserList(db);
+        AssignmentNoteList.queryNoteCount(db, thisAssignment);
+    }
+}

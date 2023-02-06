@@ -1,0 +1,180 @@
+// Actually receives a new message
+private SpreadMessage internal_receive() throws SpreadException, InterruptedIOException {
+    // //////////////////////////
+    if (connected == false) {
+        throw new SpreadException("Not connected.");
+    }
+    // Read the header.
+    // /////////////////
+    byte[] header = new byte[MAX_GROUP_NAME + 16];
+    int headerIndex;
+    int rcode;
+    try {
+        for (headerIndex = 0; headerIndex < header.length; headerIndex += rcode) {
+            rcode = socketInput.read(header, headerIndex, header.length - headerIndex);
+            if (rcode == -1) {
+                throw new SpreadException("Connection closed while reading header");
+            }
+        }
+    } catch (InterruptedIOException e) {
+        throw e;
+    } catch (IOException e) {
+        throw new SpreadException("read(): " + e);
+    }
+    // Reset header index.
+    // ////////////////////
+    headerIndex = 0;
+    // Get service type.
+    // //////////////////
+    int serviceType = toInt(header, headerIndex);
+    headerIndex += 4;
+    // Get the sender.
+    // ////////////////
+    SpreadGroup sender = toGroup(header, headerIndex);
+    headerIndex += MAX_GROUP_NAME;
+    // Get the number of groups.
+    // //////////////////////////
+    int numGroups = toInt(header, headerIndex);
+    headerIndex += 4;
+    // Get the hint/type.
+    // ///////////////////
+    int hint = toInt(header, headerIndex);
+    headerIndex += 4;
+    // Get the data length.
+    // /////////////////////
+    int dataLen = toInt(header, headerIndex);
+    headerIndex += 4;
+    // Does the header need to be flipped?
+    // (Checking for a daemon server endian-mismatch)
+    // ///////////////////////////////////////////////
+    boolean daemonEndianMismatch;
+    if (sameEndian(serviceType) == false) {
+        // Flip them.
+        // ///////////
+        serviceType = flip(serviceType);
+        numGroups = flip(numGroups);
+        dataLen = flip(dataLen);
+        // The daemon endian-mismatch.
+        // ////////////////////////////
+        daemonEndianMismatch = true;
+    } else {
+        // The daemon endian-mismatch.
+        // ////////////////////////////
+        daemonEndianMismatch = false;
+    }
+    if ((numGroups < 0) || (dataLen < 0)) {
+        // drop message
+        throw new SpreadException("Illegal Message: Message Dropped");
+    }
+    // An endian mismatch.
+    // ////////////////////
+    boolean endianMismatch;
+    // The type.
+    // //////////
+    short type;
+    // ///////////////////////////
+    if (SpreadMessage.isRegular(serviceType) || SpreadMessage.isReject(serviceType)) {
+        // ////////////////////////////////////////
+        if (sameEndian(hint) == false) {
+            hint = flip(hint);
+            endianMismatch = true;
+        } else {
+            endianMismatch = false;
+        }
+        // Get the type from the hint.
+        // ////////////////////////////
+        hint = clearEndian(hint);
+        hint >>= 8;
+        hint &= 0x0000FFFF;
+        type = (short) hint;
+    } else {
+        // This is not a regular message.
+        // ///////////////////////////////
+        type = -1;
+        endianMismatch = false;
+    }
+    if (SpreadMessage.isReject(serviceType)) {
+        // Read in the old type and or with reject type field.
+        byte[] oldtypeBuffer = new byte[4];
+        try {
+            for (int oldtypeIndex = 0; oldtypeIndex < oldtypeBuffer.length; ) {
+                rcode = socketInput.read(oldtypeBuffer, oldtypeIndex, oldtypeBuffer.length - oldtypeIndex);
+                if (rcode == -1) {
+                    throw new SpreadException("Connection closed while reading groups");
+                }
+                oldtypeIndex += rcode;
+            }
+        } catch (InterruptedIOException e) {
+            throw e;
+        } catch (IOException e) {
+            throw new SpreadException("read(): " + e);
+        }
+        int oldType = toInt(oldtypeBuffer, 0);
+        if (sameEndian(serviceType) == false)
+            oldType = flip(oldType);
+        serviceType = (SpreadMessage.REJECT_MESS | oldType);
+    }
+    // Read in the group names.
+    // /////////////////////////
+    byte[] buffer = new byte[numGroups * MAX_GROUP_NAME];
+    try {
+        for (int bufferIndex = 0; bufferIndex < buffer.length; ) {
+            rcode = socketInput.read(buffer, bufferIndex, buffer.length - bufferIndex);
+            if (rcode == -1) {
+                throw new SpreadException("Connection closed while reading groups");
+            }
+            bufferIndex += rcode;
+        }
+    } catch (InterruptedIOException e) {
+        throw e;
+    } catch (IOException e) {
+        throw new SpreadException("read(): " + e);
+    }
+    // Clear the endian type.
+    // ///////////////////////
+    serviceType = clearEndian(serviceType);
+    // Get the groups from the buffer.
+    // ////////////////////////////////
+    Vector groups = new Vector(numGroups);
+    for (int bufferIndex = 0; bufferIndex < buffer.length; bufferIndex += MAX_GROUP_NAME) {
+        // Translate the name into a group and add it to the vector.
+        // //////////////////////////////////////////////////////////
+        groups.addElement(toGroup(buffer, bufferIndex));
+    }
+    // Read in the data.
+    // //////////////////
+    byte[] data = new byte[dataLen];
+    try {
+        for (int dataIndex = 0; dataIndex < dataLen; ) {
+            rcode = socketInput.read(data, dataIndex, dataLen - dataIndex);
+            if (rcode == -1) {
+                throw new SpreadException("Connection close while reading data");
+            }
+            dataIndex += rcode;
+        }
+    } catch (InterruptedIOException e) {
+        throw e;
+    } catch (IOException e) {
+        throw new SpreadException("read():" + e);
+    }
+    // Is it a membership message?
+    // ////////////////////////////
+    MembershipInfo membershipInfo;
+    if (SpreadMessage.isMembership(serviceType)) {
+        // Create a membership info object.
+        // /////////////////////////////////
+        membershipInfo = new MembershipInfo(this, serviceType, groups, sender, data, daemonEndianMismatch);
+        // ////////////////////////////////////
+        if (membershipInfo.isRegularMembership()) {
+            // Find which of these groups is the local connection.
+            // ////////////////////////////////////////////////////
+            type = (short) groups.indexOf(group);
+        }
+    } else {
+        // There's no membership info.
+        // ////////////////////////////
+        membershipInfo = null;
+    }
+    // ////////////////////
+    return new SpreadMessage(serviceType, groups, sender, data, type, endianMismatch, membershipInfo);
+}

@@ -1,0 +1,58 @@
+protected Call createCall(Service aWsdlService, Operation aOperation, IAeWebServiceEndpointReference aEndpoint, AeAddressHandlingType aAddressHandlingType, IAeWebServiceEndpointReference aDefaultReplyTo, List aWsdlPolicy) throws Exception {
+    String url = getEndpointUrl(aWsdlService, aEndpoint, aAddressHandlingType);
+    Style requestStyle = getRequestStyle(aWsdlService, aOperation.getName(), aEndpoint);
+    String soapAction = getSoapAction(aWsdlService, aOperation.getName(), aEndpoint);
+    // use AeService cached client
+    /**
+     * TODO: KP add a special .pdd flag to indicate that we need a whole new one-off client for particular cases
+     */
+    AeService service = new AeService();
+    Call call = (Call) service.createCall();
+    // set an empty soap service so axis doesn't bother trying to find specific one for invoke, since there won't be one
+    call.setSOAPService(new SOAPService());
+    call.setTimeout(new Integer(AeEngineFactory.getEngineConfig().getWebServiceTimeout() * 1000));
+    call.setTargetEndpointAddress(new URL(url));
+    call.setSOAPActionURI(soapAction);
+    call.setOperationName(aOperation.getName());
+    call.setProperty(Call.OPERATION_STYLE_PROPERTY, requestStyle.getName());
+    // for policy assertions associated with our endpoint & wsdl subjects
+    if (!AeUtil.isNullOrEmpty(aWsdlPolicy)) {
+        setupCallForPolicies(aWsdlPolicy, call);
+    } else {
+        setCredentialsOnCall(aEndpoint, call);
+    }
+    // Setup a holder for WS-Addressing info
+    IAeWebServiceEndpointReference newEndpoint = aEndpoint;
+    if (isWsaMandatory(aEndpoint, aDefaultReplyTo)) {
+        // Update the endpoint with WS-Addressing info
+        IAeAddressingHeaders wsaHeaders = new AeAddressingHeaders(aEndpoint.getSourceNamespace());
+        wsaHeaders.setAction(soapAction);
+        wsaHeaders.setTo(url);
+        wsaHeaders.setReplyTo(aDefaultReplyTo);
+        IAePartnerAddressing pa = AeEngineFactory.getPartnerAddressing();
+        newEndpoint = pa.updateEndpointHeaders(wsaHeaders, aEndpoint);
+    }
+    // Add all wsa:ReferenceProperties to the call header, per WS-Addressing spec
+    Iterator refProps = newEndpoint.getReferenceProperties().iterator();
+    SOAPHeaderElement header = null;
+    while (refProps.hasNext()) {
+        header = new SOAPHeaderElement((Element) refProps.next());
+        // in the header
+        if (header.getNamespaceURI().equals(CREDENTIALS_NAMESPACE))
+            continue;
+        // Axis will add duplicate actor and mustUnderstand attributes that will
+        // cause issues later if we do not remove them explicitly
+        String actor = header.getAttributeNS(IAeConstants.SOAP_NAMESPACE_URI, ACTOR_ATTRIBUTE);
+        if (actor != null) {
+            header.removeAttribute(ACTOR_ATTRIBUTE);
+            header.setActor(actor);
+        }
+        String mustUnderstand = header.getAttributeNS(IAeConstants.SOAP_NAMESPACE_URI, MUST_UNDERSTAND_ATTRIBUTE);
+        if (mustUnderstand != null) {
+            header.removeAttribute(MUST_UNDERSTAND_ATTRIBUTE);
+            header.setMustUnderstand(AeUtil.toBoolean(mustUnderstand));
+        }
+        call.addHeader(header);
+    }
+    return call;
+}

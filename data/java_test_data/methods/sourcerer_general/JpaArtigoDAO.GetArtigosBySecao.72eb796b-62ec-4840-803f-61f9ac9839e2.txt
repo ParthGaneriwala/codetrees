@@ -1,0 +1,106 @@
+public Collection GetArtigosBySecao(int secaoId, int start) {
+    Collection col = new ArrayList();
+    try {
+        // Obtém a seção
+        TbSecao tbsecao = em.find(TbSecao.class, secaoId);
+        // Obtem a ordenaçao da lista de acordo com a configuraçao da seçao
+        String orderBy = " order by tbartigo.artDtPublicacao DESC";
+        if ((tbsecao.getSecTpCampoOrdenacao() == UtilsDAO.C_TP_ORDENACAO_DT_PUB) && (tbsecao.getSecTpOrdenacao() == UtilsDAO.C_TP_ORDENACAO_CRESCENTE)) {
+            orderBy = " order by tbartigo.artDtPublicacao ASC";
+        } else if ((tbsecao.getSecTpCampoOrdenacao() == UtilsDAO.C_TP_ORDENACAO_DT_PUB) && (tbsecao.getSecTpOrdenacao() == UtilsDAO.C_TP_ORDENACAO_DECRESCENTE)) {
+            orderBy = " order by tbartigo.artDtPublicacao DESC";
+        } else if ((tbsecao.getSecTpCampoOrdenacao() == UtilsDAO.C_TP_ORDENACAO_TITULO) && (tbsecao.getSecTpOrdenacao() == UtilsDAO.C_TP_ORDENACAO_CRESCENTE)) {
+            orderBy = " order by tbartigo.artNmTitulo ASC";
+        } else if ((tbsecao.getSecTpCampoOrdenacao() == UtilsDAO.C_TP_ORDENACAO_TITULO) && (tbsecao.getSecTpOrdenacao() == UtilsDAO.C_TP_ORDENACAO_DECRESCENTE)) {
+            orderBy = " order by tbartigo.artNmTitulo DESC";
+        }
+        // Obtém os Ids dos artigos.
+        // Como a tabela artigo tem um atributo do tipo CLOB, infelizmente ele não pode ser utilizado
+        // junto com alguma query que gere um DISTINCT pois esses tipos de dados não permitem isso.
+        // o JPA toplink, até a versão v2 build25 gera um DISTINCT automaticamente quando existe join
+        // na query. Logo, temos que obter os IDs apenas, para depois executar um SELECT sem joins para
+        // obter os dados dos artigos desejados.
+        String hqlSelect = " select tbartigo.artId from TbArtigo as tbartigo" + " join tbartigo.tbSecaoArtigoCollection tbsecaoartigo" + " where tbsecaoartigo.tbSecao.secId = :secId" + " and tbsecaoartigo.sarTpStatus <> 1" + " and tbartigo.artDtPublicacao <= current_timestamp" + " and (tbartigo.artDtExpiracao is null or tbartigo.artDtExpiracao >= current_timestamp)" + orderBy;
+        // Retorna a lista com os itens solicitados
+        List resultListArtIds = em.createQuery(hqlSelect).setParameter("secId", tbsecao.getSecId().intValue()).setFirstResult(start).setMaxResults(tbsecao.getSecNoArtigosPagina()).getResultList();
+        // Retorna o total possível de itens, desconsiderando o range solicitado ==================================
+        String hqlSelectCount = " select count(tbartigo) from TbArtigo as tbartigo" + " join tbartigo.tbSecaoArtigoCollection tbsecaoartigo" + " where tbsecaoartigo.tbSecao.secId = :secId" + " and tbsecaoartigo.sarTpStatus <> 1" + " and tbartigo.artDtPublicacao <= current_timestamp" + " and (tbartigo.artDtExpiracao is null or tbartigo.artDtExpiracao >= current_timestamp)";
+        Long results = (Long) em.createQuery(hqlSelectCount).setParameter("secId", tbsecao.getSecId().intValue()).getSingleResult();
+        if (results == null) {
+            results = new Long(0);
+        }
+        // ==========================================================================================================
+        StringBuffer parameters = new StringBuffer();
+        for (Iterator it = resultListArtIds.iterator(); it.hasNext(); ) {
+            parameters.append(((Integer) it.next()).toString());
+            if (it.hasNext())
+                parameters.append(",");
+        }
+        List resultList2 = null;
+        if (parameters.length() > 0) {
+            hqlSelect = " select tbartigo from TbArtigo as tbartigo" + " where tbartigo.artId in (" + parameters.toString() + ")" + orderBy;
+            resultList2 = em.createQuery(hqlSelect).getResultList();
+        }
+        // Copia dados para o VO
+        if (resultList2 != null) {
+            for (Iterator iter = resultList2.iterator(); iter.hasNext(); ) {
+                TbArtigo element = (TbArtigo) iter.next();
+                // Somente artigos dentro do período de publicação devem ser apresentados
+                // if (now.after(element.getArtDtPublicacao())) {
+                // if ( (element.getArtDtExpiracao() == null) || (element.getArtDtExpiracao() != null && now.before(element.getArtDtExpiracao())) ) {
+                ArtigoSecaoRelMidiaArtigoSecaoArtigoVO artigoSecaoRelMidiaArtigoSecaoArtigoVO = new ArtigoSecaoRelMidiaArtigoSecaoArtigoVO();
+                artigoSecaoRelMidiaArtigoSecaoArtigoVO.setResults(results.longValue());
+                ArtigoVO artigoVO = new ArtigoVO();
+                try {
+                    BeanUtils.copyProperties(artigoVO, element);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+                artigoSecaoRelMidiaArtigoSecaoArtigoVO.setArtigoVO(artigoVO);
+                SecaoVO secaoVO = new SecaoVO();
+                secaoVO.setSecPorId(tbsecao.getTbPortal().getPorId());
+                secaoVO.setSecPagId(tbsecao.getTbPagina().getPagId());
+                try {
+                    BeanUtils.copyProperties(secaoVO, tbsecao);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+                artigoSecaoRelMidiaArtigoSecaoArtigoVO.setSecaoVO(secaoVO);
+                for (Iterator it = element.getTbRelMidiaArtigoCollection().iterator(); it.hasNext(); ) {
+                    TbRelMidiaArtigo tbRelMidiaArtigo = (TbRelMidiaArtigo) it.next();
+                    if ((tbRelMidiaArtigo.getRmaIcTipo().byteValue() == UtilsDAO.C_RMA_IC_TP_TRUE) && (tbRelMidiaArtigo.getRmaIcPrincipal().booleanValue() == true)) {
+                        RelMidiaArtigoVO relMidiaArtigoVO = new RelMidiaArtigoVO();
+                        relMidiaArtigoVO.setRmaArtId(element.getArtId());
+                        try {
+                            BeanUtils.copyProperties(relMidiaArtigoVO, tbRelMidiaArtigo);
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
+                        artigoSecaoRelMidiaArtigoSecaoArtigoVO.setRelMidiaArtigoVO(relMidiaArtigoVO);
+                    }
+                }
+                // Localiza a linha da tbSecaoArtigo correta, pois um artigo pode estar relacionado a varias secoes.
+                for (Iterator it = element.getTbSecaoArtigoCollection().iterator(); it.hasNext(); ) {
+                    TbSecaoArtigo tbSecaoArtigo = (TbSecaoArtigo) it.next();
+                    if ((tbSecaoArtigo.getTbSecao().getSecId() == secaoId) && (tbSecaoArtigo.getTbArtigo().getArtId() == element.getArtId())) {
+                        SecaoArtigoVO secaoArtigoVO = new SecaoArtigoVO();
+                        secaoArtigoVO.setSarArtId(element.getArtId());
+                        secaoArtigoVO.setSarSecId(secaoId);
+                        try {
+                            BeanUtils.copyProperties(secaoArtigoVO, tbSecaoArtigo);
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
+                        artigoSecaoRelMidiaArtigoSecaoArtigoVO.setSecaoArtigoVO(secaoArtigoVO);
+                    }
+                }
+                col.add(artigoSecaoRelMidiaArtigoSecaoArtigoVO);
+            // }
+            // }
+            }
+        }
+    } catch (Exception e) {
+        throw new EJBException(e);
+    }
+    return col;
+}

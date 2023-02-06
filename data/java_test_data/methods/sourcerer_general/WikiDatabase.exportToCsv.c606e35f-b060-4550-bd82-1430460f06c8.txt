@@ -1,0 +1,50 @@
+public static void exportToCsv() throws Exception {
+    if (!(WikiBase.getDataHandler() instanceof HSqlDataHandler)) {
+        throw new IllegalStateException("Exporting to CSV is allowed only when the wiki is configured to use the internal database setting.");
+    }
+    WikiPreparedStatement stmt = null;
+    String sql = null;
+    String exportTableName = null;
+    String[] tableNames = { "jam_category", "jam_group", "jam_recent_change", "jam_role_map", "jam_role", "jam_topic", "jam_topic_version", "jam_virtual_wiki", "jam_watchlist", "jam_file", "jam_file_version", "jam_wiki_user", "jam_wiki_user_info" };
+    String csvDirectory = new File(Environment.getValue(Environment.PROP_BASE_FILE_DIR), "database").getPath();
+    File csvFile = null;
+    TransactionStatus status = DatabaseConnection.startTransaction();
+    try {
+        // make sure CSV files are encoded UTF-8
+        // TODO: this does not seem to be working currently - HSQL bug?
+        sql = "set property \"textdb.encoding\" 'UTF-8'";
+        stmt = new WikiPreparedStatement(sql);
+        stmt.executeUpdate();
+        for (int i = 0; i < tableNames.length; i++) {
+            exportTableName = tableNames[i] + "_export";
+            // first drop any pre-existing CSV database files.
+            sql = "drop table " + exportTableName + " if exists";
+            stmt = new WikiPreparedStatement(sql);
+            stmt.executeUpdate();
+            // now delete the CSV file if it exists
+            csvFile = new File(csvDirectory, exportTableName + ".csv");
+            if (csvFile.exists()) {
+                if (csvFile.delete()) {
+                    logger.info("Deleted existing CSV file: " + csvFile.getPath());
+                } else {
+                    logger.warning("Could not delete existing CSV file: " + csvFile.getPath());
+                }
+            }
+            // create the CSV files
+            sql = "select * into text " + exportTableName + " from " + tableNames[i];
+            stmt = new WikiPreparedStatement(sql);
+            stmt.executeUpdate();
+        }
+        // rebuild the data files to make sure everything is committed to disk
+        sql = "checkpoint";
+        stmt = new WikiPreparedStatement(sql);
+        stmt.executeUpdate();
+    } catch (Exception e) {
+        DatabaseConnection.rollbackOnException(status, e);
+        throw e;
+    } catch (Error err) {
+        DatabaseConnection.rollbackOnException(status, err);
+        throw err;
+    }
+    DatabaseConnection.commit(status);
+}

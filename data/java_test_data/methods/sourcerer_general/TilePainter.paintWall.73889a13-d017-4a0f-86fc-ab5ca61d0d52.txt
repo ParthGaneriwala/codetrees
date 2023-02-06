@@ -1,0 +1,73 @@
+public void paintWall(CoordSet coords, ConfigReference<WallConfig> wall, int elevation, boolean erase, boolean revise) {
+    WallConfig config = _cfgmgr.getConfig(WallConfig.class, wall);
+    WallConfig.Original original = (config == null) ? null : config.getOriginal(_cfgmgr);
+    // if no config, just erase the coordinates
+    if (original == null) {
+        removeEntries(coords);
+        return;
+    }
+    // add the border
+    CoordSet ocoords = new CoordSet(coords);
+    coords.addAll(coords.getBorder());
+    // initialize the set of will-be-wall coordinates
+    CoordSet wcoords = new CoordSet();
+    if (erase) {
+        // paint over any non-wall tiles
+        for (Iterator<Coord> it = ocoords.iterator(); it.hasNext(); ) {
+            Coord coord = it.next();
+            if (!original.isWall(_scene.getTileEntry(coord.x, coord.y), elevation)) {
+                it.remove();
+            }
+        }
+        paintFloor(ocoords, original.ground, elevation);
+    } else {
+        wcoords.addAll(ocoords);
+    }
+    // divide the coordinates up by case/rotation pairs
+    HashMap<IntTuple, CoordSet> sets = new HashMap<IntTuple, CoordSet>();
+    for (Coord coord : coords) {
+        TileEntry entry = _scene.getTileEntry(coord.x, coord.y);
+        if (!(wcoords.contains(coord) || original.isWall(entry, elevation))) {
+            // only modify wall tiles
+            continue;
+        }
+        // classify the tile based on its surroundings
+        int pattern = 0;
+        for (Direction dir : Direction.CARDINAL_VALUES) {
+            int x = coord.x + dir.getX(), y = coord.y + dir.getY();
+            if (wcoords.contains(x, y) || original.isWall(_scene.getTileEntry(x, y), elevation)) {
+                pattern |= (1 << dir.ordinal());
+            }
+        }
+        IntTuple tuple = original.getWallCaseRotations(pattern);
+        if (tuple != null && (revise || !original.isWall(entry, tuple, elevation))) {
+            CoordSet set = sets.get(tuple);
+            if (set == null) {
+                sets.put(tuple, set = new CoordSet());
+            }
+            set.add(coord);
+        }
+    }
+    // add wall tiles as appropriate
+    Rectangle region = new Rectangle();
+    Paint paint = new Paint(Paint.Type.WALL, wall, elevation);
+    OUTER: for (Map.Entry<IntTuple, CoordSet> entry : sets.entrySet()) {
+        IntTuple tuple = entry.getKey();
+        CoordSet set = entry.getValue();
+        while (!set.isEmpty()) {
+            set.getLargestRegion(region);
+            TileEntry tentry = original.createWall(_cfgmgr, tuple, region.width, region.height, elevation);
+            if (tentry == null) {
+                // no appropriate tiles
+                continue OUTER;
+            }
+            Coord coord = tentry.getLocation();
+            set.pickRandom(region.width, region.height, coord);
+            TileConfig.Original tconfig = tentry.getConfig(_cfgmgr);
+            int twidth = tentry.getWidth(tconfig);
+            int theight = tentry.getHeight(tconfig);
+            addEntry(tentry, region.set(coord.x, coord.y, twidth, theight), paint);
+            set.removeAll(region);
+        }
+    }
+}

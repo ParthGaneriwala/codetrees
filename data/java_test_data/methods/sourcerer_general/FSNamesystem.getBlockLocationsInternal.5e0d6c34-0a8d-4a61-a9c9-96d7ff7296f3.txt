@@ -1,0 +1,57 @@
+private synchronized LocatedBlocks getBlockLocationsInternal(String src, INodeFile inode, long offset, long length, int nrBlocksToReturn, boolean doAccessTime) throws IOException {
+    if (inode == null) {
+        return null;
+    }
+    if (doAccessTime & isAccessTimeSupported()) {
+        dir.setTimes(src, inode, -1, now(), false);
+    }
+    Block[] blocks = inode.getBlocks();
+    if (blocks == null) {
+        return null;
+    }
+    if (blocks.length == 0) {
+        return inode.createLocatedBlocks(new ArrayList<LocatedBlock>(blocks.length));
+    }
+    List<LocatedBlock> results;
+    results = new ArrayList<LocatedBlock>(blocks.length);
+    int curBlk = 0;
+    long curPos = 0, blkSize = 0;
+    int nrBlocks = (blocks[0].getNumBytes() == 0) ? 0 : blocks.length;
+    for (curBlk = 0; curBlk < nrBlocks; curBlk++) {
+        blkSize = blocks[curBlk].getNumBytes();
+        assert blkSize > 0 : "Block of size 0";
+        if (curPos + blkSize > offset) {
+            break;
+        }
+        curPos += blkSize;
+    }
+    if (// offset >= end of file
+    nrBlocks > 0 && curBlk == nrBlocks)
+        return null;
+    long endOff = offset + length;
+    do {
+        // get block locations
+        int numNodes = blocksMap.numNodes(blocks[curBlk]);
+        int numCorruptNodes = countNodes(blocks[curBlk]).corruptReplicas();
+        int numCorruptReplicas = corruptReplicas.numCorruptReplicas(blocks[curBlk]);
+        if (numCorruptNodes != numCorruptReplicas) {
+            LOG.warn("Inconsistent number of corrupt replicas for " + blocks[curBlk] + "blockMap has " + numCorruptNodes + " but corrupt replicas map has " + numCorruptReplicas);
+        }
+        boolean blockCorrupt = (numCorruptNodes == numNodes);
+        int numMachineSet = blockCorrupt ? numNodes : (numNodes - numCorruptNodes);
+        DatanodeDescriptor[] machineSet = new DatanodeDescriptor[numMachineSet];
+        if (numMachineSet > 0) {
+            numNodes = 0;
+            for (Iterator<DatanodeDescriptor> it = blocksMap.nodeIterator(blocks[curBlk]); it.hasNext(); ) {
+                DatanodeDescriptor dn = it.next();
+                boolean replicaCorrupt = corruptReplicas.isReplicaCorrupt(blocks[curBlk], dn);
+                if (blockCorrupt || (!blockCorrupt && !replicaCorrupt))
+                    machineSet[numNodes++] = dn;
+            }
+        }
+        results.add(new LocatedBlock(blocks[curBlk], machineSet, curPos, blockCorrupt));
+        curPos += blocks[curBlk].getNumBytes();
+        curBlk++;
+    } while (curPos < endOff && curBlk < blocks.length && results.size() < nrBlocksToReturn);
+    return inode.createLocatedBlocks(results);
+}

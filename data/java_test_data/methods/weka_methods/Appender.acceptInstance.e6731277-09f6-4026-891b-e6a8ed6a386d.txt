@@ -1,0 +1,164 @@
+@Override
+public synchronized void acceptInstance(InstanceEvent e) {
+    m_busy = true;
+    if (m_completed == null) {
+        m_completed = new HashMap<Object, Instances>();
+        // until we have a header from each incoming connection, we'll have
+        // to store instances to temp files. If sequential start points are
+        // being used, or the operation of the flow results in all instances
+        // from one input path getting passed in before any subsequent input
+        // paths are processed, then this will be inefficient. Parallel start
+        // points will be most efficient
+        m_incrementalSavers = new HashMap<Object, ArffSaver>();
+        m_finishedCount = 0;
+        m_incrementalCounter = 0;
+    }
+    if (e.getStatus() == InstanceEvent.FORMAT_AVAILABLE) {
+        // we've seen a FORMAT_AVAILABLE from previously
+        if (m_completed.containsKey(e.getSource())) {
+            if (m_log != null) {
+                String msg = statusMessagePrefix() + "Resetting appender.";
+                m_log.statusMessage(msg);
+                m_log.logMessage("[Appender] " + msg + " New start of stream detected before " + "all incoming streams have finished!");
+            }
+            m_completed = new HashMap<Object, Instances>();
+            m_incrementalSavers = new HashMap<Object, ArffSaver>();
+            m_incrementalCounter = 0;
+            m_completeHeader = null;
+            m_finishedCount = 0;
+        }
+        m_completed.put(e.getSource(), e.getStructure());
+        if (m_completed.size() == m_listenees.size()) {
+            // create mondo header...
+            try {
+                if (m_log != null) {
+                    String msg = statusMessagePrefix() + "Making output header";
+                    m_log.statusMessage(msg);
+                    m_log.logMessage("[Appender] " + msg);
+                }
+                m_completeHeader = makeOutputHeader();
+                // notify listeners of output format
+                m_ie.setStructure(m_completeHeader);
+                notifyInstanceListeners(m_ie);
+                // now check for any buffered instances...
+                if (m_incrementalSavers.size() > 0) {
+                    // read in and convert these instances now
+                    for (ArffSaver s : m_incrementalSavers.values()) {
+                        // finish off the saving process first
+                        s.writeIncremental(null);
+                        File tmpFile = s.retrieveFile();
+                        ArffLoader loader = new ArffLoader();
+                        loader.setFile(tmpFile);
+                        Instances tempStructure = loader.getStructure();
+                        Instance tempLoaded = loader.getNextInstance(tempStructure);
+                        while (tempLoaded != null) {
+                            Instance converted = makeOutputInstance(m_completeHeader, tempLoaded);
+                            m_ie.setStatus(InstanceEvent.INSTANCE_AVAILABLE);
+                            m_ie.setInstance(converted);
+                            notifyInstanceListeners(m_ie);
+                            m_incrementalCounter++;
+                            if (m_incrementalCounter % 10000 == 0) {
+                                if (m_log != null) {
+                                    m_log.statusMessage(statusMessagePrefix() + "Processed " + m_incrementalCounter + " instances");
+                                }
+                            }
+                            tempLoaded = loader.getNextInstance(tempStructure);
+                        }
+                    }
+                    m_incrementalSavers.clear();
+                }
+            } catch (Exception e1) {
+                String msg = statusMessagePrefix() + "ERROR: unable to create output instances structure.";
+                if (m_log != null) {
+                    m_log.statusMessage(msg);
+                    m_log.logMessage("[Appender] " + e1.getMessage());
+                }
+                stop();
+                e1.printStackTrace();
+                m_busy = false;
+                return;
+            }
+        }
+        m_busy = false;
+        return;
+    }
+    if (e.getStatus() == InstanceEvent.BATCH_FINISHED || e.getStatus() == InstanceEvent.INSTANCE_AVAILABLE) {
+        // get the instance (if available)
+        Instance currentI = e.getInstance();
+        if (m_completeHeader == null) {
+            if (currentI != null) {
+                // save this instance to a temp file
+                ArffSaver saver = m_incrementalSavers.get(e.getSource());
+                if (saver == null) {
+                    saver = new ArffSaver();
+                    try {
+                        File tmpFile = File.createTempFile("weka", ".arff");
+                        saver.setFile(tmpFile);
+                        saver.setRetrieval(weka.core.converters.Saver.INCREMENTAL);
+                        saver.setInstances(new Instances(currentI.dataset(), 0));
+                        m_incrementalSavers.put(e.getSource(), saver);
+                    } catch (IOException e1) {
+                        stop();
+                        e1.printStackTrace();
+                        String msg = statusMessagePrefix() + "ERROR: unable to save instance to temp file";
+                        if (m_log != null) {
+                            m_log.statusMessage(msg);
+                            m_log.logMessage("[Appender] " + e1.getMessage());
+                        }
+                        m_busy = false;
+                        return;
+                    }
+                }
+                try {
+                    saver.writeIncremental(currentI);
+                    if (e.getStatus() == InstanceEvent.BATCH_FINISHED) {
+                        m_finishedCount++;
+                    }
+                } catch (IOException e1) {
+                    stop();
+                    e1.printStackTrace();
+                    String msg = statusMessagePrefix() + "ERROR: unable to save instance to temp file";
+                    if (m_log != null) {
+                        m_log.statusMessage(msg);
+                        m_log.logMessage("[Appender] " + e1.getMessage());
+                    }
+                    m_busy = false;
+                    return;
+                }
+            }
+        } else {
+            if (currentI != null) {
+                int code = InstanceEvent.INSTANCE_AVAILABLE;
+                if (e.getStatus() == InstanceEvent.BATCH_FINISHED) {
+                    m_finishedCount++;
+                    if (m_finishedCount == m_listenees.size()) {
+                        // We're all done!
+                        code = InstanceEvent.BATCH_FINISHED;
+                    }
+                }
+                // convert instance and output immediately
+                Instance newI = makeOutputInstance(m_completeHeader, currentI);
+                m_ie.setStatus(code);
+                m_ie.setInstance(newI);
+                notifyInstanceListeners(m_ie);
+                m_incrementalCounter++;
+                if (m_incrementalCounter % 10000 == 0) {
+                    if (m_log != null) {
+                        m_log.statusMessage(statusMessagePrefix() + "Processed " + m_incrementalCounter + " instances");
+                    }
+                }
+                if (code == InstanceEvent.BATCH_FINISHED) {
+                    if (m_log != null) {
+                        m_log.statusMessage(statusMessagePrefix() + "Finished");
+                    }
+                    m_completed = null;
+                    m_incrementalSavers = null;
+                    m_incrementalCounter = 0;
+                    m_completeHeader = null;
+                    m_finishedCount = 0;
+                }
+            }
+        }
+    }
+    m_busy = false;
+}

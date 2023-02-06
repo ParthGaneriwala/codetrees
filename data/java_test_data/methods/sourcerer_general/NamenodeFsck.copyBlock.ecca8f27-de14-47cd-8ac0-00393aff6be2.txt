@@ -1,0 +1,70 @@
+private void copyBlock(DFSClient dfs, LocatedBlock lblock, OutputStream fos) throws Exception {
+    int failures = 0;
+    InetSocketAddress targetAddr = null;
+    TreeSet<DatanodeInfo> deadNodes = new TreeSet<DatanodeInfo>();
+    Socket s = null;
+    DFSClient.BlockReader blockReader = null;
+    Block block = lblock.getBlock();
+    while (s == null) {
+        DatanodeInfo chosenNode;
+        try {
+            chosenNode = bestNode(dfs, lblock.getLocations(), deadNodes);
+            targetAddr = NetUtils.createSocketAddr(chosenNode.getName());
+        } catch (IOException ie) {
+            if (failures >= DFSClient.MAX_BLOCK_ACQUIRE_FAILURES) {
+                throw new IOException("Could not obtain block " + lblock);
+            }
+            LOG.info("Could not obtain block from any node:  " + ie);
+            try {
+                Thread.sleep(10000);
+            } catch (InterruptedException iex) {
+            }
+            deadNodes.clear();
+            failures++;
+            continue;
+        }
+        try {
+            s = new Socket();
+            s.connect(targetAddr, HdfsConstants.READ_TIMEOUT);
+            s.setSoTimeout(HdfsConstants.READ_TIMEOUT);
+            blockReader = DFSClient.BlockReader.newBlockReader(s, targetAddr.toString() + ":" + block.getBlockId(), block.getBlockId(), block.getGenerationStamp(), 0, -1, conf.getInt("io.file.buffer.size", 4096));
+        } catch (IOException ex) {
+            // Put chosen node into dead list, continue
+            LOG.info("Failed to connect to " + targetAddr + ":" + ex);
+            deadNodes.add(chosenNode);
+            if (s != null) {
+                try {
+                    s.close();
+                } catch (IOException iex) {
+                }
+            }
+            s = null;
+        }
+    }
+    if (blockReader == null) {
+        throw new Exception("Could not open data stream for " + lblock.getBlock());
+    }
+    byte[] buf = new byte[1024];
+    int cnt = 0;
+    boolean success = true;
+    long bytesRead = 0;
+    try {
+        while ((cnt = blockReader.read(buf, 0, buf.length)) > 0) {
+            fos.write(buf, 0, cnt);
+            bytesRead += cnt;
+        }
+        if (bytesRead != block.getNumBytes()) {
+            throw new IOException("Recorded block size is " + block.getNumBytes() + ", but datanode returned " + bytesRead + " bytes");
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+        success = false;
+    } finally {
+        try {
+            s.close();
+        } catch (Exception e1) {
+        }
+    }
+    if (!success)
+        throw new Exception("Could not copy block data for " + lblock.getBlock());
+}

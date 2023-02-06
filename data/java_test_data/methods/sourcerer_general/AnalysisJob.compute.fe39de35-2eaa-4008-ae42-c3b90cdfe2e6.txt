@@ -1,0 +1,60 @@
+public void compute(File traceFile) {
+    if (Debug.v().debugDA) {
+        System.err.println("Analyzing method: " + method().getSignature());
+    }
+    long before = System.currentTimeMillis();
+    int numIterations = 1;
+    int numShadows = allEnabledTMShadowsInMethod().size();
+    try {
+        while (true) {
+            if (Debug.v().debugDA) {
+                System.err.println("Iteration number " + (numIterations++) + " of up to " + numShadows + "...");
+            }
+            Set<Shadow> allShadows = new HashSet<Shadow>(allEnabledTMShadowsInMethod());
+            // compute for every statement, which states can reach this statement from the program entry
+            ReachingStatesAnalysis forwardAnalysis = new ReachingStatesAnalysis(this, true);
+            forwardAnalysis.doAnalysis();
+            int forwardCounter = Configuration.counter;
+            // compute for every statement the set of states from which one could reach a final state using the remainder of the program
+            ReachingStatesAnalysis backwardAnalysis = new ReachingStatesAnalysis(this, false);
+            backwardAnalysis.doAnalysis();
+            int backwardCounter = Configuration.counter;
+            // find unnecessary shadows
+            UnnecessaryShadowsAnalysis unnecessaryShadowsAnalysis = new UnnecessaryShadowsAnalysis(this, forwardAnalysis, backwardAnalysis);
+            // logging
+            if (Debug.v().dumpDA) {
+                dumpResults(allShadows, forwardAnalysis, backwardAnalysis, unnecessaryShadowsAnalysis);
+            }
+            // if we found an unnecessary shadow, disable it and re-run the flow-insensitive analysis for this method
+            if (unnecessaryShadowsAnalysis.foundUnnnecessaryShadow()) {
+                Shadow nopShadow = unnecessaryShadowsAnalysis.getUnnecessaryShadow();
+                warn(nopShadow, "nop-shadow");
+                nopShadow.disable();
+                if (Debug.v().debugDA) {
+                    System.err.println("Disabling " + symbolNameForShadow(nopShadow) + "-shadow at position:" + nopShadow.getPosition());
+                    System.err.println("Successfully removed shadow after analysis with " + Math.max(forwardCounter, backwardCounter) + " configurations");
+                }
+                // quick fi analysis
+                AdviceDependency.disableShadowsWithNoStrongSupportByAnyGroup(allEnabledTMShadowsInMethod());
+                // if all shadows are disabled now, we can stop
+                if (allEnabledTMShadowsInMethod().isEmpty()) {
+                    break;
+                }
+            } else {
+                // we found no unnecessary shadow; give up
+                // but before, still print out all certain matches
+                CertainMatchAnalysis certainMatchAnalysis = new CertainMatchAnalysis(unnecessaryShadowsAnalysis);
+                pointsOfCertainMatches.addAll(certainMatchAnalysis.pointsOfCertainMatches());
+                break;
+            }
+        }
+    } catch (MaxConfigException e) {
+        System.err.println(e.getMessage());
+        System.err.println("Aborting analysis of: " + method().getSignature());
+        Ranking.v().addMethodWithCutOffComputation(method());
+    }
+    if (Debug.v().debugDA) {
+        System.err.println("Done analyzing method : " + method().getSignature() + ", took: " + (System.currentTimeMillis() - before));
+        System.err.println("Done analyzing method with iterations: " + (numIterations - 1) + ", max was: " + numShadows);
+    }
+}

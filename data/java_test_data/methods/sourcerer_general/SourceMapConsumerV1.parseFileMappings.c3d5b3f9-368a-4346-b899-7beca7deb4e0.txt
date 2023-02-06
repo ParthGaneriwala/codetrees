@@ -1,0 +1,55 @@
+private void parseFileMappings(ParseState parser, int maxID) throws SourceMapParseException, JSONException {
+    // ['d.js', 3, 78, 'foo']
+    // Intern the strings to save memory.
+    Interner<String> interner = Interners.newStrongInterner();
+    ImmutableList.Builder<SourceFile> mappingsBuilder = ImmutableList.builder();
+    // Setup all the arrays to keep track of the various details about the
+    // source file.
+    ArrayList<Byte> lineOffsets = Lists.newArrayList();
+    ArrayList<Short> columns = Lists.newArrayList();
+    ArrayList<String> identifiers = Lists.newArrayList();
+    // The indexes and details about the current position in the file to do
+    // diffs against.
+    String currentFile = null;
+    int lastLine = -1;
+    int startLine = -1;
+    int startMapId = -1;
+    for (int mappingId = 0; mappingId <= maxID; ++mappingId) {
+        String currentLine = parser.readLine();
+        JSONArray mapArray = new JSONArray(currentLine);
+        if (mapArray.length() < 3) {
+            parser.fail("Invalid mapping array");
+        }
+        // Split up the file and directory names to reduce memory usage.
+        String myFile = mapArray.getString(0);
+        int line = mapArray.getInt(1);
+        if (!myFile.equals(currentFile) || (line - lastLine) > Byte.MAX_VALUE || (line - lastLine) < Byte.MIN_VALUE) {
+            if (currentFile != null) {
+                FileName dirFile = splitFileName(interner, currentFile);
+                SourceFile.Builder builder = SourceFile.newBuilder().setDir(dirFile.dir).setFileName(dirFile.name).setStartLine(startLine).setStartMapId(startMapId).setLineOffsets(lineOffsets).setColumns(columns).setIdentifiers(identifiers);
+                mappingsBuilder.add(builder.build());
+            }
+            // Reset all the positions back to the start and clear out the arrays
+            // to start afresh.
+            currentFile = myFile;
+            startLine = line;
+            lastLine = line;
+            startMapId = mappingId;
+            columns.clear();
+            lineOffsets.clear();
+            identifiers.clear();
+        }
+        // We need to add on the columns and identifiers for all the lines, even
+        // for the first line.
+        lineOffsets.add((byte) (line - lastLine));
+        columns.add((short) mapArray.getInt(2));
+        identifiers.add(interner.intern(mapArray.optString(3, "")));
+        lastLine = line;
+    }
+    if (currentFile != null) {
+        FileName dirFile = splitFileName(interner, currentFile);
+        SourceFile.Builder builder = SourceFile.newBuilder().setDir(dirFile.dir).setFileName(dirFile.name).setStartLine(startLine).setStartMapId(startMapId).setLineOffsets(lineOffsets).setColumns(columns).setIdentifiers(identifiers);
+        mappingsBuilder.add(builder.build());
+    }
+    mappings = mappingsBuilder.build();
+}

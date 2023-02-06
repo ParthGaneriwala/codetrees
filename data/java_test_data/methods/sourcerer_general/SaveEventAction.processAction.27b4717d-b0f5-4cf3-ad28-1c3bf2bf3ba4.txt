@@ -1,0 +1,71 @@
+public GenericBean processAction(ActionRequest request, ActionResponse response) throws Exception {
+    // Determine the project container to use
+    Project project = findProject(request);
+    if (project == null) {
+        throw new Exception("Project is null");
+    }
+    // Check the user's permissions
+    User user = getUser(request);
+    if (!ProjectUtils.hasAccess(project.getId(), user, "project-calendar-add")) {
+        throw new PortletException("Unauthorized to add in this project");
+    }
+    // Populate any info from the request
+    Meeting meeting = (Meeting) getFormBean(request, Meeting.class);
+    MeetingInviteesBean meetingInviteesBean = null;
+    // Set default values when saving records
+    meeting.setProjectId(project.getId());
+    meeting.setModifiedBy(user.getId());
+    // Determine the database connection to use
+    Connection db = useConnection(request);
+    // Save the record
+    boolean recordSaved = false;
+    if (meeting.getId() == -1) {
+        // This appears to be a new record
+        meeting.setEnteredBy(user.getId());
+        // process the invitees list and save meeting
+        meetingInviteesBean = new MeetingInviteesBean(meeting, project, DimDimUtils.ACTION_MEETING_DIMDIM_SCHEDULE);
+        recordSaved = meetingInviteesBean.processInvitees(db, request);
+        // Trigger the workflow
+        if (recordSaved) {
+            PortalUtils.processInsertHook(request, meeting);
+        }
+    } else {
+        // Load the previous record for use in the confirmation page
+        Meeting previousMeeting = new Meeting(db, meeting.getId());
+        meeting.setEnteredBy(previousMeeting.getEnteredBy());
+        meeting.setDimdimMeetingId(previousMeeting.getDimdimMeetingId());
+        meeting.setDimdimUrl(previousMeeting.getDimdimUrl());
+        meeting.setDimdimUsername(previousMeeting.getDimdimUsername());
+        // Only set and show the password if this is the previous user
+        if (user.getId() == previousMeeting.getEnteredBy()) {
+            meeting.setDimdimPassword(previousMeeting.getDimdimPassword());
+        }
+        meeting.setDimdimMeetingKey(previousMeeting.getDimdimMeetingKey());
+        // Verify the record matches the specified project
+        if (previousMeeting.getProjectId() != project.getId()) {
+            throw new PortletException("Mismatched projectId found");
+        }
+        // check if new invitees were added or existing invitees removed and update meeting
+        meetingInviteesBean = new MeetingInviteesBean(meeting, project, DimDimUtils.ACTION_MEETING_DIMDIM_EDIT);
+        recordSaved = meetingInviteesBean.compareInvitees(db, request, previousMeeting);
+        // Trigger the workflow
+        if (recordSaved) {
+            PortalUtils.processUpdateHook(request, previousMeeting, meeting);
+        }
+    }
+    // Check if an error occurred
+    if (!recordSaved) {
+        return meeting;
+    }
+    // Index the record
+    PortalUtils.indexAddItem(request, meeting);
+    // show invitees confirmation page if web meeting or if invitees needs further processing
+    if (meeting.getIsDimdim() || meetingInviteesBean.hasInviteesToConfirm()) {
+        return meetingInviteesBean;
+    } else {
+        // send mail to invitees, if any
+        PortalUtils.processInsertHook(request, meetingInviteesBean);
+    }
+    // This call will close panels and perform redirects
+    return (PortalUtils.performRefresh(request, response, "/show/calendar"));
+}

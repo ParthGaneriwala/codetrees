@@ -1,0 +1,78 @@
+public void processAction(ActionRequest request, ActionResponse response) throws PortletException, IOException {
+    // Check to see if the application is allowing registration
+    ApplicationPrefs prefs = PortalUtils.getApplicationPrefs(request);
+    boolean showLicense = "true".equals(prefs.get(ApplicationPrefs.SHOW_TERMS_AND_CONDITIONS));
+    boolean invitationOnly = false;
+    if ("false".equals(prefs.get("REGISTER"))) {
+        invitationOnly = true;
+    }
+    Connection db = PortalUtils.useConnection(request);
+    String ctx = request.getContextPath();
+    // Determine the page that submitted the data
+    String currentPage = request.getParameter("currentPage");
+    // Handle the form post
+    RegisterBean bean = new RegisterBean();
+    PortalUtils.populateObject(bean, request);
+    request.getPortletSession().setAttribute(REGISTER_BEAN, bean);
+    // Check credentials
+    if (invitationOnly) {
+        if (!StringUtils.hasText(bean.getData())) {
+            throw new PortletException("Registration is currently by invitation only");
+        } else {
+            Key key = PortalUtils.getApplicationKey(request);
+            String data = PrivateString.decrypt(key, bean.getData());
+            int userId = retrieveUserId(data);
+            User thisUser = UserUtils.loadUser(userId);
+            if (userId == -1 || thisUser == null) {
+                throw new PortletException("Registration is currently by invitation only");
+            }
+        }
+    }
+    try {
+        if ("form".equals(currentPage)) {
+            // Validate the terms
+            if (showLicense && !bean.getTerms()) {
+                bean.getErrors().put("termsError", "You must check the terms of use");
+            }
+            // Validate and check captcha
+            if (!bean.isValid(request.getPortletSession())) {
+                response.sendRedirect(ctx + "/page/register");
+            } else if (bean.isAlreadyRegistered(db)) {
+                bean.getErrors().put("actionError", "This email address is already registered. " + "If you forgot your login information then you can request your registration " + "information from the login page.");
+                response.sendRedirect(ctx + "/page/register");
+            } else {
+                // Forward to the verification page
+                response.sendRedirect(ctx + "/page/register/verify");
+            }
+        } else if ("verify".equals(currentPage)) {
+            // Handle the back button
+            String submitAction = request.getParameter("submitAction");
+            if ("Back".equals(submitAction)) {
+                // User chose to go back and modify the form data
+                response.sendRedirect(ctx + "/page/register");
+            } else {
+                // User chose to continue, so save all data and provide confirmation
+                bean.setInstanceId(PortalUtils.getInstance(request).getId());
+                boolean saved = bean.save(db, prefs, request, null);
+                if (saved) {
+                    PortalUtils.processInsertHook(request, bean);
+                    PortalUtils.processInsertHook(request, bean.getUser().getProfileProject());
+                    PortalUtils.indexAddItem(request, bean.getUser().getProfileProject());
+                    response.sendRedirect(ctx + "/page/register/thanks");
+                } else {
+                    if (bean.getErrors().size() > 0) {
+                        bean.getErrors().put("actionError", "Email could not be sent to the specified address: " + bean.getErrors().get("emailError"));
+                        bean.getErrors().put("emailError", "Check email address");
+                    } else {
+                        bean.getErrors().put("actionError", "Account could not be created.  An account might already exist for this email address or a problem with sending an email to this address.");
+                    }
+                    response.sendRedirect(ctx + "/page/register");
+                }
+            }
+        } else if ("thanks".equals(currentPage)) {
+            response.sendRedirect(ctx + "/close_panel_refresh.jsp");
+        }
+    } catch (Exception e) {
+        e.printStackTrace(System.out);
+    }
+}

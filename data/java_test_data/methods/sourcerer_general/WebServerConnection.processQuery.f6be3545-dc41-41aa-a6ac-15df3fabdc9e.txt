@@ -1,0 +1,50 @@
+void processQuery(InputStream inStream) {
+    try {
+        DataInputStream dataIn = new DataInputStream(inStream);
+        int databaseID = dataIn.readInt();
+        long sessionID = dataIn.readLong();
+        int mode = dataIn.readByte();
+        Session session = DatabaseManager.getSession(databaseID, sessionID);
+        Result resultIn = Result.newResult(session, mode, dataIn, rowIn);
+        resultIn.setDatabaseId(databaseID);
+        resultIn.setSessionId(sessionID);
+        // 
+        Result resultOut;
+        if (resultIn.getType() == ResultConstants.CONNECT) {
+            try {
+                String databaseName = resultIn.getDatabaseName();
+                int dbIndex = server.getDBIndex(databaseName);
+                int dbID = server.dbID[dbIndex];
+                session = DatabaseManager.newSession(dbID, resultIn.getMainString(), resultIn.getSubString(), resultIn.getZoneString(), resultIn.getUpdateCount());
+                resultIn.readAdditionalResults(session, dataIn, rowIn);
+                resultOut = Result.newConnectionAcknowledgeResponse(session.getDatabase(), session.getId(), dbID);
+            } catch (HsqlException e) {
+                resultOut = Result.newErrorResult(e);
+            } catch (RuntimeException e) {
+                resultOut = Result.newErrorResult(e);
+            }
+        } else {
+            int dbID = resultIn.getDatabaseId();
+            if (session == null) {
+                resultOut = Result.newErrorResult(Error.error(ErrorCode.SERVER_DATABASE_DISCONNECTED));
+            } else {
+                resultIn.setSession(session);
+                resultIn.readAdditionalResults(session, dataIn, rowIn);
+                resultOut = session.execute(resultIn);
+            }
+        }
+        int type = resultIn.getType();
+        if (type == ResultConstants.DISCONNECT || type == ResultConstants.RESETSESSION) {
+            return;
+        }
+        // 
+        DataOutputStream dataOut = new DataOutputStream(socket.getOutputStream());
+        String header = getHead(HEADER_OK, false, "application/octet-stream", rowOut.size());
+        dataOut.write(header.getBytes(ENCODING));
+        dataOut.flush();
+        resultOut.write(dataOut, rowOut);
+        dataOut.close();
+    } catch (Exception e) {
+        server.printStackTrace(e);
+    }
+}

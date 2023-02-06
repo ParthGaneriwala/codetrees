@@ -1,0 +1,204 @@
+private void setBit(int ind, int val) {
+    assert val == 0 || val == 1;
+    if (ind >= numBits()) {
+        int diff = ind - numBits() + 1;
+        if (active.nbits > 0) {
+            if (ind + 1 >= nbits + MAXBITS) {
+                diff -= MAXBITS - active.nbits;
+                active.val <<= (MAXBITS - active.nbits);
+                if (diff == 0)
+                    active.val += (val != 0 ? 1 : 0);
+                appendLiteral();
+            } else {
+                active.nbits += diff;
+                active.val <<= diff;
+                active.val += (val != 0 ? 1 : 0);
+                diff = 0;
+            }
+        }
+        if (diff != 0) {
+            int w = diff / MAXBITS;
+            diff -= w * MAXBITS;
+            if (diff != 0) {
+                if (w > 1) {
+                    appendCounter(0, w);
+                } else if (w != 0) {
+                    appendLiteral();
+                }
+                active.nbits = diff;
+                active.val += (val != 0 ? 1 : 0);
+            } else if (val != 0) {
+                if (w > 2) {
+                    appendCounter(0, w - 1);
+                } else if (w == 2) {
+                    appendLiteral();
+                }
+                active.val = 1;
+                appendLiteral();
+            } else {
+                if (w > 1) {
+                    appendCounter(0, w);
+                } else if (w != 0) {
+                    appendLiteral();
+                }
+            }
+        }
+        if (numBits() != ind + 1)
+            logger.warning("Warning");
+        if (nset != 0)
+            nset += (val != 0 ? 1 : 0);
+        return;
+    } else if (ind >= nbits) {
+        // modify an active bit
+        int u = active.val;
+        if (val != 0) {
+            active.val |= (1 << (active.nbits - (ind - nbits) - 1));
+        } else {
+            active.val &= ~(1 << (active.nbits - (ind - nbits) - 1));
+        }
+        if (nset != 0 && (u != active.val))
+            nset += (val != 0 ? 1 : -1);
+        return;
+    } else if (vec.size() * MAXBITS == nbits) {
+        // uncompressed
+        int i = ind / MAXBITS;
+        int u = vec.get(i);
+        int w = (1 << (SECONDBIT - (ind % MAXBITS)));
+        if (val != 0)
+            vec.setQuick(i, u |= w);
+        else
+            vec.setQuick(i, u &= ~w);
+        if (nset != 0 && (vec.getQuick(i) != u))
+            nset += (val != 0 ? 1 : -1);
+        return;
+    }
+    // the bit to be modified is in vec
+    if (RUN_UNTESTED_CODE) {
+        int idx = 0;
+        int compressed = 0, cnt = 0, ind1 = 0, ind0 = ind;
+        // current bit value
+        int current = 0;
+        while ((ind0 > 0) && (idx < vec.size())) {
+            int v = vec.getQuick(idx);
+            if (isAFill(v)) {
+                // a fill
+                cnt = ((v) & MAXCNT) * MAXBITS;
+                if (cnt > ind0) {
+                    // found the location
+                    current = (isOneFill(v) ? 1 : 0);
+                    compressed = 1;
+                    ind1 = ind0;
+                    ind0 = 0;
+                } else {
+                    ind0 -= cnt;
+                    ind1 = ind0;
+                    ++idx;
+                }
+            } else {
+                // a literal word
+                cnt = MAXBITS;
+                if (MAXBITS > ind0) {
+                    // found the location
+                    current = (1 & ((v) >>> (SECONDBIT - ind0)));
+                    compressed = 0;
+                    ind1 = ind0;
+                    ind0 = 0;
+                } else {
+                    ind0 -= MAXBITS;
+                    ind1 = ind0;
+                    ++idx;
+                }
+            }
+        }
+        if (ind1 == 0) {
+            // set current and compressed
+            int v = vec.getQuick(idx);
+            if (isAFill(v)) {
+                cnt = (v & MAXCNT) * MAXBITS;
+                current = (isOneFill(v) ? 1 : 0);
+                compressed = 1;
+            } else {
+                cnt = MAXBITS;
+                current = (v >>> SECONDBIT);
+                compressed = 0;
+            }
+        }
+        if (// has not found the right location yet.
+        ind0 > 0) {
+            if (ind0 < active.nbits) {
+                // in the active word
+                ind1 = (1 << (active.nbits - ind0 - 1));
+                if (val != 0) {
+                    active.val |= ind1;
+                } else {
+                    active.val &= ~ind1;
+                }
+            } else {
+                // extends the current bit vector
+                ind1 = ind0 - active.nbits - 1;
+                appendWord(HEADER0 | (ind1 / MAXBITS));
+                for (ind1 %= MAXBITS; ind1 > 0; --ind1) addOneBit(0);
+                addOneBit(val != 0 ? 1 : 0);
+            }
+            if (nset != 0)
+                nset += val != 0 ? 1 : -1;
+            return;
+        }
+        // nothing to do
+        if (current == val)
+            return;
+        int v = vec.getQuick(idx);
+        // need to actually modify the bit
+        if (compressed == 0) {
+            // toggle a single bit of a literal word
+            v ^= (1 << (SECONDBIT - ind1));
+            vec.setQuick(idx, v);
+        } else if (ind1 < MAXBITS) {
+            // bit to be modified is in the first word, two pieces
+            --v;
+            vec.set(idx, v);
+            if ((v & MAXCNT) == 1) {
+                v = (current != 0) ? ALLONES : 0;
+                vec.setQuick(idx, v);
+            }
+            int w = 1 << (SECONDBIT - ind1);
+            if (val == 0)
+                w ^= ALLONES;
+            vec.beforeInsert(idx, w);
+            idx++;
+        } else if (cnt - ind1 <= MAXBITS) {
+            // bit to be modified is in the last word, two pieces
+            --(v);
+            vec.setQuick(idx, v);
+            if ((v & MAXCNT) == 1) {
+                v = (current != 0) ? ALLONES : 0;
+                vec.setQuick(idx, v);
+            }
+            int w = 1 << (cnt - ind1 - 1);
+            if (val == 0)
+                w ^= ALLONES;
+            ++idx;
+            vec.beforeInsert(idx, w);
+        } else {
+            // the counter breaks into three pieces
+            int u[] = new int[2], w;
+            u[0] = ind1 / MAXBITS;
+            w = (v & MAXCNT) - u[0] - 1;
+            u[1] = 1 << (SECONDBIT - ind1 + u[0] * MAXBITS);
+            if (val == 0) {
+                u[0] = (u[0] > 1) ? (HEADER1 | u[0]) : (ALLONES);
+                u[1] ^= ALLONES;
+                w = (w > 1) ? (HEADER1 | w) : (ALLONES);
+            } else {
+                u[0] = (u[0] > 1) ? (HEADER0 | u[0]) : 0;
+                w = (w > 1) ? (HEADER0 | w) : 0;
+            }
+            vec.setQuick(idx, w);
+            vec.beforeInsertAllOf(idx, Arrays.asList(u));
+        }
+        if (nset != 0)
+            nset += val != 0 ? 1 : -1;
+    } else {
+        throw new AssertionError("Untested code detected, would rather die than run this");
+    }
+}

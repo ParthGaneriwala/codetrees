@@ -1,0 +1,71 @@
+protected ActionForward protectedExecute(ActionMapping mapping, ActionForm form, HttpServletRequest request, HttpServletResponse response) throws Exception {
+    if (isCancelled(request)) {
+        request.getSession(false).setAttribute("coautores", null);
+        return mapping.findForward("inicio");
+    }
+    AltaPonenciaForm altaForm = (AltaPonenciaForm) form;
+    Usuario user = (Usuario) request.getSession(false).getAttribute("currentUser");
+    assert user != null : "El usuario deberia estar comprobado que no es nulo";
+    log.trace("current user:" + user.getEmail());
+    // solo se trata de agregar un nuevo coautor
+    if (((String) request.getParameter("action")).equals("Añadir coautor")) {
+        List coautores = (List) request.getSession(false).getAttribute("coautores");
+        if (coautores == null) {
+            coautores = new ArrayList();
+        }
+        ActionMessages errors = validarCoautor(user.getEmail(), coautores, altaForm.getCoautor());
+        if (errors != null) {
+            this.saveErrors(request, errors);
+        } else {
+            log.trace("nuevo coautor: " + altaForm.getCoautor());
+            coautores.add(altaForm.getCoautor());
+            request.getSession(false).setAttribute("coautores", coautores);
+        }
+        log.trace(mapping.getInput());
+        return mapping.findForward("mismo");
+    }
+    try {
+        Ponencia ponencia = new Ponencia();
+        BeanUtils.copyProperties(ponencia, altaForm);
+        ponencia.setAutor(user.getEmail());
+        List coautores = (List) request.getSession(false).getAttribute("coautores");
+        ponencia.setCoautores(coautores);
+        if (coautores != null) {
+            log.trace("Coautores para la ponencia: " + ((List) request.getSession(false).getAttribute("coautores")).size());
+        } else {
+            log.trace("no se han definido coautores para la ponencia");
+        }
+        request.setAttribute("nuevaPonencia", ponencia);
+        try {
+            getCio2005().addPonencia(ponencia);
+        } catch (DataAccessException e) {
+            log.trace("seguramente se intento repetir ponencia:" + e.getMessage());
+            return mapping.findForward("failure");
+        }
+        log.trace("alta ponencia: " + altaForm.getTitulo() + " " + user.getEmail() + " " + altaForm.getCategoria());
+        try {
+            writeFile(altaForm.getResumen(), directory + ponencia.getId() + ".pdf");
+        } catch (IOException e) {
+            log.trace("Error de entrada salida en ponencia" + ponencia.getTitulo() + " de " + ponencia.getAutor() + ": " + e.getMessage());
+            // (bueno,si)
+            return mapping.findForward("ioFailure");
+        }
+        try {
+            getCio2005().sendMailResumen(user, ponencia);
+        } catch (MailException e) {
+            log.trace("Envio Fallido de alta a la dirección " + user.getEmail() + ":\n" + e.getMessage());
+        }
+        altaForm.setCategoria("");
+        altaForm.setTitulo("");
+        altaForm.setCoautor("");
+        request.getSession(false).setAttribute("coautores", null);
+        log.trace("limpiados campos");
+    } catch (Exception e) {
+        log.trace("Registro FALLIDO (Excepcion no capturada) de ponencia para" + user.getEmail() + "--" + altaForm.getTitulo() + "\n");
+        log.trace(e.getMessage());
+        log.trace(e.getCause());
+        log.trace(e.getStackTrace());
+        return mapping.findForward("dataFailure");
+    }
+    return mapping.findForward("success");
+}

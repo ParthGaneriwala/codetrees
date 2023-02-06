@@ -1,0 +1,65 @@
+protected void processBatchClassifierCase(Data data, Instances trainingData, Instances testData) throws WekaException {
+    if (isStopRequested()) {
+        getStepManager().interrupted();
+        return;
+    }
+    weka.classifiers.Classifier classifier = (weka.classifiers.Classifier) data.getPayloadElement(StepManager.CON_BATCH_CLASSIFIER);
+    int setNum = (Integer) data.getPayloadElement(StepManager.CON_AUX_DATA_SET_NUM);
+    int maxSetNum = (Integer) data.getPayloadElement(StepManager.CON_AUX_DATA_MAX_SET_NUM);
+    String relationNameModifier = "_set_" + setNum + "_of_" + maxSetNum;
+    boolean classNumeric = trainingData != null ? trainingData.classAttribute().isNumeric() : testData.classAttribute().isNumeric();
+    boolean labelOrNumeric = !m_appendProbabilities || classNumeric;
+    try {
+        getStepManager().processing();
+        Instances newTrainInstances = trainingData != null ? makeOutputDataClassifier(trainingData, classifier, !labelOrNumeric, relationNameModifier) : null;
+        Instances newTestInstances = testData != null ? makeOutputDataClassifier(testData, classifier, !labelOrNumeric, relationNameModifier) : null;
+        if (newTrainInstances != null && getStepManager().numOutgoingConnectionsOfType(StepManager.CON_TRAININGSET) > 0) {
+            for (int i = 0; i < newTrainInstances.numInstances(); i++) {
+                if (labelOrNumeric) {
+                    predictLabelClassifier(classifier, newTrainInstances.instance(i), trainingData.instance(i));
+                } else {
+                    predictProbabilitiesClassifier(classifier, newTrainInstances.instance(i), trainingData.instance(i));
+                }
+            }
+            if (isStopRequested()) {
+                getStepManager().interrupted();
+                return;
+            }
+            Data outTrain = new Data(StepManager.CON_TRAININGSET);
+            outTrain.setPayloadElement(StepManager.CON_TRAININGSET, newTrainInstances);
+            outTrain.setPayloadElement(StepManager.CON_AUX_DATA_SET_NUM, setNum);
+            outTrain.setPayloadElement(StepManager.CON_AUX_DATA_MAX_SET_NUM, maxSetNum);
+            getStepManager().outputData(outTrain);
+        }
+        if (newTestInstances != null && (getStepManager().numOutgoingConnectionsOfType(StepManager.CON_TESTSET) > 0 || getStepManager().numOutgoingConnectionsOfType(StepManager.CON_DATASET) > 0)) {
+            for (int i = 0; i < newTestInstances.numInstances(); i++) {
+                if (labelOrNumeric) {
+                    predictLabelClassifier(classifier, newTestInstances.instance(i), testData.instance(i));
+                } else {
+                    predictProbabilitiesClassifier(classifier, newTestInstances.instance(i), testData.instance(i));
+                }
+            }
+            if (isStopRequested()) {
+                getStepManager().interrupted();
+                return;
+            }
+            if (getStepManager().numOutgoingConnectionsOfType(StepManager.CON_TESTSET) > 0) {
+                Data outTest = new Data(StepManager.CON_TESTSET);
+                outTest.setPayloadElement(StepManager.CON_TESTSET, newTestInstances);
+                outTest.setPayloadElement(StepManager.CON_AUX_DATA_SET_NUM, setNum);
+                outTest.setPayloadElement(StepManager.CON_AUX_DATA_MAX_SET_NUM, maxSetNum);
+                getStepManager().outputData(outTest);
+            }
+            if (getStepManager().numIncomingConnectionsOfType(StepManager.CON_DATASET) > 0) {
+                Data outData = new Data(StepManager.CON_DATASET);
+                outData.setPayloadElement(StepManager.CON_DATASET, newTestInstances);
+                outData.setPayloadElement(StepManager.CON_AUX_DATA_SET_NUM, setNum);
+                outData.setPayloadElement(StepManager.CON_AUX_DATA_MAX_SET_NUM, maxSetNum);
+                getStepManager().outputData(outData);
+            }
+        }
+        getStepManager().finished();
+    } catch (Exception ex) {
+        throw new WekaException(ex);
+    }
+}

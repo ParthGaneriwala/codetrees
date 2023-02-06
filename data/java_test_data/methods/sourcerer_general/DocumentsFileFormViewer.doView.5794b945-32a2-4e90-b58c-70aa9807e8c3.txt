@@ -1,0 +1,78 @@
+public String doView(RenderRequest request, RenderResponse response) throws Exception {
+    // The JSP to show upon success
+    String defaultView = VIEW_PAGE;
+    // Determine the project container to use
+    Project project = findProject(request);
+    // Determine the record to show
+    int recordId = getPageViewAsInt(request);
+    // Check the user's permissions
+    User user = getUser(request);
+    if (recordId == -1 && !ProjectUtils.hasAccess(project.getId(), user, "project-documents-files-upload")) {
+        throw new PortletException("Unauthorized to add this record");
+    } else if (recordId > -1 && !ProjectUtils.hasAccess(project.getId(), user, "project-documents-files-rename")) {
+        throw new PortletException("Unauthorized to modify this record");
+    }
+    // Check the request for the record and provide a value for the request scope
+    FileItem thisItem = (FileItem) PortalUtils.getFormBean(request, FILE_ITEM, FileItem.class);
+    // Determine the database connection
+    Connection db = useConnection(request);
+    // Generate a list of folders which will be displayed in a drop-down
+    FileFolderList folderList = new FileFolderList();
+    folderList.setLinkModuleId(Constants.PROJECTS_FILES);
+    folderList.setLinkItemId(project.getId());
+    folderList.buildList(db);
+    request.setAttribute(FOLDER_LIST, folderList);
+    // Process the current folder information
+    int folderId = -1;
+    String folderIdValue = request.getParameter("folder");
+    if (folderIdValue != null) {
+        folderId = Integer.parseInt(folderIdValue);
+    } else {
+        folderId = thisItem.getFolderId();
+    }
+    if (folderId > -1 && !folderList.hasFolder(folderId)) {
+        throw new PortletException("Unauthorized folder specified");
+    }
+    request.setAttribute(CURRENT_FOLDER_ID, String.valueOf(folderId));
+    // Provide the folder to the view
+    if (folderId > -1) {
+        FileFolder currentFolder = folderList.getFolder(folderId);
+        request.setAttribute(CURRENT_FOLDER, currentFolder);
+    }
+    // Determine if adding or updating
+    String action = getPageAction(request);
+    if ("create".equals(action)) {
+        // Check the user's account size first
+        if (user.getAccountSize() > -1) {
+            // Refresh the user's account size
+            user.setCurrentAccountSize(FileItemVersionList.queryOwnerSize(db, user.getId()));
+            if (!user.isWithinAccountSize()) {
+                defaultView = FILE_LIMIT_VIEW_PAGE;
+            }
+        }
+        // Determine if this is a new file or new version of a file
+        String object = getPageDomainObject(request);
+        if ("file".equals(object)) {
+            // A new file is being uploaded
+            thisItem.setFolderId(folderId);
+        } else if ("file-version".equals(object)) {
+            // A version is being uploaded to an existing file
+            thisItem = new FileItem(db, recordId, project.getId(), Constants.PROJECTS_FILES);
+            request.setAttribute(FILE_ITEM, thisItem);
+        }
+    } else if ("modify".equals(action)) {
+        // Load the file item to be modified
+        thisItem = new FileItem(db, recordId, project.getId(), Constants.PROJECTS_FILES);
+        thisItem.buildVersionList(db);
+        request.setAttribute(FILE_ITEM, thisItem);
+        defaultView = MODIFY_VIEW_PAGE;
+    }
+    // Show the folder hierarchy
+    if (folderId > 0) {
+        LinkedHashMap folderLevels = new LinkedHashMap();
+        FileFolder.buildHierarchy(db, folderLevels, folderId);
+        request.setAttribute(FOLDER_HIERARCHY, folderLevels);
+    }
+    // JSP view
+    return defaultView;
+}

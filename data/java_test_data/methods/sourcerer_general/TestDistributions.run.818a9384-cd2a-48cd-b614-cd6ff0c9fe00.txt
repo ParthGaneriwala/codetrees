@@ -1,0 +1,60 @@
+public void run() {
+    while (true) {
+        BinaryTree<HistoryTreePayload> tree = lm.getHistoryTree();
+        while (!tree.isLeaf()) {
+            if (Math.random() < 0.5) {
+                tree = tree.getLeft();
+            } else {
+                tree = tree.getRight();
+            }
+        }
+        if (tree.getPayload().isBackoff) {
+            // ignore backoff clusters
+            continue;
+        }
+        LinkedList<Pair<HashMap<FactorTuple, OnDiskCompactProbTree>, Double>> distributions = new LinkedList<Pair<HashMap<FactorTuple, OnDiskCompactProbTree>, Double>>();
+        double lambda = 1.0;
+        BinaryTree<HistoryTreePayload> leaf = tree;
+        while (tree != null) {
+            int clusterid = tree.getPayload().clusterid;
+            HashMap<FactorTuple, OnDiskCompactProbTree> dist = new HashMap<FactorTuple, OnDiskCompactProbTree>();
+            for (FactorTuple word : allOvertFactors) {
+                OnDiskCompactProbTree probTree = storage.getProbTree(lm.getIdNum(), clusterid, word);
+                if (probTree != null) {
+                    dist.put(word, probTree);
+                }
+            }
+            double scale = lambda * tree.getPayload().lambda;
+            distributions.add(new Pair<HashMap<FactorTuple, OnDiskCompactProbTree>, Double>(dist, scale));
+            lambda *= 1.0 - tree.getPayload().lambda;
+            tree = tree.getParent();
+        }
+        double totalProb = 0.0;
+        for (FactorTuple overtFactors : allOvertFactors) {
+            ArrayList<OnDiskCompactProbTree> trees = new ArrayList<OnDiskCompactProbTree>(distributions.size());
+            for (Pair<HashMap<FactorTuple, OnDiskCompactProbTree>, Double> pair : distributions) {
+                HashMap<FactorTuple, OnDiskCompactProbTree> dist = pair.getFirst();
+                double scale = pair.getSecond();
+                OnDiskCompactProbTree probTree = dist.get(overtFactors);
+                if (probTree != null) {
+                    probTree.scale(scale);
+                    trees.add(probTree);
+                }
+            }
+            OnDiskCompactProbTree probTree = OnDiskCompactProbTree.merge(trees);
+            if (probTree == null) {
+            // FactorTuple tuple = experiment.getTupleDescription().createTuple();
+            // tuple.setOvertValues(overtFactors.factors);
+            // System.out.printf("zero prob for %s\n", tuple.toStringNoNull());
+            } else {
+                double prob = probTree.getTotalProb();
+                totalProb += prob;
+            }
+        }
+        probs[num] = totalProb;
+        if (!ProbMath.approxEqual(probs[num], 1.0)) {
+            System.out.printf("[%d] prob = %g\n", leaf.getPayload().clusterid, probs[num]);
+        }
+        return;
+    }
+}

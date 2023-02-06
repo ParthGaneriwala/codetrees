@@ -1,0 +1,57 @@
+private boolean slowReadUntilMatch(Pattern markPattern, boolean includePat, DataOutputBuffer outBufOrNull) throws IOException {
+    byte[] buf = new byte[Math.max(lookAhead_, maxRecSize_)];
+    int read = 0;
+    // mark to invalidate if we read more
+    bin_.mark(Math.max(lookAhead_, maxRecSize_) + 2);
+    read = bin_.read(buf);
+    if (read == -1)
+        return false;
+    String sbuf = new String(buf, 0, read, "UTF-8");
+    Matcher match = markPattern.matcher(sbuf);
+    firstMatchStart_ = NA;
+    firstMatchEnd_ = NA;
+    int bufPos = 0;
+    int state = synched_ ? CDATA_OUT : CDATA_UNK;
+    int s = 0;
+    while (match.find(bufPos)) {
+        int input;
+        if (match.group(1) != null) {
+            input = CDATA_BEGIN;
+        } else if (match.group(2) != null) {
+            input = CDATA_END;
+            // |<DOC CDATA[ </DOC> ]]> should keep it
+            firstMatchStart_ = NA;
+        } else {
+            input = RECORD_MAYBE;
+        }
+        if (input == RECORD_MAYBE) {
+            if (firstMatchStart_ == NA) {
+                firstMatchStart_ = match.start();
+                firstMatchEnd_ = match.end();
+            }
+        }
+        state = nextState(state, input, match.start());
+        if (state == RECORD_ACCEPT) {
+            break;
+        }
+        bufPos = match.end();
+        s++;
+    }
+    if (state != CDATA_UNK) {
+        synched_ = true;
+    }
+    boolean matched = (firstMatchStart_ != NA) && (state == RECORD_ACCEPT || state == CDATA_UNK);
+    if (matched) {
+        int endPos = includePat ? firstMatchEnd_ : firstMatchStart_;
+        bin_.reset();
+        for (long skiplen = endPos; skiplen > 0; ) {
+            // Skip succeeds as we have read this buffer
+            skiplen -= bin_.skip(skiplen);
+        }
+        pos_ += endPos;
+        if (outBufOrNull != null) {
+            outBufOrNull.writeBytes(sbuf.substring(0, endPos));
+        }
+    }
+    return matched;
+}

@@ -1,0 +1,49 @@
+private Result executeCompiledBatchStatement(Result cmd) {
+    long csid;
+    Statement cs;
+    int[] updateCounts;
+    int count;
+    csid = cmd.getStatementID();
+    cs = statementManager.getStatement(this, csid);
+    if (cs == null) {
+        // invalid sql has been removed already
+        return Result.newErrorResult(Error.error(ErrorCode.X_07501));
+    }
+    count = 0;
+    RowSetNavigator nav = cmd.initialiseNavigator();
+    updateCounts = new int[nav.getSize()];
+    Result generatedResult = null;
+    if (cs.hasGeneratedColumns()) {
+        generatedResult = Result.newDataResult(cs.generatedResultMetaData());
+    }
+    Result error = null;
+    while (nav.hasNext()) {
+        Object[] pvals = (Object[]) nav.getNext();
+        Result in = executeCompiledStatement(cs, pvals);
+        // esultConstants.EXECUTE_FAILED is encountered in the result
+        if (in.isUpdateCount()) {
+            if (cs.hasGeneratedColumns()) {
+                RowSetNavigator navgen = in.getChainedResult().getNavigator();
+                while (navgen.hasNext()) {
+                    Object[] generatedRow = navgen.getNext();
+                    generatedResult.getNavigator().add(generatedRow);
+                }
+            }
+            updateCounts[count++] = in.getUpdateCount();
+        } else if (in.isData()) {
+            // FIXME:  we don't have what it takes yet
+            // to differentiate between things like
+            // stored procedure calls to methods with
+            // void return type and select statements with
+            // a single row/column containg null
+            updateCounts[count++] = ResultConstants.SUCCESS_NO_INFO;
+        } else if (in.mode == ResultConstants.ERROR) {
+            updateCounts = ArrayUtil.arraySlice(updateCounts, 0, count);
+            error = in;
+            break;
+        } else {
+            throw Error.runtimeError(ErrorCode.U_S0500, "Session");
+        }
+    }
+    return Result.newBatchedExecuteResponse(updateCounts, generatedResult, error);
+}

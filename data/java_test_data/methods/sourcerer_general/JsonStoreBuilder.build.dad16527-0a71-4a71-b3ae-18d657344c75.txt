@@ -1,0 +1,49 @@
+public void build() throws IOException {
+    logger.info("Building store " + storeDefinition.getName() + " for " + cluster.getNumberOfNodes() + " with " + numChunks + " chunks per node.");
+    // initialize nodes
+    int numNodes = cluster.getNumberOfNodes();
+    DataOutputStream[][] indexes = new DataOutputStream[numNodes][numChunks];
+    DataOutputStream[][] datas = new DataOutputStream[numNodes][numChunks];
+    int[][] positions = new int[numNodes][numChunks];
+    for (Node node : cluster.getNodes()) {
+        int nodeId = node.getId();
+        File nodeDir = new File(outputDir, "node-" + Integer.toString(nodeId));
+        nodeDir.mkdirs();
+        for (int chunk = 0; chunk < numChunks; chunk++) {
+            File indexFile = new File(nodeDir, chunk + ".index");
+            File dataFile = new File(nodeDir, chunk + ".data");
+            positions[nodeId][chunk] = 0;
+            indexes[nodeId][chunk] = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(indexFile), ioBufferSize));
+            datas[nodeId][chunk] = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(dataFile), ioBufferSize));
+        }
+    }
+    logger.info("Reading items...");
+    int count = 0;
+    ExternalSorter<KeyValuePair> sorter = new ExternalSorter<KeyValuePair>(new KeyValuePairSerializer(), new KeyMd5Comparator(), internalSortSize, tempDir.getAbsolutePath(), ioBufferSize, numThreads);
+    JsonObjectIterator iter = new JsonObjectIterator(reader, storeDefinition);
+    for (KeyValuePair pair : sorter.sorted(iter)) {
+        List<Node> nodes = this.routingStrategy.routeRequest(pair.getKey());
+        byte[] keyMd5 = pair.getKeyMd5();
+        for (int i = 0; i < this.storeDefinition.getReplicationFactor(); i++) {
+            int nodeId = nodes.get(i).getId();
+            int chunk = ReadOnlyUtils.chunk(keyMd5, numChunks);
+            int numBytes = pair.getValue().length;
+            datas[nodeId][chunk].writeInt(numBytes);
+            datas[nodeId][chunk].write(pair.getValue());
+            indexes[nodeId][chunk].write(keyMd5);
+            indexes[nodeId][chunk].writeInt(positions[nodeId][chunk]);
+            positions[nodeId][chunk] += numBytes + 4;
+            checkOverFlow(chunk, positions[nodeId][chunk]);
+        }
+        count++;
+    }
+    logger.info(count + " items read.");
+    // sort and write out
+    logger.info("Closing all store files.");
+    for (int node = 0; node < numNodes; node++) {
+        for (int chunk = 0; chunk < numChunks; chunk++) {
+            indexes[node][chunk].close();
+            datas[node][chunk].close();
+        }
+    }
+}

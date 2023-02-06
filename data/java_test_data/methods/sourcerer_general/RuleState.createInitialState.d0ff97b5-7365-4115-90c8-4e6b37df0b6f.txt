@@ -1,0 +1,52 @@
+public static RuleState createInitialState(Rule rule, GoalResults generator) {
+    // Axioms are alredy handled by the infGraph so this first guard should be helpful but
+    // in practice it doesn't seem to.
+    // if (rule.bodyLength() == 0) return null;
+    TriplePattern goal = generator.goal;
+    TriplePattern head = (TriplePattern) rule.getHeadElement(0);
+    BindingVector env = BindingVector.unify(goal, head, rule.getNumVars());
+    if (env == null)
+        return null;
+    // Find the first goal clause
+    RuleInstance ri = new RuleInstance(generator, rule, head);
+    int maxClause = rule.bodyLength();
+    int clauseIndex = 0;
+    while (clauseIndex < maxClause) {
+        ClauseEntry clause = rule.getBodyElement(clauseIndex++);
+        if (clause instanceof TriplePattern) {
+            // Check for possible clause reorder ...
+            ClauseEntry secondClause = null;
+            boolean foundSecondClause = false;
+            if (clauseIndex < maxClause) {
+                secondClause = rule.getBodyElement(clauseIndex);
+                if (secondClause instanceof TriplePattern) {
+                    foundSecondClause = true;
+                }
+            }
+            if (foundSecondClause) {
+                int score1 = scoreClauseBoundness((TriplePattern) clause, head, env);
+                int score2 = scoreClauseBoundness((TriplePattern) secondClause, head, env);
+                if (score2 > score1) {
+                    ri.clausesReordered = true;
+                    ri.secondClause = clauseIndex;
+                    clause = secondClause;
+                    clauseIndex++;
+                }
+            }
+            // ... end of clause reorder
+            TriplePattern subgoal = env.partInstantiate((TriplePattern) clause);
+            if (!subgoal.isLegal())
+                return null;
+            GoalState gs = generator.getEngine().findGoal(subgoal);
+            RuleState rs = new RuleState(ri, env, gs, clauseIndex);
+            rs.initMapping(subgoal);
+            return rs;
+        } else {
+            if (!generator.getEngine().processBuiltin(clause, rule, env)) {
+                return null;
+            }
+        }
+    }
+    // If we get to here there are no rule body clause to process
+    return new RuleState(ri, env, null, 0);
+}

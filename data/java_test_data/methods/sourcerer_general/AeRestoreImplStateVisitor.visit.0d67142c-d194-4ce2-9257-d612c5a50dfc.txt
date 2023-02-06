@@ -1,0 +1,70 @@
+public void visit(AeBusinessProcess aProcess) throws AeBusinessProcessException {
+    // Restore process fields.
+    Element element = getImplState().getElement(aProcess);
+    int processState = getAttributeInt(element, STATE_PROCESSSTATE);
+    int processStateReason = getAttributeInt(element, STATE_PROCESSSTATEREASON);
+    Date endDate = toDate(getAttribute(element, STATE_ENDDATEMILLIS));
+    Date startDate = toDate(getAttribute(element, STATE_STARTDATEMILLIS));
+    int maxLocationId = getAttributeInt(element, STATE_MAXLOCATIONID);
+    // Note: coordinator and participant flags are new for AE 2.1
+    boolean coordinator = getAttributeBoolean(element, STATE_COORDINATOR);
+    boolean participant = getAttributeBoolean(element, STATE_PARTICIPANT);
+    boolean exiting = getAttributeBoolean(element, STATE_EXITING);
+    // record the version of the state that we're reading in case there's any modifications we need to make to the process post read
+    getImplState().setStateVersion(getAttribute(element, STATE_DOC_VERSION));
+    int nextVariableId = getAttributeInt(element, STATE_NEXTVARIABLEID);
+    if (nextVariableId == -1) {
+        // This accounts for processes saved prior to the introduction of the
+        // variable id. We'll walk all of the variables in the state document
+        // and record the highest variable version number.
+        // $NON-NLS-1$ //$NON-NLS-2$
+        String xpath = "//" + STATE_VAR + "/@" + STATE_VERSION;
+        // $NON-NLS-1$
+        List nodes = selectNodes(element.getOwnerDocument(), xpath, "Error selecting variable versions");
+        nextVariableId = 0;
+        for (Iterator iter = nodes.iterator(); iter.hasNext(); ) {
+            Attr attr = (Attr) iter.next();
+            nextVariableId = Math.max(nextVariableId, Integer.parseInt(attr.getNodeValue()));
+        }
+        // add one to move to a unique value
+        nextVariableId += 1;
+    }
+    // restore invoke id.
+    long invokeId = getAttributeLong(element, STATE_INVOKE_ID);
+    int alarmId = getAttributeInt(element, STATE_ALARM_ID);
+    aProcess.setProcessState(processState);
+    aProcess.setProcessStateReason(processStateReason);
+    aProcess.setEndDate(endDate);
+    aProcess.setStartDate(startDate);
+    aProcess.setMaxLocationId(maxLocationId);
+    aProcess.setNextVersionNumber(nextVariableId);
+    aProcess.setExiting(exiting);
+    aProcess.setCreateMessage(createCreateMessage(aProcess));
+    aProcess.setInvokeId(invokeId);
+    aProcess.setAlarmId(alarmId);
+    if (((AeProcessDef) aProcess.getDefinition()).containsSerializableScopes()) {
+        Node variableLockerData = getImplState().getVariableLockerData();
+        aProcess.setVariableLockerData(variableLockerData);
+    }
+    // Restore any business process properties
+    restoreBusinessProcessProperties(aProcess);
+    // Restore any faulting activity location paths
+    restoreFaultingActivityLocationPaths(aProcess);
+    // Now handle the process as a scope.
+    visit((AeActivityScopeImpl) aProcess);
+    // Restore open message activity list
+    restoreOpenMessageActivityList(aProcess, element);
+    // Scope visit needs to happen before we set the location paths for the process as they are dependent
+    // upon impl objects created in the scope visitation.
+    boolean suspended = isSuspended(processState);
+    List locationPaths = getImplState().getExecutionQueuePaths();
+    aProcess.setExecutionQueue(suspended, locationPaths);
+    // Set the coordinator flag.
+    // Visiting the scopes would have also set a flag to indicate that at least one of the
+    // scopes had a coordinated invoke. Use this for legacy/backward compatibility.
+    aProcess.setCoordinator(coordinator || mScopeHadCoordination);
+    // Set the participant flag. For legacy compatibility (pre 2.1), we should
+    // also check the business properties.
+    participant = participant || AeUtil.notNullOrEmpty(aProcess.getBusinessProcessProperty(IAeCoordinating.WSCOORD_ID));
+    aProcess.setParticipant(participant);
+}

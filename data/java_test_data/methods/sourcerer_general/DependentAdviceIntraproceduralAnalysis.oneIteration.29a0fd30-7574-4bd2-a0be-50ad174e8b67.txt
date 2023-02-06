@@ -1,0 +1,79 @@
+protected void oneIteration(Set<Shadow> shadows, CallGraph cg, File traceFile) {
+    HasDAInfo gai = (HasDAInfo) Main.v().getAbcExtension();
+    /*
+		 * First, split shadows by TracePattern. This will ignore shadows that are not symbol shadows. 
+		 */
+    Map<TracePattern, Set<Shadow>> tmToShadows = ShadowsPerTMSplitter.splitSymbolShadows(shadows);
+    for (TracePattern tp : (Collection<TracePattern>) gai.getDependentAdviceInfo().getTracePatterns()) {
+        Set<Shadow> thisTMsShadows = tmToShadows.get(tp);
+        if (thisTMsShadows == null) {
+            // no shadows left
+            continue;
+        }
+        /*
+        	 * Build a mapping from methods to the shadows in these methods.
+        	 * We only take account shadows for this TracePattern.
+        	 */
+        Map<SootMethod, EnabledShadowSet> methodToEnabledTMShadows = new HashMap<SootMethod, EnabledShadowSet>();
+        for (Shadow s : thisTMsShadows) {
+            if (s.isEnabled()) {
+                SootMethod m = s.getContainer();
+                EnabledShadowSet shadowsInMethod = methodToEnabledTMShadows.get(m);
+                if (shadowsInMethod == null) {
+                    shadowsInMethod = new EnabledShadowSet();
+                    methodToEnabledTMShadows.put(m, shadowsInMethod);
+                }
+                shadowsInMethod.add(s);
+            }
+        }
+        /*
+             * For each method in the mapping...
+             */
+        for (SootMethod m : methodToEnabledTMShadows.keySet()) {
+            Set<Shadow> shadowsInMethod = methodToEnabledTMShadows.get(m);
+            // no active shadows any more
+            if (shadowsInMethod.isEmpty())
+                continue;
+            if (Debug.v().debugDA)
+                System.err.println("Analyzing: " + m + " on TracePattern: " + tp.getName());
+            long before = System.currentTimeMillis();
+            Map<TracePattern, AnalysisJob> tpToJob = methodToTracePatternToJob.get(m);
+            if (tpToJob == null) {
+                tpToJob = new HashMap<TracePattern, AnalysisJob>();
+                methodToTracePatternToJob.put(m, tpToJob);
+            }
+            AnalysisJob job = tpToJob.get(tp);
+            if (job == null) {
+                /*
+                     * Set up supporting analyses.
+                     */
+                job = new AnalysisJob(m, tp, shadowsInMethod, cg, methodToEnabledTMShadows);
+                tpToJob.put(tp, job);
+            }
+            /*
+                 * Run the analysis job.
+                 */
+            job.compute(traceFile);
+            long duration = System.currentTimeMillis() - before;
+            if (Debug.v().debugDA) {
+                System.err.println("Done analyzing: " + m + " on TracePattern: " + tp.getName());
+                System.err.println("Analysis took: " + duration);
+            }
+            maxTime = Math.max(maxTime, duration);
+            totalTime += duration;
+            analysisCount++;
+        }
+    }
+    averageTime = Math.round(totalTime / (analysisCount + 0.0));
+    if (Debug.v().debugDA) {
+        // for(AnalysisJob job: allJobs()) {
+        // job.dump();
+        // }
+        System.err.println("Number of analysis runs: " + analysisCount);
+        System.err.println("Maximal analysis time:   " + maxTime);
+        System.err.println("Average analysis time:   " + averageTime);
+        System.err.println("Total analysis time:     " + totalTime);
+    }
+    // perform flow-insensitive analysis again
+    AdviceDependency.disableShadowsWithNoStrongSupportByAnyGroup(shadows);
+}

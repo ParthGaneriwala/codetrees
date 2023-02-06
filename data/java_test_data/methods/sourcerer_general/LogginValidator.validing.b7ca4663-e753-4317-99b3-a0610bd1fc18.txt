@@ -1,0 +1,60 @@
+/**
+ * 登陆的校验
+ *
+ * @ param: HttpServletRequest request
+ * @ param: ValidatedResult vr 校验结果存放器
+ * @ param: String[] params 配置参数
+ */
+public void validing(HttpServletRequest request, ValidatedResult vr, String[] params) {
+    logger.debug("开始登录前校验");
+    this.monitor();
+    UserManager userManager = (UserManager) this.getBean("userManager");
+    User user = userManager.getByAccount(request.getParameter("account"));
+    if (user == null) {
+        vr.setErrMess("errMess", "帐户不存在");
+        return;
+    }
+    if (user.getStatus() != UserStatus.VALID) {
+        vr.setErrMess("errMess", "帐号处于" + user.getStatusName() + "状态,无法登录");
+        return;
+    }
+    // 是否超过错误次数
+    if (!this.isAllowed2Login(user)) {
+        logger.debug("密码错误次数过多");
+        vr.setErrMess("errMess", "密码错误次数过多,系统暂停该帐号的访问,请在5分钟后重试");
+        return;
+    }
+    this.monitor();
+    // 密码 校验
+    if (!user.checkPW(request.getParameter("password"))) {
+        this.pwErrCount4WaitPP(user.getAccount());
+        if (this.has2BeLocked(user)) {
+            logger.info("密码错误次数过多,系统锁定该帐号(" + user.getAccount() + ")");
+            vr.setErrMess("errMess", "密码错误次数过多,系统锁定该帐号");
+            user.setStatus(UserStatus.LOCKED);
+            userManager.update(user);
+            this.resetPwErrCount(user.getAccount());
+            this.resetPwErrCount4Wait(user.getAccount());
+            return;
+        }
+        vr.setErrMess("errMess", "密码不正确");
+        return;
+    } else {
+        Date now = new Date();
+        if (!user.getPwLimtDate().after(now)) {
+            vr.setErrMess("errMess", "密码已经过期");
+            return;
+        }
+        if (!user.getIdLimtDate().after(now)) {
+            vr.setErrMess("errMess", "帐号已经过期");
+            return;
+        }
+        this.resetPwErrCount(user.getAccount());
+        this.resetPwErrCount4Wait(user.getAccount());
+        logger.debug("允许登录");
+        // user.getOrgs();
+        // user.getPosts();
+        // user.getColumns();
+        request.getSession().setAttribute(SysFrameParams.CURRENT_USER_ID, user.getId());
+    }
+}

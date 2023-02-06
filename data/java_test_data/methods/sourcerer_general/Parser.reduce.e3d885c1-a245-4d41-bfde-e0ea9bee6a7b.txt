@@ -1,0 +1,90 @@
+// 
+// check for reduced states and print states information.
+// 
+// the reason to combine them is to produce conflicts message
+private void reduce() {
+    verboseSection("DFA states: " + _DFAStates.size());
+    boolean defaultReduce = getDefaultReduce();
+    verbose("default reduce = " + defaultReduce);
+    for (int i = 0; i < _DFAStates.size(); ++i) {
+        verbose("");
+        verbose("State " + i + ":");
+        verbose(toString(_DFAStates.get(i)));
+        short[] column = m_dfa.getRow(i).getStates();
+        // force default reduce on any productions with error tokens
+        Production defaultReduceState = hasDefaultReduce(_DFAStates.get(i));
+        if (defaultReduceState != null && (defaultReduce || defaultReduceState.isErrorCorrecting())) {
+            short id = (short) -defaultReduceState.getId();
+            for (int j = 0; j < column.length; ++j) if (column[j] == 0)
+                column[j] = id;
+        }
+        for (int j = 0; j < m_usedTerminalCount; ++j) {
+            Production reduceState = hasReduce(_DFAStates.get(i), m_usedSymbols[j]);
+            String reason = "";
+            if (reduceState != null && column[j] > 0) {
+                // possible shift reduce error, try to resolve
+                Token shiftPrecedence = Token.DEFAULT;
+                // we need to check the precedence of the rules of the destination
+                // kernel (important!) set, not the how set.
+                ItemSet destSet = _DFAStates.get(column[j]);
+                for (Item item : destSet.getKernelItems()) {
+                    Token prec = item.getProduction().getPrecedence();
+                    if (shiftPrecedence.level < prec.level)
+                        shiftPrecedence = prec;
+                }
+                Token reducePrecedence = reduceState.getPrecedence();
+                if (shiftPrecedence.level < reducePrecedence.level) {
+                    // we go for the reduce
+                    reason = ", due to precedence";
+                } else if (shiftPrecedence.level > reducePrecedence.level) {
+                    // we go for the shift
+                    reason = ", due to precedence";
+                    reduceState = null;
+                } else {
+                    // now check associativity
+                    if (shiftPrecedence.type == Token.LEFT) {
+                        reason = ", due to left associativity";
+                    } else if (shiftPrecedence.type == Token.RIGHT) {
+                        // right associativity
+                        if (shiftPrecedence.level > 0) {
+                            reason = ", due to right associativity";
+                            reduceState = null;
+                        } else {
+                            reason = ", due to shift/reduce conflict";
+                            reduceState = null;
+                            ++m_shiftConflict;
+                        }
+                    } else // NONASSOC
+                    {
+                        reason = ", due to shift/reduce conflict on non-associative terminal";
+                        ++m_shiftConflict;
+                    }
+                }
+            }
+            if (reduceState != null)
+                column[j] = (short) -reduceState.getId();
+            if (m_out != null) {
+                if (column[j] != 0) {
+                    m_out.print('\t' + m_symbolMap.get(m_usedSymbols[j]));
+                    if (column[j] > 0)
+                        m_out.println("\tshift, goto to state " + column[j] + reason);
+                    else if (column[j] < -1)
+                        m_out.println("\treduce to rule " + (-column[j]) + reason);
+                    else if (column[j] == -1)
+                        m_out.println("\tAccept");
+                }
+            }
+        }
+        if (m_out != null) {
+            short[] gotoColumn = m_goto.get(i);
+            for (int j = 0; j < gotoColumn.length; ++j) {
+                if (gotoColumn[j] != 0)
+                    verbose('\t' + m_symbolMap.get(m_usedSymbols[m_usedTerminalCount + j]) + "\tshift, goto to state " + gotoColumn[j]);
+            }
+            verbose("");
+        }
+    }
+    if (m_shiftConflict > 0 || m_reduceConflict > 0)
+        Main.warn("shift/reduce conflicts: " + m_shiftConflict + ", reduce/reduce conflicts: " + m_reduceConflict);
+    verbose("shift/reduce conflicts: " + m_shiftConflict + ", reduce/reduce conflicts: " + m_reduceConflict);
+}

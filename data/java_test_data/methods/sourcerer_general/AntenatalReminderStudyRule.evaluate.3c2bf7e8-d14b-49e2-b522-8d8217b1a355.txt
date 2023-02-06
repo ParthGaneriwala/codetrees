@@ -1,0 +1,68 @@
+@Override
+protected Result evaluate(final LogicContext context, final Integer patientId, final Map<String, Object> parameters) {
+    String artifact = decodeArtifact(parameters.get(POST_EVALUATION_ARTIFACT));
+    Result result = new Result(artifact);
+    List<String> encounterTypes = Arrays.asList(EvaluableNameConstants.ENCOUNTER_TYPE_ANCINITIAL, EvaluableNameConstants.ENCOUNTER_TYPE_ANCRETURN);
+    parameters.put(EvaluableConstants.ENCOUNTER_TYPE, encounterTypes);
+    parameters.put(EvaluableConstants.ENCOUNTER_FETCH_SIZE, 1);
+    EncounterWithRestrictionRule encounterWithRestrictionRule = new EncounterWithStringRestrictionRule();
+    Result encounterResults = encounterWithRestrictionRule.eval(context, patientId, parameters);
+    if (CollectionUtils.isNotEmpty(encounterResults)) {
+        Result encounterResult = encounterResults.latest();
+        Encounter encounter = (Encounter) encounterResult.getResultObject();
+        Location studyLocation = Context.getLocationService().getLocation(EvaluableNameConstants.ANTENATAL_STUDY_LOCATION);
+        if (OpenmrsUtil.nullSafeEquals(encounter.getLocation(), studyLocation)) {
+            // create the study concept when they're not in the system yet
+            Concept interventionConcept = createConceptIfNeeded(EvaluableNameConstants.ANTENATAL_STUDY_INTERVENTION_GROUP);
+            Concept controlConcept = createConceptIfNeeded(EvaluableNameConstants.ANTENATAL_STUDY_CONTROL_GROUP);
+            parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.ANTENATAL_STUDY_INTERVENTION_GROUP, EvaluableNameConstants.ANTENATAL_STUDY_CONTROL_GROUP));
+            parameters.put(EvaluableConstants.OBS_FETCH_SIZE, 1);
+            ObsWithRestrictionRule obsWithRestrictionRule = new ObsWithStringRestrictionRule();
+            Result obsResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+            Boolean disableTextReminder = Boolean.FALSE;
+            if (CollectionUtils.isEmpty(obsResults)) {
+                Obs obs = new Obs();
+                obs.setObsDatetime(new Date());
+                obs.setPerson(Context.getPatientService().getPatient(patientId));
+                obs.setConcept(controlConcept);
+                if (StudyRandomizer.getRandomizedValue(RANDOM_NUMBER_PROPERTY) == 1) {
+                    obs.setConcept(interventionConcept);
+                    disableTextReminder = Boolean.TRUE;
+                }
+                obs.setLocation(studyLocation);
+                Context.getObsService().saveObs(obs, "Randomizing patient that's not in the study yet.");
+            } else {
+                Result obsResult = obsResults.latest();
+                Obs obs = (Obs) obsResult.getResultObject();
+                if (OpenmrsUtil.nullSafeEquals(obs.getConcept(), interventionConcept))
+                    disableTextReminder = Boolean.TRUE;
+            }
+            try {
+                if (disableTextReminder) {
+                    DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+                    DocumentBuilder db = dbf.newDocumentBuilder();
+                    InputSource is = new InputSource(new StringReader(artifact));
+                    Document document = db.parse(is);
+                    Element element = document.getDocumentElement();
+                    NodeList nodeList = element.getElementsByTagName("reminders");
+                    if (nodeList != null && nodeList.getLength() > 0) {
+                        for (int i = 0; i < nodeList.getLength(); i++) {
+                            Element nodeElement = (Element) nodeList.item(i);
+                            nodeElement.setAttribute("displayText", String.valueOf(Boolean.FALSE));
+                        }
+                    }
+                    OutputFormat format = new OutputFormat();
+                    format.setIndenting(true);
+                    format.setLineWidth(150);
+                    Writer writer = new StringWriter();
+                    XMLSerializer xmlSerializer = new XMLSerializer(writer, format);
+                    xmlSerializer.serialize(document);
+                    result = new Result(writer.toString());
+                }
+            } catch (Exception e) {
+                log.error("Failed parsing xml string ...", e);
+            }
+        }
+    }
+    return result;
+}

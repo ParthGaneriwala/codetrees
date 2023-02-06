@@ -1,0 +1,66 @@
+private void createInterferenceGraph() {
+    Vector cfgNodes = cfg.nodes();
+    int count = 0;
+    BitSet[] liveInTemp = new BitSet[numNodes];
+    BitSet[] liveOutTemp = new BitSet[numNodes];
+    do {
+        // Start by iterating backwards
+        for (int i = numNodes - 1; i >= 0; i--) {
+            liveInTemp[i] = (BitSet) liveIn[i].clone();
+            liveOutTemp[i] = (BitSet) liveOut[i].clone();
+            Node node = (Node) cfgNodes.elementAt(i);
+            liveOut[i] = getLiveOutForNode(node);
+            liveIn[i] = getLiveInForNode(node, i);
+        }
+        count++;
+    } while (!isEndOfIterations(liveInTemp, liveOutTemp));
+    // the live-out temporaries for each node
+    for (int i = 0; i < numNodes; i++) {
+        Node cfgNode = (Node) cfgNodes.elementAt(i);
+        CfgProperties cfgProps = cfg.getCfgProperties(cfgNode);
+        Vector defList = cfgProps.getDefList();
+        Vector useList = cfgProps.getUseList();
+        populateLiveRangeInfo(i, defList, useList);
+        boolean isMove = cfgProps.isMove();
+        Vector liveOutTemps = getLiveOutTemps(i);
+        if (defList == null)
+            continue;
+        int numDefs = defList.size();
+        for (int j = 0; j < numDefs; j++) {
+            Temp from = (Temp) defList.elementAt(j);
+            Node fromNode = newInterferenceGraphNode(from);
+            // If it is a move, add to move-related nodes
+            if (isMove) {
+                for (int a = 0; a < useList.size(); a++) {
+                    Node toNode = newInterferenceGraphNode((Temp) useList.elementAt(a));
+                    addToMoveRelatedNodes(fromNode, toNode);
+                }
+            }
+            // Add interference edges for this dest. node to each of the live-outs
+            int numLiveOuts = liveOutTemps.size();
+            for (int k = 0; k < numLiveOuts; k++) {
+                Temp to = (Temp) liveOutTemps.elementAt(k);
+                if (from == to)
+                    continue;
+                Node toNode = newInterferenceGraphNode(to);
+                // Add an interference edge if it is not a move
+                if (!isMove) {
+                    updateAdjacencyMatrix(fromNode, toNode);
+                } else {
+                    if (!useList.contains(to))
+                        updateAdjacencyMatrix(fromNode, toNode);
+                }
+            }
+            // should we make it part of the interference graph?
+            if (fromNode.getSuccessors() == null || fromNode.getSuccessors().size() == 0) {
+                // This node does not have any interference; make it interfere at least with FP
+                Temp to = Temp.getTemp("FP");
+                Node toNode = newInterferenceGraphNode(to);
+                // addEdge(fromNode, toNode);
+                updateAdjacencyMatrix(fromNode, toNode);
+            }
+        }
+    }
+    // Now that the interference graph has been created, populate the spill costs
+    populateSpillCosts();
+}

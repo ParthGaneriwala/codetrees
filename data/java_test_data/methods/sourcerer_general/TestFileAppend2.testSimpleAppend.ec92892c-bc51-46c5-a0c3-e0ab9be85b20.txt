@@ -1,0 +1,122 @@
+public void testSimpleAppend() throws IOException {
+    Configuration conf = new Configuration();
+    if (simulatedStorage) {
+        conf.setBoolean(SimulatedFSDataset.CONFIG_PROPERTY_SIMULATED, true);
+    }
+    conf.setInt("dfs.datanode.handler.count", 50);
+    initBuffer(fileSize);
+    MiniDFSCluster cluster = new MiniDFSCluster(conf, 1, true, null);
+    FileSystem fs = cluster.getFileSystem();
+    try {
+        {
+            // test appending to a file.
+            // create a new file.
+            Path file1 = new Path("/simpleAppend.dat");
+            FSDataOutputStream stm = createFile(fs, file1, 1);
+            System.out.println("Created file simpleAppend.dat");
+            // write to file
+            // io.bytes.per.checksum bytes
+            int mid = 186;
+            System.out.println("Writing " + mid + " bytes to file " + file1);
+            stm.write(fileContents, 0, mid);
+            stm.close();
+            System.out.println("Wrote and Closed first part of file.");
+            // write to file
+            // io.bytes.per.checksum bytes
+            int mid2 = 607;
+            System.out.println("Writing " + mid + " bytes to file " + file1);
+            stm = fs.append(file1);
+            stm.write(fileContents, mid, mid2 - mid);
+            stm.close();
+            System.out.println("Wrote and Closed second part of file.");
+            // write the remainder of the file
+            stm = fs.append(file1);
+            System.out.println("Writing " + (fileSize - mid2) + " bytes to file " + file1);
+            stm.write(fileContents, mid2, fileSize - mid2);
+            System.out.println("Written second part of file");
+            stm.close();
+            System.out.println("Wrote and Closed second part of file.");
+            // verify that entire file is good
+            checkFullFile(fs, file1);
+        }
+        {
+            // test appending to an non-existing file.
+            FSDataOutputStream out = null;
+            try {
+                out = fs.append(new Path("/non-existing.dat"));
+                fail("Expected to have FileNotFoundException");
+            } catch (java.io.FileNotFoundException fnfe) {
+                System.out.println("Good: got " + fnfe);
+                fnfe.printStackTrace(System.out);
+            } finally {
+                IOUtils.closeStream(out);
+            }
+        }
+        {
+            // test append permission.
+            // set root to all writable
+            Path root = new Path("/");
+            fs.setPermission(root, new FsPermission((short) 0777));
+            fs.close();
+            // login as a different user
+            final UserGroupInformation superuser = UserGroupInformation.getCurrentUGI();
+            String username = "testappenduser";
+            String group = "testappendgroup";
+            assertFalse(superuser.getUserName().equals(username));
+            assertFalse(Arrays.asList(superuser.getGroupNames()).contains(group));
+            UnixUserGroupInformation appenduser = UnixUserGroupInformation.createImmutable(new String[] { username, group });
+            UnixUserGroupInformation.saveToConf(conf, UnixUserGroupInformation.UGI_PROPERTY_NAME, appenduser);
+            fs = FileSystem.get(conf);
+            // create a file
+            Path dir = new Path(root, getClass().getSimpleName());
+            Path foo = new Path(dir, "foo.dat");
+            FSDataOutputStream out = null;
+            int offset = 0;
+            try {
+                out = fs.create(foo);
+                int len = 10 + AppendTestUtil.nextInt(100);
+                out.write(fileContents, offset, len);
+                offset += len;
+            } finally {
+                IOUtils.closeStream(out);
+            }
+            // change dir and foo to minimal permissions.
+            fs.setPermission(dir, new FsPermission((short) 0100));
+            fs.setPermission(foo, new FsPermission((short) 0200));
+            // try append, should success
+            out = null;
+            try {
+                out = fs.append(foo);
+                int len = 10 + AppendTestUtil.nextInt(100);
+                out.write(fileContents, offset, len);
+                offset += len;
+            } finally {
+                IOUtils.closeStream(out);
+            }
+            // change dir and foo to all but no write on foo.
+            fs.setPermission(foo, new FsPermission((short) 0577));
+            fs.setPermission(dir, new FsPermission((short) 0777));
+            // try append, should fail
+            out = null;
+            try {
+                out = fs.append(foo);
+                fail("Expected to have AccessControlException");
+            } catch (AccessControlException ace) {
+                System.out.println("Good: got " + ace);
+                ace.printStackTrace(System.out);
+            } finally {
+                IOUtils.closeStream(out);
+            }
+        }
+    } catch (IOException e) {
+        System.out.println("Exception :" + e);
+        throw e;
+    } catch (Throwable e) {
+        System.out.println("Throwable :" + e);
+        e.printStackTrace();
+        throw new IOException("Throwable : " + e);
+    } finally {
+        fs.close();
+        cluster.shutdown();
+    }
+}

@@ -1,0 +1,80 @@
+public Object js_split(Context cx, Scriptable scope, String target, Object[] args) {
+    // create an empty Array to return;
+    Scriptable top = ScriptableObject.getTopLevelScope(scope);
+    Scriptable result = ScriptRuntime.newObject(cx, top, "Array", null);
+    // 'fooundefinedbar'.split(void 0) to split to ['foo', 'bar']
+    if (args.length < 1) {
+        result.put(0, result, target);
+        return result;
+    }
+    // Use the second argument as the split limit, if given.
+    boolean limited = (args.length > 1) && (args[1] != Undefined.instance);
+    // Initialize to avoid warning.
+    long limit = 0;
+    if (limited) {
+        /* Clamp limit between 0 and 1 + string length. */
+        limit = ScriptRuntime.toUint32(args[1]);
+        if (limit > target.length())
+            limit = 1 + target.length();
+    }
+    String separator = null;
+    int[] matchlen = new int[1];
+    Scriptable re = null;
+    RegExpProxy reProxy = null;
+    if (args[0] instanceof Scriptable) {
+        reProxy = ScriptRuntime.getRegExpProxy(cx);
+        if (reProxy != null) {
+            Scriptable test = (Scriptable) args[0];
+            if (reProxy.isRegExp(test)) {
+                re = test;
+            }
+        }
+    }
+    if (re == null) {
+        separator = ScriptRuntime.toString(args[0]);
+        matchlen[0] = separator.length();
+    }
+    // split target with separator or re
+    int[] ip = { 0 };
+    int match;
+    int len = 0;
+    boolean[] matched = { false };
+    String[][] parens = { null };
+    int version = cx.getLanguageVersion();
+    while ((match = find_split(cx, scope, target, separator, version, reProxy, re, ip, matchlen, matched, parens)) >= 0) {
+        if ((limited && len >= limit) || (match > target.length()))
+            break;
+        String substr;
+        if (target.length() == 0)
+            substr = target;
+        else
+            substr = target.substring(ip[0], match);
+        result.put(len, result, substr);
+        len++;
+        /*
+         * Imitate perl's feature of including parenthesized substrings
+         * that matched part of the delimiter in the new array, after the
+         * split substring that was delimited.
+         */
+        if (re != null && matched[0] == true) {
+            int size = parens[0].length;
+            for (int num = 0; num < size; num++) {
+                if (limited && len >= limit)
+                    break;
+                result.put(len, result, parens[0][num]);
+                len++;
+            }
+            matched[0] = false;
+        }
+        ip[0] = match + matchlen[0];
+        if (version < Context.VERSION_1_3 && version != Context.VERSION_DEFAULT) {
+            /*
+         * Deviate from ECMA to imitate Perl, which omits a final
+         * split unless a limit argument is given and big enough.
+         */
+            if (!limited && ip[0] == target.length())
+                break;
+        }
+    }
+    return result;
+}

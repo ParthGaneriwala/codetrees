@@ -1,0 +1,64 @@
+public void testTaskPlacement() throws IOException {
+    String namenode = null;
+    MiniDFSCluster dfs = null;
+    MiniMRCluster mr = null;
+    FileSystem fileSys = null;
+    String testName = "TestForRackAwareness";
+    try {
+        final int taskTrackers = 1;
+        /* Start 3 datanodes, one in rack r1, and two in r2. Create three
+       * files (splits).
+       * 1) file1, just after starting the datanode on r1, with 
+       *    a repl factor of 1, and,
+       * 2) file2 & file3 after starting the other two datanodes, with a repl 
+       *    factor of 3.
+       * At the end, file1 will be present on only datanode1, and, file2 and 
+       * file3, will be present on all datanodes. 
+       */
+        Configuration conf = new Configuration();
+        conf.setBoolean("dfs.replication.considerLoad", false);
+        dfs = new MiniDFSCluster(conf, 1, true, rack1, hosts1);
+        dfs.waitActive();
+        fileSys = dfs.getFileSystem();
+        if (!fileSys.mkdirs(inDir)) {
+            throw new IOException("Mkdirs failed to create " + inDir.toString());
+        }
+        writeFile(dfs.getNameNode(), conf, new Path(inDir + "/file1"), (short) 1);
+        dfs.startDataNodes(conf, 2, true, null, rack2, hosts2, null);
+        dfs.waitActive();
+        writeFile(dfs.getNameNode(), conf, new Path(inDir + "/file2"), (short) 3);
+        writeFile(dfs.getNameNode(), conf, new Path(inDir + "/file3"), (short) 3);
+        namenode = (dfs.getFileSystem()).getUri().getHost() + ":" + (dfs.getFileSystem()).getUri().getPort();
+        /* Run a job with the (only)tasktracker on rack2. The rack location
+       * of the tasktracker will determine how many data/rack local maps it
+       * runs. The hostname of the tasktracker is set to same as one of the 
+       * datanodes.
+       */
+        mr = new MiniMRCluster(taskTrackers, namenode, 1, rack2, hosts4);
+        /* The job is configured with three maps since there are three 
+       * (non-splittable) files. On rack2, there are two files and both
+       * have repl of three. The blocks for those files must therefore be
+       * present on all the datanodes, in particular, the datanodes on rack2.
+       * The third input file is pulled from rack1.
+       */
+        launchJobAndTestCounters(testName, mr, fileSys, inDir, outputPath, 3, 0, 2, 0);
+        mr.shutdown();
+        /* Run a job with the (only)tasktracker on rack1.
+       */
+        mr = new MiniMRCluster(taskTrackers, namenode, 1, rack1, hosts3);
+        /* The job is configured with three maps since there are three 
+       * (non-splittable) files. On rack1, because of the way in which repl
+       * was setup while creating the files, we will have all the three files. 
+       * Thus, a tasktracker will find all inputs in this rack.
+       */
+        launchJobAndTestCounters(testName, mr, fileSys, inDir, outputPath, 3, 0, 0, 3);
+        mr.shutdown();
+    } finally {
+        if (dfs != null) {
+            dfs.shutdown();
+        }
+        if (mr != null) {
+            mr.shutdown();
+        }
+    }
+}

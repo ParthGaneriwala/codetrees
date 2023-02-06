@@ -1,0 +1,53 @@
+private static boolean renderPortlet(ActionContext context, PortletContainer container, DashboardPortlet thisPortlet, PortletWindowImpl portletWindow, PortalServletRequest portalRequest, PortalServletResponse portalResponse) {
+    ExecutorService executor = null;
+    List<Future<PortletWindowImpl>> futures = null;
+    try {
+        long doRenderStartTime = System.currentTimeMillis();
+        // if (thisPortlet.getTimeout() <= 0) {
+        if (true) {
+            // Remove the project since it might get set by another project
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("before container.doRender");
+                if (portalRequest.getAttribute("project") != null) {
+                    LOG.debug("  The project for rendering: " + ((Project) portalRequest.getAttribute("project")).getUniqueId());
+                }
+            }
+            portalRequest.removeAttribute("project");
+            // Render the portlet immediately
+            container.doRender(portletWindow, portalRequest, portalResponse);
+        } else {
+            // Render the portlet using an executor; this will allow for cancelling timed-out portlets
+            LOG.debug("Using executor...");
+            List<PortletRenderTask> renderTasks = new ArrayList<PortletRenderTask>();
+            renderTasks.add(new PortletRenderTask(container, portletWindow, portalRequest, portalResponse));
+            executor = Executors.newFixedThreadPool(1);
+            // NOTE: this wrapper fix is for Java 1.5
+            final Collection<Callable<PortletWindowImpl>> wrapper = Collections.<Callable<PortletWindowImpl>>unmodifiableCollection(renderTasks);
+            if (thisPortlet.getTimeout() <= 0) {
+                futures = executor.invokeAll(wrapper);
+            } else {
+                futures = executor.invokeAll(wrapper, thisPortlet.getTimeout(), TimeUnit.SECONDS);
+            }
+            for (Future<PortletWindowImpl> f : futures) {
+                if (f.isCancelled()) {
+                    LOG.debug("Portlet was cancelled due to timeout");
+                    return false;
+                }
+            }
+        }
+        long doRenderEndTime = System.currentTimeMillis();
+        LOG.debug("Portlet (" + thisPortlet.getName() + ") took: " + (doRenderEndTime - doRenderStartTime) + " ms");
+        // When the portlet is rendered, place the response in the request for displaying later
+        context.getRequest().setAttribute("portal_response_" + thisPortlet.getId(), portalResponse.getInternalBuffer().toString());
+        LOG.trace("Render response: " + portalResponse.getInternalBuffer().toString());
+    } catch (Exception re) {
+        // The portlet could not be rendered so skip it
+        LOG.error("Render exception", re);
+        return false;
+    } finally {
+        if (executor != null) {
+            executor.shutdown();
+        }
+    }
+    return true;
+}

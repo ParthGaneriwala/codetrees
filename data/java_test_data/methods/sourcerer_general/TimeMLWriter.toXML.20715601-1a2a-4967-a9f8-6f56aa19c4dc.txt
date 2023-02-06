@@ -1,0 +1,87 @@
+private static String toXML(CAS cas, AnnotationsToElements converter) throws SAXException {
+    ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+    XMLSerializer sax2xml = new XMLSerializer(byteArrayOutputStream, false);
+    // get document text
+    String docText = cas.getDocumentText();
+    char[] docCharArray = docText.toCharArray();
+    // get iterator over annotations sorted by increasing start position and
+    // decreasing end position
+    FSIterator<AnnotationFS> iterator = cas.getAnnotationIndex().iterator();
+    // This is basically a recursive algorithm that has had the recursion
+    // removed through the use of an explicit Stack. We iterate over the
+    // annotations, and if an annotation contains other annotations, we
+    // push the parent annotation on the stack, process the children, and
+    // then come back to the parent later.
+    List<AnnotationFS> stack = new ArrayList<AnnotationFS>();
+    int pos = 0;
+    ContentHandler handler = sax2xml.getContentHandler();
+    handler.startDocument();
+    // write the start tag
+    converter.startRootElement(handler);
+    // now use null is a placeholder for this artificial Document annotation
+    AnnotationFS curAnnot = null;
+    while (iterator.isValid()) {
+        AnnotationFS nextAnnot = iterator.get();
+        if (curAnnot == null || nextAnnot.getBegin() < curAnnot.getEnd()) {
+            // nextAnnot's start point is within the span of curAnnot
+            if (// crossover span check
+            curAnnot == null || nextAnnot.getEnd() <= curAnnot.getEnd()) {
+                // write text between current pos and beginning of nextAnnot
+                try {
+                    handler.characters(docCharArray, pos, nextAnnot.getBegin() - pos);
+                    pos = nextAnnot.getBegin();
+                    converter.startAnnotationElement(nextAnnot, handler);
+                    // push parent annotation on stack
+                    stack.add(curAnnot);
+                    // move on to next annotation
+                    curAnnot = nextAnnot;
+                } catch (StringIndexOutOfBoundsException e) {
+                    System.err.println("Invalid annotation range: " + nextAnnot.getBegin() + "," + nextAnnot.getEnd() + " in document of length " + docText.length());
+                }
+            }
+            iterator.moveToNext();
+        } else {
+            // write text between current pos and end of curAnnot
+            try {
+                handler.characters(docCharArray, pos, curAnnot.getEnd() - pos);
+                pos = curAnnot.getEnd();
+            } catch (StringIndexOutOfBoundsException e) {
+                System.err.println("Invalid annotation range: " + curAnnot.getBegin() + "," + curAnnot.getEnd() + " in document of length " + docText.length());
+            }
+            converter.endAnnotationElement(curAnnot, handler);
+            // pop next containing annotation off stack
+            curAnnot = stack.remove(stack.size() - 1);
+        }
+    }
+    // finished writing all start tags, now finish up
+    if (curAnnot != null) {
+        try {
+            handler.characters(docCharArray, pos, curAnnot.getEnd() - pos);
+            pos = curAnnot.getEnd();
+        } catch (StringIndexOutOfBoundsException e) {
+            System.err.println("Invalid annotation range: " + curAnnot.getBegin() + "," + curAnnot.getEnd() + "in document of length " + docText.length());
+        }
+        converter.endAnnotationElement(curAnnot, handler);
+        while (!stack.isEmpty()) {
+            // pop
+            curAnnot = stack.remove(stack.size() - 1);
+            if (curAnnot == null) {
+                break;
+            }
+            try {
+                handler.characters(docCharArray, pos, curAnnot.getEnd() - pos);
+                pos = curAnnot.getEnd();
+            } catch (StringIndexOutOfBoundsException e) {
+                System.err.println("Invalid annotation range: " + curAnnot.getBegin() + "," + curAnnot.getEnd() + "in document of length " + docText.length());
+            }
+            converter.endAnnotationElement(curAnnot, handler);
+        }
+    }
+    if (pos < docCharArray.length) {
+        handler.characters(docCharArray, pos, docCharArray.length - pos);
+    }
+    converter.endRootElement(handler);
+    handler.endDocument();
+    // return XML string
+    return new String(byteArrayOutputStream.toByteArray());
+}

@@ -1,0 +1,80 @@
+public static List<Protein> simulatePeptideIsoforms(Peptide peptide, Protein p, int a_start, int a_end, double factor) {
+    // start the monte-carlo simulation
+    List<Protein> isoforms = new ArrayList<Protein>();
+    // int count = 1;
+    int n_run = 1;
+    double _occ, lower, upper, mid, ascnd;
+    List<List<Double>> hits = new ArrayList<List<Double>>();
+    // number of the simulations
+    for (int j = a_start; j < a_end; j++) n_run *= peptide.getAddOn(j).getModifiers().size();
+    n_run = Util.bound(100, 1500, (int) (n_run * Math.abs(factor)));
+    System.out.println("Start Monte Carlo Simulation for " + n_run + " runs.");
+    Random rand = new Random(System.currentTimeMillis());
+    for (int i = 0; i < n_run; i++) {
+        // set up the ending element
+        double _mass = 0d;
+        // pick the modifier
+        for (int j = a_start; j < a_end; j++) {
+            double coin = rand.nextDouble() * 100d, current = 0d;
+            ModifierSet mods = peptide.getAddOn(j);
+            for (int k = 0; k < mods.getModifiers().size(); k++) {
+                _occ = mods.getModifier(k).getOccupancy();
+                if (coin > current && coin <= _occ) {
+                    _mass += mods.getModifier(k).getAverageMass();
+                    mods.setUpTo(k);
+                }
+                current = mods.getModifier(k).getOccupancy();
+            }
+        }
+        // check for duplication
+        int flag = 0;
+        for (List<Double> hit : hits) {
+            if (// necessary to avoid round up error
+            Math.abs(hit.get(0) - _mass) < 0.005) {
+                hit.set(1, hit.get(1) + 1);
+                flag = 1;
+                break;
+            }
+        }
+        if (flag == 0) {
+            // create a new peptide
+            List<Double> hit = Util.add(hits, new ArrayList<Double>());
+            hit.add(_mass);
+            hit.add(1d);
+            for (int k = a_start; k < a_end; k++) hit.add((double) peptide.getAddOn(k).getUpTo());
+        }
+    }
+    // sort  the isoforms according to their abundance
+    // int threshold = hits.size();
+    double _avg = 0d;
+    for (List<Double> hit : hits) _avg += (peptide.getAverageMass() + hit.get(1) * hit.get(2));
+    for (List<Double> hit : hits) {
+        Protein protein_new = Util.add(isoforms, new Protein());
+        Peptide peptide_new = protein_new.addChain(new Peptide());
+        for (int k = a_start; k < a_end; k++) {
+            ModifierSet mods_new = peptide_new.addAddon(new ModifierSet());
+            mods_new.addModifier(peptide.getModifier(k, hit.get(k - a_start + 2).intValue()));
+            mods_new.setLocation(peptide.getAddOn(k).getLocation());
+            mods_new.setUpTo(peptide.getAddOn(k).getLocation());
+        }
+        peptide_new.setName(p.getChain(0).getName());
+        peptide_new.setPreN(p.getChain(0).getPreN()).setPostC(p.getChain(0).getPostC());
+        peptide_new.setNStart(p.getChain(0).getNStart());
+        copyProperties(protein_new, p);
+        protein_new.setAbundance(100f * hit.get(1).floatValue() / n_run);
+        protein_new.setName("");
+        for (ModifierSet mods : peptide_new.getAddOns()) if (!mods.getModifier(0).getSymbol().equals(Util.NULL))
+            protein_new.setName(protein_new.getName() + "^" + mods.getModifier(0).getSymbol());
+        protein_new.setName(protein_new.getName().equals("") ? "Invariant" : formatIsoformName(p.getName() + protein_new.getName(), "\\^"));
+        peptide_new.setSequence(p.getChain(0).getSequence());
+        for (Peptide chain : p.getChains()) protein_new.addChain(new Peptide()).setSequence(chain.getSequence());
+        for (int k = 0; k < a_start; k++) protein_new.getChain(0).addAddon(peptide.getAddOn(k));
+        // full calculation
+        calcProperties(protein_new, false);
+        // simple enumeration only
+        enumVariety(protein_new, false, true, factor);
+        hit = null;
+    }
+    // d.avg_mass = _avg / n_run;
+    return isoforms;
+}

@@ -1,0 +1,126 @@
+public void testConcurrentThread() {
+    class thread1 extends Thread {
+
+        syncOnCount s;
+
+        public thread1(syncOnCount sc) {
+            super("thread1");
+            s = sc;
+        }
+
+        public void run() {
+            IDBConnection conn = makeAndCleanTestConnection();
+            try {
+                ModelRDB foo = ModelRDB.createModel(conn, "foo");
+                // count is now 1
+                s.incCount();
+                s.waitOnCount(2);
+                Resource u = foo.createResource("test#subject");
+                Property p = foo.createProperty("test#predicate");
+                Resource o = foo.createResource("test#object");
+                Statement stmt = foo.createStatement(u, p, o);
+                if (foo.contains(stmt))
+                    synchronized (msg) {
+                        if (msg.length() == 0)
+                            msg = "Thread 1 can see uncommited statement";
+                        s.incCount(99);
+                        return;
+                    }
+                // assertFalse(foo.contains(stmt));
+                s.incCount();
+                s.waitOnCount(4);
+                if (!foo.contains(stmt))
+                    synchronized (msg) {
+                        if (msg.length() == 0)
+                            msg = "Thread 1 can't see commited statement";
+                        s.incCount(99);
+                        return;
+                    }
+                // assertTrue(foo.contains(stmt));
+                foo.remove(stmt);
+                s.incCount();
+            } finally {
+                try {
+                    conn.close();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+    class thread2 extends Thread {
+
+        syncOnCount s;
+
+        public thread2(syncOnCount sc) {
+            super("thread2");
+            s = sc;
+        }
+
+        public void run() {
+            s.waitOnCount(1);
+            IDBConnection conn = makeTestConnection();
+            try {
+                ModelRDB foo = ModelRDB.open(conn, "foo");
+                foo.begin();
+                Resource u = foo.createResource("test#subject");
+                Property p = foo.createProperty("test#predicate");
+                Resource o = foo.createResource("test#object");
+                Statement stmt = foo.createStatement(u, p, o);
+                foo.add(stmt);
+                s.incCount();
+                s.waitOnCount(3);
+                if (!foo.contains(stmt))
+                    synchronized (msg) {
+                        if (msg.length() == 0)
+                            msg = "Thread 2 can't see statement it just added";
+                        s.incCount(99);
+                        return;
+                    }
+                // assertTrue(foo.contains(stmt));
+                try {
+                    foo.commit();
+                } catch (Exception e) {
+                    if (msg.length() == 0)
+                        msg = "Failed to commit transaction: " + e.getMessage();
+                    return;
+                }
+                // wake up thread 1
+                s.incCount();
+                // thread1 has now removed stmt
+                s.waitOnCount(5);
+                // assertFalse(foo.contains(stmt));
+                if (foo.contains(stmt))
+                    synchronized (msg) {
+                        if (msg.length() == 0)
+                            msg = "Thread 2 can see statement thread 1 should have removed";
+                        s.incCount(99);
+                        return;
+                    }
+            } finally {
+                try {
+                    conn.close();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+    if (!TestPackage.M_DBCONCURRENT) {
+        logger.warn("Transaction isolation test surpressed");
+        return;
+    }
+    syncOnCount s = new syncOnCount();
+    Thread t1 = new thread1(s);
+    Thread t2 = new thread2(s);
+    t2.start();
+    t1.start();
+    try {
+        t1.join();
+        t2.join();
+    } catch (Exception e) {
+        assertTrue(false);
+    }
+    if (msg != null && msg.length() > 0)
+        assertTrue(msg, false);
+}

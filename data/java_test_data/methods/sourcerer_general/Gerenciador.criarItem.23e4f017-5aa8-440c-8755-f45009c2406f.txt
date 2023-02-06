@@ -1,0 +1,229 @@
+private String criarItem(String templateItem, ItemConteudo item, Conteudo conteudo, int numero) {
+    String valor = "";
+    String linkEditar = null;
+    try {
+        HashMap<Long, ConteudoFormatado> mapConteudoFormatado = new HashMap<Long, ConteudoFormatado>();
+        for (ConteudoFormatado conteudoFormatado : item.getListConteudoFormatado()) {
+            mapConteudoFormatado.put(conteudoFormatado.getNuInformacaoTipoConteudo(), conteudoFormatado);
+        }
+        if (usuario != null) {
+            // Colocar um botao para editar?
+            if (SecurityManager.podeAlterarItemConteudo(usuario, item)) {
+                linkEditar = "<span style=\"position:relative;top:0;left:0;\"><a style=\"position:absolute;top:0;left:0;\" href=\"adm/editarItemConteudo.action?conteudo.nuConteudo=" + conteudo.getNuConteudo() + "&amp;itemConteudo.nuItemConteudo=" + item.getNuItemConteudo() + "\">Editar</a></span>";
+            }
+        }
+        // verificar css
+        Matcher matCssAlternado = patCssAlternado.matcher(templateItem);
+        if (matCssAlternado.find()) {
+            String cssPar = matCssAlternado.group(1);
+            String cssImpar = matCssAlternado.group(2);
+            String cssConteudo = matCssAlternado.group(3);
+            if (numero % 2 == 0) {
+                cssConteudo = cssConteudo.replaceAll("\\sclass=\".*?\"", " class=\"" + cssPar + "\"");
+            } else {
+                cssConteudo = cssConteudo.replaceAll("\\sclass=\".*?\"", " class=\"" + cssImpar + "\"");
+            }
+            templateItem = matCssAlternado.replaceAll(cssConteudo);
+        }
+        {
+            // substituir o titulo
+            Matcher matItemTitulo = patItemTitulo.matcher(templateItem);
+            if (matItemTitulo.find()) {
+                templateItem = matItemTitulo.replaceFirst(item.getNoTitulo());
+            }
+        }
+        {
+            // substituir a data
+            Matcher matItemData = patItemData.matcher(templateItem);
+            if (matItemData.find() && item.getDtParaPublicacao() != null) {
+                SimpleDateFormat formatador1 = new SimpleDateFormat("dd/MM/yyyy");
+                templateItem = matItemData.replaceFirst(formatador1.format(item.getDtParaPublicacao()));
+            }
+        }
+        {
+            // substituir o preco
+            Matcher matPreco = patItemPreco.matcher(templateItem);
+            if (matPreco.find() && item.getPreco() != null) {
+                templateItem = matPreco.replaceAll(Conversor.converteMoeda(item.getPreco()));
+            }
+        }
+        // substituir a informacao do conteudo formatado
+        for (InformacaoTipoConteudo info : conteudo.getTipoConteudo().getListInformacaoTipoConteudo()) {
+            valor = "";
+            String noTag = info.getNoTag();
+            Pattern patItemAtt = Pattern.compile("<!-- ini item\\(" + Pattern.quote(noTag) + "\\) -->(.*?)<!-- fim item\\(" + Pattern.quote(noTag) + "\\) -->", Pattern.DOTALL);
+            if (mapConteudoFormatado.get(info.getNuInformacaoTipoConteudo()) != null) {
+                valor = mapConteudoFormatado.get(info.getNuInformacaoTipoConteudo()).getDeConteudo();
+            }
+            if (valor.equals("") && !info.getNuFormato().equals(TIPO_LINK_EXTERNO_NAO_VAZIO) && !info.getNuFormato().equals(TIPO_LINK_EXTERNO)) {
+                // Nao possui valor tenta retirar o bloco
+                String reg2 = "<!-- ini bloco " + noTag + " -->(.*?)<!-- fim bloco " + noTag + " -->";
+                Pattern patItemBlocoAtt = Pattern.compile(reg2, Pattern.DOTALL);
+                Matcher matItemAtt = patItemBlocoAtt.matcher(templateItem);
+                if (matItemAtt.find()) {
+                    templateItem = matItemAtt.replaceAll("");
+                }
+                // retira o item
+                matItemAtt = patItemAtt.matcher(templateItem);
+                if (matItemAtt.find()) {
+                    templateItem = matItemAtt.replaceAll("");
+                }
+            } else if (info.getNuFormato().equals(TIPO_IMAGEM)) {
+                // Imagem
+                Matcher matItemAtt = patItemAtt.matcher(templateItem);
+                if (matItemAtt.find()) {
+                    String img = Template.substituiSrcImagem(matItemAtt.group(1), valor);
+                    // Capturar a descricao
+                    String alt = "Descri&ccedil;&atilde;o";
+                    Arquivo arquivo = null;
+                    if (cacheArquivo.get(valor) == null) {
+                        arquivo = arquivoDao.select(valor, sitio);
+                    } else {
+                        arquivo = cacheArquivo.get(valor);
+                    }
+                    if (arquivo != null) {
+                        alt = arquivo.getDeArquivo().replaceAll("\\s", " ").replace("\"", "&quot;");
+                        img = Template.substituirAtributoTag(img, "img", "alt", alt);
+                        img = Template.substituirAtributoTag(img, "img", "title", alt);
+                        if (arquivo.getLongdesc() != null) {
+                            // colocar a descricao longa
+                            String linkLongdesc = "longdesc/img-" + arquivo.getNuArquivo() + ".html";
+                            if (img.contains(" longdesc=\"")) {
+                                img = Template.substituirAtributoTag(img, "img", "longdesc", linkLongdesc);
+                            } else {
+                                img = img.replaceAll("(<img\\s)([^>]*>)", "$1longdesc=\"" + linkLongdesc + "\" $2");
+                            }
+                            img = img.replaceAll("(<img\\s[^>]*>)", "$1 <a class=\"longdesc\" href=\"" + linkLongdesc + "\" title=\"Descri&ccedil;&atilde;o longa da imagem para usu&aacute;rios de Leitores de Tela\">D</a>");
+                        }
+                    }
+                    templateItem = matItemAtt.replaceAll(img);
+                }
+            } else if (info.getNuFormato().equals(TIPO_ARQUIVO_DOWNLOAD)) {
+                // link externo nao vazio
+                if (!valor.equals("")) {
+                    // nao eh vazio, substitui o href
+                    // colocar o tamanho do arquivo
+                    String tamanho = "";
+                    if (valor.startsWith("arquivos/")) {
+                        ArquivoAction arquivoAction = new ArquivoAction();
+                        tamanho = " (" + arquivoAction.getHumanFileSize(valor, sitio) + ")";
+                        logger.debug("tamanho " + valor + " " + tamanho);
+                    }
+                    Matcher matItemAtt = patItemAtt.matcher(templateItem);
+                    while (matItemAtt.find()) {
+                        String tagTemplate = matItemAtt.group(1).replace("</a>", tamanho + "</a>");
+                        templateItem = matItemAtt.replaceFirst(Template.substituiHrefA(tagTemplate, valor));
+                        matItemAtt = patItemAtt.matcher(templateItem);
+                    }
+                } else {
+                    // eh vazio, limpa as tags A
+                    Matcher matItemAtt = patItemAtt.matcher(templateItem);
+                    if (matItemAtt.find()) {
+                        String aux = matItemAtt.group(1);
+                        Pattern patA = Pattern.compile("<a.*?>|</a>", Pattern.DOTALL);
+                        Matcher matA = patA.matcher(aux);
+                        if (matA.find()) {
+                            aux = matA.replaceAll("");
+                        }
+                        templateItem = matItemAtt.replaceAll(aux);
+                    }
+                }
+            } else if (info.getNuFormato().equals(TIPO_LINK_EXTERNO_NAO_VAZIO)) {
+                // link externo n�o vazio
+                if (!valor.equals("")) {
+                    // nao eh vazio, substitui o href
+                    Matcher matItemAtt = patItemAtt.matcher(templateItem);
+                    while (matItemAtt.find()) {
+                        templateItem = matItemAtt.replaceFirst(Template.substituiHrefA(matItemAtt.group(1), valor));
+                        matItemAtt = patItemAtt.matcher(templateItem);
+                    }
+                } else {
+                    // o valor eh vazio, tentamos retirar o bloco
+                    String reg2 = "<!-- ini bloco " + noTag + " -->(.*?)<!-- fim bloco " + noTag + " -->";
+                    Pattern patItemBlocoAtt = Pattern.compile(reg2, Pattern.DOTALL);
+                    Matcher matItemAtt = patItemBlocoAtt.matcher(templateItem);
+                    if (matItemAtt.find()) {
+                        // existe o bloco
+                        // remove o bloco
+                        templateItem = matItemAtt.replaceAll("");
+                    } else {
+                        // nao existe o bloco, limpamos as tags A
+                        matItemAtt = patItemAtt.matcher(templateItem);
+                        if (matItemAtt.find()) {
+                            String aux = matItemAtt.group(1);
+                            Pattern patA = Pattern.compile("<a\\s.*?>|</a>", Pattern.DOTALL);
+                            Matcher matA = patA.matcher(aux);
+                            if (matA.find()) {
+                                aux = matA.replaceAll("");
+                            }
+                            templateItem = matItemAtt.replaceAll(aux);
+                        }
+                    }
+                }
+            } else if (info.getNuFormato().equals(TIPO_LINK_EXTERNO)) {
+                // link externo
+                if (!valor.equals("")) {
+                    Matcher matItemAtt = patItemAtt.matcher(templateItem);
+                    while (matItemAtt.find()) {
+                        String valTemp = matItemAtt.group(1);
+                        Matcher matLinkTemplate = patLimpaLinkTemplate.matcher(valTemp);
+                        if (matLinkTemplate.find()) {
+                            valTemp = matLinkTemplate.replaceAll("");
+                        }
+                        templateItem = matItemAtt.replaceFirst(Template.substituiHrefA(valTemp, valor));
+                        matItemAtt = patItemAtt.matcher(templateItem);
+                    }
+                }
+            } else if (info.getNuFormato().equals(TIPO_FLASH)) {
+                // flash
+                Matcher matItemAtt = patItemAtt.matcher(templateItem);
+                if (matItemAtt.find()) {
+                    Arquivo arquivo = arquivoDao.select(valor, sitio);
+                    if (arquivo != null && arquivo.getLongdesc() != null) {
+                        String swf = substituirSwfFlash(matItemAtt.group(1), valor);
+                        templateItem = matItemAtt.replaceAll(swf.replaceAll("(</object>)", "$1 <a class=\"longdescflash\" href=\"longdesc/img-" + arquivo.getNuArquivo() + ".html\">Vers&atilde;o acess&iacute;vel<span> para usu&aacute;rios de Leitores de Tela</span></a>"));
+                    } else {
+                        templateItem = matItemAtt.replaceAll(substituirSwfFlash(matItemAtt.group(1), valor));
+                    }
+                }
+            } else if (info.getNuFormato().equals(TIPO_RTF)) {
+                // Texto WYSIWYG j� com formato html, n�o colocamos o <br />
+                Matcher matItemAtt = patItemAtt.matcher(templateItem);
+                if (matItemAtt.find()) {
+                    templateItem = matItemAtt.replaceFirst(StringUtils.tratarCaracteresEspeciaisRegex(valor));
+                }
+            } else {
+                // string
+                valor = StringUtils.tratarCaracteresEspeciaisRegex(valor.replace("\n", "<br />\n").replace("\r", ""));
+                Matcher matItemAtt = patItemAtt.matcher(templateItem);
+                if (matItemAtt.find()) {
+                    templateItem = matItemAtt.replaceFirst(valor);
+                }
+            }
+        }
+        // verificar a existencia para um padr�o de apresenta��o diferente
+        Matcher matLinkTemplate = patLinkTemplate.matcher(templateItem);
+        while (matLinkTemplate.find() && item.getDtParaPublicacao() != null) {
+            String nu_padrao_apresentacao = matLinkTemplate.group(1);
+            String link = matLinkTemplate.group(2).replace("target=\"_blank\"", "").replace("onclick=\"window.open(this.href); return false;\"", "");
+            templateItem = matLinkTemplate.replaceFirst(Template.substituiHrefA(link, "index.action?nu_padrao_apresentacao=" + nu_padrao_apresentacao + "&amp;nu_item_conteudo=" + item.getNuItemConteudo() + "&amp;nu_pagina=" + conteudo.getNuPagina()));
+            matLinkTemplate = patLinkTemplate.matcher(templateItem);
+        }
+    } catch (Exception e) {
+        logger.error("Erro ao criar um item com valor='" + valor + "'", e);
+    }
+    if (templateItem.contains(EXPRESS_NU_ITEM_CONTEUDO)) {
+        // coloca o ${nuItemConteudo}
+        templateItem = templateItem.replace(EXPRESS_NU_ITEM_CONTEUDO, item.getNuItemConteudo() + "");
+    }
+    if (linkEditar != null) {
+        // Colocar o link de edicao
+        if (templateItem.trim().endsWith("</li>")) {
+            int fim = templateItem.lastIndexOf("</li>");
+            templateItem = templateItem.substring(0, fim) + linkEditar + "</li>";
+        } else {
+            templateItem += linkEditar;
+        }
+    }
+    return templateItem;
+}

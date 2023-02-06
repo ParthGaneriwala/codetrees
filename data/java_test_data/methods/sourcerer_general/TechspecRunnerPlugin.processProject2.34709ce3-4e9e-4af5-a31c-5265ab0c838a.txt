@@ -1,0 +1,76 @@
+@SuppressWarnings("unchecked")
+public // @Override
+void processProject2(Techspec techspec, Appspec appspec) throws IOException, MojoExecutionException {
+    List<String> classpathEntries = getMavenRuntimeClasspathEntries();
+    List<String> autoscanTemplatesFromClasspath = RuntimeManifestGenerator.getAutoscanTemplatesFromClasspath(classpathEntries);
+    File originalOutputDirectory = techspec.getOutputDirectory();
+    File incomingDirectory = new File(originalOutputDirectory, "target" + File.separator + "clickframes-incoming");
+    File modifiedDirectory = new File(originalOutputDirectory, "target" + File.separator + "clickframes-modified");
+    try {
+        if (modifiedDirectory.exists()) {
+            FileUtils.deleteDirectory(modifiedDirectory);
+        }
+        // run the techspec in a temp directory
+        if (incomingDirectory.exists()) {
+            FileUtils.cleanDirectory(incomingDirectory);
+        }
+        techspec.setOutputDirectory(incomingDirectory);
+        TechspecRunner.run(techspec, appspec, autoscanTemplatesFromClasspath);
+        // update manifest from directory, using basepath
+        TechspecManifest techspecManifest;
+        File techspecManifestFile = new File(clickframesDirectory, "techspec-manifest.xml");
+        if (!techspecManifestFile.exists()) {
+            techspecManifest = TechspecManifest.create();
+        } else {
+            try {
+                techspecManifest = TechspecManifest.readTechspecManifest(new FileInputStream(techspecManifestFile));
+            } catch (JAXBException e) {
+                throw new MojoExecutionException("Invalid manifest file", e);
+            }
+        }
+        int addedCount = 0;
+        int modifications = 0;
+        for (File newFile : (Collection<File>) FileUtils.listFiles(techspec.getOutputDirectory(), FileFilterUtils.trueFileFilter(), FileFilterUtils.trueFileFilter())) {
+            addedCount += techspecManifest.addOrUpdateEntry(techspec.getOutputDirectory(), newFile) ? 1 : 0;
+            // copy newFile from tmpdir to originalOutputDir, preserving the
+            // relative path - if original source is not modified
+            File dest = ClickframeUtils.getDestinationFile(techspec.getOutputDirectory(), newFile, originalOutputDirectory);
+            // version of modified files handy
+            if (dest.exists() && VelocityCodeGenerator.isModified(dest)) {
+                File modifiedDest = ClickframeUtils.getDestinationFile(techspec.getOutputDirectory(), newFile, modifiedDirectory);
+                FileUtils.copyFile(newFile, modifiedDest);
+            }
+            boolean moved = VelocityCodeGenerator.moveIfContentNotModified(newFile, dest);
+            if (!moved && VelocityCodeGenerator.isSameEmbeddedChecksum(newFile, dest)) {
+                // source template is not modified, but destination may have
+                // been
+                // customized
+                newFile.delete();
+                modifications += 1;
+            }
+            // remove empty directories - as we go along
+            File parent = newFile.getParentFile();
+            while (parent.list().length == 0 && parent.getCanonicalPath() != techspec.getOutputDirectory().getCanonicalPath()) {
+                parent.delete();
+                parent = parent.getParentFile();
+            }
+        }
+        if (modifications > 0) {
+            getLog().info(modifications + " incoming changes blocked by local modifications, see " + incomingDirectory.getCanonicalPath());
+        }
+        // save techspec manifest
+        try {
+            techspecManifestFile.getParentFile().mkdirs();
+            FileUtils.writeStringToFile(techspecManifestFile, techspecManifest.toXml());
+        // getLog().info(addedCount +
+        // " entries added to manifest, wrote " +
+        // techspecManifestFile.getCanonicalPath());
+        } catch (JAXBException e) {
+            throw new MojoExecutionException("Error saving manifest", e);
+        }
+    } catch (IOException e) {
+        throw new RuntimeException("Could not clean the tmp directory:" + incomingDirectory.getAbsolutePath());
+    } finally {
+        techspec.setOutputDirectory(originalOutputDirectory);
+    }
+}

@@ -1,0 +1,121 @@
+synchronized Block addStoredBlock(Block block, DatanodeDescriptor node, DatanodeDescriptor delNodeHint) {
+    BlockInfo storedBlock = blocksMap.getStoredBlock(block);
+    if (storedBlock == null || storedBlock.getINode() == null) {
+        // If this block does not belong to anyfile, then we are done.
+        NameNode.stateChangeLog.info("BLOCK* NameSystem.addStoredBlock: " + "addStoredBlock request received for " + block + " on " + node.getName() + " size " + block.getNumBytes() + " But it does not belong to any file.");
+        // it will happen in next block report otherwise.
+        return block;
+    }
+    // add block to the data-node
+    boolean added = node.addBlock(storedBlock);
+    assert storedBlock != null : "Block must be stored by now";
+    if (block != storedBlock) {
+        if (block.getNumBytes() > 0) {
+            long cursize = storedBlock.getNumBytes();
+            if (cursize == 0) {
+                storedBlock.setNumBytes(block.getNumBytes());
+            } else if (cursize != block.getNumBytes()) {
+                LOG.warn("Inconsistent size for block " + block + " reported from " + node.getName() + " current size is " + cursize + " reported size is " + block.getNumBytes());
+                try {
+                    if (cursize > block.getNumBytes()) {
+                        // new replica is smaller in size than existing block.
+                        // Delete new replica.
+                        LOG.warn("Deleting block " + block + " from " + node.getName());
+                        invalidateBlock(block, node);
+                    } else {
+                        // new replica is larger in size than existing block.
+                        // Delete pre-existing replicas.
+                        int numNodes = blocksMap.numNodes(block);
+                        int count = 0;
+                        DatanodeDescriptor[] nodes = new DatanodeDescriptor[numNodes];
+                        Iterator<DatanodeDescriptor> it = blocksMap.nodeIterator(block);
+                        for (; it != null && it.hasNext(); ) {
+                            DatanodeDescriptor dd = it.next();
+                            if (!dd.equals(node)) {
+                                nodes[count++] = dd;
+                            }
+                        }
+                        for (int j = 0; j < count; j++) {
+                            LOG.warn("Deleting block " + block + " from " + nodes[j].getName());
+                            invalidateBlock(block, nodes[j]);
+                        }
+                        // 
+                        // change the size of block in blocksMap
+                        // 
+                        // extra look up!
+                        storedBlock = blocksMap.getStoredBlock(block);
+                        if (storedBlock == null) {
+                            LOG.warn("Block " + block + " reported from " + node.getName() + " does not exist in blockMap. Surprise! Surprise!");
+                        } else {
+                            storedBlock.setNumBytes(block.getNumBytes());
+                        }
+                    }
+                } catch (IOException e) {
+                    LOG.warn("Error in deleting bad block " + block + e);
+                }
+            }
+            // Updated space consumed if required.
+            INodeFile file = (storedBlock != null) ? storedBlock.getINode() : null;
+            long diff = (file == null) ? 0 : (file.getPreferredBlockSize() - storedBlock.getNumBytes());
+            if (diff > 0 && file.isUnderConstruction() && cursize < storedBlock.getNumBytes()) {
+                try {
+                    String path = /* For finding parents */
+                    leaseManager.findPath((INodeFileUnderConstruction) file);
+                    dir.updateSpaceConsumed(path, 0, -diff * file.getReplication());
+                } catch (IOException e) {
+                    LOG.warn("Unexpected exception while updating disk space : " + e.getMessage());
+                }
+            }
+        }
+        block = storedBlock;
+    }
+    assert storedBlock == block : "Block must be stored by now";
+    int curReplicaDelta = 0;
+    if (added) {
+        curReplicaDelta = 1;
+        // 
+        if (!isInSafeMode()) {
+            NameNode.stateChangeLog.info("BLOCK* NameSystem.addStoredBlock: " + "blockMap updated: " + node.getName() + " is added to " + block + " size " + block.getNumBytes());
+        }
+    } else {
+        NameNode.stateChangeLog.warn("BLOCK* NameSystem.addStoredBlock: " + "Redundant addStoredBlock request received for " + block + " on " + node.getName() + " size " + block.getNumBytes());
+    }
+    // filter out containingNodes that are marked for decommission.
+    NumberReplicas num = countNodes(storedBlock);
+    int numLiveReplicas = num.liveReplicas();
+    int numCurrentReplica = numLiveReplicas + pendingReplications.getNumReplicas(block);
+    // check whether safe replication is reached for the block
+    incrementSafeBlockCount(numCurrentReplica);
+    // 
+    // if file is being actively written to, then do not check
+    // replication-factor here. It will be checked when the file is closed.
+    // 
+    INodeFile fileINode = null;
+    fileINode = storedBlock.getINode();
+    if (fileINode.isUnderConstruction()) {
+        return block;
+    }
+    // do not handle mis-replicated blocks during startup
+    if (isInSafeMode())
+        return block;
+    // handle underReplication/overReplication
+    short fileReplication = fileINode.getReplication();
+    if (numCurrentReplica >= fileReplication) {
+        neededReplications.remove(block, numCurrentReplica, num.decommissionedReplicas, fileReplication);
+    } else {
+        updateNeededReplications(block, curReplicaDelta, 0);
+    }
+    if (numCurrentReplica > fileReplication) {
+        proccessOverReplicatedBlock(block, fileReplication, node, delNodeHint);
+    }
+    // If the file replication has reached desired value
+    // we can remove any corrupt replicas the block may have
+    int corruptReplicasCount = corruptReplicas.numCorruptReplicas(block);
+    int numCorruptNodes = num.corruptReplicas();
+    if (numCorruptNodes != corruptReplicasCount) {
+        LOG.warn("Inconsistent number of corrupt replicas for " + block + "blockMap has " + numCorruptNodes + " but corrupt replicas map has " + corruptReplicasCount);
+    }
+    if ((corruptReplicasCount > 0) && (numLiveReplicas >= fileReplication))
+        invalidateCorruptReplicas(block);
+    return block;
+}

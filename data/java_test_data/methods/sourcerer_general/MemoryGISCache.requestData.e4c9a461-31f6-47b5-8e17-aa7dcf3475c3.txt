@@ -1,0 +1,63 @@
+@SuppressWarnings("unchecked")
+public synchronized MapResponse requestData(MapRequest request) {
+    GeoRegion region = request.getRegion().getRegion();
+    Double resolution = request.getRegion().getResolution();
+    GeoRectangle bound = region.getBoundingRectangle();
+    final double minLong = bound.getMinimumLatitude();
+    final double maxLong = bound.getMaximumLongitude();
+    final double minLat = bound.getMinimumLatitude();
+    final double maxLat = bound.getMaximumLatitude();
+    Set<Layer> results = new HashSet<Layer>(mLayerIndex.get(request.getLayer()));
+    results.retainAll(mSourceIndex.get(request.getDataSource()));
+    results.retainAll(mResolutionIndex.tailMultiMap(nullToPositiveInfinity(resolution), true).valueSet());
+    results.removeAll(mExpirationIndex.headMultiMap(now(), true).valueSet());
+    results.retainAll(queryIntersecting(region.getSimplified()));
+    Set sorted = new TreeSet(new Comparator() {
+
+        public int compare(Object l, Object r) {
+            if (l == r)
+                return 0;
+            GISDatum left = (GISDatum) l, right = (GISDatum) r;
+            double leftOverlap = getOverlap(left.getRectangle().getRectangle());
+            double rightOverlap = getOverlap(right.getRectangle().getRectangle());
+            if (leftOverlap < rightOverlap)
+                return 1;
+            else if (leftOverlap != rightOverlap)
+                return -1;
+            if (left.getRectangle().getResolution() == null) {
+                if (right.getRectangle().getResolution() != null)
+                    return 1;
+            } else if (right.getRectangle().getResolution() == null)
+                return -1;
+            else if (left.getRectangle().getResolution().compareTo(right.getRectangle().getResolution()) != 0)
+                return left.getRectangle().getResolution().compareTo(right.getRectangle().getResolution());
+            if (left.getExpiration() == null)
+                return right.getExpiration() == null ? 0 : -1;
+            else if (right.getExpiration() == null)
+                return 11;
+            else
+                return right.getExpiration().getTime().compareTo(left.getExpiration().getTime());
+        }
+
+        public double getOverlap(GeoRectangle rect) {
+            return (Math.min(rect.getMaximumLongitude(), maxLong) - Math.max(rect.getMinimumLongitude(), minLong)) * (Math.min(rect.getMaximumLatitude(), maxLat) - Math.max(rect.getMinimumLatitude(), minLat));
+        }
+    });
+    sorted.addAll(results);
+    results = sorted;
+    List<GISDatum> data = new ArrayList<GISDatum>();
+    for (Iterator itr = results.iterator(); region != null && itr.hasNext(); ) {
+        GISDatum datum = (GISDatum) itr.next();
+        GeoRegion subtracted = region.subtract(datum.getRectangle().getRectangle());
+        if (subtracted == null || !subtracted.equals(region)) {
+            region = subtracted;
+            data.add(datum);
+            mUsageQueue.remove(datum);
+            mUsageQueue.addLast(datum);
+        }
+    }
+    if (region == null)
+        return new MapResponse(request, data, null);
+    else
+        return new MapResponse(request, data, new GeoResoluteRegion(region, resolution));
+}

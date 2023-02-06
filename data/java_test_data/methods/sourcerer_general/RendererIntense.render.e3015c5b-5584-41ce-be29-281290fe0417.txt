@@ -1,0 +1,146 @@
+public void render(int height, int width, StatesCapsule sC) {
+    tmp_height = height;
+    screen = new int[height + 1][width + 1];
+    // System.out.println("Intense: " + height + "," + width);
+    int ymin, ymax, yprev;
+    float yintens = 0.0f;
+    // y, z,, xtag, ytag, ztag;
+    float x0, y0, Z;
+    // float Xcb, Xsb;
+    // len,
+    float dfdu, dfdv, LdotN;
+    // , del, ;
+    float intens, intens1, YSfl;
+    // a, b, c, t, sq, tand, tang;
+    float t;
+    // , y_old;
+    float LdotN_old, t_old;
+    t_old = 0.0f;
+    int XS, YS, j, firstXS, lastXS, base_col;
+    // variables for perspective projection
+    float r1, u, v, w, x1, y1, z1;
+    // float len_L, len_N;
+    // , max_dist;
+    float min_dist;
+    float t_save;
+    int count;
+    Intrpl Intr = new Intrpl();
+    // N_old,
+    my_Vector3d N, L, NxL, NxL_old;
+    N = new my_Vector3d();
+    L = new my_Vector3d();
+    NxL = new my_Vector3d();
+    NxL_old = new my_Vector3d();
+    firstXS = sC.getMidx() - (int) (sC.getRADIUS() * sC.getScreen_to_max_crd_ratio());
+    lastXS = sC.getMidx() + (int) (sC.getRADIUS() * sC.getScreen_to_max_crd_ratio());
+    for (XS = firstXS; XS <= lastXS; XS++) {
+        LdotN_old = 0.0f;
+        // Mark for first pixel in column.
+        yprev = 99999;
+        // Initialize min value in column.
+        ymin = 99999;
+        // Initialize max value in column.
+        ymax = -99999;
+        x0 = (XS - sC.getMidx()) / sC.getScreen_to_max_crd_ratio();
+        // Xcb = x0*sC.getCos_beta();
+        // Xsb = x0*sC.getSin_beta();
+        t = sC.getNeg_t_plane_limit();
+        t_save = 99999.9f;
+        count = 0;
+        while (t <= sC.getPos_t_plane_limit() && count < 5000) {
+            count++;
+            min_dist = sC.getDist_of_screen_from_origin() + sC.getFUN_MAX() * sC.getSin_alpha() + t * sC.getCos_alpha();
+            if (min_dist <= 0.) {
+                t += sC.getT_STEP();
+                continue;
+            }
+            r1 = x0 * (t * sC.getCos_alpha() + sC.getDist_of_veiwport_from_origin()) / sC.getDist_veiwport_from_screen();
+            u = r1 * sC.getCos_beta() + t * sC.getSin_beta();
+            v = -r1 * sC.getSin_beta() + t * sC.getCos_beta();
+            w = (float) func.eval(u, v);
+            z1 = w * sC.getSin_alpha() + t * sC.getCos_alpha();
+            x1 = x0 * (z1 + sC.getDist_of_veiwport_from_origin()) / sC.getDist_veiwport_from_screen();
+            y1 = w * sC.getCos_alpha() - t * sC.getSin_alpha();
+            if (sC.isPerspective)
+                y0 = y1 * sC.getDist_veiwport_from_screen() / // y_zero
+                (z1 + sC.getDist_of_veiwport_from_origin());
+            else
+                y0 = y1;
+            YS = (int) UsefulFunctions.my_Round(y0 * sC.getScreen_to_max_crd_ratio() + sC.getMidy());
+            if (YS < 0)
+                // don't waste time on
+                YS = -1;
+            if (YS > sC.getMaxy())
+                // invisible pixels
+                YS = sC.getMaxy() + 1;
+            // partial x-derivative
+            dfdu = (float) funx.eval(u, v);
+            // partial z-derivative
+            dfdv = (float) funz.eval(u, v);
+            N.vx = -dfdu * sC.getCos_beta() + dfdv * sC.getSin_beta();
+            N.vy = dfdu * sC.getSina_x_sinb() + sC.getCos_alpha() + dfdv * sC.getSina_x_cosb();
+            N.vz = -dfdu * sC.getCosa_x_sinb() + sC.getSin_alpha() - dfdv * sC.getCosa_x_cosb();
+            N.Normalize();
+            L.vx = -x1;
+            L.vy = -y1;
+            L.vz = -(sC.getDist_of_veiwport_from_origin() + z1);
+            L.Normalize();
+            LdotN = N.Dot(L);
+            NxL = N.Cross(L);
+            Z = (float) Math.sqrt((double) (UsefulFunctions.SQ(x0 - x1) + UsefulFunctions.SQ(y0 - y1) + UsefulFunctions.SQ(sC.getOriginal_distance_of_screen_from_origin() + z1)));
+            YSfl = y0 * sC.getScreen_to_max_crd_ratio() + sC.getMidy();
+            YS = (int) UsefulFunctions.my_Round(YSfl);
+            intens = Intensity(Math.abs(LdotN), Z, sC);
+            if (sC.getRidge() && yprev != 99999 && t_save == 99999. && (LdotN * LdotN_old < 0. || (Math.abs(intens - yintens) > sC.getThin() && Math.abs(YS - yprev) > 2) || (NxL.Dot(NxL_old) < 0.0f))) {
+                // begin
+                // supersampling
+                // procedure:
+                t_save = t;
+                t = t_old + 0.0625f * sC.getT_STEP();
+                continue;
+            }
+            if (// first pixel drawn in column?
+            yprev == 99999) {
+                base_col = (LdotN >= 0.0) ? 64 : 128;
+                ymin = ymax = YS;
+                Putpixel(XS, YS, base_col, intens);
+            } else // not first pixel in column:
+            {
+                if (// draw lower surface:
+                YS < ymin) {
+                    Intr.init((float) yprev, yintens, (float) YS, intens);
+                    for (j = ymin - 1; j >= YS; j--) {
+                        intens1 = Intr.InterValue((float) j);
+                        Putpixel(XS, j, 128, intens1);
+                    }
+                    ymin = YS;
+                }
+                if (// draw upper surface:
+                YS > ymax) {
+                    Intr.init((float) yprev, yintens, (float) YS, intens);
+                    for (j = ymax + 1; j <= YS; j++) {
+                        intens1 = Intr.InterValue((float) j);
+                        Putpixel(XS, j, 64, intens1);
+                    }
+                    ymax = YS;
+                }
+            }
+            yintens = intens;
+            yprev = YS;
+            LdotN_old = LdotN;
+            // y_old = y0;
+            t_old = t;
+            NxL_old = NxL;
+            if (t_save != 99999.) {
+                t += 0.0625 * sC.getT_STEP();
+                if (t >= t_save) {
+                    t = t_save;
+                    t_save = 99999.0f;
+                }
+            } else
+                t += sC.getT_STEP();
+        }
+    // of t axis for
+    }
+// of x axis for
+}

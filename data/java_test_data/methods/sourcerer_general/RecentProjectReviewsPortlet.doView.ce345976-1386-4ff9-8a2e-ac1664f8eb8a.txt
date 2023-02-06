@@ -1,0 +1,103 @@
+public void doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    try {
+        String defaultView = VIEW_PAGE;
+        User thisUser = PortalUtils.getUser(request);
+        // Get global preferences
+        String categoryName = request.getPreferences().getValue(PREF_CATEGORY, "");
+        String title = request.getPreferences().getValue(PREF_TITLE, "");
+        String showProjectTitle = request.getPreferences().getValue(PREF_SHOW_PROJECT_TITLE, "false");
+        String showProjectCategory = request.getPreferences().getValue(PREF_SHOW_PROJECT_CATEGORY, "false");
+        String noOfReviewsToShow = request.getPreferences().getValue(PREF_NO_OF_REVIEWS_TO_SHOW, "-1");
+        String sortByRating = request.getPreferences().getValue(PREF_SORT_BY_RATING, null);
+        String sortByRatingAvg = request.getPreferences().getValue(PREF_SORT_BY_RATING_AVG, null);
+        String minimumRatingCount = request.getPreferences().getValue(PREF_PREF_MINIMUM_RATING_COUNT, null);
+        String minimumRatingAvg = request.getPreferences().getValue(PREF_PREF_MINIMUM_RATING_AVG, null);
+        String filterInappropriate = request.getPreferences().getValue(PREF_FILTER_INAPPROPRIATE, null);
+        // Determine if a specific project should be used
+        String projectId = request.getPreferences().getValue(PREF_PROJECT_ID, "-1");
+        // Check the current project profile page
+        if ("-1".equals(projectId) && "".equals(categoryName)) {
+            Project project = PortalUtils.findProject(request);
+            if (project != null) {
+                projectId = String.valueOf(project.getId());
+            }
+        }
+        // The list to show
+        ProjectRatingList projectRatingList = new ProjectRatingList();
+        try {
+            Connection db = PortalUtils.useConnection(request);
+            ProjectCategoryList categories = new ProjectCategoryList();
+            categories.setEnabled(true);
+            categories.setTopLevelOnly(true);
+            categories.buildList(db);
+            request.setAttribute(PROJECT_CATEGORY_LIST, categories);
+            int categoryId = -1;
+            boolean privateCategory = false;
+            if (StringUtils.hasText(categoryName)) {
+                ProjectCategory category = categories.getFromValue(categoryName);
+                if (category != null) {
+                    if (category.getSensitive()) {
+                        privateCategory = true;
+                    }
+                }
+            }
+            // Use paged data for sorting
+            PagedListInfo pagedListInfo = new PagedListInfo();
+            pagedListInfo.setItemsPerPage(noOfReviewsToShow);
+            StringBuffer columnsToSort = new StringBuffer();
+            columnsToSort.append("entered desc");
+            if (StringUtils.hasText(sortByRating) && ("asc".equals(sortByRating) || "desc".equals(sortByRating))) {
+                columnsToSort.append(", rating " + sortByRating);
+            }
+            if (StringUtils.hasText(sortByRatingAvg) && ("asc".equals(sortByRatingAvg) || "desc".equals(sortByRatingAvg))) {
+                columnsToSort.append(", rating_avg " + sortByRatingAvg);
+            }
+            pagedListInfo.setColumnToSortBy(columnsToSort.toString());
+            // Projects to show
+            projectRatingList.setPagedListInfo(pagedListInfo);
+            projectRatingList.setInstanceId(PortalUtils.getInstance(request).getId());
+            projectRatingList.setGroupId(thisUser.getGroupId());
+            projectRatingList.setCategoryId(categoryId);
+            projectRatingList.setProjectId(projectId);
+            projectRatingList.setLoadProject(true);
+            projectRatingList.setOpenProjectsOnly(true);
+            if ("-1".equals(projectId)) {
+                if (PortalUtils.getDashboardPortlet(request).isCached() || privateCategory) {
+                    if (PortalUtils.canShowSensitiveData(request)) {
+                        // Use the most generic settings since this portlet is cached
+                        projectRatingList.setForParticipant(Constants.TRUE);
+                    } else {
+                        // Use the most generic settings since this portlet is cached
+                        projectRatingList.setPublicProjects(Constants.TRUE);
+                    }
+                } else {
+                    projectRatingList.setPublicProjects(Constants.TRUE);
+                }
+            }
+            if (StringUtils.hasText(minimumRatingCount) && StringUtils.isNumber(minimumRatingCount)) {
+                projectRatingList.setMinimumRatingCount(minimumRatingCount);
+            }
+            if (StringUtils.hasText(minimumRatingAvg)) {
+                projectRatingList.setMinimumRatingAvg(minimumRatingAvg);
+            }
+            if ("true".equals(filterInappropriate)) {
+                projectRatingList.setFilterInappropriate(Constants.TRUE);
+            }
+            projectRatingList.buildList(PortalUtils.useConnection(request));
+            request.setAttribute(PROJECT_RATING_LIST, projectRatingList);
+            request.setAttribute(TITLE, title);
+            request.setAttribute(SHOW_PROJECT_TITLE, showProjectTitle);
+            request.setAttribute(SHOW_PROJECT_CATEGORY, showProjectCategory);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        // JSP view
+        if (projectRatingList.size() > 0) {
+            PortletContext context = getPortletContext();
+            PortletRequestDispatcher requestDispatcher = context.getRequestDispatcher(defaultView);
+            requestDispatcher.include(request, response);
+        }
+    } catch (Exception e) {
+        throw new PortletException(e.getMessage());
+    }
+}

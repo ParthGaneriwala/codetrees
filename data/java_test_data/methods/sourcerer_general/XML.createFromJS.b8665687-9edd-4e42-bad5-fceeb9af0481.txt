@@ -1,0 +1,121 @@
+static XML createFromJS(XMLLibImpl lib, Object inputObject) {
+    XmlObject xo;
+    boolean isText = false;
+    String frag;
+    if (inputObject == null || inputObject == Undefined.instance) {
+        frag = "";
+    } else if (inputObject instanceof XMLObjectImpl) {
+        // todo: faster way for XMLObjects?
+        frag = ((XMLObjectImpl) inputObject).toXMLString(0);
+    } else {
+        if (inputObject instanceof Wrapper) {
+            Object wrapped = ((Wrapper) inputObject).unwrap();
+            if (wrapped instanceof XmlObject) {
+                return createFromXmlObject(lib, (XmlObject) wrapped);
+            }
+        }
+        frag = ScriptRuntime.toString(inputObject);
+    }
+    if (frag.trim().startsWith("<>")) {
+        throw ScriptRuntime.typeError("Invalid use of XML object anonymous tags <></>.");
+    }
+    if (frag.indexOf("<") == -1) {
+        // Must be solo text node, wrap in XML fragment
+        isText = true;
+        frag = "<textFragment>" + frag + "</textFragment>";
+    }
+    XmlOptions options = new XmlOptions();
+    if (lib.ignoreComments) {
+        options.put(XmlOptions.LOAD_STRIP_COMMENTS);
+    }
+    if (lib.ignoreProcessingInstructions) {
+        options.put(XmlOptions.LOAD_STRIP_PROCINSTS);
+    }
+    if (lib.ignoreWhitespace) {
+        options.put(XmlOptions.LOAD_STRIP_WHITESPACE);
+    }
+    try {
+        xo = XmlObject.Factory.parse(frag, options);
+        // Apply the default namespace
+        Context cx = Context.getCurrentContext();
+        String defaultURI = lib.getDefaultNamespaceURI(cx);
+        if (defaultURI.length() > 0) {
+            XmlCursor cursor = xo.newCursor();
+            boolean isRoot = true;
+            while (!cursor.toNextToken().isEnddoc()) {
+                if (!cursor.isStart())
+                    continue;
+                // Check if this element explicitly sets the
+                // default namespace
+                boolean defaultNSDeclared = false;
+                cursor.push();
+                while (cursor.toNextToken().isAnyAttr()) {
+                    if (cursor.isNamespace()) {
+                        if (cursor.getName().getLocalPart().length() == 0) {
+                            defaultNSDeclared = true;
+                            break;
+                        }
+                    }
+                }
+                cursor.pop();
+                if (defaultNSDeclared) {
+                    cursor.toEndToken();
+                    continue;
+                }
+                // Check if this element's name is in no namespace
+                javax.xml.namespace.QName qname = cursor.getName();
+                if (qname.getNamespaceURI().length() == 0) {
+                    // Change the namespace
+                    qname = new javax.xml.namespace.QName(defaultURI, qname.getLocalPart());
+                    cursor.setName(qname);
+                }
+                if (isRoot) {
+                    // Declare the default namespace
+                    cursor.push();
+                    cursor.toNextToken();
+                    cursor.insertNamespace("", defaultURI);
+                    cursor.pop();
+                    isRoot = false;
+                }
+            }
+            cursor.dispose();
+        }
+    } catch (XmlException xe) {
+        /*
+todo need to handle namespace prefix not found in XML look for namespace type in the scope change.
+
+            String errorMsg = "Use of undefined namespace prefix: ";
+            String msg = xe.getError().getMessage();
+            if (msg.startsWith(errorMsg))
+            {
+                String prefix = msg.substring(errorMsg.length());
+            }
+*/
+        String errMsg = xe.getMessage();
+        if (errMsg.equals("error: Unexpected end of file after null")) {
+            // Create an empty document.
+            xo = XmlObject.Factory.newInstance();
+        } else {
+            throw ScriptRuntime.typeError(xe.getMessage());
+        }
+    } catch (Throwable e) {
+        // todo: TLL Catch specific exceptions during parse.
+        throw ScriptRuntime.typeError("Not Parsable as XML");
+    }
+    XmlCursor curs = xo.newCursor();
+    if (curs.currentTokenType().isStartdoc()) {
+        curs.toFirstContentToken();
+    }
+    if (isText) {
+        // Move it to point to the text node
+        curs.toFirstContentToken();
+    }
+    XScriptAnnotation anno;
+    try {
+        anno = new XScriptAnnotation(curs);
+        curs.setBookmark(anno);
+    } finally {
+        curs.dispose();
+    }
+    return new XML(lib, anno);
+}

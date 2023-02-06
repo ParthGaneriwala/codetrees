@@ -1,0 +1,49 @@
+private void processCreateView() throws HsqlException {
+    String name = tokenizer.getName();
+    HsqlName schemaname = session.getSchemaHsqlNameForWrite(tokenizer.getLongNameFirst());
+    int logposition = tokenizer.getPartMarker();
+    database.schemaManager.checkUserViewNotExists(session, name, schemaname.name);
+    HsqlName viewHsqlName = database.nameManager.newHsqlName(name, tokenizer.wasQuotedIdentifier());
+    viewHsqlName.schema = schemaname;
+    HsqlName[] colList = null;
+    // lists when used in OOo
+    if (tokenizer.isGetThis(Token.T_OPENBRACKET)) {
+        try {
+            HsqlArrayList list = Parser.getColumnNames(database, null, tokenizer, true);
+            colList = new HsqlName[list.size()];
+            colList = (HsqlName[]) list.toArray(colList);
+            // added lines to make sure all valid columns are quoted
+            if (database.isStoredFileAccess()) {
+                for (int i = 0; i < colList.length; i++) {
+                    if (!colList[i].isNameQuoted) {
+                        colList = null;
+                        break;
+                    }
+                }
+            }
+        } catch (HsqlException e) {
+            // added lines to catch unquoted names with spaces
+            if (database.isStoredFileAccess()) {
+                while (!tokenizer.getString().equals(Token.T_CLOSEBRACKET)) {
+                }
+            } else {
+                throw e;
+            }
+        }
+    }
+    tokenizer.getThis(Token.T_AS);
+    tokenizer.setPartMarker();
+    Parser parser = new Parser(session, database, tokenizer);
+    int brackets = parser.parseOpenBracketsSelect();
+    Select select;
+    // accept ORDER BY or ORDRY BY with LIMIT - accept unions
+    select = parser.parseSelect(brackets, true, false, true, true);
+    if (select.sIntoTable != null) {
+        throw (Trace.error(Trace.INVALID_IDENTIFIER, Token.INTO));
+    }
+    select.prepareResult(session);
+    View view = new View(session, database, viewHsqlName, tokenizer.getLastPart(), colList);
+    session.commit();
+    database.schemaManager.linkTable(view);
+    tokenizer.setPartMarker(logposition);
+}

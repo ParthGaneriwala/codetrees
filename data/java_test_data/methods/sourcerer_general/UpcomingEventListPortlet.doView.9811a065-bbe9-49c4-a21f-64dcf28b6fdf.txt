@@ -1,0 +1,129 @@
+public void doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    // Prefs
+    request.setAttribute(TITLE, request.getPreferences().getValue(TITLE, "Upcoming Events"));
+    request.setAttribute(PREF_SHOW_LINKS, request.getPreferences().getValue(PREF_SHOW_LINKS, "true"));
+    String view = VIEW_PAGE;
+    String viewType = request.getParameter(VIEW_TYPE);
+    if (viewType == null) {
+        viewType = (String) request.getPortletSession().getAttribute(VIEW_TYPE);
+    }
+    User thisUser = PortalUtils.getUser(request);
+    String webcastsOnly = request.getPreferences().getValue(INCLUDE_WEBCASTS_ONLY, "false");
+    String includeCategoryListString = request.getPreferences().getValue(INCLUDE_CATEGORY_LIST, "");
+    String listSizeString = request.getPreferences().getValue(LIMIT, "10");
+    int listSize = Integer.parseInt(listSizeString);
+    Collection<String> includeCategoryList = Arrays.asList(includeCategoryListString.split(","));
+    ProjectCategoryList allCategories = new ProjectCategoryList();
+    List<Integer> includeCategoryIdList = new ArrayList<Integer>();
+    // Check if all projects should be used, or a specific project
+    int projectId = -1;
+    Project project = null;
+    if ("".equals(includeCategoryListString)) {
+        // This portlet can consume data from other portlets so check that first
+        for (String event : PortalUtils.getDashboardPortlet(request).getConsumeDataEvents()) {
+            project = (Project) PortalUtils.getGeneratedData(request, event);
+        }
+        // This portlet can use the project in the request scope so check that last
+        if (project == null) {
+            project = PortalUtils.findProject(request);
+        }
+        if (project != null) {
+            projectId = project.getId();
+        }
+    }
+    try {
+        // Now that the meetings have been sorted by date collect them all into a single list
+        MeetingList events = new MeetingList();
+        if (ADD_SUCCESS.equals(viewType)) {
+            view = MESSAGE_PAGE;
+            Project p = (Project) request.getPortletSession().getAttribute(PROJECT);
+            request.setAttribute(SUCCESS_MESSAGE, request.getPreferences().getValue(PREF_SUCCESS_MESSAGE, null));
+            request.setAttribute(PROJECT_URL, request.getContextPath() + "/show/" + p.getUniqueId());
+        } else {
+            Connection db = PortalUtils.useConnection(request);
+            allCategories.buildList(db);
+            // For each category get all the public projects that match the category id
+            for (String thisCategory : includeCategoryList) {
+                ProjectCategory category = allCategories.getFromValue(thisCategory.trim());
+                if (category != null) {
+                    includeCategoryIdList.add(category.getId());
+                }
+            }
+            Map<Integer, Project> projectByIdMap = new HashMap<Integer, Project>();
+            // using treemap to sort meetings by date
+            Map<Date, MeetingList> meetingByDateMap = new TreeMap<Date, MeetingList>();
+            PagedListInfo pagedListInfo = new PagedListInfo();
+            pagedListInfo.setItemsPerPage(listSize);
+            pagedListInfo.setColumnToSortBy("m.start_date");
+            pagedListInfo.setSortOrder("asc");
+            // Show the current or upcoming events
+            events.setPagedListInfo(pagedListInfo);
+            events.setEventSpanStart(new Timestamp(System.currentTimeMillis()));
+            // Show webcasts only
+            if (StringUtils.isTrue(webcastsOnly)) {
+                events.setIsWebcast(true);
+            }
+            if (projectId > -1) {
+                // Show the meetings for a specific project
+                events.setProjectId(projectId);
+            } else {
+                events.setInstanceId(PortalUtils.getInstance(request).getId());
+                if (PortalUtils.getDashboardPortlet(request).isCached()) {
+                    if (PortalUtils.canShowSensitiveData(request)) {
+                        // Use the most generic settings since this portlet is cached
+                        events.setForParticipant(Constants.TRUE);
+                    } else {
+                        // Use the most generic settings since this portlet is cached
+                        events.setPublicOpenProjectsOnly(true);
+                    }
+                } else {
+                    if (thisUser.isLoggedIn()) {
+                        // Use the current user's setting
+                        events.setForUser(thisUser.getId());
+                    } else {
+                        // Use the most generic settings
+                        events.setPublicOpenProjectsOnly(true);
+                    }
+                }
+                // Show meetings that exist for the specified categories
+                events.setProjectCategoryIdList(includeCategoryIdList);
+            }
+            // Build the list
+            events.buildList(db);
+            for (Meeting m : events) {
+                // check if project was already added
+                Project p = projectByIdMap.get(m.getProjectId());
+                if (p == null) {
+                    p = ProjectUtils.loadProject(m.getProjectId());
+                }
+                projectByIdMap.put(p.getId(), p);
+            }
+            // Get all meeting attendee records for this user
+            Map<Integer, MeetingAttendee> attendeeByMeetingIdMap = new HashMap<Integer, MeetingAttendee>();
+            if (thisUser != null && thisUser.getId() > 0) {
+                MeetingAttendeeList attendeeList = new MeetingAttendeeList();
+                attendeeList.setUserId(thisUser.getId());
+                attendeeList.buildList(db);
+                for (MeetingAttendee attendee : attendeeList) {
+                    attendeeByMeetingIdMap.put(attendee.getMeetingId(), attendee);
+                }
+            }
+            request.setAttribute(EVENT_LIST, events);
+            request.setAttribute(PROJECT_BY_ID_MAP, projectByIdMap);
+            request.setAttribute(ATTENDEE_BY_MEETING_ID_MAP, attendeeByMeetingIdMap);
+            request.setAttribute(USER, thisUser);
+        }
+        // Clean up session
+        request.getPortletSession().removeAttribute(VIEW_TYPE);
+        request.getPortletSession().removeAttribute(PROJECT);
+        if (events.size() > 0) {
+            // JSP view
+            PortletContext context = getPortletContext();
+            PortletRequestDispatcher requestDispatcher = context.getRequestDispatcher(view);
+            requestDispatcher.include(request, response);
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+        throw new PortletException(e);
+    }
+}

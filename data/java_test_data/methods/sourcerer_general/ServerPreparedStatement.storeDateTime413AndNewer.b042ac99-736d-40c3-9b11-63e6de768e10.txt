@@ -1,0 +1,51 @@
+private void storeDateTime413AndNewer(Buffer intoBuf, java.util.Date dt, int bufferType) throws SQLException {
+    Calendar sessionCalendar = null;
+    if (!this.useLegacyDatetimeCode) {
+        if (bufferType == MysqlDefs.FIELD_TYPE_DATE) {
+            sessionCalendar = getDefaultTzCalendar();
+        } else {
+            sessionCalendar = getServerTzCalendar();
+        }
+    } else {
+        sessionCalendar = (dt instanceof Timestamp && this.connection.getUseJDBCCompliantTimezoneShift()) ? this.connection.getUtcCalendar() : getCalendarInstanceForSessionOrNew();
+    }
+    synchronized (sessionCalendar) {
+        java.util.Date oldTime = sessionCalendar.getTime();
+        try {
+            sessionCalendar.setTime(dt);
+            if (dt instanceof java.sql.Date) {
+                sessionCalendar.set(Calendar.HOUR_OF_DAY, 0);
+                sessionCalendar.set(Calendar.MINUTE, 0);
+                sessionCalendar.set(Calendar.SECOND, 0);
+            }
+            byte length = (byte) 7;
+            if (dt instanceof java.sql.Timestamp) {
+                length = (byte) 11;
+            }
+            intoBuf.ensureCapacity(length);
+            // length
+            intoBuf.writeByte(length);
+            int year = sessionCalendar.get(Calendar.YEAR);
+            int month = sessionCalendar.get(Calendar.MONTH) + 1;
+            int date = sessionCalendar.get(Calendar.DAY_OF_MONTH);
+            intoBuf.writeInt(year);
+            intoBuf.writeByte((byte) month);
+            intoBuf.writeByte((byte) date);
+            if (dt instanceof java.sql.Date) {
+                intoBuf.writeByte((byte) 0);
+                intoBuf.writeByte((byte) 0);
+                intoBuf.writeByte((byte) 0);
+            } else {
+                intoBuf.writeByte((byte) sessionCalendar.get(Calendar.HOUR_OF_DAY));
+                intoBuf.writeByte((byte) sessionCalendar.get(Calendar.MINUTE));
+                intoBuf.writeByte((byte) sessionCalendar.get(Calendar.SECOND));
+            }
+            if (length == 11) {
+                // MySQL expects microseconds, not nanos
+                intoBuf.writeLong(((java.sql.Timestamp) dt).getNanos() / 1000);
+            }
+        } finally {
+            sessionCalendar.setTime(oldTime);
+        }
+    }
+}

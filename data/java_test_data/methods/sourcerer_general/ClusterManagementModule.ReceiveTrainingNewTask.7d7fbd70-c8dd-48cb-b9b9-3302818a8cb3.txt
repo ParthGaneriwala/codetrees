@@ -1,0 +1,66 @@
+// ------------------------------------------------------------------------
+public synchronized void ReceiveTrainingNewTask(Integer MachineID, MachineTrainingData Data) {
+    SA.AddLogEntry("CMM", "Info - Received a \"Training New Task\" message from the cluster." + " SenderID=" + MachineID + " for Trainee machine name - " + Data.getMachineName());
+    // If local machine is in PRE_TRAINING state
+    if (LocalMachineEntry.getMachineState() == MachineState.PRE_TRAINING) {
+        // Check if the message is for this local machine
+        if (LocalMachineEntry.getClusterMachineName().equals(Data.getMachineName())) {
+            SA.AddLogEntry("CMM", "Info - Beginning the Training session.");
+            MachineDB = Data.getMachineDB();
+            // Interpret the number of ACTIVE machines in the Cluster from the MachineDB
+            // Convert MachineDB from TreeMap into a Set
+            Set<Map.Entry<Integer, MachineEntry>> MachineSet = MachineDB.entrySet();
+            Iterator<Map.Entry<Integer, MachineEntry>> it = MachineSet.iterator();
+            // for each element in the set
+            while (it.hasNext()) {
+                // retrieve the set element
+                Map.Entry<Integer, MachineEntry> MapEntry = it.next();
+                // if the current machine in the Machine Database is ACTIVES
+                if (MapEntry.getValue().getMachineState() == MachineState.ACTIVE)
+                    ClusterActiveMachineCount++;
+            }
+            SA.AddLogEntry("CMM", "Info - Learned Machine database from Training session.");
+            TrainingMessageQueue = new MessageQueue();
+            // Move to TRAINING state
+            LocalMachineEntry.putMachineState(MachineState.TRAINING);
+            SpreadListener.setLocalMachineState(LocalMachineEntry.getMachineState());
+        }
+    } else // If local machine is in ACTIVE state or in POST_TRAINING state
+    // note: TRAINING stage is handled in the listener
+    {
+        // Create a new training context
+        TrainingContext Context = new TrainingContext();
+        Context.setLastTrainedTaskID(null);
+        Context.setTraineeName(Data.getMachineName());
+        Integer TrainingTaskID = null;
+        try {
+            // Add the new Training task into the Task database
+            TrainingTaskID = InsertNewTaskIntoDB(MachineID, Context);
+        } catch (CMMExn_TaskErr e) {
+            // TODO remove stack trace
+            e.printStackTrace();
+            SA.AddLogEntry("CMM", "Error - Failed to add the new training task into the Task database.");
+            SA.UnrecoverableClusterError();
+            return;
+        }
+        SA.AddLogEntry("CMM", "Info - Added a Training task to the task database. TaskID=" + TrainingTaskID);
+        // If local machine was the one who sent the message
+        if (MachineID.equals(MachineDBLocalID)) {
+            // This training task is handled by this machine
+            // Retrieve the Training entry for this task
+            ToBeMentoredEntry FirstEntry = ToBeMentoredList.getFirst();
+            if (!FirstEntry.getMachineName().equals(Data.getMachineName())) {
+                // Message is not consistent with ToBeMentored Queue
+                SA.AddLogEntry("CMM", "Error - Got unexpected Trainee machine name in the \"Training New Task\" message");
+                SA.UnrecoverableClusterError();
+                return;
+            }
+            LocalMachineEntry.incTaskCount();
+            // Remove the training data from the ToBeMentoredList
+            ToBeMentoredList.removeFirst();
+            // Create a new Mentor and add it to the Mentor List
+            MentorList.addLast(new Mentor(this, TrainingTaskID, Data.getMachineName(), FirstEntry.getSnapshotTaskDB(), InteractiveTrainingMode));
+            SA.AddLogEntry("CMM", "Info - Started a new Mentor thread for this mentoring session.");
+        }
+    }
+}

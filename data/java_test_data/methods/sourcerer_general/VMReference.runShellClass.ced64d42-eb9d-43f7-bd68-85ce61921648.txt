@@ -1,0 +1,46 @@
+public DebuggerResult runShellClass(String className) {
+    // ** call Shell.run() **
+    try {
+        exitStatus = Debugger.NORMAL_EXIT;
+        serverThreadStartWait();
+        // Store the class and method to call
+        setStaticFieldObject(serverClass, ExecServer.CLASS_TO_RUN_NAME, className);
+        setStaticFieldValue(serverClass, ExecServer.EXEC_ACTION_NAME, machine.mirrorOf(ExecServer.EXEC_SHELL));
+        // Resume the thread, wait for it to finish and the new thread to start
+        serverThreadStarted = false;
+        resumeServerThread();
+        serverThreadStartWait();
+        // Get return value and check for exceptions
+        ObjectReference rval = getStaticFieldObject(serverClass, ExecServer.METHOD_RETURN_NAME);
+        if (rval == null) {
+            ObjectReference exception = getStaticFieldObject(serverClass, ExecServer.EXCEPTION_NAME);
+            if (exception != null) {
+                exceptionEvent(new InvocationException(exception));
+                return new DebuggerResult(lastException);
+            }
+        }
+        ClassObjectReference execdClass = (ClassObjectReference) getStaticFieldObject(serverClass, ExecServer.EXECUTED_CLASS_NAME);
+        ClassType ctype = (ClassType) execdClass.reflectedType();
+        Field rfield = ctype.fieldByName("__bluej_runtime_result");
+        if (rfield != null) {
+            rval = (ObjectReference) ctype.getValue(rfield);
+            if (rval != null) {
+                GenTypeClass rgtype = (GenTypeClass) JdiReflective.fromField(rfield, ctype);
+                JdiObject robj = JdiObject.getDebuggerObject(rval, rgtype);
+                ctype.setValue(rfield, null);
+                return new DebuggerResult(robj);
+            }
+        }
+        return new DebuggerResult((DebuggerObject) null);
+    } catch (VMDisconnectedException e) {
+        exitStatus = Debugger.TERMINATED;
+        return new DebuggerResult(exitStatus);
+    } catch (Exception e) {
+        // remote invocation failed
+        Debug.reportError("starting shell class failed: " + e);
+        e.printStackTrace();
+        exitStatus = Debugger.EXCEPTION;
+        lastException = new ExceptionDescription("Internal BlueJ error: unexpected exception in remote VM\n" + e);
+    }
+    return new DebuggerResult(lastException);
+}

@@ -1,0 +1,45 @@
+synchronized void commitBlockSynchronization(Block lastblock, long newgenerationstamp, long newlength, boolean closeFile, boolean deleteblock, DatanodeID[] newtargets) throws IOException {
+    LOG.info("commitBlockSynchronization(lastblock=" + lastblock + ", newgenerationstamp=" + newgenerationstamp + ", newlength=" + newlength + ", newtargets=" + Arrays.asList(newtargets) + ")");
+    final BlockInfo oldblockinfo = blocksMap.getStoredBlock(lastblock);
+    if (oldblockinfo == null) {
+        throw new IOException("Block (=" + lastblock + ") not found");
+    }
+    INodeFile iFile = oldblockinfo.getINode();
+    if (!iFile.isUnderConstruction()) {
+        throw new IOException("Unexpected block (=" + lastblock + ") since the file (=" + iFile.getLocalName() + ") is not under construction");
+    }
+    INodeFileUnderConstruction pendingFile = (INodeFileUnderConstruction) iFile;
+    // Remove old block from blocks map. This always have to be done
+    // because the generation stamp of this block is changing.
+    blocksMap.removeBlock(oldblockinfo);
+    if (deleteblock) {
+        pendingFile.removeBlock(lastblock);
+    } else {
+        // update last block, construct newblockinfo and add it to the blocks map
+        lastblock.set(lastblock.getBlockId(), newlength, newgenerationstamp);
+        final BlockInfo newblockinfo = blocksMap.addINode(lastblock, pendingFile);
+        // update block info
+        DatanodeDescriptor[] descriptors = null;
+        if (newtargets.length > 0) {
+            descriptors = new DatanodeDescriptor[newtargets.length];
+            for (int i = 0; i < newtargets.length; i++) {
+                descriptors[i] = getDatanode(newtargets[i]);
+                descriptors[i].addBlock(newblockinfo);
+            }
+        }
+        pendingFile.setLastBlock(newblockinfo, descriptors);
+    }
+    // If this commit does not want to close the file, just persist
+    // block locations and return
+    String src = leaseManager.findPath(pendingFile);
+    if (!closeFile) {
+        dir.persistBlocks(src, pendingFile);
+        getEditLog().logSync();
+        LOG.info("commitBlockSynchronization(" + lastblock + ") successful");
+        return;
+    }
+    // remove lease, close file
+    finalizeINodeFileUnderConstruction(src, pendingFile);
+    getEditLog().logSync();
+    LOG.info("commitBlockSynchronization(newblock=" + lastblock + ", newgenerationstamp=" + newgenerationstamp + ", newlength=" + newlength + ", newtargets=" + Arrays.asList(newtargets) + ") successful");
+}

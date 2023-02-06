@@ -1,0 +1,149 @@
+@Override
+public void acceptClassifier(BatchClassifierEvent e) {
+    if (m_dataSourceListeners.size() > 0 || m_trainingSetListeners.size() > 0 || m_testSetListeners.size() > 0) {
+        if (e.getTestSet() == null) {
+            // can't append predictions
+            return;
+        }
+        if ((e.getTestSet().isStructureOnly() || e.getTestSet().getDataSet().numInstances() == 0) && e.getTestSet().getDataSet().classIndex() < 0) {
+            // don't do anything or make a fuss if there is no class set in
+            return;
+        // a structure only data set
+        }
+        if (e.getTestSet().getDataSet().classIndex() < 0) {
+            if (m_logger != null) {
+                m_logger.logMessage("[PredictionAppender] " + statusMessagePrefix() + "No class attribute set in the data!");
+                m_logger.statusMessage(statusMessagePrefix() + "ERROR: Can't append probablities - see log.");
+            }
+            stop();
+            return;
+        }
+        Instances testSet = e.getTestSet().getDataSet();
+        Instances trainSet = e.getTrainSet().getDataSet();
+        int setNum = e.getSetNumber();
+        int maxNum = e.getMaxSetNumber();
+        weka.classifiers.Classifier classifier = e.getClassifier();
+        String relationNameModifier = "_set_" + e.getSetNumber() + "_of_" + e.getMaxSetNumber();
+        if (!m_appendProbabilities || testSet.classAttribute().isNumeric()) {
+            try {
+                Instances newTestSetInstances = makeDataSetClass(testSet, trainSet, classifier, relationNameModifier);
+                Instances newTrainingSetInstances = makeDataSetClass(trainSet, trainSet, classifier, relationNameModifier);
+                if (m_trainingSetListeners.size() > 0) {
+                    TrainingSetEvent tse = new TrainingSetEvent(this, new Instances(newTrainingSetInstances, 0));
+                    tse.m_setNumber = setNum;
+                    tse.m_maxSetNumber = maxNum;
+                    notifyTrainingSetAvailable(tse);
+                    // fill in predicted values
+                    for (int i = 0; i < trainSet.numInstances(); i++) {
+                        double predClass = classifier.classifyInstance(trainSet.instance(i));
+                        newTrainingSetInstances.instance(i).setValue(newTrainingSetInstances.numAttributes() - 1, predClass);
+                    }
+                    tse = new TrainingSetEvent(this, newTrainingSetInstances);
+                    tse.m_setNumber = setNum;
+                    tse.m_maxSetNumber = maxNum;
+                    notifyTrainingSetAvailable(tse);
+                }
+                if (m_testSetListeners.size() > 0) {
+                    TestSetEvent tse = new TestSetEvent(this, new Instances(newTestSetInstances, 0));
+                    tse.m_setNumber = setNum;
+                    tse.m_maxSetNumber = maxNum;
+                    notifyTestSetAvailable(tse);
+                }
+                if (m_dataSourceListeners.size() > 0) {
+                    notifyDataSetAvailable(new DataSetEvent(this, new Instances(newTestSetInstances, 0)));
+                }
+                if (e.getTestSet().isStructureOnly()) {
+                    m_format = newTestSetInstances;
+                }
+                if (m_dataSourceListeners.size() > 0 || m_testSetListeners.size() > 0) {
+                    // fill in predicted values
+                    for (int i = 0; i < testSet.numInstances(); i++) {
+                        Instance tempInst = testSet.instance(i);
+                        // in the test data)
+                        if (tempInst.isMissing(tempInst.classIndex()) && !(classifier instanceof weka.classifiers.misc.InputMappedClassifier)) {
+                            tempInst = (Instance) testSet.instance(i).copy();
+                            tempInst.setDataset(trainSet);
+                        }
+                        double predClass = classifier.classifyInstance(tempInst);
+                        newTestSetInstances.instance(i).setValue(newTestSetInstances.numAttributes() - 1, predClass);
+                    }
+                }
+                // notify listeners
+                if (m_testSetListeners.size() > 0) {
+                    TestSetEvent tse = new TestSetEvent(this, newTestSetInstances);
+                    tse.m_setNumber = setNum;
+                    tse.m_maxSetNumber = maxNum;
+                    notifyTestSetAvailable(tse);
+                }
+                if (m_dataSourceListeners.size() > 0) {
+                    notifyDataSetAvailable(new DataSetEvent(this, newTestSetInstances));
+                }
+                return;
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
+        }
+        if (m_appendProbabilities) {
+            try {
+                Instances newTestSetInstances = makeDataSetProbabilities(testSet, trainSet, classifier, relationNameModifier);
+                Instances newTrainingSetInstances = makeDataSetProbabilities(trainSet, trainSet, classifier, relationNameModifier);
+                if (m_trainingSetListeners.size() > 0) {
+                    TrainingSetEvent tse = new TrainingSetEvent(this, new Instances(newTrainingSetInstances, 0));
+                    tse.m_setNumber = setNum;
+                    tse.m_maxSetNumber = maxNum;
+                    notifyTrainingSetAvailable(tse);
+                    // fill in predicted probabilities
+                    for (int i = 0; i < trainSet.numInstances(); i++) {
+                        double[] preds = classifier.distributionForInstance(trainSet.instance(i));
+                        for (int j = 0; j < trainSet.classAttribute().numValues(); j++) {
+                            newTrainingSetInstances.instance(i).setValue(trainSet.numAttributes() + j, preds[j]);
+                        }
+                    }
+                    tse = new TrainingSetEvent(this, newTrainingSetInstances);
+                    tse.m_setNumber = setNum;
+                    tse.m_maxSetNumber = maxNum;
+                    notifyTrainingSetAvailable(tse);
+                }
+                if (m_testSetListeners.size() > 0) {
+                    TestSetEvent tse = new TestSetEvent(this, new Instances(newTestSetInstances, 0));
+                    tse.m_setNumber = setNum;
+                    tse.m_maxSetNumber = maxNum;
+                    notifyTestSetAvailable(tse);
+                }
+                if (m_dataSourceListeners.size() > 0) {
+                    notifyDataSetAvailable(new DataSetEvent(this, new Instances(newTestSetInstances, 0)));
+                }
+                if (e.getTestSet().isStructureOnly()) {
+                    m_format = newTestSetInstances;
+                }
+                if (m_dataSourceListeners.size() > 0 || m_testSetListeners.size() > 0) {
+                    // fill in predicted probabilities
+                    for (int i = 0; i < testSet.numInstances(); i++) {
+                        Instance tempInst = testSet.instance(i);
+                        // in the test data)
+                        if (tempInst.isMissing(tempInst.classIndex()) && !(classifier instanceof weka.classifiers.misc.InputMappedClassifier)) {
+                            tempInst = (Instance) testSet.instance(i).copy();
+                            tempInst.setDataset(trainSet);
+                        }
+                        double[] preds = classifier.distributionForInstance(tempInst);
+                        for (int j = 0; j < tempInst.classAttribute().numValues(); j++) {
+                            newTestSetInstances.instance(i).setValue(testSet.numAttributes() + j, preds[j]);
+                        }
+                    }
+                }
+                // notify listeners
+                if (m_testSetListeners.size() > 0) {
+                    TestSetEvent tse = new TestSetEvent(this, newTestSetInstances);
+                    tse.m_setNumber = setNum;
+                    tse.m_maxSetNumber = maxNum;
+                    notifyTestSetAvailable(tse);
+                }
+                if (m_dataSourceListeners.size() > 0) {
+                    notifyDataSetAvailable(new DataSetEvent(this, newTestSetInstances));
+                }
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
+        }
+    }
+}

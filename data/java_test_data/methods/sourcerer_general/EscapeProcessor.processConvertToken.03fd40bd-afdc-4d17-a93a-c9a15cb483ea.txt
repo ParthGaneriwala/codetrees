@@ -1,0 +1,76 @@
+private static String processConvertToken(String functionToken, boolean serverSupportsConvertFn, MySQLConnection conn) throws SQLException {
+    // The JDBC spec requires these types:
+    // 
+    // BIGINT
+    // BINARY
+    // BIT
+    // CHAR
+    // DATE
+    // DECIMAL
+    // DOUBLE
+    // FLOAT
+    // INTEGER
+    // LONGVARBINARY
+    // LONGVARCHAR
+    // REAL
+    // SMALLINT
+    // TIME
+    // TIMESTAMP
+    // TINYINT
+    // VARBINARY
+    // VARCHAR
+    // MySQL supports these types:
+    // 
+    // BINARY
+    // CHAR
+    // DATE
+    // DATETIME
+    // SIGNED (integer)
+    // UNSIGNED (integer)
+    // TIME
+    int firstIndexOfParen = functionToken.indexOf("(");
+    if (firstIndexOfParen == -1) {
+        throw SQLError.createSQLException("Syntax error while processing {fn convert (... , ...)} token, missing opening parenthesis in token '" + functionToken + "'.", SQLError.SQL_STATE_SYNTAX_ERROR, conn.getExceptionInterceptor());
+    }
+    int tokenLength = functionToken.length();
+    int indexOfComma = functionToken.lastIndexOf(",");
+    if (indexOfComma == -1) {
+        throw SQLError.createSQLException("Syntax error while processing {fn convert (... , ...)} token, missing comma in token '" + functionToken + "'.", SQLError.SQL_STATE_SYNTAX_ERROR, conn.getExceptionInterceptor());
+    }
+    int indexOfCloseParen = functionToken.indexOf(')', indexOfComma);
+    if (indexOfCloseParen == -1) {
+        throw SQLError.createSQLException("Syntax error while processing {fn convert (... , ...)} token, missing closing parenthesis in token '" + functionToken + "'.", SQLError.SQL_STATE_SYNTAX_ERROR, conn.getExceptionInterceptor());
+    }
+    String expression = functionToken.substring(firstIndexOfParen + 1, indexOfComma);
+    String type = functionToken.substring(indexOfComma + 1, indexOfCloseParen);
+    String newType = null;
+    String trimmedType = type.trim();
+    if (StringUtils.startsWithIgnoreCase(trimmedType, "SQL_")) {
+        trimmedType = trimmedType.substring(4, trimmedType.length());
+    }
+    if (serverSupportsConvertFn) {
+        newType = (String) JDBC_CONVERT_TO_MYSQL_TYPE_MAP.get(trimmedType.toUpperCase(Locale.ENGLISH));
+    } else {
+        newType = (String) JDBC_NO_CONVERT_TO_MYSQL_EXPRESSION_MAP.get(trimmedType.toUpperCase(Locale.ENGLISH));
+        if (newType == null) {
+            throw SQLError.createSQLException("Can't find conversion re-write for type '" + type + "' that is applicable for this server version while processing escape tokens.", SQLError.SQL_STATE_GENERAL_ERROR, conn.getExceptionInterceptor());
+        }
+    }
+    if (newType == null) {
+        throw SQLError.createSQLException("Unsupported conversion type '" + type.trim() + "' found while processing escape token.", SQLError.SQL_STATE_GENERAL_ERROR, conn.getExceptionInterceptor());
+    }
+    int replaceIndex = newType.indexOf("?");
+    if (replaceIndex != -1) {
+        StringBuffer convertRewrite = new StringBuffer(newType.substring(0, replaceIndex));
+        convertRewrite.append(expression);
+        convertRewrite.append(newType.substring(replaceIndex + 1, newType.length()));
+        return convertRewrite.toString();
+    } else {
+        StringBuffer castRewrite = new StringBuffer("CAST(");
+        castRewrite.append(expression);
+        castRewrite.append(" AS ");
+        castRewrite.append(newType);
+        castRewrite.append(")");
+        return castRewrite.toString();
+    }
+}

@@ -1,0 +1,52 @@
+protected void launchMSteps(Instances inst) throws Exception {
+    if (m_executionSlots <= 1 || inst.numInstances() < 2 * m_executionSlots) {
+        M(inst);
+        return;
+    }
+    // aggregated estimators
+    new_estimators();
+    estimate_priors(inst);
+    int numPerTask = inst.numInstances() / m_executionSlots;
+    List<Future<MTask>> results = new ArrayList<Future<MTask>>();
+    for (int i = 0; i < m_executionSlots; i++) {
+        int start = i * numPerTask;
+        int end = start + numPerTask;
+        if (i == m_executionSlots - 1) {
+            end = inst.numInstances();
+        }
+        DiscreteEstimator[][] model = new DiscreteEstimator[m_num_clusters][m_num_attribs];
+        double[][][] normal = new double[m_num_clusters][m_num_attribs][3];
+        for (int ii = 0; ii < m_num_clusters; ii++) {
+            for (int j = 0; j < m_num_attribs; j++) {
+                if (m_theInstances.attribute(j).isNominal()) {
+                    model[ii][j] = new DiscreteEstimator(m_theInstances.attribute(j).numValues(), false);
+                } else {
+                    normal[ii][j][0] = normal[ii][j][1] = normal[ii][j][2] = 0.0;
+                }
+            }
+        }
+        MTask newTask = new MTask(inst, start, end, model, normal);
+        Future<MTask> futureM = m_executorPool.submit(newTask);
+        results.add(futureM);
+    // newTask.run();
+    }
+    for (Future<MTask> t : results) {
+        MTask m = t.get();
+        // aggregate
+        for (int i = 0; i < m_num_clusters; i++) {
+            for (int j = 0; j < m_num_attribs; j++) {
+                if (m_theInstances.attribute(j).isNominal()) {
+                    for (int k = 0; k < m_theInstances.attribute(j).numValues(); k++) {
+                        m_model[i][j].addValue(k, m.m_taskModel[i][j].getCount(k));
+                    }
+                } else {
+                    m_modelNormal[i][j][0] += m.m_taskModelNormal[i][j][0];
+                    m_modelNormal[i][j][2] += m.m_taskModelNormal[i][j][2];
+                    m_modelNormal[i][j][1] += m.m_taskModelNormal[i][j][1];
+                }
+            }
+        }
+    }
+    // re-estimate Gaussian parameters
+    M_reEstimate(inst);
+}

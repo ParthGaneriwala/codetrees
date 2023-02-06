@@ -1,0 +1,59 @@
+public int readAndProcess() throws IOException, InterruptedException {
+    while (true) {
+        /* Read at most one RPC. If the header is not read completely yet
+         * then iterate until we read first RPC or until there is no data left.
+         */
+        int count = -1;
+        if (dataLengthBuffer.remaining() > 0) {
+            count = channel.read(dataLengthBuffer);
+            if (count < 0 || dataLengthBuffer.remaining() > 0)
+                return count;
+        }
+        if (!versionRead) {
+            // Every connection is expected to send the header.
+            ByteBuffer versionBuffer = ByteBuffer.allocate(1);
+            count = channel.read(versionBuffer);
+            if (count <= 0) {
+                return count;
+            }
+            int version = versionBuffer.get(0);
+            dataLengthBuffer.flip();
+            if (!HEADER.equals(dataLengthBuffer) || version != CURRENT_VERSION) {
+                // Warning is ok since this is not supposed to happen.
+                LOG.warn("Incorrect header or version mismatch from " + hostAddress + ":" + remotePort + " got version " + version + " expected version " + CURRENT_VERSION);
+                return -1;
+            }
+            dataLengthBuffer.clear();
+            versionRead = true;
+            continue;
+        }
+        if (data == null) {
+            dataLengthBuffer.flip();
+            dataLength = dataLengthBuffer.getInt();
+            if (dataLength == Client.PING_CALL_ID) {
+                dataLengthBuffer.clear();
+                // ping message
+                return 0;
+            }
+            data = ByteBuffer.allocate(dataLength);
+            // Increment the rpc count
+            incRpcCount();
+        }
+        count = channel.read(data);
+        if (data.remaining() == 0) {
+            dataLengthBuffer.clear();
+            data.flip();
+            if (headerRead) {
+                processData();
+                data = null;
+                return count;
+            } else {
+                processHeader();
+                headerRead = true;
+                data = null;
+                continue;
+            }
+        }
+        return count;
+    }
+}

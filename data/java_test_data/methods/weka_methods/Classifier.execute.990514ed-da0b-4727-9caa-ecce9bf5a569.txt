@@ -1,0 +1,148 @@
+@SuppressWarnings("deprecation")
+@Override
+public void execute() {
+    try {
+        if (m_train != null) {
+            if (m_train.classIndex() < 0) {
+                // stop all processing
+                stop();
+                String errorMessage = statusMessagePrefix() + "ERROR: no class attribute set in test data!";
+                if (m_log != null) {
+                    m_log.statusMessage(errorMessage);
+                    m_log.logMessage("[Classifier] " + errorMessage);
+                } else {
+                    System.err.println("[Classifier] " + errorMessage);
+                }
+                return;
+            // assume last column is the class
+            /*
+             * m_train.setClassIndex(m_train.numAttributes()-1); if (m_log !=
+             * null) { m_log.logMessage("[Classifier] " + statusMessagePrefix()
+             * + " : assuming last " +"column is the class"); }
+             */
+            }
+            if (m_runNum == 1 && m_setNum == 1) {
+                // set this back to idle once the last fold
+                // of the last run has completed
+                // global state
+                m_state = BUILDING_MODEL;
+                // local status of this runnable
+                m_taskInfo.setExecutionStatus(TaskStatusInfo.PROCESSING);
+            }
+            // m_visual.setAnimated();
+            // m_visual.setText("Building model...");
+            String msg = statusMessagePrefix() + "Building model for run " + m_runNum + " fold " + m_setNum;
+            if (m_log != null) {
+                m_log.statusMessage(msg);
+            } else {
+                System.err.println(msg);
+            }
+            // buildClassifier();
+            // copy the classifier configuration
+            weka.classifiers.Classifier classifierCopy = weka.classifiers.AbstractClassifier.makeCopy(m_ClassifierTemplate);
+            if (classifierCopy instanceof EnvironmentHandler && m_env != null) {
+                ((EnvironmentHandler) classifierCopy).setEnvironment(m_env);
+            }
+            // build this model
+            classifierCopy.buildClassifier(m_train);
+            if (m_runNum == m_maxRunNum && m_setNum == m_maxSetNum) {
+                // Save the last classifier (might be used later on for
+                // classifying further test sets.
+                m_Classifier = classifierCopy;
+                m_trainingSet = new Instances(m_train, 0);
+            }
+            // if (m_batchClassifierListeners.size() > 0) {
+            // notify anyone who might be interested in just the model
+            // and training set.
+            BatchClassifierEvent ce = new BatchClassifierEvent(Classifier.this, classifierCopy, // no test
+            new DataSetEvent(this, m_train), // no test
+            null, // (yet)
+            m_setNum, m_maxSetNum);
+            ce.setGroupIdentifier(m_currentBatchIdentifier.getTime());
+            ce.setLabel(getCustomName());
+            notifyBatchClassifierListeners(ce);
+            // store in the output queue (if we have incoming test set events)
+            ce = new BatchClassifierEvent(Classifier.this, classifierCopy, // no test set (yet)
+            new DataSetEvent(this, m_train), // no test set (yet)
+            null, m_setNum, m_maxSetNum);
+            ce.setGroupIdentifier(m_currentBatchIdentifier.getTime());
+            ce.setLabel(getCustomName());
+            classifierTrainingComplete(ce);
+            if (classifierCopy instanceof weka.core.Drawable && m_graphListeners.size() > 0) {
+                String grphString = ((weka.core.Drawable) classifierCopy).graph();
+                int grphType = ((weka.core.Drawable) classifierCopy).graphType();
+                String grphTitle = classifierCopy.getClass().getName();
+                grphTitle = grphTitle.substring(grphTitle.lastIndexOf('.') + 1, grphTitle.length());
+                grphTitle = "Set " + m_setNum + " (" + m_train.relationName() + ") " + grphTitle;
+                GraphEvent ge = new GraphEvent(Classifier.this, grphString, grphTitle, grphType);
+                notifyGraphListeners(ge);
+            }
+            if (m_textListeners.size() > 0) {
+                String modelString = classifierCopy.toString();
+                String titleString = classifierCopy.getClass().getName();
+                titleString = titleString.substring(titleString.lastIndexOf('.') + 1, titleString.length());
+                modelString = "=== Classifier model ===\n\n" + "Scheme:   " + titleString + "\n" + "Relation: " + m_train.relationName() + ((m_maxSetNum > 1) ? "\nTraining Fold: " + m_setNum : "") + "\n\n" + modelString;
+                titleString = "Model: " + titleString;
+                TextEvent nt = new TextEvent(Classifier.this, modelString, titleString + (m_maxSetNum > 1 ? (" (fold " + m_setNum + ")") : ""));
+                notifyTextListeners(nt);
+            }
+        }
+    } catch (Exception ex) {
+        ex.printStackTrace();
+        if (m_log != null) {
+            String titleString = "[Classifier] " + statusMessagePrefix();
+            titleString += " run " + m_runNum + " fold " + m_setNum + " failed to complete.";
+            m_log.logMessage(titleString + " (build classifier). " + ex.getMessage());
+            m_log.statusMessage(statusMessagePrefix() + "ERROR (see log for details)");
+            ex.printStackTrace();
+        }
+        m_taskInfo.setExecutionStatus(TaskStatusInfo.FAILED);
+        // Stop all processing
+        stop();
+    } finally {
+        m_visual.setStatic();
+        if (m_log != null) {
+            if (m_setNum == m_maxSetNum) {
+                m_log.statusMessage(statusMessagePrefix() + "Finished.");
+            }
+        }
+        m_state = IDLE;
+        if (Thread.currentThread().isInterrupted()) {
+            // prevent any classifier events from being fired
+            m_trainingSet = null;
+            if (m_log != null) {
+                String titleString = "[Classifier] " + statusMessagePrefix();
+                m_log.logMessage(titleString + " (" + " run " + m_runNum + " fold " + m_setNum + ") interrupted!");
+                m_log.statusMessage(statusMessagePrefix() + "INTERRUPTED");
+            /*
+             * // are we the last active thread? if
+             * (m_executorPool.getActiveCount() == 1) { String msg =
+             * "[Classifier] " + statusMessagePrefix() +
+             * " last classifier unblocking..."; System.err.println(msg +
+             * " (interrupted)"); m_log.logMessage(msg + " (interrupted)"); //
+             * m_log.statusMessage(statusMessagePrefix() + "finished."); m_block
+             * = false; m_state = IDLE; block(false); }
+             */
+            }
+        /*
+           * System.err.println("Queue size: " +
+           * m_executorPool.getQueue().size() + " Active count: " +
+           * m_executorPool.getActiveCount());
+           */
+        }
+    /*
+           * else { // check to see if we are the last active thread if
+           * (m_executorPool == null || (m_executorPool.getQueue().size() == 0
+           * && m_executorPool.getActiveCount() == 1)) {
+           * 
+           * String msg = "[Classifier] " + statusMessagePrefix() +
+           * " last classifier unblocking..."; System.err.println(msg); if
+           * (m_log != null) { m_log.logMessage(msg); } else {
+           * System.err.println(msg); } //m_visual.setText(m_oldText);
+           * 
+           * if (m_log != null) { m_log.statusMessage(statusMessagePrefix() +
+           * "Finished."); } // m_outputQueues = null; // free memory m_block =
+           * false; block(false); } }
+           */
+    }
+}

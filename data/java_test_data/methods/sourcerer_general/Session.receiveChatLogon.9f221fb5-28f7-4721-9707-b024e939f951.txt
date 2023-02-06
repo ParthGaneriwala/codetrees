@@ -1,0 +1,101 @@
+// -----------------------------------------------------------------
+// Process an incoming CHATLOGON packet.  We get one of these:
+// (a) as a way of finishing the login handshaking process, containing
+// room details (we already know) and a list of current members.
+// (b) when the login process fails (room full?), containing only a 114
+// field (set to '-35'?) - see error handling code elsewhere
+// (c) as a stripped down version when a new user enters the room
+// (including ourselves!)
+// (d) as a stripped down version when an existing member updates
+// their details.
+// Sometimes a login packet is broken over several packets.  The clue
+// here appears to be that the first (and subsequent?) packets have a
+// status of 5, while the final packet has a status of 1.
+protected // 0x98
+void receiveChatLogon(// 0x98
+YMSG9Packet pkt) {
+    boolean joining = false;
+    try {
+        // -----Is this an error packet, sent to us via processError() ?
+        if (pkt.exists("114")) {
+            loginException = new LoginRefusedException("User " + chatID + " refused chat login");
+            joining = true;
+            chatSessionStatus = FAILED;
+            // ...to finally block
+            return;
+        }
+        // -----Returns null if more packets to come
+        pkt = compoundChatLoginPacket(pkt);
+        if (pkt == null)
+            return;
+        // -----As we need to load a room to get at its lobby data so we
+        // -----can login, the next line *should* never fail... however :-)
+        // room:lobby
+        String netname = pkt.getValue("104");
+        YahooChatLobby ycl = YahooChatCategory.getLobby(netname);
+        if (ycl == null)
+            throw new NoSuchChatroomException("Chatroom/lobby " + netname + " not found.");
+        // -----Note: Yahoo sometimes lies about the '108' count of users!
+        // -----Reduce count until to see how many users there *actually* are!
+        int cnt = Integer.parseInt(pkt.getValue("108"));
+        while (cnt > 0 && pkt.getNthValue("109", cnt - 1) == null) cnt--;
+        // -----Is this an update packet, for an existing member?
+        YahooChatUser ycu = ycl.getUser(pkt.getValue("109"));
+        if (cnt == 1 && ycu != null) {
+            // -----Count is one and user exists - UPDATE
+            ycu.update(// Attributes
+            pkt.getValue("113"), // Alias (optional)
+            pkt.getValue("141"), // Age (or zero)
+            pkt.getValue("110"), // Location (optional)
+            pkt.getValue("142"));
+            SessionChatEvent se = new SessionChatEvent(this, 1, ycl);
+            se.setChatUser(0, ycu);
+            new FireEvent().fire(se, SERVICE_X_CHATUPDATE);
+            // ...to finally block
+            return;
+        } else {
+            // -----Count is gt one, or user unknown - ADD
+            // -----Full sized packet, when joining room?
+            joining = pkt.exists("61");
+            // -----If we are joining, clear the array of users (just to be sure!)
+            if (joining)
+                ycl.clearUsers();
+            // -----When sent in muliple parts the login packet usually
+            // -----contains a high degree of duplicates.  Remove using hash.
+            Hashtable ht = new Hashtable();
+            for (int i = 0; i < cnt; i++) {
+                // -----Note: automatically creates YahooUser if necessary
+                ycu = createChatUser(pkt, i);
+                ht.put(ycu.getId(), ycu);
+            }
+            // -----Create event, add users
+            SessionChatEvent se = new SessionChatEvent(this, cnt, ycl);
+            int i = 0;
+            for (Enumeration en = ht.elements(); en.hasMoreElements(); ) {
+                ycu = (YahooChatUser) en.nextElement();
+                // Add to lobby
+                if (!ycl.exists(ycu))
+                    ycl.addUser(ycu);
+                // Add to event
+                se.setChatUser(i++, ycu);
+            }
+            // -----events when someone joins and we need to signal an update.
+            if (!joining) {
+                // -----Did we actually accrue any *new* users in previous loop?
+                if (se.getChatUsers().length > 0)
+                    new FireEvent().fire(se, SERVICE_CHATLOGON);
+            } else {
+                chatSessionStatus = MESSAGING;
+            }
+            // ...to finally block
+            return;
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+        throw new YMSG9BadFormatException("chat login", false, e);
+    } finally {
+        // FIX: Not thread safe if multiple chatroom supported!
+        if (joining)
+            chatLoginOver = true;
+    }
+}

@@ -1,0 +1,103 @@
+public String executeCommandUpload(ActionContext context) {
+    Connection db = null;
+    boolean recordInserted = false;
+    try {
+        String filePath = this.getPath(context, "projects");
+        // Process the form data
+        HttpMultiPartParser multiPart = new HttpMultiPartParser();
+        multiPart.setUsePathParam(false);
+        multiPart.setUseUniqueName(true);
+        multiPart.setUseDateForFolder(true);
+        multiPart.setExtensionId(getUserId(context));
+        HashMap parts = multiPart.parseData(context.getRequest(), filePath);
+        String projectId = (String) parts.get("pid");
+        String subject = (String) parts.get("subject");
+        String comment = (String) parts.get("comment");
+        String featuredFile = (String) parts.get("featuredFile");
+        String folderId = (String) parts.get("folderId");
+        String itemId = (String) parts.get("fid");
+        String versionId = (String) parts.get("versionId");
+        db = getConnection(context);
+        Project thisProject = retrieveAuthorizedProject(Integer.parseInt(projectId), context);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-documents-files-upload")) {
+            // Delete the unallowed uploads, then exit
+            if (parts.get("id" + projectId) instanceof FileInfo) {
+                FileInfo newFileInfo = (FileInfo) parts.get("id" + projectId);
+                File thisFile = newFileInfo.getLocalFile();
+                if (thisFile.exists()) {
+                    thisFile.delete();
+                    System.out.println("FileAttachments-> Unallowed file deleted");
+                }
+            }
+            return "PermissionError";
+        }
+        context.getRequest().setAttribute("project", thisProject);
+        context.getRequest().setAttribute("folderId", folderId);
+        context.getRequest().setAttribute("fid", itemId);
+        // Update the database with the resulting file
+        if (parts.get("id" + projectId) instanceof FileInfo) {
+            FileInfo newFileInfo = (FileInfo) parts.get("id" + projectId);
+            FileItem thisItem = new FileItem();
+            thisItem.setLinkModuleId(Constants.PROJECTS_FILES);
+            thisItem.setLinkItemId(thisProject.getId());
+            thisItem.setEnteredBy(getUserId(context));
+            thisItem.setModifiedBy(getUserId(context));
+            thisItem.setFolderId(Integer.parseInt(folderId));
+            thisItem.setSubject(subject);
+            thisItem.setComment(comment);
+            thisItem.setFeaturedFile(featuredFile);
+            thisItem.setClientFilename(newFileInfo.getClientFileName());
+            thisItem.setFilename(newFileInfo.getRealFilename());
+            thisItem.setSize(newFileInfo.getSize());
+            // Verify the integrity of the image
+            if (thisItem.isImageFormat()) {
+                thisItem.setImageSize(ImageUtils.getImageSize(newFileInfo.getLocalFile()));
+                if (thisItem.getImageWidth() == 0 || thisItem.getImageHeight() == 0) {
+                    // A bad image was sent
+                    return ("ImageUploadERROR");
+                }
+            }
+            if (itemId == null || "-1".equals(itemId)) {
+                // this is a new document
+                thisItem.setVersion(1.0);
+                recordInserted = thisItem.insert(db);
+                // Index the record and its file contents
+                thisItem.setDirectory(filePath);
+                indexAddItem(context, thisItem);
+            } else {
+                // this is a new version of an existing document
+                thisItem.setId(Integer.parseInt(itemId));
+                thisItem.setVersion(Double.parseDouble(versionId));
+                recordInserted = thisItem.insertVersion(db);
+                // Index the record and its file contents
+                thisItem.setDirectory(filePath);
+                indexAddItem(context, thisItem);
+            }
+            if (!recordInserted) {
+                processErrors(context, thisItem.getErrors());
+            } else {
+                // trigger the workflow
+                this.processInsertHook(context, thisItem);
+                if (thisItem.isImageFormat()) {
+                    // Prepare this image for thumbnail conversion
+                    ImageResizerBean bean = new ImageResizerBean();
+                    bean.setFileItemId(thisItem.getId());
+                    bean.setImagePath(newFileInfo.getLocalFile().getParent());
+                    bean.setImageFilename(thisItem.getFilename());
+                    bean.setEnteredBy(thisItem.getEnteredBy());
+                    // Add this to the ImageResizerJob to multi-thread the thumbnails
+                    Scheduler scheduler = (Scheduler) context.getServletContext().getAttribute("Scheduler");
+                    ((Vector) scheduler.getContext().get(ImageResizerJob.IMAGE_RESIZER_ARRAY)).add(bean);
+                    scheduler.triggerJob("imageResizer", (String) scheduler.getContext().get(ScheduledJobs.CONTEXT_SCHEDULER_GROUP));
+                }
+            }
+            return ("AddOK");
+        }
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return ("SystemError");
+    } finally {
+        freeConnection(context, db);
+    }
+    return "TODO Error";
+}

@@ -1,0 +1,449 @@
+final int getToken() throws IOException {
+    int c;
+    retry: for (; ; ) {
+        // Eat whitespace, possibly sensitive to newlines.
+        for (; ; ) {
+            c = getChar();
+            if (c == EOF_CHAR) {
+                return Token.EOF;
+            } else if (c == '\n') {
+                dirtyLine = false;
+                return Token.EOL;
+            } else if (!isJSSpace(c)) {
+                if (c != '-') {
+                    dirtyLine = true;
+                }
+                break;
+            }
+        }
+        if (c == '@')
+            return Token.XMLATTR;
+        // identifier/keyword/instanceof?
+        // watch out for starting with a <backslash>
+        boolean identifierStart;
+        boolean isUnicodeEscapeStart = false;
+        if (c == '\\') {
+            c = getChar();
+            if (c == 'u') {
+                identifierStart = true;
+                isUnicodeEscapeStart = true;
+                stringBufferTop = 0;
+            } else {
+                identifierStart = false;
+                ungetChar(c);
+                c = '\\';
+            }
+        } else {
+            identifierStart = Character.isJavaIdentifierStart((char) c);
+            if (identifierStart) {
+                stringBufferTop = 0;
+                addToString(c);
+            }
+        }
+        if (identifierStart) {
+            boolean containsEscape = isUnicodeEscapeStart;
+            for (; ; ) {
+                if (isUnicodeEscapeStart) {
+                    // strictly speaking we should probably push-back
+                    // all the bad characters if the <backslash>uXXXX
+                    // sequence is malformed. But since there isn't a
+                    // correct context(is there?) for a bad Unicode
+                    // escape sequence in an identifier, we can report
+                    // an error here.
+                    int escapeVal = 0;
+                    for (int i = 0; i != 4; ++i) {
+                        c = getChar();
+                        escapeVal = Kit.xDigitToInt(c, escapeVal);
+                        // Next check takes care about c < 0 and bad escape
+                        if (escapeVal < 0) {
+                            break;
+                        }
+                    }
+                    if (escapeVal < 0) {
+                        parser.addError("msg.invalid.escape");
+                        return Token.ERROR;
+                    }
+                    addToString(escapeVal);
+                    isUnicodeEscapeStart = false;
+                } else {
+                    c = getChar();
+                    if (c == '\\') {
+                        c = getChar();
+                        if (c == 'u') {
+                            isUnicodeEscapeStart = true;
+                            containsEscape = true;
+                        } else {
+                            parser.addError("msg.illegal.character");
+                            return Token.ERROR;
+                        }
+                    } else {
+                        if (c == EOF_CHAR || !Character.isJavaIdentifierPart((char) c)) {
+                            break;
+                        }
+                        addToString(c);
+                    }
+                }
+            }
+            ungetChar(c);
+            String str = getStringFromBuffer();
+            if (!containsEscape) {
+                // OPT we shouldn't have to make a string (object!) to
+                // check if it's a keyword.
+                // Return the corresponding token if it's a keyword
+                int result = stringToKeyword(str);
+                if (result != Token.EOF) {
+                    if (result != Token.RESERVED) {
+                        return result;
+                    } else if (!parser.compilerEnv.isReservedKeywordAsIdentifier()) {
+                        return result;
+                    } else {
+                        // If implementation permits to use future reserved
+                        // keywords in violation with the EcmaScript,
+                        // treat it as name but issue warning
+                        parser.addWarning("msg.reserved.keyword", str);
+                    }
+                }
+            }
+            this.string = (String) allStrings.intern(str);
+            return Token.NAME;
+        }
+        // is it a number?
+        if (isDigit(c) || (c == '.' && isDigit(peekChar()))) {
+            stringBufferTop = 0;
+            int base = 10;
+            if (c == '0') {
+                c = getChar();
+                if (c == 'x' || c == 'X') {
+                    base = 16;
+                    c = getChar();
+                } else if (isDigit(c)) {
+                    base = 8;
+                } else {
+                    addToString('0');
+                }
+            }
+            if (base == 16) {
+                while (0 <= Kit.xDigitToInt(c, 0)) {
+                    addToString(c);
+                    c = getChar();
+                }
+            } else {
+                while ('0' <= c && c <= '9') {
+                    /*
+                         * We permit 08 and 09 as decimal numbers, which
+                         * makes our behavior a superset of the ECMA
+                         * numeric grammar.  We might not always be so
+                         * permissive, so we warn about it.
+                         */
+                    if (base == 8 && c >= '8') {
+                        parser.addWarning("msg.bad.octal.literal", c == '8' ? "8" : "9");
+                        base = 10;
+                    }
+                    addToString(c);
+                    c = getChar();
+                }
+            }
+            boolean isInteger = true;
+            if (base == 10 && (c == '.' || c == 'e' || c == 'E')) {
+                isInteger = false;
+                if (c == '.') {
+                    do {
+                        addToString(c);
+                        c = getChar();
+                    } while (isDigit(c));
+                }
+                if (c == 'e' || c == 'E') {
+                    addToString(c);
+                    c = getChar();
+                    if (c == '+' || c == '-') {
+                        addToString(c);
+                        c = getChar();
+                    }
+                    if (!isDigit(c)) {
+                        parser.addError("msg.missing.exponent");
+                        return Token.ERROR;
+                    }
+                    do {
+                        addToString(c);
+                        c = getChar();
+                    } while (isDigit(c));
+                }
+            }
+            ungetChar(c);
+            String numString = getStringFromBuffer();
+            double dval;
+            if (base == 10 && !isInteger) {
+                try {
+                    // Use Java conversion to number from string...
+                    dval = Double.valueOf(numString).doubleValue();
+                } catch (NumberFormatException ex) {
+                    parser.addError("msg.caught.nfe");
+                    return Token.ERROR;
+                }
+            } else {
+                dval = ScriptRuntime.stringToNumber(numString, 0, base);
+            }
+            this.number = dval;
+            return Token.NUMBER;
+        }
+        // is it a string?
+        if (c == '"' || c == '\'') {
+            // We attempt to accumulate a string the fast way, by
+            // building it directly out of the reader.  But if there
+            // are any escaped characters in the string, we revert to
+            // building it out of a StringBuffer.
+            int quoteChar = c;
+            stringBufferTop = 0;
+            c = getChar();
+            while (c != quoteChar) {
+                if (c == '\n' || c == EOF_CHAR) {
+                    ungetChar(c);
+                    parser.addError("msg.unterminated.string.lit");
+                    return Token.ERROR;
+                }
+                if (c == '\\') {
+                    // We've hit an escaped character
+                    c = getChar();
+                    switch(c) {
+                        // backslash
+                        case '\\':
+                        // backspace
+                        case 'b':
+                        // form feed
+                        case 'f':
+                        // line feed
+                        case 'n':
+                        // carriage return
+                        case 'r':
+                        // horizontal tab
+                        case 't':
+                        // vertical tab
+                        case 'v':
+                        // octal sequence
+                        case 'd':
+                        // unicode sequence
+                        case 'u':
+                        case // hexadecimal sequence
+                        'x':
+                            // Only keep the '\' character for those
+                            // characters that need to be escaped...
+                            // Don't escape quoting characters...
+                            addToString('\\');
+                            break;
+                        case '\n':
+                            // Remove line terminator after escape
+                            c = getChar();
+                            break;
+                    }
+                }
+                addToString(c);
+                c = getChar();
+            }
+            String str = getStringFromBuffer();
+            this.string = (String) allStrings.intern(str);
+            return Token.STRING;
+        }
+        switch(c) {
+            case ';':
+                return Token.SEMI;
+            case '[':
+                return Token.LB;
+            case ']':
+                return Token.RB;
+            case '{':
+                return Token.LC;
+            case '}':
+                return Token.RC;
+            case '(':
+                return Token.LP;
+            case ')':
+                return Token.RP;
+            case ',':
+                return Token.COMMA;
+            case '?':
+                return Token.HOOK;
+            case ':':
+                if (matchChar(':')) {
+                    return Token.COLONCOLON;
+                } else {
+                    return Token.COLON;
+                }
+            case '.':
+                if (matchChar('.')) {
+                    return Token.DOTDOT;
+                } else if (matchChar('(')) {
+                    return Token.DOTQUERY;
+                } else {
+                    return Token.DOT;
+                }
+            case '|':
+                if (matchChar('|')) {
+                    return Token.OR;
+                } else if (matchChar('=')) {
+                    return Token.ASSIGN_BITOR;
+                } else {
+                    return Token.BITOR;
+                }
+            case '^':
+                if (matchChar('=')) {
+                    return Token.ASSIGN_BITXOR;
+                } else {
+                    return Token.BITXOR;
+                }
+            case '&':
+                if (matchChar('&')) {
+                    return Token.AND;
+                } else if (matchChar('=')) {
+                    return Token.ASSIGN_BITAND;
+                } else {
+                    return Token.BITAND;
+                }
+            case '=':
+                if (matchChar('=')) {
+                    if (matchChar('='))
+                        return Token.SHEQ;
+                    else
+                        return Token.EQ;
+                } else {
+                    return Token.ASSIGN;
+                }
+            case '!':
+                if (matchChar('=')) {
+                    if (matchChar('='))
+                        return Token.SHNE;
+                    else
+                        return Token.NE;
+                } else {
+                    return Token.NOT;
+                }
+            case '<':
+                /* NB:treat HTML begin-comment as comment-till-eol */
+                if (matchChar('!')) {
+                    if (matchChar('-')) {
+                        if (matchChar('-')) {
+                            skipLine();
+                            continue retry;
+                        }
+                        ungetChar('-');
+                    }
+                    ungetChar('!');
+                }
+                if (matchChar('<')) {
+                    if (matchChar('=')) {
+                        return Token.ASSIGN_LSH;
+                    } else {
+                        return Token.LSH;
+                    }
+                } else {
+                    if (matchChar('=')) {
+                        return Token.LE;
+                    } else {
+                        return Token.LT;
+                    }
+                }
+            case '>':
+                if (matchChar('>')) {
+                    if (matchChar('>')) {
+                        if (matchChar('=')) {
+                            return Token.ASSIGN_URSH;
+                        } else {
+                            return Token.URSH;
+                        }
+                    } else {
+                        if (matchChar('=')) {
+                            return Token.ASSIGN_RSH;
+                        } else {
+                            return Token.RSH;
+                        }
+                    }
+                } else {
+                    if (matchChar('=')) {
+                        return Token.GE;
+                    } else {
+                        return Token.GT;
+                    }
+                }
+            case '*':
+                if (matchChar('=')) {
+                    return Token.ASSIGN_MUL;
+                } else {
+                    return Token.MUL;
+                }
+            case '/':
+                // is it a // comment?
+                if (matchChar('/')) {
+                    skipLine();
+                    continue retry;
+                }
+                if (matchChar('*')) {
+                    boolean lookForSlash = false;
+                    StringBuffer sb = new StringBuffer();
+                    for (; ; ) {
+                        c = getChar();
+                        if (c == EOF_CHAR) {
+                            parser.addError("msg.unterminated.comment");
+                            return Token.ERROR;
+                        }
+                        sb.append((char) c);
+                        if (c == '*') {
+                            lookForSlash = true;
+                        } else if (c == '/') {
+                            if (lookForSlash) {
+                                sb.delete(sb.length() - 2, sb.length());
+                                String s = sb.toString();
+                                if (s.startsWith("@cc_on") || s.startsWith("@if") || s.startsWith("@elif") || s.startsWith("@else") || s.startsWith("@end")) {
+                                    this.string = s;
+                                    return Token.IECC;
+                                } else {
+                                    continue retry;
+                                }
+                            }
+                        } else {
+                            lookForSlash = false;
+                        }
+                    }
+                }
+                if (matchChar('=')) {
+                    return Token.ASSIGN_DIV;
+                } else {
+                    return Token.DIV;
+                }
+            case '%':
+                if (matchChar('=')) {
+                    return Token.ASSIGN_MOD;
+                } else {
+                    return Token.MOD;
+                }
+            case '~':
+                return Token.BITNOT;
+            case '+':
+                if (matchChar('=')) {
+                    return Token.ASSIGN_ADD;
+                } else if (matchChar('+')) {
+                    return Token.INC;
+                } else {
+                    return Token.ADD;
+                }
+            case '-':
+                if (matchChar('=')) {
+                    c = Token.ASSIGN_SUB;
+                } else if (matchChar('-')) {
+                    if (!dirtyLine) {
+                        // after line start as comment-utill-eol
+                        if (matchChar('>')) {
+                            skipLine();
+                            continue retry;
+                        }
+                    }
+                    c = Token.DEC;
+                } else {
+                    c = Token.SUB;
+                }
+                dirtyLine = true;
+                return c;
+            default:
+                parser.addError("msg.illegal.character");
+                return Token.ERROR;
+        }
+    }
+}

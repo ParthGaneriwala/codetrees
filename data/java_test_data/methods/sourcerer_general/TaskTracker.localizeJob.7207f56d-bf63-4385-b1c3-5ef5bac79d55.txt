@@ -1,0 +1,75 @@
+private void localizeJob(TaskInProgress tip) throws IOException {
+    Path localJarFile = null;
+    Task t = tip.getTask();
+    JobID jobId = t.getJobID();
+    Path jobFile = new Path(t.getJobFile());
+    // Get sizes of JobFile and JarFile
+    // sizes are -1 if they are not present.
+    FileStatus status = null;
+    long jobFileSize = -1;
+    try {
+        status = systemFS.getFileStatus(jobFile);
+        jobFileSize = status.getLen();
+    } catch (FileNotFoundException fe) {
+        jobFileSize = -1;
+    }
+    Path localJobFile = lDirAlloc.getLocalPathForWrite((getJobCacheSubdir() + Path.SEPARATOR + jobId + Path.SEPARATOR + "job.xml"), jobFileSize, fConf);
+    RunningJob rjob = addTaskToJob(jobId, localJobFile, tip);
+    synchronized (rjob) {
+        if (!rjob.localized) {
+            FileSystem localFs = FileSystem.getLocal(fConf);
+            // this will happen on a partial execution of localizeJob.
+            // Sometimes the job.xml gets copied but copying job.jar
+            // might throw out an exception
+            // we should clean up and then try again
+            Path jobDir = localJobFile.getParent();
+            if (localFs.exists(jobDir)) {
+                localFs.delete(jobDir, true);
+                boolean b = localFs.mkdirs(jobDir);
+                if (!b)
+                    throw new IOException("Not able to create job directory " + jobDir.toString());
+            }
+            systemFS.copyToLocalFile(jobFile, localJobFile);
+            JobConf localJobConf = new JobConf(localJobFile);
+            // create the 'work' directory
+            // job-specific shared directory for use as scratch space
+            Path workDir = lDirAlloc.getLocalPathForWrite((getJobCacheSubdir() + Path.SEPARATOR + jobId + Path.SEPARATOR + "work"), fConf);
+            if (!localFs.mkdirs(workDir)) {
+                throw new IOException("Mkdirs failed to create " + workDir.toString());
+            }
+            System.setProperty("job.local.dir", workDir.toString());
+            localJobConf.set("job.local.dir", workDir.toString());
+            // copy Jar file to the local FS and unjar it.
+            String jarFile = localJobConf.getJar();
+            long jarFileSize = -1;
+            if (jarFile != null) {
+                Path jarFilePath = new Path(jarFile);
+                try {
+                    status = systemFS.getFileStatus(jarFilePath);
+                    jarFileSize = status.getLen();
+                } catch (FileNotFoundException fe) {
+                    jarFileSize = -1;
+                }
+                // Here we check for and we check five times the size of jarFileSize
+                // to accommodate for unjarring the jar file in work directory
+                localJarFile = new Path(lDirAlloc.getLocalPathForWrite(getJobCacheSubdir() + Path.SEPARATOR + jobId + Path.SEPARATOR + "jars", 5 * jarFileSize, fConf), "job.jar");
+                if (!localFs.mkdirs(localJarFile.getParent())) {
+                    throw new IOException("Mkdirs failed to create jars directory ");
+                }
+                systemFS.copyToLocalFile(jarFilePath, localJarFile);
+                localJobConf.setJar(localJarFile.toString());
+                OutputStream out = localFs.create(localJobFile);
+                try {
+                    localJobConf.writeXml(out);
+                } finally {
+                    out.close();
+                }
+                // also unjar the job.jar files
+                RunJar.unJar(new File(localJarFile.toString()), new File(localJarFile.getParent().toString()));
+            }
+            rjob.keepJobFiles = ((localJobConf.getKeepTaskFilesPattern() != null) || localJobConf.getKeepFailedTaskFiles());
+            rjob.localized = true;
+        }
+    }
+    launchTaskForJob(tip, new JobConf(rjob.jobFile));
+}

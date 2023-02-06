@@ -1,0 +1,72 @@
+@Override
+public void process(JCas jCas) throws AnalysisEngineProcessException {
+    for (Sentence sentence : JCasUtil.select(jCas, Sentence.class)) {
+        List<Token> tokens = JCasUtil.selectCovered(jCas, Token.class, sentence);
+        // convert tokens into MaltParser input array
+        List<String> inputStrings = new ArrayList<String>();
+        int lineNo = -1;
+        for (Token token : tokens) {
+            lineNo += 1;
+            String text = token.getCoveredText();
+            String pos = token.getPos();
+            // line format is <index>\t<word>\t_\t<pos>\t<pos>\t_
+            String lineFormat = "%1$d\t%2$s\t_\t%3$s\t%3$s\t_";
+            inputStrings.add(String.format(lineFormat, lineNo + 1, text, pos));
+        }
+        try {
+            // parse with MaltParser
+            String[] input = inputStrings.toArray(new String[inputStrings.size()]);
+            DependencyStructure graph = this.service.parse(input);
+            // convert MaltParser structure into annotations
+            Map<Integer, DependencyNode> nodes = new HashMap<Integer, DependencyNode>();
+            SortedSet<Integer> tokenIndices = graph.getTokenIndices();
+            for (int i : tokenIndices) {
+                org.maltparser.core.syntaxgraph.node.DependencyNode maltNode = graph.getTokenNode(i);
+                Token token = tokens.get(maltNode.getIndex() - 1);
+                DependencyNode node;
+                if (maltNode.getHead().getIndex() != 0) {
+                    node = new DependencyNode(jCas, token.getBegin(), token.getEnd());
+                } else {
+                    node = new TopDependencyNode(jCas, token.getBegin(), token.getEnd());
+                }
+                nodes.put(i, node);
+            }
+            // add relation annotations
+            Map<DependencyNode, List<DependencyRelation>> headRelations;
+            headRelations = new HashMap<DependencyNode, List<DependencyRelation>>();
+            Map<DependencyNode, List<DependencyRelation>> childRelations;
+            childRelations = new HashMap<DependencyNode, List<DependencyRelation>>();
+            SymbolTable table = graph.getSymbolTables().getSymbolTable("DEPREL");
+            for (int i : tokenIndices) {
+                org.maltparser.core.syntaxgraph.node.DependencyNode maltNode = graph.getTokenNode(i);
+                int headIndex = maltNode.getHead().getIndex();
+                if (headIndex != 0) {
+                    String label = maltNode.getHeadEdge().getLabelSymbol(table);
+                    DependencyNode node = nodes.get(i);
+                    DependencyNode head = nodes.get(headIndex);
+                    DependencyRelation rel = new DependencyRelation(jCas);
+                    rel.setHead(head);
+                    rel.setChild(node);
+                    rel.setRelation(label);
+                    rel.addToIndexes();
+                    if (!headRelations.containsKey(node)) {
+                        headRelations.put(node, new ArrayList<DependencyRelation>());
+                    }
+                    headRelations.get(node).add(rel);
+                    if (!childRelations.containsKey(head)) {
+                        childRelations.put(head, new ArrayList<DependencyRelation>());
+                    }
+                    childRelations.get(head).add(rel);
+                }
+            }
+            // finalize nodes: add links between nodes and relations
+            for (DependencyNode node : nodes.values()) {
+                node.setHeadRelations(UIMAUtil.toFSArray(jCas, headRelations.get(node)));
+                node.setChildRelations(UIMAUtil.toFSArray(jCas, childRelations.get(node)));
+                node.addToIndexes();
+            }
+        } catch (MaltChainedException e) {
+            throw new AnalysisEngineProcessException(e);
+        }
+    }
+}

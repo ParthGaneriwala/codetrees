@@ -1,0 +1,61 @@
+@Override
+public synchronized void processIncoming(Data data) throws WekaException {
+    if (m_saver == null) {
+        try {
+            m_saver = (weka.core.converters.Saver) new SerializedObject(getWrappedAlgorithm()).getObject();
+        } catch (Exception ex) {
+            throw new WekaException(ex);
+        }
+        if (m_saver instanceof EnvironmentHandler) {
+            ((EnvironmentHandler) m_saver).setEnvironment(getStepManager().getExecutionEnvironment().getEnvironmentVariables());
+        }
+        if (data.getConnectionName().equalsIgnoreCase(StepManager.CON_INSTANCE)) {
+            // incremental saving
+            Instance forStructure = (Instance) data.getPayloadElement(StepManager.CON_INSTANCE);
+            if (forStructure != null) {
+                // processing();
+                m_saver.setRetrieval(weka.core.converters.Saver.INCREMENTAL);
+                String fileName = sanitizeFilename(forStructure.dataset().relationName());
+                try {
+                    m_saver.setDirAndPrefix(fileName, "");
+                } catch (Exception ex) {
+                    throw new WekaException(ex);
+                }
+                m_saver.setInstances(forStructure.dataset());
+                if (m_isDBSaver) {
+                    if (((DatabaseSaver) m_saver).getRelationForTableName()) {
+                        ((DatabaseSaver) m_saver).setTableName(fileName);
+                        ((DatabaseSaver) m_saver).setRelationForTableName(false);
+                    }
+                }
+            }
+        }
+    }
+    if (data.getConnectionName().equals(StepManager.CON_DATASET) || data.getConnectionName().equals(StepManager.CON_TRAININGSET) || data.getConnectionName().equals(StepManager.CON_TESTSET)) {
+        m_saver.setRetrieval(weka.core.converters.Saver.BATCH);
+        Instances theData = (Instances) data.getPayloadElement(data.getConnectionName());
+        Integer setNum = (Integer) data.getPayloadElement(StepManager.CON_AUX_DATA_SET_NUM);
+        Integer maxSetNum = (Integer) data.getPayloadElement(StepManager.CON_AUX_DATA_MAX_SET_NUM);
+        saveBatch(theData, setNum, maxSetNum, data.getConnectionName());
+        return;
+    }
+    Instance toSave = (Instance) data.getPayloadElement(StepManager.CON_INSTANCE);
+    boolean streamEnd = getStepManager().isStreamFinished(data);
+    try {
+        if (streamEnd) {
+            m_saver.writeIncremental(null);
+            getStepManager().throughputFinished(new Data(StepManagerImpl.CON_INSTANCE));
+            return;
+        }
+        if (!isStopRequested()) {
+            getStepManager().throughputUpdateStart();
+            m_saver.writeIncremental(toSave);
+        } else {
+            // make sure that saver finishes and closes file
+            m_saver.writeIncremental(null);
+        }
+        getStepManager().throughputUpdateEnd();
+    } catch (Exception ex) {
+        throw new WekaException(ex);
+    }
+}

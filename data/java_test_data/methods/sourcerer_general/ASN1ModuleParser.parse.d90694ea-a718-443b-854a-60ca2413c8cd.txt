@@ -1,0 +1,123 @@
+private synchronized void parse(BufferedReader inReader) throws IOException, ParseException {
+    mCurrentModule = null;
+    mCurrentDefinition = null;
+    mFieldStack.clear();
+    TokenReader tokenReader = new TokenReader(inReader);
+    State state = State.initial;
+    List<Token> phrase = new ArrayList<Token>();
+    while (tokenReader.hasNext()) {
+        Token token = tokenReader.next();
+        switch(state) {
+            case // Not currently in a module.
+            initial:
+                if (token.equals("BEGIN") && phrase.size() > 2 && phrase.get(phrase.size() - 1).equals("::=") && phrase.get(phrase.size() - 2).equals("DEFINITIONS")) {
+                    mCurrentModule = phrase.get(phrase.size() - 3).toString();
+                    state = State.inModule;
+                    if (phrase.size() > 3) {
+                        throw new ParseException("Unparsed phrase: " + StringUtil.join(phrase.subList(0, phrase.size() - 3), " "), phrase.get(0).getLineNum());
+                    }
+                    phrase.clear();
+                } else {
+                    phrase.add(token);
+                }
+                break;
+            case inModule:
+                if (token.equals("{")) {
+                    // There may be single type definitions that weren't parsed since we trigger on '{'.
+                    while (extractDefFromPhrase(phrase) != null) {
+                    }
+                    state = State.inDefinition;
+                    if (phrase.size() > 0) {
+                        throw new ParseException("Unparsed phrase: " + StringUtil.join(phrase, " "), phrase.get(0).getLineNum());
+                    }
+                    phrase.clear();
+                } else if (token.equals("EXPORTS")) {
+                    state = State.inExports;
+                    if (phrase.size() > 0) {
+                        throw new ParseException("Unparsed phrase: " + StringUtil.join(phrase, " "), phrase.get(0).getLineNum());
+                    }
+                    phrase.clear();
+                } else if (token.equals("IMPORTS")) {
+                    state = State.inImports;
+                    if (phrase.size() > 0) {
+                        throw new ParseException("Unparsed phrase: " + StringUtil.join(phrase, " "), phrase.get(0).getLineNum());
+                    }
+                    phrase.clear();
+                } else if (token.equals("END")) {
+                    state = State.initial;
+                    if (phrase.size() > 0) {
+                        // There may be single type definitions that weren't parsed since we trigger on '{'.
+                        while (extractDefFromPhrase(phrase) != null) {
+                        }
+                        if (phrase.size() > 0) {
+                            throw new ParseException("Unparsed phrase: " + StringUtil.join(phrase, " "), phrase.get(0).getLineNum());
+                        }
+                    }
+                } else {
+                    phrase.add(token);
+                }
+                break;
+            case inExports:
+                if (token.equals(";") || token.endsWith(";")) {
+                    state = State.inModule;
+                    // TODO: save the export list
+                    phrase.clear();
+                } else {
+                    phrase.add(token);
+                }
+                break;
+            case inImports:
+                if (token.equals(";") || token.endsWith(";")) {
+                    state = State.inModule;
+                    // TODO: save the import list
+                    phrase.clear();
+                } else {
+                    phrase.add(token);
+                }
+                break;
+            case inDefinition:
+                if (token.equals(",")) {
+                    if (phrase.size() > 0 && phrase.get(0).equals("OPTIONAL") && mCurrentDefinition.getFields().size() > 0) {
+                        mCurrentDefinition.getFields().get(mCurrentDefinition.getFields().size() - 1).setIsOptional(true);
+                        phrase.remove(0);
+                    }
+                    if (phrase.size() >= 2 && phrase.get(0).equals("DEFAULT")) {
+                        mCurrentDefinition.getFields().get(mCurrentDefinition.getFields().size() - 1).setDefaultValue(StringUtil.unquote(phrase.get(1).toString()));
+                        phrase.remove(0);
+                        phrase.remove(0);
+                    }
+                    extractFieldFromPhrase(phrase);
+                    if (phrase.size() > 0) {
+                        throw new ParseException("Unparsed phrase: " + StringUtil.join(phrase, " "), phrase.get(0).getLineNum());
+                    }
+                } else if (token.equals("{")) {
+                    ASN1Definition field = extractFieldFromPhrase(phrase);
+                    if (phrase.size() > 0) {
+                        throw new ParseException("Unparsed phrase: " + StringUtil.join(phrase, " "), phrase.get(0).getLineNum());
+                    }
+                    mFieldStack.add(field);
+                } else if (token.equals("}")) {
+                    if (phrase.size() > 0 && phrase.get(0).equals("OPTIONAL") && mCurrentDefinition.getFields().size() > 0) {
+                        mCurrentDefinition.getFields().get(mCurrentDefinition.getFields().size() - 1).setIsOptional(true);
+                        phrase.remove(0);
+                    }
+                    if (phrase.size() >= 2 && phrase.get(0).equals("DEFAULT")) {
+                        mCurrentDefinition.getFields().get(mCurrentDefinition.getFields().size() - 1).setDefaultValue(StringUtil.unquote(phrase.get(1).toString()));
+                        phrase.remove(0);
+                        phrase.remove(0);
+                    }
+                    extractFieldFromPhrase(phrase);
+                    if (phrase.size() > 0) {
+                        throw new ParseException("Unparsed phrase: " + StringUtil.join(phrase, " "), phrase.get(0).getLineNum());
+                    }
+                    if (mFieldStack.size() > 0) {
+                        mFieldStack.pop();
+                    } else {
+                        state = State.inModule;
+                    }
+                } else {
+                    phrase.add(token);
+                }
+        }
+    }
+}

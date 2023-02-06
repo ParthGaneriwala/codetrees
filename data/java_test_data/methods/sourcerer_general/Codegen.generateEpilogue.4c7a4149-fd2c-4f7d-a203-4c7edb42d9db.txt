@@ -1,0 +1,87 @@
+private void generateEpilogue() {
+    if (compilerEnv.isGenerateObserverCount())
+        addInstructionCount();
+    if (isGenerator) {
+        // generate locals initialization
+        Map<Node, int[]> liveLocals = ((FunctionNode) scriptOrFn).getLiveLocals();
+        if (liveLocals != null) {
+            List<Node> nodes = ((FunctionNode) scriptOrFn).getResumptionPoints();
+            for (int i = 0; i < nodes.size(); i++) {
+                Node node = nodes.get(i);
+                int[] live = liveLocals.get(node);
+                if (live != null) {
+                    cfw.markTableSwitchCase(generatorSwitch, getNextGeneratorState(node));
+                    generateGetGeneratorLocalsState();
+                    for (int j = 0; j < live.length; j++) {
+                        cfw.add(ByteCode.DUP);
+                        cfw.addLoadConstant(j);
+                        cfw.add(ByteCode.AALOAD);
+                        cfw.addAStore(live[j]);
+                    }
+                    cfw.add(ByteCode.POP);
+                    cfw.add(ByteCode.GOTO, getTargetLabel(node));
+                }
+            }
+        }
+        // generate dispatch tables for finally
+        if (finallys != null) {
+            for (Node n : finallys.keySet()) {
+                if (n.getType() == Token.FINALLY) {
+                    FinallyReturnPoint ret = finallys.get(n);
+                    // the finally will jump here
+                    cfw.markLabel(ret.tableLabel, (short) 1);
+                    // start generating a dispatch table
+                    int startSwitch = cfw.addTableSwitch(0, ret.jsrPoints.size() - 1);
+                    int c = 0;
+                    cfw.markTableSwitchDefault(startSwitch);
+                    for (int i = 0; i < ret.jsrPoints.size(); i++) {
+                        // generate gotos back to the JSR location
+                        cfw.markTableSwitchCase(startSwitch, c);
+                        cfw.add(ByteCode.GOTO, ret.jsrPoints.get(i).intValue());
+                        c++;
+                    }
+                }
+            }
+        }
+    }
+    if (epilogueLabel != -1) {
+        cfw.markLabel(epilogueLabel);
+    }
+    if (hasVarsInRegs) {
+        cfw.add(ByteCode.ARETURN);
+        return;
+    } else if (isGenerator) {
+        if (((FunctionNode) scriptOrFn).getResumptionPoints() != null) {
+            cfw.markTableSwitchDefault(generatorSwitch);
+        }
+        // change state for re-entry
+        generateSetGeneratorResumptionPoint(GENERATOR_TERMINATE);
+        // throw StopIteration
+        cfw.addALoad(variableObjectLocal);
+        addOptRuntimeInvoke("throwStopIteration", "(Ljava/lang/Object;)V");
+        Codegen.pushUndefined(cfw);
+        cfw.add(ByteCode.ARETURN);
+    } else if (fnCurrent == null) {
+        cfw.addALoad(popvLocal);
+        cfw.add(ByteCode.ARETURN);
+    } else {
+        generateActivationExit();
+        cfw.add(ByteCode.ARETURN);
+        // Generate catch block to catch all and rethrow to call exit code
+        // under exception propagation as well.
+        int finallyHandler = cfw.acquireLabel();
+        cfw.markHandler(finallyHandler);
+        short exceptionObject = getNewWordLocal();
+        cfw.addAStore(exceptionObject);
+        // Duplicate generateActivationExit() in the catch block since it
+        // takes less space then full-featured ByteCode.JSR/ByteCode.RET
+        generateActivationExit();
+        cfw.addALoad(exceptionObject);
+        releaseWordLocal(exceptionObject);
+        // rethrow
+        cfw.add(ByteCode.ATHROW);
+        // mark the handler
+        cfw.addExceptionHandler(enterAreaStartLabel, epilogueLabel, finallyHandler, // catch any
+        null);
+    }
+}

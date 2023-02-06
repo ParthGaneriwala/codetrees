@@ -1,0 +1,210 @@
+protected boolean takeStep(int i1, int i2, double F2) throws Exception {
+    double alph1, alph2, y1, y2, F1, s, L, H, k11, k12, k22, eta, a1, a2, f1, f2, v1, v2, Lobj, Hobj;
+    double C1 = m_C * m_data.instance(i1).weight();
+    double C2 = m_C * m_data.instance(i2).weight();
+    // Don't do anything if the two instances are the same
+    if (i1 == i2) {
+        return false;
+    }
+    // Initialize variables
+    alph1 = m_alpha[i1];
+    alph2 = m_alpha[i2];
+    y1 = m_class[i1];
+    y2 = m_class[i2];
+    F1 = m_errors[i1];
+    s = y1 * y2;
+    // Find the constraints on a2
+    if (y1 != y2) {
+        L = Math.max(0, alph2 - alph1);
+        H = Math.min(C2, C1 + alph2 - alph1);
+    } else {
+        L = Math.max(0, alph1 + alph2 - C1);
+        H = Math.min(C2, alph1 + alph2);
+    }
+    if (L >= H) {
+        return false;
+    }
+    // Compute second derivative of objective function
+    k11 = m_kernel.eval(i1, i1, m_data.instance(i1));
+    k12 = m_kernel.eval(i1, i2, m_data.instance(i1));
+    k22 = m_kernel.eval(i2, i2, m_data.instance(i2));
+    eta = 2 * k12 - k11 - k22;
+    // Check if second derivative is negative
+    if (eta < 0) {
+        // Compute unconstrained maximum
+        a2 = alph2 - y2 * (F1 - F2) / eta;
+        // Compute constrained maximum
+        if (a2 < L) {
+            a2 = L;
+        } else if (a2 > H) {
+            a2 = H;
+        }
+    } else {
+        // Look at endpoints of diagonal
+        f1 = SVMOutput(i1, m_data.instance(i1));
+        f2 = SVMOutput(i2, m_data.instance(i2));
+        v1 = f1 + m_b - y1 * alph1 * k11 - y2 * alph2 * k12;
+        v2 = f2 + m_b - y1 * alph1 * k12 - y2 * alph2 * k22;
+        double gamma = alph1 + s * alph2;
+        Lobj = (gamma - s * L) + L - 0.5 * k11 * (gamma - s * L) * (gamma - s * L) - 0.5 * k22 * L * L - s * k12 * (gamma - s * L) * L - y1 * (gamma - s * L) * v1 - y2 * L * v2;
+        Hobj = (gamma - s * H) + H - 0.5 * k11 * (gamma - s * H) * (gamma - s * H) - 0.5 * k22 * H * H - s * k12 * (gamma - s * H) * H - y1 * (gamma - s * H) * v1 - y2 * H * v2;
+        if (Lobj > Hobj + m_eps) {
+            a2 = L;
+        } else if (Lobj < Hobj - m_eps) {
+            a2 = H;
+        } else {
+            a2 = alph2;
+        }
+    }
+    if (Math.abs(a2 - alph2) < m_eps * (a2 + alph2 + m_eps)) {
+        return false;
+    }
+    // To prevent precision problems
+    if (a2 > C2 - m_Del * C2) {
+        a2 = C2;
+    } else if (a2 <= m_Del * C2) {
+        a2 = 0;
+    }
+    // Recompute a1
+    a1 = alph1 + s * (alph2 - a2);
+    // To prevent precision problems
+    if (a1 > C1 - m_Del * C1) {
+        a1 = C1;
+    } else if (a1 <= m_Del * C1) {
+        a1 = 0;
+    }
+    // Update sets
+    if (a1 > 0) {
+        m_supportVectors.insert(i1);
+    } else {
+        m_supportVectors.delete(i1);
+    }
+    if ((a1 > 0) && (a1 < C1)) {
+        m_I0.insert(i1);
+    } else {
+        m_I0.delete(i1);
+    }
+    if ((y1 == 1) && (a1 == 0)) {
+        m_I1.insert(i1);
+    } else {
+        m_I1.delete(i1);
+    }
+    if ((y1 == -1) && (a1 == C1)) {
+        m_I2.insert(i1);
+    } else {
+        m_I2.delete(i1);
+    }
+    if ((y1 == 1) && (a1 == C1)) {
+        m_I3.insert(i1);
+    } else {
+        m_I3.delete(i1);
+    }
+    if ((y1 == -1) && (a1 == 0)) {
+        m_I4.insert(i1);
+    } else {
+        m_I4.delete(i1);
+    }
+    if (a2 > 0) {
+        m_supportVectors.insert(i2);
+    } else {
+        m_supportVectors.delete(i2);
+    }
+    if ((a2 > 0) && (a2 < C2)) {
+        m_I0.insert(i2);
+    } else {
+        m_I0.delete(i2);
+    }
+    if ((y2 == 1) && (a2 == 0)) {
+        m_I1.insert(i2);
+    } else {
+        m_I1.delete(i2);
+    }
+    if ((y2 == -1) && (a2 == C2)) {
+        m_I2.insert(i2);
+    } else {
+        m_I2.delete(i2);
+    }
+    if ((y2 == 1) && (a2 == C2)) {
+        m_I3.insert(i2);
+    } else {
+        m_I3.delete(i2);
+    }
+    if ((y2 == -1) && (a2 == 0)) {
+        m_I4.insert(i2);
+    } else {
+        m_I4.delete(i2);
+    }
+    // Update weight vector to reflect change a1 and a2, if linear SVM
+    if (m_KernelIsLinear) {
+        Instance inst1 = m_data.instance(i1);
+        for (int p1 = 0; p1 < inst1.numValues(); p1++) {
+            if (inst1.index(p1) != m_data.classIndex()) {
+                m_weights[inst1.index(p1)] += y1 * (a1 - alph1) * inst1.valueSparse(p1);
+            }
+        }
+        Instance inst2 = m_data.instance(i2);
+        for (int p2 = 0; p2 < inst2.numValues(); p2++) {
+            if (inst2.index(p2) != m_data.classIndex()) {
+                m_weights[inst2.index(p2)] += y2 * (a2 - alph2) * inst2.valueSparse(p2);
+            }
+        }
+    }
+    // Update error cache using new Lagrange multipliers
+    for (int j = m_I0.getNext(-1); j != -1; j = m_I0.getNext(j)) {
+        if ((j != i1) && (j != i2)) {
+            m_errors[j] += y1 * (a1 - alph1) * m_kernel.eval(i1, j, m_data.instance(i1)) + y2 * (a2 - alph2) * m_kernel.eval(i2, j, m_data.instance(i2));
+        }
+    }
+    // Update error cache for i1 and i2
+    m_errors[i1] += y1 * (a1 - alph1) * k11 + y2 * (a2 - alph2) * k12;
+    m_errors[i2] += y1 * (a1 - alph1) * k12 + y2 * (a2 - alph2) * k22;
+    // Update array with Lagrange multipliers
+    m_alpha[i1] = a1;
+    m_alpha[i2] = a2;
+    // Update thresholds
+    m_bLow = -Double.MAX_VALUE;
+    m_bUp = Double.MAX_VALUE;
+    m_iLow = -1;
+    m_iUp = -1;
+    for (int j = m_I0.getNext(-1); j != -1; j = m_I0.getNext(j)) {
+        if (m_errors[j] < m_bUp) {
+            m_bUp = m_errors[j];
+            m_iUp = j;
+        }
+        if (m_errors[j] > m_bLow) {
+            m_bLow = m_errors[j];
+            m_iLow = j;
+        }
+    }
+    if (!m_I0.contains(i1)) {
+        if (m_I3.contains(i1) || m_I4.contains(i1)) {
+            if (m_errors[i1] > m_bLow) {
+                m_bLow = m_errors[i1];
+                m_iLow = i1;
+            }
+        } else {
+            if (m_errors[i1] < m_bUp) {
+                m_bUp = m_errors[i1];
+                m_iUp = i1;
+            }
+        }
+    }
+    if (!m_I0.contains(i2)) {
+        if (m_I3.contains(i2) || m_I4.contains(i2)) {
+            if (m_errors[i2] > m_bLow) {
+                m_bLow = m_errors[i2];
+                m_iLow = i2;
+            }
+        } else {
+            if (m_errors[i2] < m_bUp) {
+                m_bUp = m_errors[i2];
+                m_iUp = i2;
+            }
+        }
+    }
+    if ((m_iLow == -1) || (m_iUp == -1)) {
+        throw new Exception("This should never happen!");
+    }
+    // Made some progress.
+    return true;
+}

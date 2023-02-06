@@ -1,0 +1,117 @@
+public static void copyNodeContents(Node aSource, Node aTarget) {
+    int prefixCounter = 0;
+    // flag that gets set if we need to fully qualify the source nodes when
+    // they're copied over to the target. This gets set to true if the source
+    // and target have different default namespaces
+    boolean addXmlnsDeclToChildNodes = false;
+    // adjust namespaces for nodes
+    if (aSource.getNodeType() == Node.ELEMENT_NODE && aTarget.getNodeType() == Node.ELEMENT_NODE) {
+        HashMap newNamespaceAttrs = new HashMap();
+        HashMap existingNamespaceAttrs = new HashMap();
+        HashMap changedNamespaceAttrs = new HashMap();
+        getDeclaredNamespaces((Element) aSource, newNamespaceAttrs);
+        getDeclaredNamespaces((Element) aTarget, existingNamespaceAttrs);
+        // add a default namespace to each map if not already declared
+        addDefaultNamespace(newNamespaceAttrs);
+        addDefaultNamespace(existingNamespaceAttrs);
+        Element tgtElement = (Element) aTarget;
+        String tgtElementPrefix = extractPrefix(tgtElement.getNodeName());
+        for (Iterator iter = newNamespaceAttrs.entrySet().iterator(); iter.hasNext(); ) {
+            Map.Entry es = (Map.Entry) iter.next();
+            String prefix = (String) es.getKey();
+            String namespace = (String) es.getValue();
+            String oldNamespace = (String) existingNamespaceAttrs.get(prefix);
+            // add a namespace declaration
+            if (!namespace.equals(oldNamespace)) {
+                // need to remap the old namespace declaration only if there's a conflict
+                if (existingNamespaceAttrs.containsKey(prefix)) {
+                    // add a changed prefix to the map so we can update any existing children
+                    changedNamespaceAttrs.put(prefix, oldNamespace);
+                    // if the target elements namespace/prefix conflicts reassign elements prefix to temporary one
+                    if (prefix.equals(tgtElementPrefix)) {
+                        int counter = getUniquePrefix(prefixCounter, newNamespaceAttrs);
+                        tgtElementPrefix = PREFIX + counter;
+                        prefixCounter++;
+                        // $NON-NLS-1$
+                        tgtElement.setAttributeNS(IAeConstants.W3C_XMLNS, "xmlns:" + tgtElementPrefix, tgtElement.getNamespaceURI());
+                        tgtElement.setPrefix(tgtElementPrefix);
+                    }
+                }
+                // add a new namespace decl
+                if (// $NON-NLS-1$
+                "".equals(prefix)) {
+                    // the namespace of an element in DOM.
+                    if (namespace.equals(tgtElement.getNamespaceURI())) {
+                        // $NON-NLS-1$
+                        prefix = "xmlns";
+                        tgtElement.setAttributeNS(IAeConstants.W3C_XMLNS, prefix, namespace);
+                    } else {
+                        addXmlnsDeclToChildNodes = true;
+                    }
+                } else {
+                    // $NON-NLS-1$
+                    prefix = "xmlns:" + prefix;
+                    tgtElement.setAttributeNS(IAeConstants.W3C_XMLNS, prefix, namespace);
+                }
+            }
+        }
+        // add a local declaration to any existing children if prefixes were changed
+        if (!AeUtil.isNullOrEmpty(changedNamespaceAttrs) && tgtElement.hasChildNodes()) {
+            NodeList nodes = tgtElement.getChildNodes();
+            for (int i = 0; i < nodes.getLength(); i++) {
+                if (nodes.item(i).getNodeType() == Node.ELEMENT_NODE) {
+                    Element child = (Element) nodes.item(i);
+                    for (Iterator it = changedNamespaceAttrs.entrySet().iterator(); it.hasNext(); ) {
+                        Map.Entry entry = (Map.Entry) it.next();
+                        String prefix = (String) entry.getKey();
+                        String namespace = (String) entry.getValue();
+                        if (// $NON-NLS-1$
+                        "".equals(prefix))
+                            // $NON-NLS-1$
+                            prefix = "xmlns";
+                        else
+                            // $NON-NLS-1$
+                            prefix = "xmlns:" + prefix;
+                        // add a new namespace decl if one hasn't been locally defined
+                        if (AeUtil.isNullOrEmpty(child.getAttribute(prefix))) {
+                            child.setAttributeNS(IAeConstants.W3C_XMLNS, prefix, namespace);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Import the node and append all of its children to the target
+    Node srcNode = aTarget.getOwnerDocument().importNode(aSource, true);
+    while (srcNode.getFirstChild() != null) {
+        Node child = srcNode.getFirstChild();
+        // Note: appending the child to the target node will effectively remove
+        // if from the src node. Don't explicitly remove the child from
+        // the srcNode since not all DOM impls behave well when you do
+        // this. (Axis is one example).
+        aTarget.appendChild(child);
+        // to see if it already has a default ns declaration and if not, add one.
+        if (child instanceof Element && addXmlnsDeclToChildNodes) {
+            Element e = (Element) child;
+            if (// $NON-NLS-1$
+            !e.hasAttributeNS(IAeConstants.W3C_XMLNS, "xmlns")) {
+                // $NON-NLS-1$
+                e.setAttributeNS(IAeConstants.W3C_XMLNS, "xmlns", aSource.getNamespaceURI());
+            }
+        }
+    }
+    // Copy attributes if we have any
+    if (srcNode.hasAttributes() && aTarget instanceof Element) {
+        NamedNodeMap attrMap = srcNode.getAttributes();
+        for (int i = 0, len = attrMap.getLength(); i < len; i++) {
+            Attr attr = (Attr) attrMap.item(i);
+            if (!IAeConstants.W3C_XMLNS.equals(attr.getNamespaceURI())) {
+                if (AeUtil.isNullOrEmpty(attr.getNamespaceURI())) {
+                    ((Element) aTarget).setAttributeNS(null, attr.getNodeName(), attr.getNodeValue());
+                } else {
+                    ((Element) aTarget).setAttributeNS(attr.getNamespaceURI(), attr.getNodeName(), attr.getNodeValue());
+                }
+            }
+        }
+    }
+}

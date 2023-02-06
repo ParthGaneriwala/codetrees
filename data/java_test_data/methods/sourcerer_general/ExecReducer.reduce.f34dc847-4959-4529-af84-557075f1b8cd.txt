@@ -1,0 +1,74 @@
+public void reduce(Object key, Iterator values, OutputCollector output, Reporter reporter) throws IOException {
+    if (oc == null) {
+        try {
+            oc = output;
+            reducer.setOutputCollector(oc);
+            reducer.initialize(jc);
+            rp = reporter;
+        } catch (HiveException e) {
+            abort = true;
+            e.printStackTrace();
+            throw new RuntimeException("Reduce operator initialization failed");
+        }
+    }
+    try {
+        BytesWritable keyWritable = (BytesWritable) key;
+        byte tag = 0;
+        if (isTagged) {
+            // remove the tag
+            int size = keyWritable.getSize() - 1;
+            tag = keyWritable.get()[size];
+            keyWritable.setSize(size);
+        }
+        if (!keyWritable.equals(groupKey)) {
+            // If a operator wants to do some work at the beginning of a group
+            if (groupKey == null) {
+                groupKey = new BytesWritable();
+            } else {
+                // If a operator wants to do some work at the end of a group
+                l4j.trace("End Group");
+                reducer.endGroup();
+            }
+            groupKey.set(keyWritable.get(), 0, keyWritable.getSize());
+            l4j.trace("Start Group");
+            reducer.startGroup();
+        }
+        try {
+            keyObject = inputKeyDeserializer.deserialize(keyWritable);
+        } catch (SerDeException e) {
+            throw new HiveException(e);
+        }
+        // In the future, we should use DynamicSerde and initialize it using the type info.
+        if (keyObjectInspector == null) {
+            // Directly create ObjectInspector here because we didn't know the number of cols till now.
+            keyObjectInspector = MetadataListStructObjectInspector.getInstance(((ColumnSet) keyObject).col.size());
+        }
+        // System.err.print(keyObject.toString());
+        while (values.hasNext()) {
+            Text valueText = (Text) values.next();
+            // System.err.print(who.getHo().toString());
+            try {
+                valueObject[tag] = inputValueDeserializer[tag].deserialize(valueText);
+            } catch (SerDeException e) {
+                throw new HiveException(e);
+            }
+            row.clear();
+            row.add(keyObject);
+            row.add(valueObject[tag]);
+            row.add(tag);
+            if (valueObjectInspector[tag] == null) {
+                // Directly create ObjectInspector here because we didn't know the number of cols till now.
+                valueObjectInspector[tag] = MetadataListStructObjectInspector.getInstance(((ColumnSet) valueObject[tag]).col.size());
+                ArrayList<ObjectInspector> ois = new ArrayList<ObjectInspector>();
+                ois.add(keyObjectInspector);
+                ois.add(valueObjectInspector[tag]);
+                ois.add(ObjectInspectorFactory.getStandardPrimitiveObjectInspector(Byte.class));
+                rowObjectInspector[tag] = ObjectInspectorFactory.getStandardStructObjectInspector(Arrays.asList(fieldNames), ois);
+            }
+            reducer.process(row, rowObjectInspector[tag]);
+        }
+    } catch (HiveException e) {
+        abort = true;
+        throw new IOException(e.getMessage());
+    }
+}

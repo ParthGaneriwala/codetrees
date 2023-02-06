@@ -1,0 +1,83 @@
+private void prepareAnchorsForTextProcessor(TextProcessor tp) throws SQLException {
+    System.out.println("Preparing anchors for " + tp.getName());
+    String tableName = "anchor_" + tp.getName();
+    ProgressNotifier pn = new ProgressNotifier(2);
+    int rows = this.getRowCountExact("anchor");
+    pn.startTask(rows, "Gathering and processing anchors");
+    Statement stmt = createStatement();
+    stmt.executeUpdate("DROP TABLE IF EXISTS " + tableName);
+    stmt.close();
+    stmt = createStatement();
+    stmt.executeUpdate("CREATE TABLE " + tableName + " (" + "an_text varchar(300) binary NOT NULL, " + "an_to int(8) unsigned NOT NULL, " + "an_count int(8) unsigned NOT NULL, " + "an_type int(1) unsigned NOT NULL, " + "PRIMARY KEY (an_text, an_to), " + "KEY (an_to)) ENGINE=MyISAM DEFAULT CHARSET=utf8;");
+    stmt.close();
+    HashMap<String, int[]> senseDetails = new HashMap<String, int[]>();
+    int currRow = 0;
+    int chunkIndex = 0;
+    int chunkSize = 100000;
+    while (chunkIndex * chunkSize < rows) {
+        // if (chunkIndex > 10) break ;
+        stmt = createStatement();
+        ResultSet rs = stmt.executeQuery("SELECT * FROM anchor LIMIT " + chunkIndex * chunkSize + ", " + chunkSize);
+        while (rs.next()) {
+            try {
+                String an_text = new String(rs.getBytes(1), "UTF-8");
+                long an_to = rs.getLong(2);
+                int an_count = rs.getInt(3);
+                int an_type = rs.getInt(4);
+                an_text = tp.processText(an_text);
+                // System.out.println(an_text + "," + an_to + "," + an_count) ;
+                int[] countAndType = senseDetails.get(an_text + ":" + an_to);
+                if (countAndType == null) {
+                    countAndType = new int[2];
+                    countAndType[0] = an_count;
+                    countAndType[1] = an_type;
+                } else {
+                    countAndType[0] = countAndType[0] + an_count;
+                    countAndType[1] = Math.max(countAndType[1], an_type);
+                }
+                senseDetails.put(an_text + ":" + an_to, countAndType);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            ;
+            currRow++;
+        }
+        rs.close();
+        stmt.close();
+        chunkIndex++;
+        pn.update(currRow);
+    }
+    rows = senseDetails.size();
+    pn.startTask(rows, "Saving processed anchors");
+    chunkIndex = 0;
+    currRow = 0;
+    StringBuffer insertQuery = new StringBuffer();
+    ;
+    for (String key : senseDetails.keySet()) {
+        currRow++;
+        int pos = key.lastIndexOf(':');
+        String an_text = key.substring(0, pos);
+        long an_to = new Long(key.substring(pos + 1)).longValue();
+        int[] countAndType = senseDetails.get(key);
+        if (an_text != "")
+            insertQuery.append(" (\"" + addEscapes(an_text) + "\"," + an_to + "," + countAndType[0] + "," + countAndType[1] + "),");
+        if (currRow % chunkSize == 0) {
+            if (insertQuery.length() > 0) {
+                insertQuery.delete(insertQuery.length() - 1, insertQuery.length());
+                stmt = createStatement();
+                stmt.setEscapeProcessing(false);
+                stmt.executeUpdate("INSERT IGNORE INTO " + tableName + " VALUES" + insertQuery.toString());
+                stmt.close();
+                insertQuery = new StringBuffer();
+            }
+            pn.update(currRow);
+        }
+    }
+    if (insertQuery.length() > 0) {
+        insertQuery.delete(insertQuery.length() - 1, insertQuery.length());
+        stmt = createStatement();
+        stmt.setEscapeProcessing(false);
+        stmt.executeUpdate("INSERT IGNORE INTO " + tableName + " VALUES" + insertQuery.toString());
+        stmt.close();
+    }
+}

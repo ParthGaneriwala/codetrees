@@ -1,0 +1,83 @@
+private int populateData(final TrainingDataNodeReader[] readers, final TrainingDataNodeWriter[] writers, final ActiveNodeStorage<HashSet<Long>>.ActiveNodeCollection wordsToPruneCollection, final ActiveNodeStorage<HashSet<Long>>.ActiveNodeCollection nextWordsToPruneCollection) throws IOException {
+    int numNodes = 0;
+    JobManager manager = JobManager.getInstance();
+    JobGroup group = manager.createJobGroup("full data split");
+    JobGroup populateGroup = manager.createJobGroup("populate clusters");
+    while (true) {
+        final ReadableTrainingDataNode[] dataNodes = new ReadableTrainingDataNode[readers.length];
+        for (byte dataId = 0; dataId < readers.length; ++dataId) {
+            dataNodes[dataId] = readers[dataId].getNext();
+        }
+        if (dataNodes[0] == null)
+            break;
+        final int nodeId = dataNodes[0].getNodeId();
+        for (byte dataId = 1; dataId < readers.length; ++dataId) {
+            assert (dataNodes[dataId].getNodeId() == nodeId);
+        }
+        final Long2IntMap counts = new Long2IntMap();
+        final BinaryTree<HistoryTreePayload> oldLeaf = nodes[nodeId];
+        if (oldLeaf.isLeaf()) {
+            for (byte dataId = 0; dataId < readers.length; ++dataId) {
+                ReadableTrainingData data = dataNodes[dataId].getData(0);
+                while (data.hasNext()) {
+                    TrainingDataBlock block = data.next();
+                    block.addCounts(counts);
+                }
+            }
+            if (oldLeaf.getPayload().isBackoff) {
+                oldLeaf.getPayload().lambda = 0;
+                continue;
+            }
+        } else {
+            final Long2IntMap[] countsByData = new Long2IntMap[readers.length];
+            countsByData[0] = counts;
+            for (byte d = 1; d < countsByData.length; ++d) {
+                countsByData[d] = new Long2IntMap();
+            }
+            for (byte dataId = 0; dataId < readers.length; ++dataId) {
+                final byte myDataId = dataId;
+                Runnable run = new Runnable() {
+
+                    @Override
+                    public void run() {
+                        try {
+                            TrainingDataNodeWriter writer = writers[myDataId];
+                            BinaryTree<HistoryTreePayload> left = oldLeaf.getLeft();
+                            BinaryTree<HistoryTreePayload> right = oldLeaf.getRight();
+                            int leftNodeId = left.getPayload().clusterid;
+                            int rightNodeId = right.getPayload().clusterid;
+                            WritableTrainingDataNode leftDataNode = writer.createNode(leftNodeId, 1);
+                            WritableTrainingDataNode rightDataNode = writer.createNode(rightNodeId, 1);
+                            writer.add(leftDataNode);
+                            writer.add(rightDataNode);
+                            TrainingDataUtil.splitData(dataNodes[myDataId].getData(0), oldLeaf.getPayload().question, rightDataNode.getData(0), leftDataNode.getData(0), countsByData[myDataId]);
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                };
+                Job job = new Job(run, "");
+                manager.addJob(group, job);
+            }
+            group.join();
+            numNodes += 2;
+            // sum up all counts
+            for (byte d = 1; d < countsByData.length; ++d) {
+                counts.addMap(countsByData[d]);
+            }
+        }
+        Runnable run = new Runnable() {
+
+            @Override
+            public void run() {
+                populateCluster(nodeId, counts, wordsToPruneCollection, nextWordsToPruneCollection);
+            }
+        };
+        Job job = new Job(run, "");
+        manager.addJob(populateGroup, job);
+        populateGroup.join(manager.getNumWorkers() / 2 + 1);
+    }
+    // wait for the last populateCluster()
+    populateGroup.join();
+    return numNodes;
+}

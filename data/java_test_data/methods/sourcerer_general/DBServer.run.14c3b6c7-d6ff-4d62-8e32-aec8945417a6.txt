@@ -1,0 +1,108 @@
+public void run() {
+    try {
+        ds = new DatagramSocket();
+        Config.DBServerPort = ds.getLocalPort();
+    } catch (SocketException e) {
+        e.printStackTrace();
+    }
+    Config.printlnDB2("����DBServer�ڶ˿�" + Config.DBServerPort);
+    byte[] data = new byte[1024];
+    DatagramPacket dp = new DatagramPacket(data, data.length);
+    while (true) {
+        try {
+            ds.receive(dp);
+        } catch (IOException e) {
+            continue;
+        }
+        int sType = peer.tools.MessageCheck.checkSType(dp);
+        if (sType == peer.tools.MessageType.sType_DB_CastAddMessage) {
+            CastAddMessage cam = new CastAddMessage(dp);
+            Mdb mdb = new Mdb(cam.getMd());
+            if (!DBConfig.sourceGroupMange.containsSourceGroup(mdb)) {
+                DBConfig.sourceGroupMange.addSourceGroup(mdb);
+            }
+            SourceGroup sg = (SourceGroup) DBConfig.sourceGroupMange.getSourceGroup(mdb);
+            boolean isUpdate = false;
+            if (!sg.containsSource(cam.getSourceSessionId())) {
+                SourceNode sn = new SourceNode(cam.getSourceSessionId(), cam.getAssistNodeIp(), cam.getAssistNodePort(), cam.getAssistSessionId(), dp.getAddress(), cam.getLanIp());
+                sg.addSource(sn);
+            } else {
+                isUpdate = true;
+            }
+            SourceNode sn = (SourceNode) sg.getSourceNode(cam.getSourceSessionId());
+            if (sn != null) {
+                sn.sourceSessionId = cam.getSourceSessionId();
+                sn.assistNodeIp = cam.getAssistNodeIp();
+                sn.assistNodePort = cam.getAssistNodePort();
+                HashMap<Integer, Integer> hm = cam.getBlockInfo().getHm();
+                Iterator<Integer> it = hm.keySet().iterator();
+                while (it.hasNext()) {
+                    int offset = it.next();
+                    int length = hm.get(offset);
+                    if (isUpdate) {
+                    // Config.printlnDB2("������Դ"+cam.getSourceSessionId()+" "+peer.tools.Pmd52f.byteArrayToHexString(cam.getMd())+"  "+offset+"   "+length);
+                    } else {
+                        Config.printlnDB2("�����Դ" + cam.getSourceSessionId() + " " + peer.tools.Pmd52f.byteArrayToHexString(cam.getMd()) + "  " + offset + "   " + length);
+                    }
+                    sn.addFrag(offset, length);
+                }
+            }
+            CastAddMessage2 cam2 = new CastAddMessage2(cam.getSourceSessionId());
+            cam2.setDstAddress(dp.getAddress());
+            cam2.setDstPort(dp.getPort());
+            try {
+                ds.send(cam2.getDatagramPacket());
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        } else if (sType == peer.tools.MessageType.sType_DB_CastRemoveMessage) {
+            CastRemoveMessage cdm = new CastRemoveMessage(dp);
+            Mdb mdb = new Mdb(cdm.getMd());
+            SourceGroup sg = (SourceGroup) DBConfig.sourceGroupMange.getSourceGroup(mdb);
+            Config.printlnDB2("ɾ����Դ" + peer.tools.Pmd52f.byteArrayToHexString(cdm.getMd()) + " " + cdm.getsourceSessionId());
+            if (sg != null) {
+                sg.removeSource(cdm.getsourceSessionId());
+            }
+            CastRemoveMessage2 cdm2 = new CastRemoveMessage2(cdm.getsourceSessionId());
+            cdm2.setDstAddress(dp.getAddress());
+            cdm2.setDstPort(dp.getPort());
+            try {
+                ds.send(cdm2.getDatagramPacket());
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        } else if (sType == peer.tools.MessageType.sType_DB_SourceSearchMessage) {
+            SourceSearchMessage sgm = new SourceSearchMessage(dp);
+            Mdb mdb = new Mdb(sgm.getMd());
+            SourceGroup sg = DBConfig.sourceGroupMange.getSourceGroup(mdb);
+            // System.out.println("���� "+mdb);
+            if (sg != null) {
+                SourceSearchMessage2 sgm2 = new SourceSearchMessage2(mdb, sgm.getBlockNum(), dp.getAddress());
+                sgm2.setDstAddress(dp.getAddress());
+                sgm2.setDstPort(dp.getPort());
+                try {
+                    ds.send(sgm2.getDatagramPacket());
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        } else if (sType == peer.tools.MessageType.sType_DB_SourceSumMessage1) {
+            SourceSumMessage ssm = new SourceSumMessage(dp);
+            Mdb mdb = ssm.getMdb();
+            SourceGroup sg = DBConfig.sourceGroupMange.getSourceGroup(mdb);
+            SourceSumMessage2 ssm2 = null;
+            if (sg != null) {
+                ssm2 = new SourceSumMessage2(sg.getSourceSum(), peer.Config.RoutePort);
+            } else {
+                ssm2 = new SourceSumMessage2(0, peer.Config.RoutePort);
+            }
+            ssm2.setDstAddress(dp.getAddress());
+            ssm2.setDstPort(dp.getPort());
+            try {
+                ds.send(ssm2.getDatagramPacket());
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+}

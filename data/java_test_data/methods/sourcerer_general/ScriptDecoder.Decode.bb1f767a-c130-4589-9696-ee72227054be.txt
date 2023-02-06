@@ -1,0 +1,142 @@
+public static String Decode(Page page, Cursor cursor) throws ParserException {
+    int state;
+    int substate_initial;
+    int substate_length;
+    int substate_prefix;
+    int substate_checksum;
+    int substate_final;
+    long checksum;
+    long length;
+    char[] buffer;
+    buffer = new char[6];
+    int index;
+    char character;
+    int input_character;
+    boolean found;
+    StringBuffer ret;
+    ret = new StringBuffer(1024);
+    state = STATE_INITIAL;
+    substate_initial = 0;
+    substate_length = 0;
+    substate_prefix = 0;
+    substate_checksum = 0;
+    substate_final = 0;
+    length = 0L;
+    checksum = 0L;
+    index = 0;
+    while (STATE_DONE != state) {
+        input_character = page.getCharacter(cursor);
+        character = (char) input_character;
+        if (Page.EOF == input_character) {
+            if ((STATE_INITIAL != state) || (0 != substate_initial) || (0 != substate_length) || (0 != substate_prefix) || (0 != substate_checksum) || (0 != substate_final))
+                throw new ParserException("illegal state for exit");
+            state = STATE_DONE;
+        } else
+            switch(state) {
+                case STATE_INITIAL:
+                    if (character == mLeader[substate_initial]) {
+                        substate_initial++;
+                        if (substate_initial == mLeader.length) {
+                            substate_initial = 0;
+                            state = STATE_LENGTH;
+                        }
+                    } else {
+                        // oops, flush
+                        for (int k = 0; 0 < substate_initial; k++) {
+                            ret.append(mLeader[k++]);
+                            substate_initial--;
+                        }
+                        ret.append(character);
+                    }
+                    break;
+                case STATE_LENGTH:
+                    buffer[substate_length] = character;
+                    substate_length++;
+                    if (substate_length >= buffer.length) {
+                        length = decodeBase64(buffer);
+                        if (0 > length)
+                            throw new ParserException("illegal length: " + length);
+                        substate_length = 0;
+                        state = STATE_PREFIX;
+                    }
+                    break;
+                case STATE_PREFIX:
+                    if (character == mPrefix[substate_prefix])
+                        substate_prefix++;
+                    else
+                        throw new ParserException("illegal character encountered: " + (int) character + " ('" + character + "')");
+                    if (substate_prefix >= mPrefix.length) {
+                        substate_prefix = 0;
+                        state = STATE_DECODE;
+                    }
+                    break;
+                case STATE_DECODE:
+                    if ('@' == character)
+                        state = STATE_ESCAPE;
+                    else {
+                        if (input_character < 0x80) {
+                            if (input_character == '\t')
+                                input_character = 0;
+                            else if (input_character >= ' ')
+                                input_character -= ' ' - 1;
+                            else
+                                throw new ParserException("illegal encoded character: " + input_character + " ('" + character + "')");
+                            char ch = mLookupTable[mEncodingIndex[index % 64]][input_character];
+                            ret.append(ch);
+                            checksum += ch;
+                            index++;
+                        } else
+                            ret.append(character);
+                    }
+                    length--;
+                    if (0 == length) {
+                        index = 0;
+                        state = STATE_CHECKSUM;
+                    }
+                    break;
+                case STATE_ESCAPE:
+                    found = false;
+                    for (int i = 0; i < mEscapes.length; i++) if (character == mEscapes[i]) {
+                        found = true;
+                        character = mEscaped[i];
+                    }
+                    if (!found)
+                        throw new ParserException("unexpected escape character: " + (int) character + " ('" + character + "')");
+                    ret.append(character);
+                    checksum += character;
+                    index++;
+                    state = STATE_DECODE;
+                    length--;
+                    if (0 == length) {
+                        index = 0;
+                        state = STATE_CHECKSUM;
+                    }
+                    break;
+                case STATE_CHECKSUM:
+                    buffer[substate_checksum] = character;
+                    substate_checksum++;
+                    if (substate_checksum >= buffer.length) {
+                        long check = decodeBase64(buffer);
+                        if (check != checksum)
+                            throw new ParserException("incorrect checksum, expected " + check + ", calculated " + checksum);
+                        checksum = 0;
+                        substate_checksum = 0;
+                        state = STATE_FINAL;
+                    }
+                    break;
+                case STATE_FINAL:
+                    if (character == mTrailer[substate_final])
+                        substate_final++;
+                    else
+                        throw new ParserException("illegal character encountered: " + (int) character + " ('" + character + "')");
+                    if (substate_final >= mTrailer.length) {
+                        substate_final = 0;
+                        state = LAST_STATE;
+                    }
+                    break;
+                default:
+                    throw new ParserException("invalid state: " + state);
+            }
+    }
+    return (ret.toString());
+}

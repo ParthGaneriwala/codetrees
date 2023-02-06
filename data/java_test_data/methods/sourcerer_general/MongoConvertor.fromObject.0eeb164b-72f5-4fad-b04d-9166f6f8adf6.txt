@@ -1,0 +1,44 @@
+public <T> T fromObject(Object obj, Class<T> clazz, Map<String, Object> loopMap) {
+    T bean = null;
+    try {
+        bean = clazz.newInstance();
+        if (obj instanceof DBObject) {
+            DBObject entry = (DBObject) obj;
+            for (Method method : clazz.getDeclaredMethods()) {
+                if (ReflectionUtils.isSetterMethod(method)) {
+                    String field = ReflectionUtils.getFieldNameByMethodName(method);
+                    Object value = entry.get(field);
+                    boolean hasLoop = loopMap != null && loopMap.containsKey(method.getParameterTypes()[0].getCanonicalName());
+                    if (value != null && value instanceof DBRef && hasLoop == false) {
+                        DBObject refObj = ((DBRef) value).fetch();
+                        Method getter = clazz.getMethod(ReflectionUtils.getGetterName(field), (Class[]) null);
+                        Class<?> getterClass = getter.getReturnType();
+                        Map<String, Object> loop = new HashMap<String, Object>();
+                        for (Method m : getterClass.getDeclaredMethods()) {
+                            if (ReflectionUtils.isWantedGetterMethod(m, clazz)) {
+                                loop.put(clazz.getCanonicalName(), null);
+                                break;
+                            }
+                        }
+                        value = fromObject(refObj, getter.getReturnType(), loop);
+                        Method reverse = null;
+                        reverse = ReflectionUtils.getSetterMethod(value.getClass(), clazz);
+                        if (reverse != null)
+                            reverse.invoke(value, new Object[] { bean });
+                    }
+                    if (value instanceof DBRef)
+                        value = null;
+                    if (value != null)
+                        method.invoke(bean, new Object[] { value });
+                }
+            }
+        }
+    } catch (InvocationTargetException ite) {
+        mTrace.error("invocation target exception: " + ite.getTargetException().getMessage());
+    } catch (Exception e) {
+        mTrace.error("convert mongo dbObject to bean error: " + e.getMessage());
+        mTrace.debug("convert mongo dbObject to bean error: ", e);
+        System.out.println(e);
+    }
+    return bean;
+}

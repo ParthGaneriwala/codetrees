@@ -1,0 +1,77 @@
+public void handle(SipServletMessage message) throws ServletException, IOException {
+    if (((SipMessage) message).isRequest()) {
+        SipRequest request = (SipRequest) message;
+        Address route = popLocalRoute(request);
+        if (isInitial(request)) {
+            request.setInitial(true);
+            SipApplicationRouterInfo routerInfo = null;
+            SipAppContext appContext = null;
+            try {
+                if (route != null) {
+                    SipURI uri = (SipURI) route.getURI();
+                    if (RouterInfoUtil.ROUTER_INFO.equals(uri.getUser())) {
+                        routerInfo = RouterInfoUtil.decode(uri);
+                        route = popLocalRoute(request);
+                    }
+                    if (route != null)
+                        request.setPoppedRoute(route);
+                }
+                if (routerInfo == null) {
+                    routerInfo = ((Server) getServer()).getApplicationRouter().getNextApplication(request, null, SipApplicationRoutingDirective.NEW, null, null);
+                }
+            } catch (Throwable t) {
+                if (!request.isAck()) {
+                    SipResponse response = new SipResponse(request, SipServletResponse.SC_SERVER_INTERNAL_ERROR, "Application router error: " + t.getMessage());
+                    ExceptionUtil.fillStackTrace(response, t);
+                    getConnectorManager().sendResponse(response);
+                }
+                return;
+            }
+            if (routerInfo != null && routerInfo.getNextApplicationName() != null) {
+                boolean handle = handlingRoute(request, routerInfo);
+                if (handle)
+                    return;
+                request.setStateInfo(routerInfo.getStateInfo());
+                request.setRegion(routerInfo.getRoutingRegion());
+                String s = routerInfo.getSubscriberURI();
+                if (s != null) {
+                    try {
+                        request.setSubscriberURI(URIFactory.parseURI(s));
+                    } catch (ServletParseException e) {
+                        Log.debug(e);
+                    }
+                }
+                String applicationName = routerInfo.getNextApplicationName();
+                appContext = (SipAppContext) getContext(applicationName);
+                Method method = appContext == null ? null : appContext.getSipApplicationKeyMethod();
+                if (method != null) {
+                    try {
+                        String sessionKey = (String) method.invoke(null, request);
+                        if (Log.isDebugEnabled())
+                            Log.debug("routing initial request to key {}", sessionKey);
+                        request.addHandlerAttribute(ID.SESSION_KEY_ATTRIBUTE, sessionKey);
+                    } catch (Exception e) {
+                        Log.debug("failed to get SipApplicationKey", e);
+                    }
+                }
+                if (Log.isDebugEnabled())
+                    Log.debug("application router returned application {} for initial request {}", applicationName, request.getMethod());
+                if (appContext == null && applicationName != null)
+                    Log.debug("No application with name {} returned by application router could be found", applicationName, null);
+            }
+            if (appContext == null) {
+                if (!request.isAck()) {
+                    SipResponse response = new SipResponse(request, SipServletResponse.SC_NOT_FOUND, null);
+                    response.to().setParameter(SipParams.TAG, ID.newTag());
+                    getConnectorManager().sendResponse(response);
+                }
+                return;
+            }
+            request.addHandlerAttribute(ID.CONTEXT_ATTRIBUTE, appContext);
+        } else {
+            if (route != null)
+                request.setPoppedRoute(route);
+        }
+    }
+    _handler.handle(message);
+}

@@ -1,0 +1,83 @@
+@Override
+public void trainOnInstanceImpl(Instance inst) {
+    int numClasses = inst.numClasses();
+    // Set log (k-1) and (k-1) for SAMME Method
+    if (this.sammeOption.isSet()) {
+        this.Km1 = numClasses - 1;
+        this.logKm1 = Math.log(this.Km1);
+        this.initKm1 = false;
+    }
+    // Output Codes
+    if (this.initMatrixCodes == true) {
+        this.matrixCodes = new int[this.ensemble.length][inst.numClasses()];
+        for (int i = 0; i < this.ensemble.length; i++) {
+            int numberOnes;
+            int numberZeros;
+            do {
+                // until we have the same number of zeros and ones
+                numberOnes = 0;
+                numberZeros = 0;
+                for (int j = 0; j < numClasses; j++) {
+                    int result = 0;
+                    if (j == 1 && numClasses == 2) {
+                        result = 1 - this.matrixCodes[i][0];
+                    } else {
+                        result = (this.classifierRandom.nextBoolean() ? 1 : 0);
+                    }
+                    this.matrixCodes[i][j] = result;
+                    if (result == 1) {
+                        numberOnes++;
+                    } else {
+                        numberZeros++;
+                    }
+                }
+            } while ((numberOnes - numberZeros) * (numberOnes - numberZeros) > (this.ensemble.length % 2));
+        }
+        this.initMatrixCodes = false;
+    }
+    boolean Change = false;
+    double lambda_d = 1.0;
+    Instance weightedInst = (Instance) inst.copy();
+    for (int i = 0; i < this.ensemble.length; i++) {
+        double k = this.pureBoostOption.isSet() ? lambda_d : MiscUtils.poisson(lambda_d * this.Km1, this.classifierRandom);
+        if (k > 0.0) {
+            if (this.outputCodesOption.isSet()) {
+                weightedInst.setClassValue((double) this.matrixCodes[i][(int) inst.classValue()]);
+            }
+            weightedInst.setWeight(inst.weight() * k);
+            this.ensemble[i].trainOnInstance(weightedInst);
+        }
+        boolean correctlyClassifies = this.ensemble[i].correctlyClassifies(weightedInst);
+        if (correctlyClassifies) {
+            this.scms[i] += lambda_d;
+            lambda_d *= this.trainingWeightSeenByModel / (2 * this.scms[i]);
+        } else {
+            this.swms[i] += lambda_d;
+            lambda_d *= this.trainingWeightSeenByModel / (2 * this.swms[i]);
+        }
+        double ErrEstim = this.ADError[i].getEstimation();
+        if (this.ADError[i].setInput(correctlyClassifies ? 0 : 1)) {
+            if (this.ADError[i].getEstimation() > ErrEstim) {
+                Change = true;
+            }
+        }
+    }
+    if (Change) {
+        numberOfChangesDetected++;
+        double max = 0.0;
+        int imax = -1;
+        for (int i = 0; i < this.ensemble.length; i++) {
+            if (max < this.ADError[i].getEstimation()) {
+                max = this.ADError[i].getEstimation();
+                imax = i;
+            }
+        }
+        if (imax != -1) {
+            this.ensemble[imax].resetLearning();
+            // this.ensemble[imax].trainOnInstance(inst);
+            this.ADError[imax] = new ADWIN((double) this.deltaAdwinOption.getValue());
+            this.scms[imax] = 0;
+            this.swms[imax] = 0;
+        }
+    }
+}

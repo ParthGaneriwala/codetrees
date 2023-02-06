@@ -1,0 +1,46 @@
+private void runProgram(MiniMRCluster mr, MiniDFSCluster dfs, Path program, Path inputPath, Path outputPath, int numMaps, int numReduces, String[] expectedResults) throws IOException {
+    Path wordExec = new Path("/testing/bin/application");
+    JobConf job = mr.createJobConf();
+    job.setNumMapTasks(numMaps);
+    job.setNumReduceTasks(numReduces);
+    {
+        FileSystem fs = dfs.getFileSystem();
+        fs.delete(wordExec.getParent(), true);
+        fs.copyFromLocalFile(program, wordExec);
+        Submitter.setExecutable(job, fs.makeQualified(wordExec).toString());
+        Submitter.setIsJavaRecordReader(job, true);
+        Submitter.setIsJavaRecordWriter(job, true);
+        FileInputFormat.setInputPaths(job, inputPath);
+        FileOutputFormat.setOutputPath(job, outputPath);
+        RunningJob rJob = null;
+        if (numReduces == 0) {
+            rJob = Submitter.jobSubmit(job);
+            while (!rJob.isComplete()) {
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException ie) {
+                    throw new RuntimeException(ie);
+                }
+            }
+        } else {
+            rJob = Submitter.runJob(job);
+        }
+        assertTrue("pipes job failed", rJob.isSuccessful());
+        Counters counters = rJob.getCounters();
+        Counters.Group wordCountCounters = counters.getGroup("WORDCOUNT");
+        int numCounters = 0;
+        for (Counter c : wordCountCounters) {
+            System.out.println(c);
+            ++numCounters;
+        }
+        assertTrue("No counters found!", (numCounters > 0));
+    }
+    List<String> results = new ArrayList<String>();
+    for (Path p : FileUtil.stat2Paths(dfs.getFileSystem().listStatus(outputPath, new OutputLogFilter()))) {
+        results.add(TestMiniMRWithDFS.readOutput(p, job));
+    }
+    assertEquals("number of reduces is wrong", expectedResults.length, results.size());
+    for (int i = 0; i < results.size(); i++) {
+        assertEquals("pipes program " + program + " output " + i + " wrong", expectedResults[i], results.get(i));
+    }
+}

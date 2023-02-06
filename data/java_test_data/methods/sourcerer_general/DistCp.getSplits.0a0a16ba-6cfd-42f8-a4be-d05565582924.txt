@@ -1,0 +1,40 @@
+public InputSplit[] getSplits(JobConf job, int numSplits) throws IOException {
+    int cnfiles = job.getInt(SRC_COUNT_LABEL, -1);
+    long cbsize = job.getLong(TOTAL_SIZE_LABEL, -1);
+    String srcfilelist = job.get(SRC_LIST_LABEL, "");
+    if (cnfiles < 0 || cbsize < 0 || "".equals(srcfilelist)) {
+        throw new RuntimeException("Invalid metadata: #files(" + cnfiles + ") total_size(" + cbsize + ") listuri(" + srcfilelist + ")");
+    }
+    Path src = new Path(srcfilelist);
+    FileSystem fs = src.getFileSystem(job);
+    FileStatus srcst = fs.getFileStatus(src);
+    ArrayList<FileSplit> splits = new ArrayList<FileSplit>(numSplits);
+    LongWritable key = new LongWritable();
+    FilePair value = new FilePair();
+    final long targetsize = cbsize / numSplits;
+    long pos = 0L;
+    long last = 0L;
+    long acc = 0L;
+    long cbrem = srcst.getLen();
+    SequenceFile.Reader sl = null;
+    try {
+        sl = new SequenceFile.Reader(fs, src, job);
+        for (; sl.next(key, value); last = sl.getPosition()) {
+            // cut the last split and put this next file in the next split.
+            if (acc + key.get() > targetsize && acc != 0) {
+                long splitsize = last - pos;
+                splits.add(new FileSplit(src, pos, splitsize, (String[]) null));
+                cbrem -= splitsize;
+                pos = last;
+                acc = 0L;
+            }
+            acc += key.get();
+        }
+    } finally {
+        checkAndClose(sl);
+    }
+    if (cbrem != 0) {
+        splits.add(new FileSplit(src, pos, cbrem, (String[]) null));
+    }
+    return splits.toArray(new FileSplit[splits.size()]);
+}

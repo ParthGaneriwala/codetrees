@@ -1,0 +1,76 @@
+@Override
+public void start() throws WekaException {
+    if (getStepManager().numOutgoingConnections() > 0) {
+        if (m_data.length() == 0) {
+            getStepManager().logWarning("No data to output!");
+        } else {
+            try {
+                // make instances
+                String data = environmentSubstitute(m_data);
+                Instances toOutput = new Instances(new StringReader(data));
+                if (getStepManager().numOutgoingConnectionsOfType(StepManager.CON_DATASET) > 0) {
+                    getStepManager().processing();
+                    Data batch = new Data(StepManager.CON_DATASET, toOutput);
+                    getStepManager().outputData(batch);
+                    getStepManager().finished();
+                } else {
+                    // streaming case
+                    String stm = getName() + "$" + hashCode() + 99 + "| overall flow throughput -|";
+                    m_flowThroughput = new StreamThroughput(stm, "Starting flow...", ((StepManagerImpl) getStepManager()).getLog());
+                    Instances structure = toOutput.stringFreeStructure();
+                    Instances structureCopy = null;
+                    Instances currentStructure = structure;
+                    boolean containsStrings = toOutput.checkForStringAttributes();
+                    if (containsStrings) {
+                        structureCopy = (Instances) (new SerializedObject(structure).getObject());
+                    }
+                    if (isStopRequested()) {
+                        getStepManager().interrupted();
+                        return;
+                    }
+                    for (int i = 0; i < toOutput.numInstances(); i++) {
+                        if (isStopRequested()) {
+                            break;
+                        }
+                        Instance nextInst = toOutput.instance(i);
+                        m_flowThroughput.updateStart();
+                        getStepManager().throughputUpdateStart();
+                        if (containsStrings) {
+                            if (currentStructure == structure) {
+                                currentStructure = structureCopy;
+                            } else {
+                                currentStructure = structure;
+                            }
+                            for (int j = 0; j < toOutput.numAttributes(); j++) {
+                                if (toOutput.attribute(j).isString()) {
+                                    if (!nextInst.isMissing(j)) {
+                                        currentStructure.attribute(j).setStringValue(nextInst.stringValue(j));
+                                        nextInst.setValue(j, 0);
+                                    }
+                                }
+                            }
+                        }
+                        nextInst.setDataset(currentStructure);
+                        m_incrementalData.setPayloadElement(StepManager.CON_INSTANCE, nextInst);
+                        getStepManager().throughputUpdateEnd();
+                        getStepManager().outputData(m_incrementalData);
+                        m_flowThroughput.updateEnd(((StepManagerImpl) getStepManager()).getLog());
+                    }
+                    if (isStopRequested()) {
+                        ((StepManagerImpl) getStepManager()).getLog().statusMessage(stm + "remove");
+                        getStepManager().interrupted();
+                        return;
+                    }
+                    m_flowThroughput.finished(((StepManagerImpl) getStepManager()).getLog());
+                    // signal end of input
+                    m_incrementalData.clearPayload();
+                    getStepManager().throughputFinished(m_incrementalData);
+                }
+            } catch (Exception ex) {
+                throw new WekaException(ex);
+            }
+        }
+    } else {
+        getStepManager().logWarning("No connected outputs");
+    }
+}

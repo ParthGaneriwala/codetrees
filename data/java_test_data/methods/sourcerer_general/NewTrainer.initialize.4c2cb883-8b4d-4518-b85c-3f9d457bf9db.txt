@@ -1,0 +1,70 @@
+public TrainingContext initialize() throws IOException {
+    HistoryTreePayload payload = new HistoryTreePayload((Question) null);
+    payload.top = true;
+    activeNodeStorage.open();
+    Experiment exp = Experiment.getInstance();
+    FactorTupleDescription desc = exp.getTupleDescription();
+    Experiment.Files files = exp.getFiles();
+    int numSplits = files.getTrainData().size();
+    TrainingContext ctx = createNewContext(0, 1, new BinaryTree<HistoryTreePayload>(payload));
+    int nodeId = ctx.getNextNodeId();
+    payload.clusterid = nodeId;
+    OnDiskTrainingDataNodeWriter writer = new OnDiskTrainingDataNodeWriter(ctx.getFile().getChannel());
+    WritableTrainingDataNode node = writer.createNode(nodeId, numSplits);
+    writer.add(node);
+    WritableTrainingData[] newData = node.getData();
+    long overtMask = desc.getOvertFactorsMask();
+    TrainingDataFilter filter = new MaskedFuturesTrainingDataFilter(overtMask);
+    Long2IntMap[] dataCounts = new Long2IntMap[numSplits];
+    for (int i = 0; i < numSplits; ++i) {
+        dataCounts[i] = new Long2IntMap();
+        for (String fname : files.getTrainDataFiles(i)) {
+            FileChannel channel = new FileInputStream(fname).getChannel();
+            TrainingDataReader reader = new OnDiskTrainingDataReader(channel);
+            ReadableTrainingData inputData = new ReadableTrainingData(reader);
+            // System.err.printf("data #%d\n", i);
+            TrainingDataUtil.reduceContext(inputData, newData[i], lm.getOvertOrder(), lm.getHiddenOrder(), filter, dataCounts[i]);
+            // System.err.printf("=====================\n");
+            channel.close();
+        }
+        newData[i].finish();
+    }
+    writer.close();
+    ctx.setDataWriter(writer);
+    ActiveTreeNode activeNode = new ActiveTreeNode(numSplits);
+    activeNode.possibleQuestions = new int[allQuestions.length];
+    for (int i = 0; i < allQuestions.length; ++i) {
+        activeNode.possibleQuestions[i] = i;
+    }
+    this.entropies = new double[numSplits];
+    long[] totalCounts = new long[numSplits];
+    for (int i = 0; i < numSplits; ++i) {
+        // convert training counts to distribution
+        long totalCount = 0;
+        for (Long2IntMap.Iterator it = dataCounts[i].iterator(); it.hasNext(); ) {
+            totalCount += it.next().getValue();
+        }
+        totalCounts[i] = totalCount;
+        double revTotalCount = 1.0 / totalCount;
+        Long2DoubleMap trainingDist = new Long2DoubleMap(dataCounts[i].size());
+        for (Long2IntMap.Iterator it = dataCounts[i].iterator(); it.hasNext(); ) {
+            Long2IntMap.Entry entry = it.next();
+            trainingDist.put(entry.getKey(), entry.getValue() * revTotalCount);
+        }
+        // activeNode.smoothedDistributions[i] = trainingDist;
+        double entropy = ProbMath.computeEntropy(dataCounts[i]);
+        entropies[i] = entropy;
+    }
+    activeNode.nodeCosts = Arrays.copyOf(entropies, entropies.length);
+    activeNode.possibleWords = new long[desc.getAllOvertFactors().size()];
+    {
+        int i = 0;
+        for (FactorTuple tuple : desc.getAllOvertFactors().keySet()) {
+            activeNode.possibleWords[i++] = tuple.getBits();
+        }
+    }
+    AbstractQuestionEstimator.setTotalCounts(totalCounts);
+    ctx.getActiveNodes().putNode(nodeId, activeNode);
+    ctx.putLeaf(nodeId, ctx.getTree());
+    return ctx;
+}

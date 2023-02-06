@@ -1,0 +1,45 @@
+@SuppressWarnings("unchecked")
+void partition(DecodingContext context) {
+    TreeTrellisNode currentNode = context.getCurrentNode();
+    long partitionStartTime = Timing.nanoTime();
+    int numLMs = Experiment.getInstance().getNumLMs();
+    if (forest.getOrder() > 1) {
+        TrellisNodeItem[] items = currentNode.getPreviousNode().itemsArray();
+        Arrays.sort(items, newItemComparator);
+        double bestProb = items[0].getProb();
+        ArrayDeque<TrellisNodeItem> agenda = new ArrayDeque<TrellisNodeItem>(items.length * 2);
+        for (TrellisNodeItem item : items) {
+            if (item.getProb() < bestProb * PRUNING_THRESHOLD) {
+                // System.err.println("pruned!");
+                break;
+            }
+            agenda.addFirst(item);
+            context.setItemData(item, new ItemData(new BinaryTree[numLMs]));
+        }
+        while (!agenda.isEmpty()) {
+            reallyNewPartition(context, agenda);
+        }
+    } else {
+        BinaryTree<HistoryTreePayload>[] decodingPosition = new BinaryTree[numLMs];
+        for (LanguageModel lm : forest.getModels()) {
+            BinaryTree<HistoryTreePayload> historyTree = lm.getHistoryTree();
+            decodingPosition[lm.getIdNum()] = historyTree;
+            addCluster(context, lm.getIdNum(), historyTree);
+        }
+        context.addPrediction(decodingPosition, null);
+    }
+    long afterPartionTime = Timing.nanoTime();
+    newGeneratePredictions(context);
+    long afterPredictionsTime = Timing.nanoTime();
+    // int point = 0;
+    // System.out.printf("[%d] @%d logProb=%f\n", currentNode.time, ++point, currentNode.getLogProb());
+    // System.out.printf("[%d] @%d logProb=%f\n", currentNode.time, ++point, currentNode.getLogProb());
+    currentNode.rescale();
+    if (debug > 0) {
+        StringBuilder sb = new StringBuilder();
+        debugContext(context, sb);
+        System.out.print(sb.toString());
+    }
+    timingData.setTotalPartitionTime(timingData.getTotalPartitionTime() + afterPartionTime - partitionStartTime);
+    TimingData.totalPredictionTime.addAndGet(afterPredictionsTime - afterPartionTime);
+}

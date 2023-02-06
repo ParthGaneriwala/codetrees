@@ -1,0 +1,98 @@
+public String nodeToRDBString(Node node, boolean addIfLong) throws RDFRDBException {
+    String res = null;
+    if (node.isURI()) {
+        String uri = new String(((Node_URI) node).getURI());
+        if (uri.startsWith(RDBCodeURI)) {
+            throw new RDFRDBException("URI Node looks like a blank node: " + uri);
+        }
+        // TODO: need to write special version of splitNamespace for rdb.
+        // or else, need a guarantee that splitNamespace never changes.
+        // the problem is that if the splitNamespace algorithm changes,
+        // then URI's may be encoded differently. so, URI's in existing
+        // databases may become inaccessible.
+        int pos = 0;
+        boolean noCompress;
+        String pfx;
+        String qname;
+        if (URI_COMPRESS == true) {
+            pos = dbSplitNamespace(uri);
+            if (uri.startsWith(DB.uri))
+                noCompress = true;
+            else
+                noCompress = (pos == uri.length()) || (pos <= URI_COMPRESS_LENGTH);
+        } else
+            noCompress = true;
+        if (noCompress) {
+            pfx = RDBCodeDelim + RDBCodeDelim;
+            qname = uri;
+        } else {
+            // see if it's cached
+            DBIDInt pfxid = URItoPrefix(uri, pos, addIfLong);
+            if (pfxid == null)
+                return res;
+            pfx = RDBCodeDelim + ((DBIDInt) pfxid).getIntID() + RDBCodeDelim;
+            qname = uri.substring(pos);
+        }
+        int encodeLen = RDBCodeURI.length() + 1 + pfx.length() + EOS_LEN;
+        boolean URIisLong = objectIsLong(encodeLen, qname);
+        if (URIisLong) {
+            int dbid;
+            // belongs in URI table
+            DBIDInt URIid = getURIID(qname, addIfLong);
+            if (URIid == null)
+                return res;
+            dbid = URIid.getIntID();
+            res = new String(RDBCodeURI + RDBCodeRef + pfx + dbid);
+        } else {
+            res = RDBCodeURI + RDBCodeValue + pfx + qname + EOS;
+        }
+    } else if (node.isLiteral()) {
+        // TODO: may need to encode literal value when datatype is not a string.
+        Node_Literal litNode = (Node_Literal) node;
+        String lval = litNode.getLiteralLexicalForm();
+        String lang = litNode.getLiteralLanguage();
+        String dtype = litNode.getLiteralDatatypeURI();
+        String ld = litLangTypeToRDBString(lang, dtype);
+        int encodeLen = RDBCodeLiteral.length() + 2 + ld.length() + EOS_LEN;
+        boolean litIsLong = objectIsLong(encodeLen, lval);
+        if (litIsLong) {
+            int dbid;
+            // System.err.println("Long literal("+lval.length()+" => "+encodeLen+")") ;
+            // belongs in literal table
+            DBIDInt lid = getLiteralID(litNode, addIfLong);
+            if (lid == null)
+                return res;
+            dbid = lid.getIntID();
+            res = new String(RDBCodeLiteral + RDBCodeRef + RDBCodeDelim + dbid);
+        } else {
+            res = new String(RDBCodeLiteral + RDBCodeValue + RDBCodeDelim + ld + lval + EOS);
+        }
+    } else if (node.isBlank()) {
+        String bnid = node.getBlankNodeId().toString();
+        String delims = "::";
+        int encodeLen = RDBCodeBlank.length() + 1 + delims.length() + EOS_LEN;
+        boolean BisLong = objectIsLong(encodeLen, bnid);
+        if (BisLong) {
+            int dbid;
+            // belongs in URI table
+            DBIDInt URIid = getBlankID(bnid, addIfLong);
+            if (URIid == null)
+                return res;
+            dbid = URIid.getIntID();
+            res = new String(RDBCodeBlank + RDBCodeRef + delims + dbid);
+        } else {
+            res = new String(RDBCodeBlank + RDBCodeValue + delims + bnid + EOS);
+        }
+    } else if (node.isVariable()) {
+        String name = ((Node_Variable) node).getName();
+        int len = name.length();
+        if ((len + 3 + EOS_LEN) > LONG_OBJECT_LENGTH)
+            throw new JenaException("Variable name too long: " + name);
+        res = RDBCodeVariable + RDBCodeValue + RDBCodeDelim + name + EOS;
+    } else if (node.equals(Node.ANY)) {
+        res = RDBCodeANY + RDBCodeValue + RDBCodeDelim;
+    } else {
+        throw new RDFRDBException("Expected Concrete Node, got " + node.toString());
+    }
+    return res;
+}

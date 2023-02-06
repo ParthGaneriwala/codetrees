@@ -1,0 +1,121 @@
+static Handle buildDialogLogic(final DialogImpl.Elements elements, final DialogImpl.DialogPreferencesStore dialogPreferencesStore, final Value uiValue) {
+    final Updater updater = new Updater();
+    Scope rootScope = updater.rootScope();
+    // A global dialog warning collection (those warnings that are not tied to the primary
+    // result value).
+    List<ValueSource<String>> warningSources = new ArrayList<ValueSource<String>>(2);
+    // 'Property expression' editor raw value.
+    final ValueSource<String> propertyExpressionEditorValue = new ValueSource<String>() {
+
+        private final Text textElement = elements.getExpressionText();
+
+        {
+            String text = dialogPreferencesStore.getExpressionText();
+            textElement.setText(text);
+            // Select all expression but a first dot.
+            // $NON-NLS-1$
+            int selectionStart = text.startsWith(".") ? 1 : 0;
+            textElement.setSelection(selectionStart, text.length());
+            addModifyListener(textElement, this, updater);
+        }
+
+        public String getValue() {
+            return textElement.getText();
+        }
+    };
+    updater.addSource(rootScope, propertyExpressionEditorValue);
+    // A preview context value. It is constant but optional (so it's passed via updater).
+    final ValueSource<Optional<DialogLogic.PreviewContext>> evaluatorValue = createConstant(PreviewContext.build(uiValue), updater);
+    // Property expression parsed as Expression. Parse errors are kept in Optional.
+    final ValueProcessor<Optional<DialogLogic.Expression>> parsedPropertyExpressionValue = createProcessor(new Gettable<Optional<DialogLogic.Expression>>() {
+
+        @Override
+        public Optional<DialogLogic.Expression> getValue() {
+            return parseExpression(propertyExpressionEditorValue.getValue());
+        }
+    });
+    updater.addConsumer(rootScope, parsedPropertyExpressionValue);
+    updater.addSource(rootScope, parsedPropertyExpressionValue);
+    updater.addDependency(parsedPropertyExpressionValue, propertyExpressionEditorValue);
+    // 'Show preview' check box value.
+    final ValueSource<Boolean> previewCheckBoxValue = new ValueSource<Boolean>() {
+
+        private final Button checkBox = elements.getPreviewCheckBox();
+
+        {
+            checkBox.setSelection(dialogPreferencesStore.getPreviewCheck());
+            addModifyListener(checkBox, this, updater);
+        }
+
+        @Override
+        public Boolean getValue() {
+            return checkBox.getSelection();
+        }
+    };
+    // A conditional block that holds optional preview section.
+    Switcher<Boolean> checkerSwitch = rootScope.addSwitch(previewCheckBoxValue);
+    PreviewSwitchOutput switchBlockOutput = fillShowPreviewSwitch(checkerSwitch, updater, rootScope, elements, evaluatorValue, parsedPropertyExpressionValue);
+    // Preview block may emit warning.
+    warningSources.add(switchBlockOutput.warningSource());
+    // 'Add watch expression' check box value.
+    final ValueSource<Boolean> addWatchExpressionValue = new ValueSource<Boolean>() {
+
+        private final Button checkBox = elements.getAddWatchCheckBox();
+
+        {
+            checkBox.setSelection(dialogPreferencesStore.getAddWatchExpression());
+            addModifyListener(checkBox, this, updater);
+        }
+
+        @Override
+        public Boolean getValue() {
+            return checkBox.getSelection();
+        }
+    };
+    updater.addSource(rootScope, addWatchExpressionValue);
+    // An OK button implementation that do set property in remote VM.
+    final ValueProcessor<Optional<? extends Runnable>> okRunnable = createProcessor(handleErrors(new NormalExpression<Runnable>() {
+
+        @Calculate
+        public Runnable calculate(DialogLogic.PreviewContext previewContext, DialogLogic.Expression expression) {
+            return new OkRunnable(elements.getParentShell(), expression, previewContext, addWatchExpressionValue.getValue());
+        }
+
+        @DependencyGetter
+        public ValueSource<Optional<DialogLogic.PreviewContext>> previewContextSource() {
+            return evaluatorValue;
+        }
+
+        @DependencyGetter
+        public ValueSource<Optional<DialogLogic.Expression>> parsedPropertyExpressionSource() {
+            return parsedPropertyExpressionValue;
+        }
+    }));
+    updater.addSource(rootScope, okRunnable);
+    updater.addConsumer(rootScope, okRunnable);
+    updater.addDependency(okRunnable, evaluatorValue);
+    updater.addDependency(okRunnable, parsedPropertyExpressionValue);
+    updater.addDependency(okRunnable, addWatchExpressionValue);
+    final OkButtonControl<Runnable> okButtonControl = new OkButtonControl<Runnable>(okRunnable, warningSources, elements);
+    updater.addConsumer(rootScope, okButtonControl);
+    updater.addDependency(okButtonControl, okButtonControl.getDependencies());
+    return new Handle() {
+
+        @Override
+        public void updateAll() {
+            updater.updateAll();
+        }
+
+        @Override
+        public Runnable getOkRunnable() {
+            return okButtonControl.getNormalValue();
+        }
+
+        @Override
+        public void saveStateInStore() {
+            dialogPreferencesStore.setExpressionText(elements.getExpressionText().getText());
+            dialogPreferencesStore.setPreviewCheck(elements.getPreviewCheckBox().getSelection());
+            dialogPreferencesStore.setAddWatchExpression(elements.getAddWatchCheckBox().getSelection());
+        }
+    };
+}

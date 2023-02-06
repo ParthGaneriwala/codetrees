@@ -1,0 +1,79 @@
+private boolean buildMatches(ActionRequest request) throws SQLException {
+    Connection db = PortalUtils.useConnection(request);
+    String[] membersToInvite = request.getParameter(MEMBERS_TO_INVITE).split(",");
+    LinkedHashMap<String, String> members = new LinkedHashMap<String, String>();
+    LinkedHashMap<String, String> membersPresent = new LinkedHashMap<String, String>();
+    boolean hasMultipleMatches = false;
+    for (String member : membersToInvite) {
+        members.put(member.trim(), NO_MATCH_FOUND);
+    }
+    // 1. Profile Id based Query
+    Iterator<String> keyIterator = members.keySet().iterator();
+    while (keyIterator.hasNext()) {
+        String profileId = keyIterator.next();
+        if (members.get(profileId).equals(NO_MATCH_FOUND) && (profileId.indexOf("(") != -1)) {
+            // Find user by unique profileId
+            String[] arrNameProfile = profileId.split("\\(");
+            int endIndex = arrNameProfile[1].indexOf(")") < 0 ? arrNameProfile[1].length() : arrNameProfile[1].indexOf(")");
+            arrNameProfile[1] = arrNameProfile[1].substring(0, endIndex);
+            Project project = ProjectUtils.loadProject(arrNameProfile[1]);
+            if (project == null) {
+                continue;
+            }
+            int userId = project.getOwner();
+            if (userId > -1) {
+                members = updateMemberList(request, profileId, String.valueOf(userId), members, membersPresent);
+            }
+        }
+    }
+    // 2. Email based Query
+    keyIterator = members.keySet().iterator();
+    while (keyIterator.hasNext()) {
+        String email = keyIterator.next();
+        if (members.get(email).equals(NO_MATCH_FOUND) && (email.indexOf("@") != -1)) {
+            // Find user by email address
+            String strEmail = email.trim();
+            HashMap<String, String> mapEmail = DimDimUtils.processEmail(strEmail);
+            strEmail = StringUtils.hasText(mapEmail.get(DimDimUtils.EMAIL)) ? mapEmail.get(DimDimUtils.EMAIL) : strEmail;
+            int userId = User.getIdByEmailAddress(db, strEmail);
+            if (userId > -1) {
+                members = updateMemberList(request, email, String.valueOf(userId), members, membersPresent);
+            }
+        }
+    }
+    // 3. Name based Query based on first and last name
+    // for the items that did not match in 1.get the names (i.e., first and last names) only (i.e., filter out the emails)
+    // Fetch from users by matching first name and last name if more than one character exists in the last name
+    keyIterator = members.keySet().iterator();
+    while (keyIterator.hasNext()) {
+        String name = keyIterator.next();
+        if (members.get(name).equals(NO_MATCH_FOUND) && (name.indexOf("@") == -1)) {
+            String[] nameParts = name.split(" ");
+            UserList userList = new UserList();
+            if (nameParts.length == 1) {
+                // search first and last name fields
+                UserSearchBean userSearch = new UserSearchBean();
+                userSearch.setName(nameParts[0]);
+                userList.setSearchCriteria(userSearch);
+            } else if (nameParts.length == 2) {
+                userList.setFirstName(nameParts[0]);
+                userList.setLastName(nameParts[1]);
+            }
+            userList.buildList(db);
+            if (userList.size() > 0) {
+                if (userList.size() > 1) {
+                    hasMultipleMatches = true;
+                }
+                StringBuffer idStringBuffer = new StringBuffer();
+                for (User user : userList) {
+                    idStringBuffer.append("," + user.getId());
+                }
+                members = updateMemberList(request, name, idStringBuffer.toString().substring(1), members, membersPresent);
+            }
+        }
+    }
+    request.getPortletSession().setAttribute(MEMBERS, members);
+    request.getPortletSession().setAttribute(HAS_MULTIPLE_MATCHES, String.valueOf(hasMultipleMatches));
+    request.getPortletSession().setAttribute(MEMBERS_PRESENT, membersPresent);
+    return members.isEmpty();
+}

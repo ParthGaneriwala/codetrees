@@ -1,0 +1,83 @@
+private void processCreateTrigger() throws HsqlException {
+    Table t;
+    boolean isForEach;
+    boolean isNowait;
+    int queueSize;
+    String triggerName;
+    boolean isQuoted;
+    String sWhen;
+    String sOper;
+    String tableName;
+    String token;
+    String className;
+    TriggerDef td;
+    Trigger o;
+    triggerName = tokenizer.getName();
+    String schemaname = tokenizer.getLongNameFirst();
+    database.schemaManager.checkTriggerExists(triggerName, session.getSchemaNameForWrite(schemaname), false);
+    isQuoted = tokenizer.wasQuotedIdentifier();
+    isForEach = false;
+    isNowait = false;
+    queueSize = TriggerDef.getDefaultQueueSize();
+    sWhen = tokenizer.getSimpleToken();
+    sOper = tokenizer.getSimpleToken();
+    tokenizer.getThis(Token.T_ON);
+    tableName = tokenizer.getName();
+    if (schemaname == null) {
+        schemaname = session.getSchemaNameForWrite(tokenizer.getLongNameFirst());
+    } else if (!schemaname.equals(session.getSchemaNameForWrite(tokenizer.getLongNameFirst()))) {
+        throw Trace.error(Trace.INVALID_SCHEMA_NAME_NO_SUBCLASS);
+    }
+    t = database.schemaManager.getUserTable(session, tableName, schemaname);
+    if (t.isView()) {
+        throw Trace.error(Trace.NOT_A_TABLE);
+    }
+    session.setScripting(true);
+    // "FOR EACH ROW" or "CALL"
+    token = tokenizer.getSimpleToken();
+    if (token.equals(Token.T_FOR)) {
+        token = tokenizer.getSimpleToken();
+        if (token.equals(Token.T_EACH)) {
+            token = tokenizer.getSimpleToken();
+            if (token.equals(Token.T_ROW)) {
+                isForEach = true;
+                // should be 'NOWAIT' or 'QUEUE' or 'CALL'
+                token = tokenizer.getSimpleToken();
+            } else {
+                throw Trace.error(Trace.UNEXPECTED_END_OF_COMMAND, token);
+            }
+        } else {
+            throw Trace.error(Trace.UNEXPECTED_END_OF_COMMAND, token);
+        }
+    }
+    if (token.equals(Token.T_NOWAIT)) {
+        isNowait = true;
+        // should be 'CALL' or 'QUEUE'
+        token = tokenizer.getSimpleToken();
+    }
+    if (token.equals(Token.T_QUEUE)) {
+        queueSize = tokenizer.getInt();
+        // should be 'CALL'
+        token = tokenizer.getSimpleToken();
+    }
+    if (!token.equals(Token.T_CALL)) {
+        throw Trace.error(Trace.UNEXPECTED_END_OF_COMMAND, token);
+    }
+    className = tokenizer.getSimpleName();
+    if (!tokenizer.wasQuotedIdentifier()) {
+        throw Trace.error(Trace.UNEXPECTED_END_OF_COMMAND, className);
+    }
+    HsqlName name = database.nameManager.newHsqlName(triggerName, isQuoted);
+    td = new TriggerDef(name, sWhen, sOper, isForEach, t, className, isNowait, queueSize, database.classLoader);
+    t.addTrigger(td);
+    if (td.isValid()) {
+        try {
+            // start the trigger thread
+            td.start();
+        } catch (Exception e) {
+            throw Trace.error(Trace.UNKNOWN_FUNCTION, e.toString());
+        }
+    }
+    database.schemaManager.registerTriggerName(triggerName, t.getName());
+// --
+}

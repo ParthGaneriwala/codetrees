@@ -1,0 +1,43 @@
+public IndividualEvaluationResult evaluate(OWLIndividual individual, OWLDataProperty dataProperty, MAEStart formula, boolean write) {
+    IndividualEvaluationResult toReturn = null;
+    ClassExtractor classExtractor = new ClassExtractor(this.ontologies, this.ontologyManager);
+    formula.jjtAccept(classExtractor, null);
+    OWLDescription description = classExtractor.getClassDescription();
+    try {
+        if (!this.reasoner.isClassified()) {
+            this.reasoner.classify();
+        }
+        if (this.reasoner.hasType(individual, description, false)) {
+            // Must pick only one formula for each individual
+            AlternativeFormulaPicker picker = new AlternativeFormulaPicker(individual, formula, this.ontologies, this.reasoner, this.ontologyManager);
+            dataProperty.accept(picker);
+            MAEStart pickedFormula = picker.pickFormula();
+            if (pickedFormula == null) {
+                BindingAssigner assigner = new BindingAssigner(individual, this.ontologyManager, this.ontologies, this.reasoner);
+                formula.jjtAccept(assigner, null);
+                Set<BindingAssignment> bindingAssignments = assigner.getBindingAssignments();
+                SimpleFormulaEvaluator simpleFormulaEvaluator = new SimpleFormulaEvaluator(bindingAssignments);
+                formula.jjtAccept(simpleFormulaEvaluator, null);
+                EvaluationResult evaluationResults = simpleFormulaEvaluator.getEvaluationResults();
+                if (evaluationResults != null) {
+                    toReturn = new IndividualEvaluationResult(individual, evaluationResults);
+                    ResultReportWriter rrw = new ResultReportWriter(dataProperty, formula, toReturn);
+                    this.report.accept(rrw, null);
+                    if (write) {
+                        Writer writer = new Writer(individual, dataProperty, evaluationResults.getValues(), this.ontology, this.reasoner, this.ontologyManager, this.report);
+                        formula.jjtAccept(writer, null);
+                    }
+                } else {
+                    ExceptionReportWriter erw = new ExceptionReportWriter(dataProperty, formula, new UnresolvedSymbolsException("There are some unresolved variables for the individual " + individual));
+                    this.report.accept(erw, null);
+                }
+            }
+        }
+    } catch (Exception e) {
+        EvaluationReport evaluationReport = getReport();
+        ExceptionReportWriter erw = new ExceptionReportWriter(dataProperty, formula, e);
+        evaluationReport.accept(erw, null);
+        e.printStackTrace();
+    }
+    return toReturn;
+}

@@ -1,0 +1,75 @@
+public void performDeploy(WebApplication webApp, String warUrl, WebDescriptorParser parser) throws DeploymentException {
+    log.debug("deploying webapp at " + warUrl);
+    try {
+        String contextPath = webApp.getMetaData().getContextRoot();
+        webApp.setURL(new URL(warUrl));
+        if (_deployed.get(warUrl) != null)
+            throw new DeploymentException(warUrl + " is already deployed");
+        // make a context for the webapp and configure it from the jetty jboss-service.xml defaults
+        // and the jboss-web.xml descriptor
+        JBossSipAppContext app = new JBossSipAppContext(parser, webApp, warUrl);
+        app.setContextPath(contextPath);
+        app.setConfigurationClasses(new String[] { "org.mortbay.jetty.webapp.WebInfConfiguration", "org.cipango.jboss.JBossWebXmlConfiguration", "org.mortbay.jetty.webapp.JettyWebXmlConfiguration", "org.mortbay.jetty.webapp.TagLibConfiguration", "org.cipango.jboss.JBossSipXmlConfiguration" });
+        app.setExtractWAR(getUnpackWars());
+        app.setParentLoaderPriority(getJava2ClassLoadingCompliance());
+        // as the jboss webservice client tests seem to use these invalid urls
+        if (Log.isDebugEnabled())
+            Log.debug("Allowing non-trailing '/' on context path");
+        app.setAllowNullPathInfo(true);
+        Manager manager = (Manager) getDistributableSessionManagerPrototype();
+        if (manager != null) {
+            throw new UnsupportedOperationException("NOT IMPLEMENTED - please ask");
+        // app.setDistributableSessionManager((Manager) manager.clone());
+        // if (getForceDistributable())
+        // app.setDistributable(true);
+        }
+        // if a different webdefault.xml file has been provided, use it
+        if (_configData.getWebDefaultResource() != null) {
+            try {
+                URL url = getClass().getClassLoader().getResource(_configData.getWebDefaultResource());
+                String fixedUrl = (fixURL(url.toString()));
+                app.setDefaultsDescriptor(fixedUrl);
+                if (Log.isDebugEnabled())
+                    Log.debug("webdefault specification is: " + _configData.getWebDefaultResource());
+            } catch (Exception e) {
+                Log.warn("Could not find resource: " + _configData.getWebDefaultResource() + " using default", e);
+            }
+        }
+        Iterator hosts = webApp.getMetaData().getVirtualHosts();
+        List hostList = new ArrayList();
+        while (hosts.hasNext()) hostList.add((String) hosts.next());
+        app.setVirtualHosts((String[]) LazyList.toArray(hostList, String.class));
+        // Add the webapp to jetty
+        _contexts.addHandler(app);
+        // tell jboss about the classloader the webapp is using - ensure
+        // this is done before the context is started, because webservices
+        // want to get access to this classloader
+        // System.err.println("In JettyDeployer, setting webapp.metadata.contextloader="+app.getClassLoader());
+        webApp.getMetaData().setContextLoader(app.getClassLoader());
+        // handler just added
+        if (_contexts.isStarted())
+            app.start();
+        // keep track of deployed contexts for undeployment
+        _deployed.put(warUrl, app);
+        // tell jboss about the jsr77 mbeans we've created
+        // first check that there is an mbean for the webapp itself
+        ObjectName webAppMBean = new ObjectName(_configData.getMBeanDomain() + ":J2EEServer=none,J2EEApplication=none,J2EEWebModule=" + app.getUniqueName());
+        if (server.isRegistered(webAppMBean)) {
+            _deploymentInfo.deployedObject = webAppMBean;
+        } else {
+            throw new IllegalStateException("No mbean registered for webapp at " + app.getUniqueName());
+        }
+        // now get all the mbeans that represent servlets and set them on the
+        // deployment info so they will be found by the jsr77 management system
+        ObjectName servletQuery = new ObjectName(_configData.getMBeanDomain() + ":J2EEServer=none,J2EEApplication=none,J2EEWebModule=" + app.getUniqueName() + ",j2eeType=Servlet,*");
+        Iterator iterator = server.queryNames(servletQuery, null).iterator();
+        while (iterator.hasNext()) {
+            _deploymentInfo.mbeans.add((ObjectName) iterator.next());
+        }
+        Log.info("successfully deployed " + warUrl + " to " + contextPath);
+    } catch (Exception e) {
+        Log.warn("Undeploying on start due to error", e);
+        performUndeploy(warUrl, webApp);
+        throw new DeploymentException(e);
+    }
+}

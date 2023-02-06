@@ -1,0 +1,138 @@
+public static synchronized RatingBean save(Connection db, int userId, int projectId, int objectId, String vote, String table, String uniqueField, int setInappropriateColumn) throws SQLException {
+    boolean commit = false;
+    try {
+        commit = db.getAutoCommit();
+        if (commit) {
+            db.setAutoCommit(false);
+        }
+        // Determine the current value
+        int existingVote = queryUserRating(db, userId, objectId, table, uniqueField);
+        int newVote = Integer.parseInt(vote);
+        PreparedStatement pst = null;
+        ResultSet rs = null;
+        // Determine if an update, insert, or delete is required
+        if (existingVote == -1) {
+            // Perform an insert
+            pst = db.prepareStatement("INSERT INTO " + table + "_rating " + "(project_id, " + (Project.PRIMARY_KEY.equals(uniqueField) ? "" : uniqueField + ", ") + ((setInappropriateColumn != Constants.UNDEFINED) ? "inappropriate, " : "") + "rating, enteredby) " + "VALUES (?, " + (Project.PRIMARY_KEY.equals(uniqueField) ? "" : "?, ") + ((setInappropriateColumn != Constants.UNDEFINED) ? "?, " : "") + "?, ?)");
+            int i = 0;
+            pst.setInt(++i, projectId);
+            if (!Project.PRIMARY_KEY.equals(uniqueField)) {
+                pst.setInt(++i, objectId);
+            }
+            if (setInappropriateColumn != Constants.UNDEFINED) {
+                pst.setBoolean(++i, (setInappropriateColumn == Constants.TRUE));
+            }
+            pst.setInt(++i, newVote);
+            pst.setInt(++i, userId);
+            pst.execute();
+            pst.close();
+        } else if (existingVote != newVote) {
+            // Try an update
+            pst = db.prepareStatement("UPDATE " + table + "_rating " + "SET rating = ?, entered = " + DatabaseUtils.getCurrentTimestamp(db) + " " + ((setInappropriateColumn != Constants.UNDEFINED) ? ", inappropriate = ? " : "") + "WHERE " + uniqueField + " = ? AND enteredby = ? ");
+            int i = 0;
+            pst.setInt(++i, newVote);
+            if (setInappropriateColumn != Constants.UNDEFINED) {
+                pst.setBoolean(++i, (setInappropriateColumn == Constants.TRUE));
+            }
+            pst.setInt(++i, objectId);
+            pst.setInt(++i, userId);
+            pst.execute();
+            pst.close();
+        }
+        if (existingVote != newVote) {
+            // Update the object count and value
+            pst = db.prepareStatement("UPDATE " + table + " " + "SET rating_count = rating_count + ?, rating_value = rating_value + ?, " + "rating_avg = ((rating_value + ?) / (rating_count + ?)) " + "WHERE " + uniqueField + " = ? ");
+            int i = 0;
+            if (existingVote == -1) {
+                if (newVote == INAPPROPRIATE_COMMENT) {
+                    // rating count is incremented, but no change in rating value, therefore, rating average decreases
+                    pst.setInt(++i, 1);
+                    pst.setInt(++i, 0);
+                    pst.setInt(++i, 0);
+                    pst.setInt(++i, 1);
+                } else {
+                    pst.setInt(++i, 1);
+                    pst.setInt(++i, newVote);
+                    pst.setInt(++i, newVote);
+                    pst.setInt(++i, 1);
+                }
+            } else {
+                if (newVote == INAPPROPRIATE_COMMENT || existingVote == INAPPROPRIATE_COMMENT) {
+                    if (newVote == INAPPROPRIATE_COMMENT) {
+                        // The effects of the previous rating are reversed.
+                        pst.setInt(++i, 0);
+                        pst.setInt(++i, (-1) * existingVote);
+                        pst.setInt(++i, (-1) * existingVote);
+                        pst.setInt(++i, 0);
+                    } else if (existingVote == INAPPROPRIATE_COMMENT) {
+                        // The new rating by the user is recorded,
+                        // as an existing inappropriate comment was never considered towards rating value, no additional math is required
+                        pst.setInt(++i, 0);
+                        pst.setInt(++i, newVote);
+                        pst.setInt(++i, newVote);
+                        pst.setInt(++i, 0);
+                    }
+                } else {
+                    pst.setInt(++i, 0);
+                    pst.setInt(++i, newVote - existingVote);
+                    pst.setInt(++i, newVote - existingVote);
+                    pst.setInt(++i, 0);
+                }
+            }
+            pst.setInt(++i, objectId);
+            // System.out.println(pst);
+            pst.execute();
+            pst.close();
+        }
+        if (setInappropriateColumn != Constants.UNDEFINED) {
+            int inappropriateCount = 0;
+            pst = db.prepareStatement("SELECT count(*) AS ic " + "FROM " + table + "_rating " + "WHERE " + uniqueField + " = ? AND inappropriate = ?");
+            int i = 0;
+            pst.setInt(++i, objectId);
+            pst.setBoolean(++i, true);
+            rs = pst.executeQuery();
+            if (rs.next()) {
+                inappropriateCount = rs.getInt("ic");
+            }
+            rs.close();
+            pst.close();
+            pst = db.prepareStatement("UPDATE " + table + " " + "SET  inappropriate_count = ? " + "WHERE " + uniqueField + " = ? ");
+            i = 0;
+            pst.setInt(++i, inappropriateCount);
+            pst.setInt(++i, objectId);
+            pst.execute();
+            pst.close();
+        }
+        // Retrieve the values
+        pst = db.prepareStatement("SELECT rating_count, rating_value " + "FROM " + table + " WHERE " + uniqueField + " = ?");
+        pst.setInt(1, objectId);
+        rs = pst.executeQuery();
+        int count = 0;
+        int value = 0;
+        if (rs.next()) {
+            count = rs.getInt("rating_count");
+            value = rs.getInt("rating_value");
+        }
+        rs.close();
+        pst.close();
+        if (commit) {
+            db.commit();
+        }
+        // Share the rating bean
+        RatingBean rating = new RatingBean();
+        rating.setItemId(objectId);
+        rating.setCount(count);
+        rating.setValue(value);
+        return rating;
+    } catch (Exception e) {
+        if (commit) {
+            db.rollback();
+        }
+        LOG.error("save", e);
+        throw new SQLException(e.getMessage());
+    } finally {
+        if (commit) {
+            db.setAutoCommit(true);
+        }
+    }
+}

@@ -1,0 +1,60 @@
+@SuppressWarnings("nls")
+private void genMapRedTasks() throws SemanticException {
+    // First we generate the move work as this needs to be made dependent on all
+    // the tasks
+    // that have a file sink operation
+    moveWork mv = new moveWork(loadTableWork, loadFileWork);
+    Task<? extends Serializable> mvTask = TaskFactory.get(mv, this.conf);
+    // Maintain a map from the top level left most reducer in each of these
+    // trees
+    // to a task. This tells us whether we have to allocate another
+    // root level task or we can reuse an existing one
+    HashMap<Operator<? extends Serializable>, Task<? extends Serializable>> opTaskMap = new HashMap<Operator<? extends Serializable>, Task<? extends Serializable>>();
+    for (String alias_id : this.topOps.keySet()) {
+        Operator<? extends Serializable> topOp = this.topOps.get(alias_id);
+        Operator<? extends Serializable> reducer = getReducer(topOp);
+        Task<? extends Serializable> rootTask = opTaskMap.get(reducer);
+        if (rootTask == null) {
+            rootTask = TaskFactory.get(getMapRedWork(), this.conf);
+            opTaskMap.put(reducer, rootTask);
+            ((mapredWork) rootTask.getWork()).setReducer(reducer);
+            this.rootTasks.add(rootTask);
+        }
+        genTaskPlan(topOp, rootTask, opTaskMap, mvTask);
+        // Generate the map work for this alias_id
+        PartitionPruner pruner = this.aliasToPruner.get(alias_id);
+        Set<Partition> parts = null;
+        try {
+            parts = pruner.prune();
+        } catch (HiveException e) {
+            // Has to use full name to make sure it does not conflict with org.apache.commons.lang.StringUtils
+            LOG.error(org.apache.org.fit.hiai.hadoop.util.StringUtils.stringifyException(e));
+            throw new SemanticException(e.getMessage(), e);
+        }
+        SamplePruner samplePruner = this.aliasToSamplePruner.get(alias_id);
+        mapredWork plan = (mapredWork) rootTask.getWork();
+        for (Partition part : parts) {
+            // Later the properties have to come from the partition as opposed
+            // to from the table in order to support versioning.
+            Path[] paths;
+            if (samplePruner != null) {
+                paths = samplePruner.prune(part);
+            } else {
+                paths = part.getPath();
+            }
+            for (Path p : paths) {
+                String path = p.toString();
+                LOG.debug("Adding " + path + " of table" + alias_id);
+                // Add the path to alias mapping
+                if (plan.getPathToAliases().get(path) == null) {
+                    plan.getPathToAliases().put(path, new ArrayList<String>());
+                }
+                plan.getPathToAliases().get(path).add(alias_id);
+                plan.getPathToPartitionInfo().put(path, Utilities.getPartitionDesc(part));
+                LOG.debug("Information added for path " + path);
+            }
+        }
+        plan.getAliasToWork().put(alias_id, topOp);
+        LOG.debug("Created Map Work for " + alias_id);
+    }
+}

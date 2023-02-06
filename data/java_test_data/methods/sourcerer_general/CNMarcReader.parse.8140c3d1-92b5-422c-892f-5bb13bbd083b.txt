@@ -1,0 +1,84 @@
+private void parse(InputStream input) throws IOException {
+    log.entry("enter parse()");
+    if (mh != null)
+        mh.startCollection();
+    byte[] ldr = new byte[24];
+    bytesRead += input.read(ldr);
+    log.debug("---------------------------------------");
+    log.debugObject("Leader", new String(ldr));
+    Leader leader = new Leader(new String(ldr));
+    int baseAddress = leader.getBaseAddressOfData();
+    log.debugObject("baseAddress", baseAddress);
+    // 1 是字段分隔符FT(001E)
+    int dirLength = baseAddress - (24 + 1);
+    byte[] bdir = new byte[dirLength];
+    log.debugObject("dirLength", bdir.length);
+    log.debugObject("bytesRead", bytesRead);
+    log.debugObject("available", input.available());
+    // read()方法的第2个参数是指当前读入的第1个字节存贮在byte[]数组中的位置
+    // 因此，input的位置指针是由length决定，请仔细阅读文档
+    bytesRead += input.read(bdir);
+    log.debugObject("bdir", new String(bdir));
+    log.debugObject("bytesRead", bytesRead);
+    // 使用平台默认编码把byte[] bdir构造为String dir处理
+    // 因为dir永远都是ascii字符，所以这样处理不会有问题
+    // 或是应该像marc4j那样处理
+    String dir = new String(bdir);
+    // 当前record中著录的款目数目
+    int entries = dirLength / 12;
+    // String[]数组存储所著录的每个字段的名称
+    String[] tag = new String[entries];
+    // int[]数组存储所著录的每个款目的实际长度
+    int[] length = new int[entries];
+    // int[]数组存储所著录的每个款目在整个record中的开始位置
+    int[] position = new int[entries];
+    // 循环读取dir中每个款目的信息，index是读取整个dir的位置标志
+    for (int i = 0, index = 0; i < entries; i++, index += 12) {
+        tag[i] = dir.substring(index, index + 3);
+        length[i] = Integer.parseInt(dir.substring(index + 3, index + 7));
+        position[i] = Integer.parseInt(dir.substring(index + 7, index + 12));
+    /*System.out.println(tag[i] + " "
+                    + length[i] + " "
+                    + position[i] + "\n");*/
+    }
+    // 如果不是的话，读取有误，报告错误
+    if (input.read() != FT) {
+        log.debug("dir的最后一个字符不是字段分隔符FT");
+    // System.exit(1);  // should do sth more
+    }
+    // 整个marc的读取计数器加1
+    bytesRead++;
+    log.debugObject("bytesRead", bytesRead);
+    for (int i = 0; i < entries; i++) {
+        byte[] field = new byte[length[i]];
+        bytesRead += input.read(field);
+        // 字段最后一个字符是字段分隔符
+        if (field[field.length - 1] != FT) {
+            log.debug("当前读取字段的最后一个字符不是字段分隔符FT");
+        // System.exit(1);  // should do sth more
+        }
+        // Tag前两位是00的就是控制字段。只有001和005
+        if (Tag.isControlField(tag[i])) {
+            parseControlField(tag[i], field);
+        } else {
+            // 否则是数据字段
+            parseDataField(tag[i], field);
+        }
+    }
+    if (input.read() != RT) {
+        log.debug("当前记录的最后一个字符不是记录结束符RT");
+    // System.exit(1);  // should do sth more
+    }
+    bytesRead++;
+    if (mh != null)
+        mh.endRecord();
+    input.close();
+    if (mh != null) {
+        mh.endCollection();
+    }
+    log.debugObject("bytesRead", bytesRead);
+    log.debug("---------------------------------------");
+    // 计数器置零
+    bytesRead = 0;
+    log.exit("exit parse()");
+}

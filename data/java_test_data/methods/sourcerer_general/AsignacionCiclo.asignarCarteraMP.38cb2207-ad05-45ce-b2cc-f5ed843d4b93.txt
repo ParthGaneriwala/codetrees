@@ -1,0 +1,107 @@
+private List<Llamada__c> asignarCarteraMP(ID idEmpresa, String metodoPago, List<Cobro> cobros, Date fechaInicioCiclo, Date fechaFinCiclo, ID idCiclo, List<Mora> moras) throws Exception {
+    try {
+        List<Llamada__c> newLlamadas = new ArrayList<Llamada__c>();
+        List<AsignacionMP> asignacionesMP = new ArrayList<AsignacionMP>();
+        List<Cobro> cobrosAsignados = new ArrayList<Cobro>();
+        if (metodoPago == null) {
+            throw new Exception("La empresa no tiene el metodo de pago definido");
+        }
+        // Ordenas las moras de mayor a menor y
+        if (moras.size() > 1) {
+            Collections.sort(moras, new MoraComparator());
+        }
+        // Crea la lista de asignaciones para MP
+        for (Mora mora : moras) {
+            if (mora.isMarcadorPredictivo()) {
+                AsignacionMP asignacionMP = new AsignacionMP(mora.getId(), this.obtenerCola(mora.getId()), obtenerRebalseMora(moras, mora.getId()), this.obtenerScoreLiberacion(mora.getId()));
+                asignacionesMP.add(asignacionMP);
+            }
+        }
+        // Ordenas los cobros seg�n su nivel de mora consolidado, descendente
+        if (asignacionesMP.size() > 1) {
+            Collections.sort(cobros, new NivelMoraComparator());
+            // Paso los cobros a su respectiva mora
+            int indexCobroActual = 0;
+            for (Iterator<Cobro> iter = cobros.iterator(); iter.hasNext(); ) {
+                Cobro cobro = iter.next();
+                boolean colocado = false;
+                if (!cobro.isMarca()) {
+                    for (AsignacionMP asignacionMP : asignacionesMP) {
+                        if (asignacionMP.getIdMora().getID().equals(cobro.getCobro__c().getConf_Info_Mora__c().getID())) {
+                            asignacionMP.getCobros().add(cobro);
+                            asignacionMP.getCobros().addAll(AsignacionCiclo.obtenerCobrosMismoClienteMoraNoMarcado(cobros, indexCobroActual, asignacionMP.getIdMora()));
+                            iter.remove();
+                            colocado = true;
+                            break;
+                        }
+                    }
+                } else {
+                    iter.remove();
+                    colocado = true;
+                }
+                if (!colocado) {
+                    indexCobroActual++;
+                }
+            }
+        } else {
+            if (asignacionesMP.size() == 1) {
+                asignacionesMP.get(0).setCobros(cobros);
+            }
+        }
+        List<Date> feriados = this.obtenerFeriados();
+        // Realiza la asignacion de las moras en MP, por separado
+        for (AsignacionMP asignacionMP : asignacionesMP) {
+            logger.info("Mora = " + asignacionMP.getIdMora() + " Total de cobros = " + asignacionMP.getCobros().size());
+            if (asignacionMP.getCobros().size() > 0) {
+                // Paso 1. Colocar los cobros segun configuracion score
+                if (asignacionMP.colocarCobrosEnScoreLiberacion()) {
+                    Date fechaLiberacion = fechaInicioCiclo;
+                    // Se hace una distribucion por configuracion de score y liberacion y luego por los cobros restantes
+                    for (ScoreLiberacion scoreLiberacion : asignacionMP.getLiberaciones()) {
+                        logger.info("Dia liberacion " + scoreLiberacion.getDiaLiberacion() + ". Tipo = " + scoreLiberacion.getTipo() + "  From " + scoreLiberacion.getScoreDesde() + " To " + scoreLiberacion.getScoreHasta() + " Monto = " + scoreLiberacion.getMonto() + ". Total de cobros = " + scoreLiberacion.getCobros().size());
+                        fechaLiberacion = this.obtenerFechaRealInicioCiclo(asignacionMP.generarFecha(fechaInicioCiclo, scoreLiberacion.getDiaLiberacion()), feriados);
+                        if (asignacionMP.getCola() != null) {
+                            if (asignacionMP.getCola().getDiasCobro().size() == 0 || asignacionMP.getCola().getDiasCobro().get(asignacionMP.getCola().getDiasCobro().size() - 1).getFecha().compareTo(fechaLiberacion) < 0) {
+                                DiaAgente dia = new DiaAgente(fechaLiberacion);
+                                asignacionMP.getCola().getDiasCobro().add(dia);
+                            }
+                        }
+                        // Paso 2. Obtener
+                        if (metodoPago.equals(Empresa.METODO_PAGO_SALDO_MINIMO)) {
+                            // Ordena por score de menor a mayor y saldo de mayor a menor
+                            Collections.sort(scoreLiberacion.getCobros(), new CobroTarjetaCreditoComparator());
+                        } else {
+                            // Ordena por saldo
+                            Collections.sort(scoreLiberacion.getCobros(), new CobroPrestamoComparator());
+                        }
+                        newLlamadas.addAll(asignarGrupoMP(scoreLiberacion.getCobros(), fechaLiberacion, feriados, asignacionMP.getCola(), asignacionMP.getIdRebalse(), idCiclo, idEmpresa));
+                        cobrosAsignados.addAll(scoreLiberacion.getCobros());
+                    }
+                    // Se distribuye lo que qued� en la lista de prestamos
+                    fechaLiberacion = this.obtenerFechaRealInicioCiclo(fechaLiberacion, feriados);
+                    if (asignacionMP.getCobros().size() > 0) {
+                        logger.info("Sin clasificacion. Total de cobros = " + asignacionMP.getCobros().size());
+                        newLlamadas.addAll(asignarGrupoMP(asignacionMP.getCobros(), fechaLiberacion, feriados, asignacionMP.getCola(), asignacionMP.getIdRebalse(), idCiclo, idEmpresa));
+                        cobrosAsignados.addAll(asignacionMP.getCobros());
+                    }
+                } else {
+                    throw new Exception("Error en mora MP y la distribuci�n de score y liberaciones");
+                }
+            }
+        }
+        // Devuelve la lista de llamadas nuevas
+        logger.info("Num Llamadas sin cola " + newLlamadas.size());
+        for (AsignacionMP asignacionMP : asignacionesMP) {
+            Cola cola = asignacionMP.getCola();
+            for (DiaAgente diaCobro : cola.getDiasCobro()) {
+                newLlamadas.addAll(diaCobro.getLlamadas());
+            }
+        }
+        cobros.clear();
+        cobros.addAll(cobrosAsignados);
+        return newLlamadas;
+    } catch (Exception e) {
+        logger.error(e);
+        throw e;
+    }
+}

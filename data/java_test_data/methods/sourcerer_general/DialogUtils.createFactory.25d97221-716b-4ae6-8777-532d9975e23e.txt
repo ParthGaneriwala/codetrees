@@ -1,0 +1,88 @@
+private <VARIABLES> Factory<SW, VARIABLES> createFactory(final Class<VARIABLES> variablesType) {
+    if (variablesType.getTypeParameters().length != 0) {
+        // We have to make sure that parameter types are the same for all instances.
+        throw new IllegalArgumentException("Type should not be parameterized");
+    }
+    final List<Method> getterMethods = new ArrayList<Method>();
+    final Map<Method, Integer> methodToPosition = new HashMap<Method, Integer>();
+    for (Method m : variablesType.getDeclaredMethods()) {
+        if (m.getAnnotation(BranchVariableGetter.class) == null) {
+            throw new IllegalArgumentException("Method " + m + " should have " + BranchVariableGetter.class.getName() + " annotation");
+        }
+        if (m.getParameterTypes().length != 0) {
+            throw new IllegalArgumentException("Method " + m + " should have no parameters");
+        }
+        Type returnType = m.getGenericReturnType();
+        try {
+            if (returnType instanceof ParameterizedType == false) {
+                throw new IllegalArgumentException("Method should return parameterized type " + ValueSource.class);
+            }
+            ParameterizedType parameterizedType = (ParameterizedType) returnType;
+            if (parameterizedType.getRawType() != ValueSource.class) {
+                throw new IllegalArgumentException("Method should return parameterized type " + ValueSource.class);
+            }
+            checkGetterType(parameterizedType.getActualTypeArguments()[0]);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Method " + m + " has wrong return type", e);
+        }
+        int position = getterMethods.size();
+        getterMethods.add(m);
+        methodToPosition.put(m, position);
+    }
+    Class<?> proxyClass = Proxy.getProxyClass(this.getClass().getClassLoader(), variablesType);
+    final Constructor<?> constructor;
+    try {
+        constructor = proxyClass.getConstructor(InvocationHandler.class);
+    } catch (SecurityException e) {
+        throw new RuntimeException(e);
+    } catch (NoSuchMethodException e) {
+        throw new RuntimeException(e);
+    }
+    return new Factory<SW, VARIABLES>() {
+
+        @Override
+        public VARIABLES create(SW switcher, VARIABLES... branches) throws IllegalAccessException, InvocationTargetException, SecurityException, NoSuchMethodException {
+            final ValueSource<?>[] dataArray = new ValueSource<?>[getterMethods.size()];
+            for (int i = 0; i < dataArray.length; i++) {
+                ValueSource<?>[] allBranchesSources = new ValueSource<?>[branches.length];
+                Method interfaceGetter = getterMethods.get(i);
+                for (int j = 0; j < allBranchesSources.length; j++) {
+                    if (branches[j] == null) {
+                        allBranchesSources[j] = createConstant(null, switcher.getUpdater());
+                    } else {
+                        Method classGetter = branches[j].getClass().getMethod(interfaceGetter.getName(), interfaceGetter.getParameterTypes());
+                        classGetter.setAccessible(true);
+                        allBranchesSources[j] = (ValueSource<?>) classGetter.invoke(branches[j]);
+                    }
+                }
+                dataArray[i] = createValueMerger(switcher, allBranchesSources);
+            }
+            InvocationHandler invocationHandler = new InvocationHandler() {
+
+                @Override
+                public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+                    if (OBJECT_METHODS.contains(method)) {
+                        return method.invoke(this, args);
+                    }
+                    Integer position = methodToPosition.get(method);
+                    if (position == null) {
+                        throw new RuntimeException("Unknown method: " + method);
+                    }
+                    return dataArray[position];
+                }
+
+                @Override
+                public String toString() {
+                    return "*Merged:" + variablesType;
+                }
+            };
+            Object resultInstance;
+            try {
+                resultInstance = constructor.newInstance(invocationHandler);
+            } catch (InstantiationException e) {
+                throw new RuntimeException(e);
+            }
+            return (VARIABLES) resultInstance;
+        }
+    };
+}

@@ -1,0 +1,45 @@
+public static void main(String[] args) throws IOException {
+    OptionParser optParser = new OptionParser(Options.class);
+    Options opts = (Options) optParser.parse(args, true);
+    Experiment.initialize(opts.config);
+    Experiment experiment = Experiment.getInstance();
+    LanguageModel lm = experiment.getLM(opts.lm);
+    JobManager.initialize(opts.jobs);
+    Thread thread = new Thread(JobManager.getInstance(), "Job Manager");
+    thread.setDaemon(true);
+    thread.start();
+    experiment.buildPrefixes();
+    if (opts.shuffle) {
+        experiment.getFiles().reshuffleTrainingData();
+    }
+    File tmpDir = new File(opts.tmpDir);
+    if (!tmpDir.isDirectory()) {
+        tmpDir.mkdirs();
+    }
+    NewTrainer.setNR_RANDOM_EXCHANGE_INIT(opts.nrExchangeInits);
+    NewTrainer trainer = new NewTrainer(lm, tmpDir);
+    TrainingContext context;
+    context = trainer.initialize();
+    if (opts.ignoreOvertFactors != null) {
+        String[] factorIDs = opts.ignoreOvertFactors.split(",");
+        for (String factorID : factorIDs) {
+            byte factorIdx = experiment.getTupleDescription().getFactorIndex(factorID);
+            if (factorIdx == -1) {
+                System.err.printf("Unknown factor ID: '%s'\n", factorID);
+                System.exit(1);
+            }
+            System.err.printf("Ignoring overt factor '%s'\n", factorID);
+            trainer.ignoreOvertFactor(factorIdx);
+        }
+    }
+    if (opts.load != null) {
+        System.out.printf("loading snapshot %s\n", opts.load);
+        try {
+            BinaryTree<HistoryTreePayload> snapshot = LanguageModel.loadSerializedHistoryTree(opts.load);
+            context = trainer.loadSnapshot(context, snapshot);
+        } catch (IOException ioe) {
+            ioe.printStackTrace();
+        }
+    }
+    trainer.train(context);
+}

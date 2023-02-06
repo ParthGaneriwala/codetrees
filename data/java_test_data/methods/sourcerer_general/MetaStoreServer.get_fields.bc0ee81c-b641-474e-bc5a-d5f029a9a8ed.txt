@@ -1,0 +1,51 @@
+public ArrayList<FieldSchema> get_fields(String db, String table_name) throws MetaException, UnknownTableException, UnknownDBException {
+    ArrayList<FieldSchema> str_fields = new ArrayList<FieldSchema>();
+    String[] names = table_name.split("\\.");
+    String base_table_name = names[0];
+    String last_name = names[names.length - 1];
+    // will throw UnknownTableException if not found
+    AbstractMap<String, String> schema_map = get_schema(base_table_name);
+    Properties p = new Properties();
+    for (Iterator<Entry<String, String>> it = schema_map.entrySet().iterator(); it.hasNext(); ) {
+        Entry<String, String> entry = it.next();
+        p.setProperty(entry.getKey(), entry.getValue());
+    }
+    try {
+        // Table t = Table.readTable(p, this.db);
+        Deserializer s = MetaStoreUtils.getDeserializer(conf_, p);
+        ObjectInspector oi = s.getObjectInspector();
+        // recurse down the type.subtype.subsubtype expression until at the desired type
+        for (int i = 1; i < names.length; i++) {
+            if (!(oi instanceof StructObjectInspector)) {
+                oi = s.getObjectInspector();
+                break;
+            }
+            StructObjectInspector soi = (StructObjectInspector) oi;
+            StructField sf = soi.getStructFieldRef(names[i]);
+            if (sf == null) {
+                // If invalid field, then return the schema of the table
+                oi = s.getObjectInspector();
+                break;
+            } else {
+                oi = sf.getFieldObjectInspector();
+            }
+        }
+        // rules on how to recurse the SerDe based on its type
+        if (oi.getCategory() != Category.STRUCT) {
+            str_fields.add(new FieldSchema(last_name, oi.getTypeName(), "automatically generated"));
+        } else {
+            List<? extends StructField> fields = ((StructObjectInspector) oi).getAllStructFieldRefs();
+            for (int i = 0; i < fields.size(); i++) {
+                String fieldName = fields.get(i).getFieldName();
+                String fieldTypeName = fields.get(i).getFieldObjectInspector().getTypeName();
+                str_fields.add(new FieldSchema(fieldName, fieldTypeName, "automatically generated"));
+            }
+        }
+        return str_fields;
+    } catch (SerDeException e) {
+        StringUtils.stringifyException(e);
+        MetaException m = new MetaException();
+        m.setMessage(e.getMessage());
+        throw m;
+    }
+}

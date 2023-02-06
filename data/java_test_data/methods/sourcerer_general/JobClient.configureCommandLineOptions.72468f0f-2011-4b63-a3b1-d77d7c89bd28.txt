@@ -1,0 +1,144 @@
+private void configureCommandLineOptions(JobConf job, Path submitJobDir, Path submitJarFile) throws IOException {
+    final String warning = "Use genericOptions for the option ";
+    if (!(job.getBoolean("mapred.used.genericoptionsparser", false))) {
+        LOG.warn("Use GenericOptionsParser for parsing the arguments. " + "Applications should implement Tool for the same.");
+    }
+    // get all the command line arguments into the
+    // jobconf passed in by the user conf
+    Configuration commandConf = JobClient.getCommandLineConfig();
+    String files = null;
+    String libjars = null;
+    String archives = null;
+    files = job.get("tmpfiles");
+    if (files == null) {
+        if (commandConf != null) {
+            files = commandConf.get("tmpfiles");
+            if (files != null) {
+                LOG.warn(warning + "-files");
+            }
+        }
+    }
+    libjars = job.get("tmpjars");
+    if (libjars == null) {
+        if (commandConf != null) {
+            libjars = commandConf.get("tmpjars");
+            if (libjars != null) {
+                LOG.warn(warning + "-libjars");
+            }
+        }
+    }
+    archives = job.get("tmparchives");
+    if (archives == null) {
+        if (commandConf != null) {
+            archives = commandConf.get("tmparchives");
+            if (archives != null) {
+                LOG.warn(warning + "-archives");
+            }
+        }
+    }
+    /*
+     * set this user's id in job configuration, so later job files can be
+     * accessed using this user's id
+     */
+    UnixUserGroupInformation ugi = getUGI(job);
+    // 
+    // Figure out what fs the JobTracker is using.  Copy the
+    // job to it, under a temporary name.  This allows DFS to work,
+    // and under the local fs also provides UNIX-like object loading
+    // semantics.  (that is, if the job file is deleted right after
+    // submission, we can still run the submission to completion)
+    // 
+    // Create a number of filenames in the JobTracker's fs namespace
+    FileSystem fs = getFs();
+    LOG.debug("default FileSystem: " + fs.getUri());
+    fs.delete(submitJobDir, true);
+    submitJobDir = fs.makeQualified(submitJobDir);
+    submitJobDir = new Path(submitJobDir.toUri().getPath());
+    FsPermission mapredSysPerms = new FsPermission(JOB_DIR_PERMISSION);
+    FileSystem.mkdirs(fs, submitJobDir, mapredSysPerms);
+    Path filesDir = new Path(submitJobDir, "files");
+    Path archivesDir = new Path(submitJobDir, "archives");
+    Path libjarsDir = new Path(submitJobDir, "libjars");
+    short replication = (short) job.getInt("mapred.submit.replication", 10);
+    if (files != null) {
+        FileSystem.mkdirs(fs, filesDir, mapredSysPerms);
+        String[] fileArr = files.split(",");
+        for (String tmpFile : fileArr) {
+            Path tmp = new Path(tmpFile);
+            Path newPath = copyRemoteFiles(fs, filesDir, tmp, job, replication);
+            try {
+                URI pathURI = new URI(newPath.toUri().toString() + "#" + newPath.getName());
+                DistributedCache.addCacheFile(pathURI, job);
+            } catch (URISyntaxException ue) {
+                // should not throw a uri exception
+                throw new IOException("Failed to create uri for " + tmpFile);
+            }
+            DistributedCache.createSymlink(job);
+        }
+    }
+    if (libjars != null) {
+        FileSystem.mkdirs(fs, libjarsDir, mapredSysPerms);
+        String[] libjarsArr = libjars.split(",");
+        for (String tmpjars : libjarsArr) {
+            Path tmp = new Path(tmpjars);
+            Path newPath = copyRemoteFiles(fs, libjarsDir, tmp, job, replication);
+            DistributedCache.addArchiveToClassPath(newPath, job);
+        }
+    }
+    if (archives != null) {
+        FileSystem.mkdirs(fs, archivesDir, mapredSysPerms);
+        String[] archivesArr = archives.split(",");
+        for (String tmpArchives : archivesArr) {
+            Path tmp = new Path(tmpArchives);
+            Path newPath = copyRemoteFiles(fs, archivesDir, tmp, job, replication);
+            try {
+                URI pathURI = new URI(newPath.toUri().toString() + "#" + newPath.getName());
+                DistributedCache.addCacheArchive(pathURI, job);
+            } catch (URISyntaxException ue) {
+                // should not throw an uri excpetion
+                throw new IOException("Failed to create uri for " + tmpArchives);
+            }
+            DistributedCache.createSymlink(job);
+        }
+    }
+    // set the timestamps of the archives and files
+    URI[] tarchives = DistributedCache.getCacheArchives(job);
+    if (tarchives != null) {
+        StringBuffer archiveTimestamps = new StringBuffer(String.valueOf(DistributedCache.getTimestamp(job, tarchives[0])));
+        for (int i = 1; i < tarchives.length; i++) {
+            archiveTimestamps.append(",");
+            archiveTimestamps.append(String.valueOf(DistributedCache.getTimestamp(job, tarchives[i])));
+        }
+        DistributedCache.setArchiveTimestamps(job, archiveTimestamps.toString());
+    }
+    URI[] tfiles = DistributedCache.getCacheFiles(job);
+    if (tfiles != null) {
+        StringBuffer fileTimestamps = new StringBuffer(String.valueOf(DistributedCache.getTimestamp(job, tfiles[0])));
+        for (int i = 1; i < tfiles.length; i++) {
+            fileTimestamps.append(",");
+            fileTimestamps.append(String.valueOf(DistributedCache.getTimestamp(job, tfiles[i])));
+        }
+        DistributedCache.setFileTimestamps(job, fileTimestamps.toString());
+    }
+    String originalJarPath = job.getJar();
+    if (originalJarPath != null) {
+        // use jar name if job is not named.
+        if ("".equals(job.getJobName())) {
+            job.setJobName(new Path(originalJarPath).getName());
+        }
+        job.setJar(submitJarFile.toString());
+        fs.copyFromLocalFile(new Path(originalJarPath), submitJarFile);
+        fs.setReplication(submitJarFile, replication);
+        fs.setPermission(submitJarFile, new FsPermission(JOB_FILE_PERMISSION));
+    } else {
+        LOG.warn("No job jar file set.  User classes may not be found. " + "See JobConf(Class) or JobConf#setJar(String).");
+    }
+    // Set the user's name and working directory
+    job.setUser(ugi.getUserName());
+    if (ugi.getGroupNames().length > 0) {
+        job.set("group.name", ugi.getGroupNames()[0]);
+    }
+    if (job.getWorkingDirectory() == null) {
+        job.setWorkingDirectory(fs.getWorkingDirectory());
+    }
+}

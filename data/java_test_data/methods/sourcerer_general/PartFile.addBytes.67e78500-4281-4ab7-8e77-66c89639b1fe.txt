@@ -1,0 +1,49 @@
+public synchronized int addBytes(long pos, ByteBuffer bytes) throws Exception {
+    long endPos = pos + bytes.capacity();
+    int newBytes = 0;
+    if (pos > maxSize)
+        throw new Exception("Wrong chunk position.");
+    long[] result = gapList.removeGap(pos, endPos);
+    if (result[0] == 0 && result[1] == 0) {
+        fileChannel.position(pos);
+        int nbytes = fileChannel.write(bytes);
+        newBytes += nbytes;
+        transferredBytes += nbytes;
+    }
+    if (result[0] > 0) {
+        bytes.limit((int) result[0]);
+        ByteBuffer beforeBytes = ByteBuffer.allocate((int) result[0]);
+        beforeBytes.put(bytes);
+        fileChannel.position((int) pos + result[0]);
+        int nbytes = fileChannel.write(bytes);
+        transferredBytes += nbytes;
+        newBytes += nbytes;
+        newBytes += addBytes(pos, beforeBytes);
+        beforeBytes = null;
+        bytes.rewind();
+        bytes.limit(bytes.capacity());
+    }
+    if (result[1] > 0) {
+        bytes.limit((int) (bytes.capacity() - result[1]));
+        fileChannel.position(pos);
+        int nbytes = fileChannel.write(bytes);
+        transferredBytes += nbytes;
+        newBytes += nbytes;
+        ByteBuffer afterBytes = ByteBuffer.allocate(bytes.capacity() - bytes.limit());
+        bytes.limit(bytes.capacity());
+        afterBytes.put(bytes);
+        afterBytes.rewind();
+        newBytes += addBytes((int) endPos, afterBytes);
+        afterBytes = null;
+        bytes.rewind();
+        bytes.limit(bytes.capacity());
+    }
+    if (gapList.numGaps() == 0) {
+        closeChunk();
+        if (hashState == HASH_UNCHECKED) {
+            HashChunk hc = new HashChunk(this);
+            hc.start();
+        }
+    }
+    return newBytes;
+}

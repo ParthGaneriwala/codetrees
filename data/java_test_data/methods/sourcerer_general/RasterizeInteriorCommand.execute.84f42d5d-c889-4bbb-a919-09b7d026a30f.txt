@@ -1,0 +1,55 @@
+protected void execute() {
+    List list = actionsList.getSelectedList(MASK_TRACE | MASK_GEOMETRY);
+    list.addAll(actionsList.getSelectedList(MASK_DRILL));
+    statusBar.setMessage("Rasterizing " + list.size() + " actions");
+    statusBar.startProgress(list.size() + 1);
+    List newActions = new LinkedList();
+    List removeActions = new LinkedList();
+    // Now simplify all the traces
+    log.debug("Rasterize Interior");
+    int progressCount = 0;
+    GeometryFactory gf = MillingAction.geoFactory;
+    for (Iterator iter = list.iterator(); iter.hasNext(); ) {
+        Object o = iter.next();
+        Geometry g = null;
+        Object removeAction = null;
+        if (o instanceof MillingGeometryAction) {
+            MillingGeometryAction a = (MillingGeometryAction) o;
+            g = a.getGeometry();
+        } else if (o instanceof DrilledHole) {
+            DrilledHole hole = (DrilledHole) o;
+            if (hole.getToolDiameter() > tool.getStepDiameter()) {
+                g = gf.createPoint(new Coordinate(hole.getXpos(), hole.getYpos()));
+                g = g.buffer(hole.getToolDiameter() / 2, 3, BufferOp.CAP_ROUND);
+                removeAction = hole;
+            } else {
+                log.info("Skipping hole smaller than tool size: " + hole);
+                g = null;
+            }
+        }
+        // If it has holes, rasterize the holes
+        if (g != null && g instanceof Polygon) {
+            Polygon p = (Polygon) g;
+            int holes = p.getNumInteriorRing();
+            if (holes == 0) {
+                rasterizePolygon(newActions, p);
+            } else {
+                for (int n = 0; n < holes; n++) {
+                    LinearRing lr = gf.createLinearRing(p.getInteriorRingN(n).getCoordinates());
+                    Polygon ip = gf.createPolygon(lr, new LinearRing[] {});
+                    rasterizePolygon(newActions, ip);
+                    if (removeAction != null) {
+                        removeActions.add(removeAction);
+                    }
+                }
+            }
+        }
+        statusBar.incrementProgress(progressCount++, list.size());
+    }
+    // remove anything that needs to be removed
+    actionsList.removeAll(removeActions);
+    // Add the new traces
+    actionsList.addAll(newActions);
+    statusBar.stopProgress();
+    statusBar.setMessage("Completed Rasterizing " + list.size() + " actions");
+}

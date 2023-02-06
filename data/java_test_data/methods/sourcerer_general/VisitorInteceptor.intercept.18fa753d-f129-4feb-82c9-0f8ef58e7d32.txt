@@ -1,0 +1,79 @@
+/**
+ * 存储模块访问日志的队列
+ */
+// public static java.util.Vector<LogOpt> LOGOPTS = new
+public String intercept(ActionInvocation invocation) throws Exception {
+    // TODO Auto-generated method stub
+    long begin = System.currentTimeMillis();
+    Action action = (Action) invocation.getAction();
+    if (!(action instanceof AbstractAdminAction)) {
+        return invocation.invoke();
+    }
+    String result = "actionResult";
+    ActionContext context = ActionContext.getContext();
+    HttpServletRequest request = (HttpServletRequest) context.get(ServletActionContext.HTTP_REQUEST);
+    String ip = getIpAddr(request);
+    String url = request.getRequestURI();
+    String ajax = request.getHeader("x-requested-with");
+    String actionName = invocation.getProxy().getActionName();
+    LOG.debug("ajax:" + ajax + ",+actionName=" + actionName);
+    String moduleId = "NO";
+    Object obj = null;
+    TsysUser userinfo = null;
+    try {
+        obj = ActionContext.getContext().getSession().get(SessionKey.SK_USER_SESSION);
+        AbstractAdminAction abstractAction = (AbstractAdminAction) action;
+        abstractAction.setUserIp(ip);
+        boolean execute = false;
+        // setAutoLogin(obj);
+        if (obj != null) {
+            userinfo = (TsysUser) obj;
+            abstractAction.setUserinfo(userinfo);
+            if (userinfo.getLoginName().equalsIgnoreCase("admin"))
+                execute = true;
+            if (userinfo.hasRight(actionName)) {
+                execute = true;
+            } else {
+                result = "noright";
+                execute = false;
+            }
+        } else {
+            abstractAction.setUserinfo(null);
+            if (abstractAction.getNeedLogin()) {
+                // 没有会话信息但是又需要登录的情况
+                if (ajax != null && ajax.equalsIgnoreCase("XMLHttpRequest"))
+                    result = "poplogin";
+                else
+                    // 跳回到登录页面。这里如果是ajax请求的话,可以将其他跳转到Action.AjaxLogin的登录页
+                    result = Action.LOGIN;
+            } else {
+                // 这里是不需要登录的情况,即继续执行那个action
+                execute = true;
+            }
+        }
+        if (execute) {
+            result = invocation.invoke();
+            moduleId = abstractAction.getModuleId();
+            String opResult = abstractAction.getOpResult();
+            if (moduleId != "" || (opResult != null && opResult.equals(""))) {
+                // 记录到log_opt,这里考虑通过接口来做
+                LogDao logdao = (LogDao) WebContextWrapper.getBean("logDao");
+                if (logdao != null && userinfo != null)
+                    logdao.logOpt(userinfo.getId(), userinfo.getUserName(), moduleId, url, ip, opResult, result);
+                else
+                    LOG.warn("未有实现logDao的接口");
+            }
+        }
+        return result;
+    } catch (Exception e) {
+        LOG.error("拦截失败::" + ip + ">" + url, e);
+        // result = invocation.invoke();
+        return "error";
+    } finally {
+        long now = System.currentTimeMillis();
+        if (obj != null)
+            LOG.info(result + ":" + userinfo.getUserName() + ">" + ip + ">" + url + ">" + (now - begin) + ">" + result);
+        else
+            LOG.info(result + ":WHO>" + ip + ">" + url + ">" + (now - begin) + ">" + result);
+    }
+}

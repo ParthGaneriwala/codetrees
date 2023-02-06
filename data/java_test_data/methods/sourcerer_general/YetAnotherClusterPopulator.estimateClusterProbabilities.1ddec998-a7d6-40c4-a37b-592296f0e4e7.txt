@@ -1,0 +1,123 @@
+private Map<FactorTuple, OnDiskCompactProbTree> estimateClusterProbabilities(int clusterid, Long2IntMap counts, ActiveNodeStorage<HashSet<Long>>.ActiveNodeCollection wordsToPruneCollection, ActiveNodeStorage<HashSet<Long>>.ActiveNodeCollection nextWordsToPruneCollection) {
+    Experiment experiment = Experiment.getInstance();
+    FactorTupleDescription desc = experiment.getTupleDescription();
+    final long overtMask = desc.getOvertFactorsMask();
+    final long hiddenMask = desc.getHiddenFactorsMask();
+    Map<FactorTuple, OnDiskCompactProbTree> data = new HashMap<FactorTuple, OnDiskCompactProbTree>();
+    BinaryTree<HistoryTreePayload> node = nodes[clusterid];
+    final boolean estimateUnseen = node.getParent() == null;
+    HashSet<Long> wordsToPrune = null;
+    HashSet<Long> newWordsToPrune = null;
+    if (lm.getPruningThreshold() > 0) {
+        if (wordsToPruneCollection != null && node.getParent() != null) {
+            wordsToPrune = wordsToPruneCollection.getNode(node.getParent().getPayload().clusterid);
+        }
+        newWordsToPrune = new HashSet<Long>();
+    }
+    // convert joint counts to word counts
+    Long2IntMap wordCounts = new Long2IntMap(counts.size());
+    for (Long2IntMap.Iterator i = counts.iterator(); i.hasNext(); ) {
+        Long2IntMap.Entry e = i.next();
+        wordCounts.addAndGet(e.getKey() & overtMask, e.getValue());
+    }
+    /*
+		SmootherProducer producer = new SmootherProducer();
+		for(Long2IntMap.Iterator i=wordCounts.iterator(); i.hasNext();) {
+			producer.addCount(i.next().getValue());
+		}
+		*/
+    Map<FactorTuple, FactorTuple> allOvertFactors = experiment.getTupleDescription().getAllOvertFactors();
+    // populate distributions at leaves
+    FactorTuple dummyTuple = new FactorTuple();
+    double totalCount = 0;
+    for (Long2IntMap.Iterator iter = counts.iterator(); iter.hasNext(); ) {
+        Long2IntMap.Entry entry = iter.next();
+        long tuple = entry.getKey();
+        int count = entry.getValue();
+        dummyTuple.setBits(tuple & overtMask);
+        FactorTuple overtFactors = allOvertFactors.get(dummyTuple);
+        if (overtFactors == null) {
+            overtFactors = new FactorTuple(tuple & overtMask);
+            System.out.printf("unkown overt factors: %s\n", overtFactors.toStringNoNull());
+        }
+        if (newWordsToPrune != null && lm.getPruningThreshold() >= count) {
+            newWordsToPrune.add(overtFactors.getBits());
+        }
+        if (wordsToPrune != null && lm.getPruningThreshold() >= count && wordsToPrune.contains(overtFactors.getBits())) {
+            continue;
+        }
+        if (newWordsToPrune != null && lm.getPruningThreshold() >= count) {
+            newWordsToPrune.add(overtFactors.getBits());
+        }
+        totalCount += count;
+        // FactorTuple hiddenFactors = new FactorTuple(tupleCount.tuple & hiddenMask);
+        int packedHiddenFactors = desc.packHiddenFactorsToInt(tuple & hiddenMask);
+        OnDiskCompactProbTree probTree = data.get(overtFactors);
+        if (probTree == null) {
+            probTree = new OnDiskCompactProbTree(packedHiddenFactors, count);
+            data.put(overtFactors, probTree);
+        } else {
+            probTree.addProbability(packedHiddenFactors, count);
+        }
+        assert (probTree.checkTree());
+    }
+    if (newWordsToPrune != null && newWordsToPrune.size() > 0) {
+        nextWordsToPruneCollection.putNode(clusterid, newWordsToPrune);
+    }
+    for (OnDiskCompactProbTree probTree : data.values()) {
+        probTree.scale(1.0 / totalCount);
+    }
+    unseen: if (estimateUnseen) {
+        HashSet<FactorTuple> unseenFactors = new HashSet<FactorTuple>(10);
+        FactorTuple nullEvent = allOvertFactors.get(new FactorTuple(0));
+        FactorTuple startEvent = allOvertFactors.get(new FactorTuple(desc.createStartTuple() & overtMask));
+        for (FactorTuple overtFactors : allOvertFactors.keySet()) {
+            if (!data.containsKey(overtFactors) && !(overtFactors == nullEvent || overtFactors == startEvent)) {
+                unseenFactors.add(overtFactors);
+                System.out.printf("unseen event: %s\n", overtFactors.toStringNoNull());
+            }
+        }
+        if (unseenFactors.size() == 0) {
+            break unseen;
+        }
+        HashMap<FactorTuple, HashSet<FactorTuple>> hidden2overt = new HashMap<FactorTuple, HashSet<FactorTuple>>(100);
+        for (Long2IntMap.Iterator iter = counts.iterator(); iter.hasNext(); ) {
+            Long2IntMap.Entry entry = iter.next();
+            long tuple = entry.getKey();
+            dummyTuple.setBits(tuple & overtMask);
+            FactorTuple overtFactors = allOvertFactors.get(dummyTuple);
+            FactorTuple hiddenFactors = new FactorTuple(tuple & hiddenMask);
+            HashSet<FactorTuple> set = hidden2overt.get(hiddenFactors);
+            if (set == null) {
+                set = new HashSet<FactorTuple>();
+                hidden2overt.put(hiddenFactors, set);
+            }
+            set.add(overtFactors);
+        }
+        // the probability of an unseen event to have a tag is propotional to the number of distinct words with that tag
+        OnDiskCompactProbTree unseenTree = new OnDiskCompactProbTree(hidden2overt.size());
+        int count = 0;
+        for (Map.Entry<FactorTuple, HashSet<FactorTuple>> entry : hidden2overt.entrySet()) {
+            int size = entry.getValue().size();
+            count += size;
+            FactorTuple hiddenFactors = entry.getKey();
+            int compactHiddenFactors = desc.packHiddenFactorsToInt(hiddenFactors.getBits());
+            if (compactHiddenFactors > 0) {
+                // ignore <NULL> should they appear
+                unseenTree.addProbability(compactHiddenFactors, size);
+            }
+        }
+        double unseenProbability = unseenFactors.size() / totalCount;
+        unseenTree.scale(unseenProbability / (count * unseenFactors.size()));
+        // make sure the distribution sums to 1.0 after adding unseen probabilities
+        for (OnDiskCompactProbTree probTree : data.values()) {
+            probTree.scale(1.0 - unseenProbability);
+        }
+        for (FactorTuple overtFactors : unseenFactors) {
+            OnDiskCompactProbTree probTree = (OnDiskCompactProbTree) unseenTree.clone();
+            data.put(overtFactors, probTree);
+        }
+        System.out.printf("distributing %e probability among %d unseen events\n", unseenProbability, unseenFactors.size());
+    }
+    return data;
+}

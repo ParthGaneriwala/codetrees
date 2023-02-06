@@ -1,0 +1,69 @@
+public boolean doLayout(int weightLayout, int goalTotal, double progress, Loader loader) {
+    // initialize the layout.
+    nodeCount = graphView.getNodeViewCount();
+    edgeCount = graphView.getEdgeViewCount();
+    // initialize the index map
+    nodeIndexToMatrixIndexMap = new HashMap();
+    matrixIndexToNodeIndexMap = new TreeMap();
+    Iterator nodes = graphView.getNodeViewsIterator();
+    int count = 0;
+    while (nodes.hasNext()) {
+        NodeView nodeView = (NodeView) nodes.next();
+        nodeIndexToMatrixIndexMap.put(new Integer(nodeView.getRootGraphIndex()), new Integer(count));
+        matrixIndexToNodeIndexMap.put(new Integer(count), new Integer(nodeView.getRootGraphIndex()));
+        count++;
+    }
+    // Stop if all nodes are closer together than this euclidean distance.
+    // TODO: Why is this an appropriate threshold?
+    double euclidean_distance_threshold = (0.5 * (nodeCount + edgeCount));
+    // Stop if the potential energy doesn't go down anymore.
+    double potential_energy_percent_change_threshold = .001;
+    int num_iterations = (int) ((nodeCount * averageIterationsPerNode) / numLayoutPasses);
+    List partials_list = createPartialsList();
+    PotentialEnergy potential_energy = new PotentialEnergy();
+    Iterator node_views_iterator;
+    NodeView node_view;
+    PartialDerivatives partials;
+    PartialDerivatives furthest_node_partials = null;
+    double current_progress_temp;
+    double setup_progress = 0.0;
+    for (layoutPass = 0; layoutPass < numLayoutPasses; layoutPass++) {
+        setupForLayoutPass();
+        // initialize this layout pass
+        potential_energy.reset();
+        partials_list.clear();
+        // Calculate all node distances.  Keep track of the furthest.
+        node_views_iterator = graphView.getNodeViewsIterator();
+        while (node_views_iterator.hasNext()) {
+            node_view = (NodeView) node_views_iterator.next();
+            partials = new PartialDerivatives(node_view);
+            calculatePartials(partials, null, potential_energy, false);
+            partials_list.add(partials);
+            if ((furthest_node_partials == null) || (partials.euclideanDistance > furthest_node_partials.euclideanDistance)) {
+                furthest_node_partials = partials;
+            }
+        }
+        // farthest node towards where it wants to be.
+        for (int iterations_i = 0; ((iterations_i < num_iterations) && (furthest_node_partials.euclideanDistance >= euclidean_distance_threshold)); iterations_i++) {
+            if (interrupted) {
+                System.err.println("Interrupted: Layouter");
+                // Before we short circuit the method, we reset the interruption so that the method can run without
+                // problems for the next cluster
+                resetDoLayout();
+                return false;
+            }
+            furthest_node_partials = moveNode(furthest_node_partials, partials_list, potential_energy);
+            progress += 100.0 * (((double) 1 / (double) (num_iterations * numLayoutPasses))) * ((double) weightLayout / (double) goalTotal);
+            if (loader != null) {
+                loader.setProgress((int) progress, "Laying out");
+            }
+        }
+    // End for each iteration, attempt to minimize the total potential
+    // energy by moving the node that is farthest from where it should be.
+    }
+    // End for each layout pass
+    // Just in case an interruption occurred right before we exit the method, we reset it, such an interruption
+    // will be dealt with in the MCODEUtil class
+    resetDoLayout();
+    return true;
+}

@@ -1,0 +1,134 @@
+private double scaleFactorUsingEntropy() {
+    String debug = "(KStarNumericAttribute.scaleFactorUsingEntropy)";
+    if (m_ClassType != Attribute.NOMINAL) {
+        System.err.println("Error: " + debug + " attribute class must be nominal!");
+        System.exit(1);
+    }
+    int j, itcount;
+    double lowest = -1.0, nextlowest = -1.0;
+    double root, up, bot, stepsize, delta;
+    double randscale;
+    double bestdiff, bestroot, currentdiff, lastdiff;
+    double bestpsum, bestminprob, scale = 1.0;
+    KStarWrapper botvals = new KStarWrapper();
+    KStarWrapper upvals = new KStarWrapper();
+    KStarWrapper vals = new KStarWrapper();
+    m_Distances = new double[m_NumInstances];
+    for (j = 0; j < m_NumInstances; j++) {
+        if (m_TrainSet.instance(j).isMissing(m_AttrIndex)) {
+            // mark the train instance with a missing value by setting
+            // the distance to -1.0
+            m_Distances[j] = -1.0;
+        } else {
+            m_Distances[j] = Math.abs(m_TrainSet.instance(j).value(m_AttrIndex) - m_Test.value(m_AttrIndex));
+            if ((m_Distances[j] + 1e-5) < nextlowest || nextlowest == -1.0) {
+                if ((m_Distances[j] + 1e-5) < lowest || lowest == -1.0) {
+                    nextlowest = lowest;
+                    lowest = m_Distances[j];
+                } else if (Math.abs(m_Distances[j] - lowest) < 1e-5) {
+                } else {
+                    nextlowest = m_Distances[j];
+                }
+            }
+            // records the actual number of instances with no missing value
+            m_ActualCount++;
+        }
+    }
+    if (nextlowest == -1 || lowest == -1) {
+        // Data values are all the same
+        scale = 1.0;
+        m_SmallestProb = m_AverageProb = 1.0;
+        return scale;
+    } else {
+        // starting point for root
+        root = 1.0 / (nextlowest - lowest);
+        // root is bracketed in interval [bot,up]
+        bot = 0.0 + ROOT_FINDER_ACCURACY / 2;
+        // This is bodgy
+        up = root * 8;
+        // Find (approx) entropy ranges
+        calculateEntropy(up, upvals);
+        calculateEntropy(bot, botvals);
+        randscale = botvals.randEntropy - upvals.randEntropy;
+        // Optimise the scale factor
+        bestroot = root = bot;
+        bestdiff = currentdiff = FLOOR1;
+        bestpsum = botvals.avgProb;
+        bestminprob = botvals.minProb;
+        stepsize = (up - bot) / 20.0;
+        itcount = 0;
+        // Root finding algorithm starts here!
+        while (true) {
+            itcount++;
+            lastdiff = currentdiff;
+            root += Math.log(root + 1.0) * stepsize;
+            if (root <= bot) {
+                root = bot;
+                currentdiff = 0.0;
+                delta = -1.0;
+            } else if (root >= up) {
+                root = up;
+                currentdiff = 0.0;
+                delta = -1.0;
+            } else {
+                calculateEntropy(root, vals);
+                // Normalise entropies
+                vals.randEntropy = (vals.randEntropy - upvals.randEntropy) / randscale;
+                vals.actEntropy = (vals.actEntropy - upvals.actEntropy) / randscale;
+                currentdiff = vals.randEntropy - vals.actEntropy;
+                if (currentdiff < FLOOR1) {
+                    currentdiff = FLOOR1;
+                    if (stepsize < 0) {
+                        // If we've hit the end and turned around we can't
+                        // have found any peaks
+                        bestdiff = currentdiff;
+                        bestroot = bot;
+                        bestpsum = botvals.avgProb;
+                        bestminprob = botvals.minProb;
+                        break;
+                    }
+                }
+                delta = currentdiff - lastdiff;
+            }
+            if (currentdiff > bestdiff) {
+                bestdiff = currentdiff;
+                bestroot = root;
+                bestminprob = vals.minProb;
+                bestpsum = vals.avgProb;
+            }
+            if (delta < 0) {
+                if (Math.abs(stepsize) < ROOT_FINDER_ACCURACY) {
+                    break;
+                } else {
+                    stepsize /= -4.0;
+                }
+            }
+            if (itcount > ROOT_FINDER_MAX_ITER) {
+                // exceeded");
+                break;
+            }
+        }
+        // while
+        m_SmallestProb = bestminprob;
+        m_AverageProb = bestpsum;
+        // Set the probability of transforming to a missing value
+        switch(m_MissingMode) {
+            case M_DELETE:
+                m_MissingProb = 0.0;
+                break;
+            case M_NORMAL:
+                m_MissingProb = 1.0;
+                break;
+            case M_MAXDIFF:
+                m_MissingProb = m_SmallestProb;
+                break;
+            case M_AVERAGE:
+                m_MissingProb = m_AverageProb;
+                break;
+        }
+        // set scale factor
+        scale = bestroot;
+    }
+    // else
+    return scale;
+}

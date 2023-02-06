@@ -1,0 +1,95 @@
+private void init(boolean tempReader) throws IOException {
+    byte[] versionBlock = new byte[VERSION.length];
+    in.readFully(versionBlock);
+    if ((versionBlock[0] != VERSION[0]) || (versionBlock[1] != VERSION[1]) || (versionBlock[2] != VERSION[2]))
+        throw new IOException(file + " not a SequenceFile");
+    // Set 'version'
+    version = versionBlock[3];
+    if (version > VERSION[3])
+        throw new VersionMismatchException(VERSION[3], version);
+    if (version < BLOCK_COMPRESS_VERSION) {
+        UTF8 className = new UTF8();
+        className.readFields(in);
+        // key class name
+        keyClassName = className.toString();
+        className.readFields(in);
+        // val class name
+        valClassName = className.toString();
+    } else {
+        keyClassName = Text.readString(in);
+        valClassName = Text.readString(in);
+    }
+    if (version > 2) {
+        // if version > 2
+        // is compressed?
+        this.decompress = in.readBoolean();
+    } else {
+        decompress = false;
+    }
+    if (version >= BLOCK_COMPRESS_VERSION) {
+        // if version >= 4
+        // is block-compressed?
+        this.blockCompressed = in.readBoolean();
+    } else {
+        blockCompressed = false;
+    }
+    // setup the compression codec
+    if (decompress) {
+        if (version >= CUSTOM_COMPRESS_VERSION) {
+            String codecClassname = Text.readString(in);
+            try {
+                Class<? extends CompressionCodec> codecClass = conf.getClassByName(codecClassname).asSubclass(CompressionCodec.class);
+                this.codec = ReflectionUtils.newInstance(codecClass, conf);
+            } catch (ClassNotFoundException cnfe) {
+                throw new IllegalArgumentException("Unknown codec: " + codecClassname, cnfe);
+            }
+        } else {
+            codec = new DefaultCodec();
+            ((Configurable) codec).setConf(conf);
+        }
+    }
+    this.metadata = new Metadata();
+    if (version >= VERSION_WITH_METADATA) {
+        // if version >= 6
+        this.metadata.readFields(in);
+    }
+    if (version > 1) {
+        // if version > 1
+        // read sync bytes
+        in.readFully(sync);
+    }
+    // Initialize... *not* if this we are constructing a temporary Reader
+    if (!tempReader) {
+        valBuffer = new DataInputBuffer();
+        if (decompress) {
+            valDecompressor = CodecPool.getDecompressor(codec);
+            valInFilter = codec.createInputStream(valBuffer, valDecompressor);
+            valIn = new DataInputStream(valInFilter);
+        } else {
+            valIn = valBuffer;
+        }
+        if (blockCompressed) {
+            keyLenBuffer = new DataInputBuffer();
+            keyBuffer = new DataInputBuffer();
+            valLenBuffer = new DataInputBuffer();
+            keyLenDecompressor = CodecPool.getDecompressor(codec);
+            keyLenInFilter = codec.createInputStream(keyLenBuffer, keyLenDecompressor);
+            keyLenIn = new DataInputStream(keyLenInFilter);
+            keyDecompressor = CodecPool.getDecompressor(codec);
+            keyInFilter = codec.createInputStream(keyBuffer, keyDecompressor);
+            keyIn = new DataInputStream(keyInFilter);
+            valLenDecompressor = CodecPool.getDecompressor(codec);
+            valLenInFilter = codec.createInputStream(valLenBuffer, valLenDecompressor);
+            valLenIn = new DataInputStream(valLenInFilter);
+        }
+        SerializationFactory serializationFactory = new SerializationFactory(conf);
+        this.keyDeserializer = getDeserializer(serializationFactory, getKeyClass());
+        if (!blockCompressed) {
+            this.keyDeserializer.open(valBuffer);
+        } else {
+            this.keyDeserializer.open(keyIn);
+        }
+        this.valDeserializer = getDeserializer(serializationFactory, getValueClass());
+        this.valDeserializer.open(valIn);
+    }
+}

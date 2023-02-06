@@ -1,0 +1,47 @@
+@Override
+protected Result evaluate(final LogicContext context, final Integer patientId, final Map<String, Object> parameters) throws LogicException {
+    Result result = new Result();
+    EncounterWithRestrictionRule encounterWithRestrictionRule = new EncounterWithStringRestrictionRule();
+    Result encounterResults = encounterWithRestrictionRule.eval(context, patientId, parameters);
+    // take out the encounter type for the reference encounter
+    Object encounterType = parameters.remove(AncParameters.AFTER_ENCOUNTER_TYPE);
+    // prepare the parameters
+    parameters.put(EvaluableConstants.ENCOUNTER_FETCH_SIZE, 1);
+    parameters.put(EvaluableConstants.ENCOUNTER_TYPE, Arrays.asList(encounterType));
+    Result afterEncounterResults = encounterWithRestrictionRule.eval(context, patientId, parameters);
+    // see if we can get the reference encounter
+    Object afterEncounter = null;
+    if (CollectionUtils.isNotEmpty(afterEncounterResults))
+        afterEncounter = afterEncounterResults.latest().getResultObject();
+    // search the ordering of the observations
+    Object conceptSetObjects = parameters.remove(EvaluableConstants.OBS_VALUE_CODED);
+    Map<Concept, Integer> codedPositions = searchPositions(conceptSetObjects);
+    ObsWithRestrictionRule obsWithRestrictionRule = new ObsWithStringRestrictionRule();
+    int counter = 0;
+    Boolean foundAfter = Boolean.FALSE;
+    while (counter < CollectionUtils.size(encounterResults) && !foundAfter) {
+        Result encounterResult = encounterResults.get(counter);
+        parameters.put(EvaluableConstants.OBS_ENCOUNTER, Arrays.asList(encounterResult.getResultObject()));
+        Result parentObsResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+        for (Result parentObsResult : parentObsResults) {
+            Obs parentObs = (Obs) parentObsResult.getResultObject();
+            if (parentObs.isObsGrouping()) {
+                Set<Obs> childObservations = parentObs.getGroupMembers();
+                Result groupedResult = new Result();
+                groupedResult.setResultDate(encounterResult.getResultDate());
+                Result[] results = new Result[CollectionUtils.size(codedPositions)];
+                for (Obs childObservation : childObservations) {
+                    Integer position = codedPositions.get(childObservation.getConcept());
+                    if (position != null)
+                        results[position] = new Result(childObservation);
+                }
+                groupedResult.addAll(Arrays.asList(results));
+                result.add(groupedResult);
+            }
+        }
+        if (OpenmrsUtil.nullSafeEquals(afterEncounter, encounterResult.getResultObject()))
+            foundAfter = Boolean.TRUE;
+        counter++;
+    }
+    return result;
+}

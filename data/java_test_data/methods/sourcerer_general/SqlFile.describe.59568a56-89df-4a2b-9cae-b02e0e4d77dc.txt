@@ -1,0 +1,96 @@
+private void describe(String tableName, String filterString) throws SQLException {
+    if (shared.jdbcConn == null)
+        throw new RuntimeException("Somehow got to 'describe' even though we have no Conn");
+    /*
+         * Doing case-sensitive filters now, for greater portability.
+        String filter = ((inFilter == null) ? null : inFilter.toUpperCase());
+         */
+    Pattern filter = null;
+    // match filter against all cols.
+    boolean filterMatchesAll = false;
+    List<String[]> rows = new ArrayList<String[]>();
+    String[] headerArray = { SqltoolRB.describe_table_name.getString(), SqltoolRB.describe_table_datatype.getString(), SqltoolRB.describe_table_width.getString(), SqltoolRB.describe_table_nonulls.getString() };
+    String[] fieldArray;
+    int[] maxWidth = { 0, 0, 0, 0 };
+    boolean[] rightJust = { false, false, true, false };
+    if (filterString != null)
+        try {
+            filterMatchesAll = (filterString.charAt(0) == '/');
+            filter = Pattern.compile(filterMatchesAll ? filterString.substring(1) : filterString);
+        } catch (PatternSyntaxException pse) {
+            throw new SQLException(SqltoolRB.regex_malformat.getString(pse.getMessage()));
+        // This is obviously not a SQLException.
+        // Perhaps change input parameter to a Pattern to require
+        // caller to compile the pattern?
+        }
+    for (int i = 0; i < headerArray.length; i++) {
+        if (htmlMode) {
+            continue;
+        }
+        if (headerArray[i].length() > maxWidth[i]) {
+            maxWidth[i] = headerArray[i].length();
+        }
+    }
+    ResultSet r = null;
+    Statement statement = shared.jdbcConn.createStatement();
+    // STEP 1: GATHER DATA
+    try {
+        statement.execute("SELECT * FROM " + tableName + " WHERE 1 = 2");
+        r = statement.getResultSet();
+        ResultSetMetaData m = r.getMetaData();
+        int cols = m.getColumnCount();
+        for (int i = 0; i < cols; i++) {
+            fieldArray = new String[4];
+            fieldArray[0] = m.getColumnName(i + 1);
+            if (filter != null && (!filterMatchesAll) && !filter.matcher(fieldArray[0]).find()) {
+                continue;
+            }
+            fieldArray[1] = m.getColumnTypeName(i + 1);
+            fieldArray[2] = Integer.toString(m.getColumnDisplaySize(i + 1));
+            fieldArray[3] = ((m.isNullable(i + 1) == java.sql.ResultSetMetaData.columnNullable) ? (htmlMode ? "&nbsp;" : "") : "*");
+            if (filter != null && filterMatchesAll && !filter.matcher(fieldArray[0] + ' ' + fieldArray[1] + ' ' + fieldArray[2] + ' ' + fieldArray[3]).find()) {
+                continue;
+            }
+            rows.add(fieldArray);
+            for (int j = 0; j < fieldArray.length; j++) {
+                if (fieldArray[j].length() > maxWidth[j]) {
+                    maxWidth[j] = fieldArray[j].length();
+                }
+            }
+        }
+        // STEP 2: DISPLAY DATA
+        condlPrint("<TABLE border='1'>" + LS + SqlFile.htmlRow(COL_HEAD) + LS + PRE_TD, true);
+        for (int i = 0; i < headerArray.length; i++) {
+            condlPrint("<TD>" + headerArray[i] + "</TD>", true);
+            condlPrint(((i > 0) ? "  " : "") + ((i < headerArray.length - 1 || rightJust[i]) ? StringUtil.toPaddedString(headerArray[i], maxWidth[i], ' ', !rightJust[i]) : headerArray[i]), false);
+        }
+        condlPrintln(LS + PRE_TR + "</TR>", true);
+        condlPrintln("", false);
+        if (!htmlMode) {
+            for (int i = 0; i < headerArray.length; i++) {
+                condlPrint(((i > 0) ? "  " : "") + SqlFile.divider(maxWidth[i]), false);
+            }
+            condlPrintln("", false);
+        }
+        for (int i = 0; i < rows.size(); i++) {
+            condlPrint(SqlFile.htmlRow(((i % 2) == 0) ? COL_EVEN : COL_ODD) + LS + PRE_TD, true);
+            fieldArray = rows.get(i);
+            for (int j = 0; j < fieldArray.length; j++) {
+                condlPrint("<TD>" + fieldArray[j] + "</TD>", true);
+                condlPrint(((j > 0) ? "  " : "") + ((j < fieldArray.length - 1 || rightJust[j]) ? StringUtil.toPaddedString(fieldArray[j], maxWidth[j], ' ', !rightJust[j]) : fieldArray[j]), false);
+            }
+            condlPrintln(LS + PRE_TR + "</TR>", true);
+            condlPrintln("", false);
+        }
+        condlPrintln(LS + "</TABLE>" + LS + "<HR>", true);
+    } finally {
+        try {
+            if (r != null) {
+                r.close();
+            }
+            statement.close();
+        } catch (SQLException se) {
+        // Purposefully doing nothing
+        }
+    }
+}

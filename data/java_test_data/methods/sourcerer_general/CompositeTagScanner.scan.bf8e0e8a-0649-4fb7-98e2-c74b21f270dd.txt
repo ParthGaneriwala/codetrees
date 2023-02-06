@@ -1,0 +1,140 @@
+public Tag scan(Tag tag, Lexer lexer, NodeList stack) throws ParserException {
+    Node node;
+    Tag next;
+    String name;
+    Scanner scanner;
+    Tag ret;
+    ret = tag;
+    if (ret.isEmptyXmlTag())
+        ret.setEndTag(ret);
+    else
+        do {
+            node = lexer.nextNode(false);
+            if (null != node) {
+                if (node instanceof Tag) {
+                    next = (Tag) node;
+                    name = next.getTagName();
+                    // check for normal end tag
+                    if (next.isEndTag() && name.equals(ret.getTagName())) {
+                        ret.setEndTag(next);
+                        node = null;
+                    } else if (// check DTD
+                    isTagToBeEndedFor(ret, next)) {
+                        // backup one node. insert a virtual end tag later
+                        lexer.setPosition(next.getStartPosition());
+                        node = null;
+                    } else if (!next.isEndTag()) {
+                        // now recurse if there is a scanner for this type of tag
+                        scanner = next.getThisScanner();
+                        if (null != scanner) {
+                            if (mUseJVMStack) {
+                                // JVM stack recursion
+                                node = scanner.scan(next, lexer, stack);
+                                addChild(ret, node);
+                            } else {
+                                // fake recursion:
+                                if (scanner == this) {
+                                    if (next.isEmptyXmlTag()) {
+                                        next.setEndTag(next);
+                                        finishTag(next, lexer);
+                                        addChild(ret, next);
+                                    } else {
+                                        stack.add(ret);
+                                        ret = next;
+                                    }
+                                } else {
+                                    // normal recursion if switching scanners
+                                    node = scanner.scan(next, lexer, stack);
+                                    addChild(ret, node);
+                                }
+                            }
+                        } else
+                            addChild(ret, next);
+                    } else {
+                        if (!mUseJVMStack && !mLeaveEnds) {
+                            // Since all non-end tags are consumed by the
+                            // previous clause, we're here because we have an
+                            // end tag with no opening tag... this could be bad.
+                            // There are two cases...
+                            // 1) The tag hasn't been registered, in which case
+                            // we just add it as a simple child, like it's
+                            // opening tag
+                            // 2) There may be an opening tag further up the
+                            // parse stack that needs closing.
+                            // So, we ask the factory for a node like this one
+                            // (since end tags never have scanners) and see
+                            // if it's scanner is a composite tag scanner.
+                            // If it is we walk up the parse stack looking for
+                            // something that needs this end tag to finish it.
+                            // If there is something, we close off all the tags
+                            // walked over and continue on as if nothing
+                            // happened.
+                            Vector attributes = new Vector();
+                            attributes.addElement(new Attribute(name, null));
+                            Tag opener = lexer.getNodeFactory().createTagNode(lexer.getPage(), next.getStartPosition(), next.getEndPosition(), attributes);
+                            scanner = opener.getThisScanner();
+                            if ((null != scanner) && (scanner == this)) {
+                                // uh-oh
+                                int index = -1;
+                                for (int i = stack.size() - 1; (-1 == index) && (i >= 0); i--) {
+                                    // short circuit here... assume everything on the stack has this as it's scanner
+                                    // we'll need to stop if either of those conditions isn't met
+                                    Tag boffo = (Tag) stack.elementAt(i);
+                                    if (name.equals(boffo.getTagName()))
+                                        index = i;
+                                    else if (// check DTD
+                                    isTagToBeEndedFor(boffo, next))
+                                        index = i;
+                                }
+                                if (-1 != index) {
+                                    // finish off the current one first
+                                    finishTag(ret, lexer);
+                                    addChild((Tag) stack.elementAt(stack.size() - 1), ret);
+                                    for (int i = stack.size() - 1; i > index; i--) {
+                                        Tag fred = (Tag) stack.remove(i);
+                                        finishTag(fred, lexer);
+                                        addChild((Tag) stack.elementAt(i - 1), fred);
+                                    }
+                                    ret = (Tag) stack.remove(index);
+                                    node = null;
+                                } else
+                                    // default behaviour
+                                    addChild(ret, next);
+                            } else
+                                // default behaviour
+                                addChild(ret, next);
+                        } else
+                            addChild(ret, next);
+                    }
+                } else {
+                    addChild(ret, node);
+                    node.doSemanticAction();
+                }
+            }
+            if (!mUseJVMStack) {
+                // handle coming out of fake recursion
+                if (null == node) {
+                    int depth = stack.size();
+                    if (0 != depth) {
+                        node = stack.elementAt(depth - 1);
+                        if (node instanceof Tag) {
+                            Tag precursor = (Tag) node;
+                            scanner = precursor.getThisScanner();
+                            if (scanner == this) {
+                                stack.remove(depth - 1);
+                                finishTag(ret, lexer);
+                                addChild(precursor, ret);
+                                ret = precursor;
+                            } else
+                                // normal recursion
+                                node = null;
+                        } else
+                            // normal recursion
+                            node = null;
+                    }
+                }
+            }
+        } while (null != node);
+    finishTag(ret, lexer);
+    return (ret);
+}

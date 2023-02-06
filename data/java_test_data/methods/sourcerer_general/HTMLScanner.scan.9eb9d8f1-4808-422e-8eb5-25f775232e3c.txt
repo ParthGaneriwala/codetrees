@@ -1,0 +1,136 @@
+// setElementName(String):Scanner
+// 
+// Scanner methods
+// 
+public boolean scan(boolean complete) throws IOException {
+    boolean next;
+    do {
+        try {
+            next = false;
+            int delimiter = -1;
+            switch(fScannerState) {
+                case STATE_CONTENT:
+                    {
+                        fBeginLineNumber = fCurrentEntity.lineNumber;
+                        fBeginColumnNumber = fCurrentEntity.columnNumber;
+                        int c = read();
+                        if (c == '<') {
+                            setScannerState(STATE_MARKUP_BRACKET);
+                            continue;
+                        }
+                        if (c == '&') {
+                            if (fTextarea) {
+                                scanEntityRef(fStringBuffer, true);
+                                continue;
+                            }
+                            fStringBuffer.clear();
+                            fStringBuffer.append('&');
+                        } else if (c == -1) {
+                            if (fReportErrors) {
+                                fErrorReporter.reportError("HTML1007", null);
+                            }
+                            throw new EOFException();
+                        } else {
+                            fCurrentEntity.offset--;
+                            fCurrentEntity.columnNumber--;
+                            fStringBuffer.clear();
+                        }
+                        scanCharacters(fStringBuffer, -1);
+                        break;
+                    }
+                // case STATE_CONTENT
+                case STATE_MARKUP_BRACKET:
+                    {
+                        int c = read();
+                        if (c == '!') {
+                            if (skip("--", false)) {
+                                fStringBuffer.clear();
+                                boolean strip = (fScript && fScriptStripCommentDelims) || (fStyle && fStyleStripCommentDelims);
+                                if (strip) {
+                                    do {
+                                        c = read();
+                                        if (c == '\r' || c == '\n') {
+                                            fCurrentEntity.columnNumber--;
+                                            fCurrentEntity.offset--;
+                                            break;
+                                        }
+                                    } while (c != -1);
+                                    skipNewlines(1);
+                                    delimiter = '-';
+                                } else {
+                                    fStringBuffer.append("<!--");
+                                }
+                            } else if (skip("[CDATA[", false)) {
+                                fStringBuffer.clear();
+                                boolean strip = (fScript && fScriptStripCDATADelims) || (fStyle && fStyleStripCDATADelims);
+                                if (strip) {
+                                    do {
+                                        c = read();
+                                        if (c == '\r' || c == '\n') {
+                                            fCurrentEntity.columnNumber--;
+                                            fCurrentEntity.offset--;
+                                            break;
+                                        }
+                                    } while (c != -1);
+                                    skipNewlines(1);
+                                    delimiter = ']';
+                                } else {
+                                    fStringBuffer.append("<![CDATA[");
+                                }
+                            }
+                        } else if (c == '/') {
+                            String ename = scanName();
+                            if (ename != null) {
+                                if (ename.equalsIgnoreCase(fElementName)) {
+                                    if (read() == '>') {
+                                        ename = modifyName(ename, fNamesElems);
+                                        if (fDocumentHandler != null && fElementCount >= fElementDepth) {
+                                            fQName.setValues(null, ename, ename, null);
+                                            if (DEBUG_CALLBACKS) {
+                                                System.out.println("endElement(" + fQName + ")");
+                                            }
+                                            fEndLineNumber = fCurrentEntity.lineNumber;
+                                            fEndColumnNumber = fCurrentEntity.columnNumber;
+                                            fDocumentHandler.endElement(fQName, locationAugs());
+                                        }
+                                        setScanner(fContentScanner);
+                                        setScannerState(STATE_CONTENT);
+                                        return true;
+                                    } else {
+                                        fCurrentEntity.offset--;
+                                        fCurrentEntity.columnNumber--;
+                                    }
+                                }
+                                fStringBuffer.clear();
+                                fStringBuffer.append("</");
+                                fStringBuffer.append(ename);
+                            } else {
+                                fStringBuffer.clear();
+                                fStringBuffer.append("</");
+                            }
+                        } else {
+                            fStringBuffer.clear();
+                            fStringBuffer.append('<');
+                            fStringBuffer.append((char) c);
+                        }
+                        scanCharacters(fStringBuffer, delimiter);
+                        setScannerState(STATE_CONTENT);
+                        break;
+                    }
+            }
+        // switch
+        }// try
+         catch (EOFException e) {
+            setScanner(fContentScanner);
+            if (fCurrentEntityStack.empty()) {
+                setScannerState(STATE_END_DOCUMENT);
+            } else {
+                fCurrentEntity = (CurrentEntity) fCurrentEntityStack.pop();
+                setScannerState(STATE_CONTENT);
+            }
+            return true;
+        }
+    } while (// do
+    next || complete);
+    return true;
+}

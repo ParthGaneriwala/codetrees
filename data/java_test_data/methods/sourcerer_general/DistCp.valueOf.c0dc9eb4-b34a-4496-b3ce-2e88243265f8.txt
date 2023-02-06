@@ -1,0 +1,66 @@
+static Arguments valueOf(String[] args, Configuration conf) throws IOException {
+    List<Path> srcs = new ArrayList<Path>();
+    Path dst = null;
+    Path log = null;
+    EnumSet<Options> flags = EnumSet.noneOf(Options.class);
+    String presevedAttributes = null;
+    long filelimit = Long.MAX_VALUE;
+    long sizelimit = Long.MAX_VALUE;
+    for (int idx = 0; idx < args.length; idx++) {
+        Options[] opt = Options.values();
+        int i = 0;
+        for (; i < opt.length && !args[idx].startsWith(opt[i].cmd); i++) ;
+        if (i < opt.length) {
+            flags.add(opt[i]);
+            if (opt[i] == Options.PRESERVE_STATUS) {
+                presevedAttributes = args[idx].substring(2);
+                // validation
+                FileAttribute.parse(presevedAttributes);
+            } else if (opt[i] == Options.FILE_LIMIT) {
+                filelimit = Options.FILE_LIMIT.parseLong(args, ++idx);
+            } else if (opt[i] == Options.SIZE_LIMIT) {
+                sizelimit = Options.SIZE_LIMIT.parseLong(args, ++idx);
+            }
+        } else if ("-f".equals(args[idx])) {
+            if (++idx == args.length) {
+                throw new IllegalArgumentException("urilist_uri not specified in -f");
+            }
+            srcs.addAll(fetchFileList(conf, new Path(args[idx])));
+        } else if ("-log".equals(args[idx])) {
+            if (++idx == args.length) {
+                throw new IllegalArgumentException("logdir not specified in -log");
+            }
+            log = new Path(args[idx]);
+        } else if ("-m".equals(args[idx])) {
+            if (++idx == args.length) {
+                throw new IllegalArgumentException("num_maps not specified in -m");
+            }
+            try {
+                conf.setInt(MAX_MAPS_LABEL, Integer.valueOf(args[idx]));
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("Invalid argument to -m: " + args[idx]);
+            }
+        } else if ('-' == args[idx].codePointAt(0)) {
+            throw new IllegalArgumentException("Invalid switch " + args[idx]);
+        } else if (idx == args.length - 1) {
+            dst = new Path(args[idx]);
+        } else {
+            srcs.add(new Path(args[idx]));
+        }
+    }
+    // mandatory command-line parameters
+    if (srcs.isEmpty() || dst == null) {
+        throw new IllegalArgumentException("Missing " + (dst == null ? "dst path" : "src"));
+    }
+    // incompatible command-line flags
+    final boolean isOverwrite = flags.contains(Options.OVERWRITE);
+    final boolean isUpdate = flags.contains(Options.UPDATE);
+    final boolean isDelete = flags.contains(Options.DELETE);
+    if (isOverwrite && isUpdate) {
+        throw new IllegalArgumentException("Conflicting overwrite policies");
+    }
+    if (isDelete && !isOverwrite && !isUpdate) {
+        throw new IllegalArgumentException(Options.DELETE.cmd + " must be specified with " + Options.OVERWRITE + " or " + Options.UPDATE + ".");
+    }
+    return new Arguments(srcs, dst, log, flags, presevedAttributes, filelimit, sizelimit);
+}

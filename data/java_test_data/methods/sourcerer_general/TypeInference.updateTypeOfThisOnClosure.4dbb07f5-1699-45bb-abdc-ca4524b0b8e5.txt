@@ -1,0 +1,72 @@
+private void updateTypeOfThisOnClosure(Node n, FunctionType fnType) {
+    if (fnType.getTemplateTypeName() == null) {
+        return;
+    }
+    int i = 0;
+    int childCount = n.getChildCount();
+    // Find the parameter whose type is the template type.
+    for (Node iParameter : fnType.getParameters()) {
+        JSType iParameterType = getJSType(iParameter).restrictByNotNullOrUndefined();
+        if (iParameterType.isTemplateType()) {
+            // Find the actual type of this argument.
+            JSType iArgumentType = null;
+            if (i + 1 < childCount) {
+                Node iArgument = n.getChildAtIndex(i + 1);
+                iArgumentType = getJSType(iArgument).restrictByNotNullOrUndefined();
+                if (!(iArgumentType instanceof ObjectType)) {
+                    compiler.report(JSError.make(NodeUtil.getSourceName(iArgument), iArgument, TEMPLATE_TYPE_NOT_OBJECT_TYPE));
+                    return;
+                }
+            }
+            // Find the parameter whose type is function(this: T, ...)
+            boolean foundTemplateTypeOfThisParameter = false;
+            int j = 0;
+            for (Node jParameter : fnType.getParameters()) {
+                JSType jParameterType = getJSType(jParameter).restrictByNotNullOrUndefined();
+                if (jParameterType.isFunctionType()) {
+                    FunctionType jParameterFnType = jParameterType.toMaybeFunctionType();
+                    if (jParameterFnType.getTypeOfThis().equals(iParameterType)) {
+                        foundTemplateTypeOfThisParameter = true;
+                        // Find the actual type of the this argument.
+                        if (j + 1 >= childCount) {
+                            // TypeCheck#visitParameterList will warn so we bail.
+                            return;
+                        }
+                        Node jArgument = n.getChildAtIndex(j + 1);
+                        JSType jArgumentType = getJSType(jArgument);
+                        if (jArgument.getType() == Token.FUNCTION && jArgumentType.isFunctionType()) {
+                            if (iArgumentType != null && // null and undefined get filtered out above.
+                            !iArgumentType.isNoType()) {
+                                // If it's an function expression, update the type of this
+                                // using the actual type of T.
+                                FunctionType jArgumentFnType = jArgumentType.toMaybeFunctionType();
+                                if (jArgumentFnType.getTypeOfThis().isUnknownType()) {
+                                    // The new type will be picked up when we traverse the inner
+                                    // function.
+                                    jArgument.setJSType(registry.createFunctionTypeWithNewThisType(jArgumentFnType, (ObjectType) iArgumentType));
+                                }
+                                // reference this.
+                                if (!NodeUtil.referencesThis(NodeUtil.getFunctionBody(jArgument))) {
+                                    compiler.report(JSError.make(NodeUtil.getSourceName(n), n, FUNCTION_LITERAL_UNREAD_THIS));
+                                }
+                            } else {
+                                // Warn if the anonymous function literal references this.
+                                if (NodeUtil.referencesThis(NodeUtil.getFunctionBody(jArgument))) {
+                                    compiler.report(JSError.make(NodeUtil.getSourceName(n), n, FUNCTION_LITERAL_UNDEFINED_THIS));
+                                }
+                            }
+                        }
+                    // TODO(user): Add code to TypeCheck to check that the
+                    // types of the arguments match.
+                    }
+                }
+                j++;
+            }
+            if (!foundTemplateTypeOfThisParameter) {
+                compiler.report(JSError.make(NodeUtil.getSourceName(n), n, TEMPLATE_TYPE_OF_THIS_EXPECTED));
+                return;
+            }
+        }
+        i++;
+    }
+}

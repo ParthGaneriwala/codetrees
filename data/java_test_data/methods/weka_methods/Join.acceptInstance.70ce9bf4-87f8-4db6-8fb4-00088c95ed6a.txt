@@ -1,0 +1,95 @@
+@Override
+public synchronized void acceptInstance(InstanceEvent e) {
+    if (e.m_formatNotificationOnly) {
+        return;
+    }
+    m_busy = true;
+    Object source = e.getSource();
+    if (e.getStatus() == InstanceEvent.FORMAT_AVAILABLE) {
+        m_runningIncrementally = true;
+        m_stopRequested.set(false);
+        if (!m_stopRequested.get() && source == m_firstInput && m_firstBuffer == null) {
+            System.err.println("Allocating first buffer");
+            m_firstFinished = false;
+            m_firstBuffer = new LinkedList<InstanceHolder>();
+            m_headerOne = e.getStructure();
+            m_stringAttIndexesOne = new HashMap<String, Integer>();
+            for (int i = 0; i < m_headerOne.numAttributes(); i++) {
+                if (m_headerOne.attribute(i).isString()) {
+                    m_stringAttIndexesOne.put(m_headerOne.attribute(i).name(), new Integer(i));
+                }
+            }
+        }
+        if (!m_stopRequested.get() && source == m_secondInput && m_secondBuffer == null) {
+            System.err.println("Allocating second buffer");
+            m_secondFinished = false;
+            m_secondBuffer = new LinkedList<InstanceHolder>();
+            m_headerTwo = e.getStructure();
+            m_stringAttIndexesTwo = new HashMap<String, Integer>();
+            for (int i = 0; i < m_headerTwo.numAttributes(); i++) {
+                if (m_headerTwo.attribute(i).isString()) {
+                    m_stringAttIndexesTwo.put(m_headerTwo.attribute(i).name(), new Integer(i));
+                }
+            }
+        }
+        if (m_stopRequested.get()) {
+            return;
+        }
+        if (m_mergedHeader == null) {
+            // can we determine the header?
+            m_throughput = new StreamThroughput(statusMessagePrefix());
+            if (m_headerOne != null && m_headerTwo != null && m_keySpec != null && m_keySpec.length() > 0) {
+                // construct merged header & check validity of indexes
+                generateMergedHeader();
+            }
+        }
+    } else {
+        if (m_stopRequested.get()) {
+            return;
+        }
+        Instance current = e.getInstance();
+        if (current == null || e.getStatus() == InstanceEvent.BATCH_FINISHED) {
+            if (source == m_firstInput) {
+                System.err.println("Finished first");
+                m_firstFinished = true;
+            }
+            if (source == m_secondInput) {
+                System.err.println("Finished second");
+                m_secondFinished = true;
+            }
+        }
+        if (current != null) {
+            if (source == m_firstInput) {
+                // m_firstBuffer.add(current);
+                addToFirstBuffer(current);
+            } else if (source == m_secondInput) {
+                // m_secondBuffer.add(current);
+                addToSecondBuffer(current);
+            }
+        }
+        if (source == m_firstInput && m_secondBuffer != null && m_secondBuffer.size() <= 100 && m_secondIsWaiting) {
+            notifyAll();
+            m_secondIsWaiting = false;
+        } else if (source == m_secondInput && m_firstBuffer != null && m_firstBuffer.size() <= 100 && m_firstIsWaiting) {
+            notifyAll();
+            m_firstIsWaiting = false;
+        }
+        if (m_firstFinished && m_secondFinished && !m_stopRequested.get()) {
+            // finished - now just clear buffers and reset headers etc
+            clearBuffers();
+            return;
+        }
+        if (m_stopRequested.get()) {
+            return;
+        }
+        m_throughput.updateStart();
+        Instance outputI = processBuffers();
+        m_throughput.updateEnd(m_log);
+        if (outputI != null && !m_stopRequested.get()) {
+            // notify instance listeners
+            m_ie.setStatus(InstanceEvent.INSTANCE_AVAILABLE);
+            m_ie.setInstance(outputI);
+            notifyInstanceListeners(m_ie);
+        }
+    }
+}

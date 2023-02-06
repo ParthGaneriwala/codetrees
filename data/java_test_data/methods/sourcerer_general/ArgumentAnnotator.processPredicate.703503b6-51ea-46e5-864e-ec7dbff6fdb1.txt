@@ -1,0 +1,55 @@
+private void processPredicate(JCas jCas, Sentence sentence, Predicate predicate, List<TreebankNode> constituents, List<List<Feature>> constituentFeatures) throws AnalysisEngineProcessException {
+    TreebankNode predicateNode = TreebankNodeUtil.selectMatchingLeaf(jCas, predicate.getAnnotation());
+    List<Token> predicateTokens = JCasUtil.selectCovered(jCas, Token.class, predicate.getAnnotation());
+    Token predicateToken = predicateTokens.get(0);
+    List<Feature> predicateFeatures = new ArrayList<Feature>(20);
+    predicateFeatures.addAll(predicateTokenExtractor.extract(jCas, predicateToken));
+    predicateFeatures.addAll(predicateNodeExtractor.extract(jCas, predicateNode));
+    for (int i = 0; i < constituents.size(); i++) {
+        TreebankNode constituent = constituents.get(i);
+        Instance<String> instance = new Instance<String>();
+        instance.addAll(predicateFeatures);
+        instance.addAll(constituentFeatures.get(i));
+        instance.addAll(relPosExtractor.extract(jCas, constituent, predicate.getAnnotation()));
+        instance.addAll(pathExtractor.extract(jCas, constituent, predicateNode));
+        instance.addAll(partialPathExtractor.extract(jCas, constituent, predicateNode));
+        instance.addAll(distanceExtractor.extract(jCas, constituent, predicateNode));
+        instance.setOutcome("NULL");
+        for (Argument arg : UIMAUtil.toList(predicate.getArguments(), Argument.class)) {
+            if (!(arg instanceof SemanticArgument))
+                continue;
+            SemanticArgument sarg = (SemanticArgument) arg;
+            if (sarg.getAnnotation() == constituent && !sarg.getLabel().equals("rel")) {
+                if (sarg.getFeature() != null) {
+                    instance.setOutcome(sarg.getLabel() + "-" + sarg.getFeature());
+                } else {
+                    instance.setOutcome(sarg.getLabel());
+                }
+                break;
+            }
+        }
+        if (this.isTraining()) {
+            this.dataWriter.write(instance);
+        } else {
+            String outcome = this.classifier.classify(instance.getFeatures());
+            if (!outcome.equals("NULL")) {
+                SemanticArgument arg = new SemanticArgument(jCas);
+                arg.setAnnotation(constituent);
+                arg.setBegin(constituent.getBegin());
+                arg.setEnd(constituent.getEnd());
+                String[] parts = outcome.split("-", 1);
+                arg.setLabel(parts[0]);
+                if (parts.length > 1)
+                    arg.setFeature(parts[1]);
+                arg.addToIndexes();
+                List<Argument> args;
+                if (predicate.getArguments() != null)
+                    args = UIMAUtil.toList(predicate.getArguments(), Argument.class);
+                else
+                    args = new ArrayList<Argument>(1);
+                args.add(arg);
+                predicate.setArguments(UIMAUtil.toFSArray(jCas, args));
+            }
+        }
+    }
+}

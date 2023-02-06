@@ -1,0 +1,58 @@
+private final void send(Buffer packet, int packetLen) throws SQLException {
+    try {
+        if (this.maxAllowedPacket > 0 && packetLen > this.maxAllowedPacket) {
+            throw new PacketTooBigException(packetLen, this.maxAllowedPacket);
+        }
+        if ((this.serverMajorVersion >= 4) && (packetLen >= this.maxThreeBytes)) {
+            sendSplitPackets(packet);
+        } else {
+            this.packetSequence++;
+            Buffer packetToSend = packet;
+            packetToSend.setPosition(0);
+            if (this.useCompression) {
+                int originalPacketLen = packetLen;
+                packetToSend = compressPacket(packet, 0, packetLen, HEADER_LENGTH);
+                packetLen = packetToSend.getPosition();
+                if (this.traceProtocol) {
+                    StringBuffer traceMessageBuf = new StringBuffer();
+                    // $NON-NLS-1$
+                    traceMessageBuf.append(Messages.getString("MysqlIO.57"));
+                    traceMessageBuf.append(getPacketDumpToLog(packetToSend, packetLen));
+                    // $NON-NLS-1$
+                    traceMessageBuf.append(Messages.getString("MysqlIO.58"));
+                    traceMessageBuf.append(getPacketDumpToLog(packet, originalPacketLen));
+                    this.connection.getLog().logTrace(traceMessageBuf.toString());
+                }
+            } else {
+                packetToSend.writeLongInt(packetLen - HEADER_LENGTH);
+                packetToSend.writeByte(this.packetSequence);
+                if (this.traceProtocol) {
+                    StringBuffer traceMessageBuf = new StringBuffer();
+                    // $NON-NLS-1$
+                    traceMessageBuf.append(Messages.getString("MysqlIO.59"));
+                    traceMessageBuf.append("host: '");
+                    traceMessageBuf.append(host);
+                    traceMessageBuf.append("' threadId: '");
+                    traceMessageBuf.append(threadId);
+                    traceMessageBuf.append("'\n");
+                    traceMessageBuf.append(packetToSend.dump(packetLen));
+                    this.connection.getLog().logTrace(traceMessageBuf.toString());
+                }
+            }
+            this.mysqlOutput.write(packetToSend.getByteBuffer(), 0, packetLen);
+            this.mysqlOutput.flush();
+        }
+        if (this.enablePacketDebug) {
+            enqueuePacketForDebugging(true, false, packetLen + 5, this.packetHeaderBuf, packet);
+        }
+        // 
+        if (packet == this.sharedSendPacket) {
+            reclaimLargeSharedSendPacket();
+        }
+        if (this.connection.getMaintainTimeStats()) {
+            this.lastPacketSentTimeMs = System.currentTimeMillis();
+        }
+    } catch (IOException ioEx) {
+        throw SQLError.createCommunicationsException(this.connection, this.lastPacketSentTimeMs, this.lastPacketReceivedTimeMs, ioEx, getExceptionInterceptor());
+    }
+}

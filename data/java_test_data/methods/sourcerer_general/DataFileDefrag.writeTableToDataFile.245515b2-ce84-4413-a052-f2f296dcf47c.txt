@@ -1,0 +1,47 @@
+int[] writeTableToDataFile(Table table) throws IOException {
+    Session session = database.getSessionManager().getSysSession();
+    PersistentStore store = session.sessionData.getRowStore(table);
+    RowOutputInterface rowOut = cache.rowOut.duplicate();
+    DoubleIntIndex pointerLookup = new DoubleIntIndex(((IndexAVL) table.getPrimaryIndex()).sizeEstimate(store), false);
+    int[] rootsArray = table.getIndexRootsArray();
+    long pos = fileOffset;
+    int count = 0;
+    pointerLookup.setKeysSearchTarget();
+    Error.printSystemOut("lookup begins: " + stopw.elapsedTime());
+    // all rows
+    RowIterator it = table.rowIterator(store);
+    for (; it.hasNext(); count++) {
+        CachedObject row = it.getNextRow();
+        pointerLookup.addUnsorted(row.getPos(), (int) (pos / scale));
+        if (count % 50000 == 0) {
+            Error.printSystemOut("pointer pair for row " + count + " " + row.getPos() + " " + pos);
+        }
+        pos += row.getStorageSize();
+    }
+    Error.printSystemOut("table: " + table.getName().name + " list done: " + stopw.elapsedTime());
+    count = 0;
+    it = table.rowIterator(store);
+    for (; it.hasNext(); count++) {
+        CachedObject row = it.getNextRow();
+        rowOut.reset();
+        row.write(rowOut, pointerLookup);
+        fileStreamOut.write(rowOut.getOutputStream().getBuffer(), 0, rowOut.size());
+        fileOffset += row.getStorageSize();
+        if ((count) % 50000 == 0) {
+            Error.printSystemOut(count + " rows " + stopw.elapsedTime());
+        }
+    }
+    for (int i = 0; i < table.getIndexCount(); i++) {
+        if (rootsArray[i] == -1) {
+            continue;
+        }
+        int lookupIndex = pointerLookup.findFirstEqualKeyIndex(rootsArray[i]);
+        if (lookupIndex == -1) {
+            throw Error.error(ErrorCode.DATA_FILE_ERROR);
+        }
+        rootsArray[i] = pointerLookup.getValue(lookupIndex);
+    }
+    setTransactionRowLookups(pointerLookup);
+    Error.printSystemOut("table: " + table.getName().name + " : table converted");
+    return rootsArray;
+}

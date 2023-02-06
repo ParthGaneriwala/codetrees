@@ -1,0 +1,116 @@
+protected Vector2f[] getPath(final boolean collideActor, ActorLogic logic, float longest, float ax, float ay, float bx, float by, boolean partial, boolean shortcut) {
+    // first things first: are we there already?
+    Vector2f start = new Vector2f(ax, ay);
+    if (ax == bx && ay == by) {
+        return new Vector2f[] { start };
+    }
+    // can we simply slide on over?
+    Vector2f end = new Vector2f(bx, by);
+    if (!sweptShapeCollides(collideActor, logic, start, end)) {
+        return new Vector2f[] { start, end };
+    }
+    // determine the actor's extents
+    Rect bounds = logic.getShape().getBounds();
+    int width = Math.max(1, FloatMath.iceil(bounds.getWidth() * SUBDIVISION));
+    int height = Math.max(1, FloatMath.iceil(bounds.getHeight() * SUBDIVISION));
+    // create the traversal predicate
+    AStarPathUtil.TraversalPred pred;
+    final Actor actor = logic.getActor();
+    final int collisionMask = actor.getCollisionMask();
+    if (width == 1 && height == 1) {
+        // simpler predicates for the common case of 1x1 actors
+        if (collideActor) {
+            pred = new AStarPathUtil.TraversalPred() {
+
+                public boolean canTraverse(Object traverser, int x, int y) {
+                    return (collisionMask & _entryFlags.get(MathUtil.floorDiv(x, SUBDIVISION), MathUtil.floorDiv(y, SUBDIVISION))) == 0 && (collisionMask & _actorFlags.get(x, y)) == 0;
+                }
+            };
+        } else {
+            pred = new AStarPathUtil.TraversalPred() {
+
+                public boolean canTraverse(Object traverser, int x, int y) {
+                    return (collisionMask & _entryFlags.get(MathUtil.floorDiv(x, SUBDIVISION), MathUtil.floorDiv(y, SUBDIVISION))) == 0;
+                }
+            };
+        }
+    } else {
+        final int left = width / 2, right = (width - 1) / 2;
+        final int bottom = height / 2, top = (height - 1) / 2;
+        if (collideActor) {
+            pred = new AStarPathUtil.TraversalPred() {
+
+                public boolean canTraverse(Object traverser, int x, int y) {
+                    for (int yy = y - bottom, yymax = y + top; yy <= yymax; yy++) {
+                        for (int xx = x - left, xxmax = x + right; xx <= xxmax; xx++) {
+                            if ((collisionMask & _entryFlags.get(MathUtil.floorDiv(xx, SUBDIVISION), MathUtil.floorDiv(yy, SUBDIVISION))) != 0 || (collisionMask & _actorFlags.get(xx, yy)) != 0) {
+                                return false;
+                            }
+                        }
+                    }
+                    return true;
+                }
+            };
+        } else {
+            pred = new AStarPathUtil.TraversalPred() {
+
+                public boolean canTraverse(Object traverser, int x, int y) {
+                    for (int yy = y - bottom, yymax = y + top; yy <= yymax; yy++) {
+                        for (int xx = x - left, xxmax = x + right; xx <= xxmax; xx++) {
+                            if ((collisionMask & _entryFlags.get(MathUtil.floorDiv(xx, SUBDIVISION), MathUtil.floorDiv(yy, SUBDIVISION))) != 0) {
+                                return false;
+                            }
+                        }
+                    }
+                    return true;
+                }
+            };
+        }
+    }
+    // compute the offsets for converting to/from integer coordinates
+    float xoff = (width % 2) * 0.5f / SUBDIVISION;
+    float yoff = (height % 2) * 0.5f / SUBDIVISION;
+    ax *= SUBDIVISION;
+    ay *= SUBDIVISION;
+    bx *= SUBDIVISION;
+    by *= SUBDIVISION;
+    // if the actor is in the space and can collide with its own flags,
+    // remove them before we compute the path
+    boolean remove = (!logic.isRemoved() && collideActor && actor.canCollide(logic.getCollisionFlags()));
+    if (remove) {
+        removeFlags(logic);
+    }
+    // compute the path
+    List<Point> path = AStarPathUtil.getPath(pred, actor, (int) longest, Math.round(ax - xoff), Math.round(ay - yoff), Math.round(bx - xoff), Math.round(by - yoff), partial);
+    // add the flags back if we removed them
+    if (remove) {
+        addFlags(logic);
+    }
+    // convert to fractional coordinates
+    if (path == null) {
+        return null;
+    }
+    Vector2f[] waypoints = new Vector2f[path.size()];
+    for (int ii = 0; ii < waypoints.length; ii++) {
+        Point pt = path.get(ii);
+        waypoints[ii] = new Vector2f((pt.x + xoff) / SUBDIVISION, (pt.y + yoff) / SUBDIVISION);
+    }
+    // process for shortcuts if requested
+    if (!shortcut) {
+        return waypoints;
+    }
+    Vector2f current = start;
+    for (int ii = 0; ii < waypoints.length; ) {
+        for (int jj = waypoints.length - 1; jj >= ii; jj--) {
+            Vector2f waypoint = waypoints[jj];
+            if (jj == ii || !sweptShapeCollides(collideActor, logic, current, waypoint)) {
+                _waypoints.add(current = waypoint);
+                ii = jj + 1;
+                break;
+            }
+        }
+    }
+    waypoints = _waypoints.toArray(new Vector2f[_waypoints.size()]);
+    _waypoints.clear();
+    return waypoints;
+}

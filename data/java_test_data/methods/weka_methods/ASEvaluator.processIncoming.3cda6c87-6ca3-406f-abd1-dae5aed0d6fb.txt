@@ -1,0 +1,55 @@
+@Override
+public void processIncoming(Data data) throws WekaException {
+    Instances train = data.getPayloadElement(StepManager.CON_TRAININGSET);
+    Instances test = data.getPayloadElement(StepManager.CON_TESTSET);
+    Integer setNum = data.getPayloadElement(StepManager.CON_AUX_DATA_SET_NUM);
+    Integer maxSetNum = data.getPayloadElement(StepManager.CON_AUX_DATA_MAX_SET_NUM);
+    if (m_isReset) {
+        m_isReset = false;
+        getStepManager().processing();
+        m_setCount = new AtomicInteger(maxSetNum != null ? maxSetNum : 1);
+        if (setNum != null && maxSetNum != null) {
+            m_isDoingXVal = maxSetNum > 1 && !m_treatXValFoldsSeparately;
+            if (m_evaluatorTemplate instanceof AttributeTransformer && m_isDoingXVal && !m_treatXValFoldsSeparately) {
+                throw new WekaException("Can't cross-validate an attribute transformer");
+            }
+            if (m_isDoingXVal) {
+                m_eval.setFolds(maxSetNum);
+            }
+            if (m_isRanking) {
+                m_eval.setRanking(m_isRanking);
+            }
+        }
+    }
+    if (m_isDoingXVal) {
+        processXVal(train, test, setNum, maxSetNum);
+    } else {
+        processNonXVal(train, test, setNum, maxSetNum);
+    }
+    if (isStopRequested()) {
+        getStepManager().interrupted();
+    } else if (m_setCount.get() == 0) {
+        if (m_isDoingXVal) {
+            // output xval summary
+            try {
+                StringBuilder builder = new StringBuilder();
+                builder.append("Search method: ");
+                String evalS = m_evaluatorTemplate.getClass().getCanonicalName();
+                evalS = evalS.substring(evalS.lastIndexOf('.') + 1, evalS.length());
+                builder.append(evalS).append(" ").append(m_evaluatorTemplate instanceof OptionHandler ? Utils.joinOptions(((OptionHandler) m_evaluatorTemplate).getOptions()) : "").append("\nEvaluator: ");
+                String searchS = m_searchTemplate.getClass().getCanonicalName();
+                searchS = searchS.substring(searchS.lastIndexOf('.') + 1, searchS.length());
+                builder.append(searchS).append(" ").append(m_searchTemplate instanceof OptionHandler ? Utils.joinOptions(((OptionHandler) m_searchTemplate).getOptions()) : "").append("\n");
+                builder.append(m_eval.CVResultsString());
+                outputTextData(builder.toString(), null);
+            } catch (Exception ex) {
+                throw new WekaException(ex);
+            }
+        }
+        getStepManager().finished();
+        // save memory
+        m_waitingTestData.clear();
+        m_selectedAttsStore.clear();
+        m_numToSelectStore.clear();
+    }
+}

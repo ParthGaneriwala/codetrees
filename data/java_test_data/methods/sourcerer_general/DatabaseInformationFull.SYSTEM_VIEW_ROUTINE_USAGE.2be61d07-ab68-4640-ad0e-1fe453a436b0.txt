@@ -1,0 +1,88 @@
+Table SYSTEM_VIEW_ROUTINE_USAGE() throws HsqlException {
+    Table t = sysTables[SYSTEM_VIEW_ROUTINE_USAGE];
+    if (t == null) {
+        t = createBlankTable(sysTableHsqlNames[SYSTEM_VIEW_ROUTINE_USAGE]);
+        addColumn(t, "TABLE_CATALOG", Types.VARCHAR);
+        addColumn(t, "TABLE_SCHEMA", Types.VARCHAR);
+        // not null
+        addColumn(t, "TABLE_NAME", Types.VARCHAR, true);
+        addColumn(t, "SPECIFIC_CATALOG", Types.VARCHAR);
+        addColumn(t, "SPECIFIC_SCHEMA", Types.VARCHAR);
+        // not null
+        addColumn(t, "SPECIFIC_NAME", Types.VARCHAR, true);
+        // false PK, as VIEW_CATALOG, VIEW_SCHEMA, TABLE_CATALOG, and/or
+        // TABLE_SCHEMA may be NULL
+        t.createPrimaryKey(null, new int[] { 0, 1, 2, 3, 4, 5 }, false);
+        return t;
+    }
+    // Calculated column values
+    String viewCat;
+    String viewSchem;
+    String viewName;
+    // Intermediate holders
+    Iterator tables;
+    View view;
+    Table table;
+    Object[] row;
+    SubQuery[] subqueries;
+    Select select;
+    Expression expression;
+    Function function;
+    Expression.Collector collector;
+    Method method;
+    HashSet methodSet;
+    Iterator iterator;
+    // Column number mappings
+    final int iv_cat = 0;
+    final int iv_schem = 1;
+    final int iv_name = 2;
+    final int ir_cat = 3;
+    final int ir_schem = 4;
+    final int ir_name = 5;
+    final int ir_sig = 6;
+    // Initialization
+    tables = database.schemaManager.allTablesIterator();
+    collector = new Expression.Collector();
+    // Do it.
+    while (tables.hasNext()) {
+        collector.clear();
+        table = (Table) tables.next();
+        if (table.isView() && isAccessibleTable(table)) {
+        // fall through
+        } else {
+            continue;
+        }
+        viewCat = ns.getCatalogName(table);
+        viewSchem = table.getSchemaName();
+        viewName = table.getName().name;
+        view = (View) table;
+        subqueries = view.viewSubqueries;
+        collector.addAll(view.viewSelect, Expression.FUNCTION);
+        for (int i = 0; i < subqueries.length; i++) {
+            collector.addAll(subqueries[i].select, Expression.FUNCTION);
+        }
+        methodSet = new HashSet();
+        iterator = collector.iterator();
+        while (iterator.hasNext()) {
+            expression = (Expression) iterator.next();
+            function = expression.function;
+            if (session.isAccessible(function.getMethod().getDeclaringClass().getName())) {
+                methodSet.add(function.getMethod());
+            }
+        }
+        iterator = methodSet.iterator();
+        while (iterator.hasNext()) {
+            method = (Method) iterator.next();
+            row = t.getEmptyRowData();
+            row[iv_cat] = viewCat;
+            row[iv_schem] = viewSchem;
+            row[iv_name] = viewName;
+            row[ir_cat] = ns.getCatalogName(method);
+            row[ir_schem] = ns.getSchemaName(method);
+            row[ir_name] = DINameSpace.getMethodSpecificName(method);
+            t.insertSys(row);
+        }
+    }
+    t.setDataReadOnly(true);
+    return t;
+}

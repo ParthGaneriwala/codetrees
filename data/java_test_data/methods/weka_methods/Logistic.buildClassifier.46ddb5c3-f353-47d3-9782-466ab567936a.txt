@@ -1,0 +1,166 @@
+@Override
+public void buildClassifier(Instances train) throws Exception {
+    // can classifier handle the data?
+    getCapabilities().testWithFail(train);
+    // remove instances with missing class
+    train = new Instances(train);
+    train.deleteWithMissingClass();
+    // Replace missing values
+    m_ReplaceMissingValues = new ReplaceMissingValues();
+    m_ReplaceMissingValues.setInputFormat(train);
+    train = Filter.useFilter(train, m_ReplaceMissingValues);
+    // Remove useless attributes
+    m_AttFilter = new RemoveUseless();
+    m_AttFilter.setInputFormat(train);
+    train = Filter.useFilter(train, m_AttFilter);
+    // Transform attributes
+    m_NominalToBinary = new NominalToBinary();
+    m_NominalToBinary.setInputFormat(train);
+    train = Filter.useFilter(train, m_NominalToBinary);
+    // Save the structure for printing the model
+    m_structure = new Instances(train, 0);
+    // Extract data
+    m_ClassIndex = train.classIndex();
+    m_NumClasses = train.numClasses();
+    // Only K-1 class labels needed
+    int nK = m_NumClasses - 1;
+    int nR = m_NumPredictors = train.numAttributes() - 1;
+    int nC = train.numInstances();
+    // Data values
+    m_Data = new double[nC][nR + 1];
+    // Class labels
+    int[] Y = new int[nC];
+    // Attribute means
+    double[] xMean = new double[nR + 1];
+    // Attribute stddev's
+    double[] xSD = new double[nR + 1];
+    // Number of classes
+    double[] sY = new double[nK + 1];
+    // Weights of instances
+    double[] weights = new double[nC];
+    // Total weights of the instances
+    double totWeights = 0;
+    // Optimized parameter values
+    m_Par = new double[nR + 1][nK];
+    if (m_Debug) {
+        System.out.println("Extracting data...");
+    }
+    for (int i = 0; i < nC; i++) {
+        // initialize X[][]
+        Instance current = train.instance(i);
+        // Class value starts from 0
+        Y[i] = (int) current.classValue();
+        // Dealing with weights
+        weights[i] = current.weight();
+        totWeights += weights[i];
+        m_Data[i][0] = 1;
+        int j = 1;
+        for (int k = 0; k <= nR; k++) {
+            if (k != m_ClassIndex) {
+                double x = current.value(k);
+                m_Data[i][j] = x;
+                xMean[j] += weights[i] * x;
+                xSD[j] += weights[i] * x * x;
+                j++;
+            }
+        }
+        // Class count
+        sY[Y[i]]++;
+    }
+    if ((totWeights <= 1) && (nC > 1)) {
+        throw new Exception("Sum of weights of instances less than 1, please reweight!");
+    }
+    xMean[0] = 0;
+    xSD[0] = 1;
+    for (int j = 1; j <= nR; j++) {
+        xMean[j] = xMean[j] / totWeights;
+        if (totWeights > 1) {
+            xSD[j] = Math.sqrt(Math.abs(xSD[j] - totWeights * xMean[j] * xMean[j]) / (totWeights - 1));
+        } else {
+            xSD[j] = 0;
+        }
+    }
+    if (m_Debug) {
+        // Output stats about input data
+        System.out.println("Descriptives...");
+        for (int m = 0; m <= nK; m++) {
+            System.out.println(sY[m] + " cases have class " + m);
+        }
+        System.out.println("\n Variable     Avg       SD    ");
+        for (int j = 1; j <= nR; j++) {
+            System.out.println(Utils.doubleToString(j, 8, 4) + Utils.doubleToString(xMean[j], 10, 4) + Utils.doubleToString(xSD[j], 10, 4));
+        }
+    }
+    // Normalise input data
+    for (int i = 0; i < nC; i++) {
+        for (int j = 0; j <= nR; j++) {
+            if (xSD[j] != 0) {
+                m_Data[i][j] = (m_Data[i][j] - xMean[j]) / xSD[j];
+            }
+        }
+    }
+    if (m_Debug) {
+        System.out.println("\nIteration History...");
+    }
+    double[] x = new double[(nR + 1) * nK];
+    // Boundary constraints, N/A here
+    double[][] b = new double[2][x.length];
+    // Initialize
+    for (int p = 0; p < nK; p++) {
+        int offset = p * (nR + 1);
+        // Null model
+        x[offset] = Math.log(sY[p] + 1.0) - Math.log(sY[nK] + 1.0);
+        b[0][offset] = Double.NaN;
+        b[1][offset] = Double.NaN;
+        for (int q = 1; q <= nR; q++) {
+            x[offset + q] = 0.0;
+            b[0][offset + q] = Double.NaN;
+            b[1][offset + q] = Double.NaN;
+        }
+    }
+    OptObject oO = new OptObject();
+    oO.setWeights(weights);
+    oO.setClassLabels(Y);
+    Optimization opt = null;
+    if (m_useConjugateGradientDescent) {
+        opt = new OptEngCG(oO);
+    } else {
+        opt = new OptEng(oO);
+    }
+    opt.setDebug(m_Debug);
+    if (m_MaxIts == -1) {
+        // Search until convergence
+        x = opt.findArgmin(x, b);
+        while (x == null) {
+            x = opt.getVarbValues();
+            if (m_Debug) {
+                System.out.println("First set of iterations finished, not enough!");
+            }
+            x = opt.findArgmin(x, b);
+        }
+        if (m_Debug) {
+            System.out.println(" -------------<Converged>--------------");
+        }
+    } else {
+        opt.setMaxIteration(m_MaxIts);
+        x = opt.findArgmin(x, b);
+        if (x == null) {
+            x = opt.getVarbValues();
+        }
+    }
+    // Log-likelihood
+    m_LL = -opt.getMinFunction();
+    // Don't need data matrix anymore
+    m_Data = null;
+    // Convert coefficients back to non-normalized attribute units
+    for (int i = 0; i < nK; i++) {
+        m_Par[0][i] = x[i * (nR + 1)];
+        for (int j = 1; j <= nR; j++) {
+            m_Par[j][i] = x[i * (nR + 1) + j];
+            if (xSD[j] != 0) {
+                m_Par[j][i] /= xSD[j];
+                m_Par[0][i] -= m_Par[j][i] * xMean[j];
+            }
+        }
+    }
+}

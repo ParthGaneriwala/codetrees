@@ -1,0 +1,105 @@
+private static Object js_splice(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+    NativeArray na = null;
+    boolean denseMode = false;
+    if (thisObj instanceof NativeArray) {
+        na = (NativeArray) thisObj;
+        denseMode = na.denseOnly;
+    }
+    /* create an empty Array to return. */
+    scope = getTopLevelScope(scope);
+    int argc = args.length;
+    if (argc == 0)
+        return ScriptRuntime.newObject(cx, scope, "Array", null);
+    long length = getLengthProperty(cx, thisObj);
+    /* Convert the first argument into a starting index. */
+    long begin = toSliceIndex(ScriptRuntime.toInteger(args[0]), length);
+    argc--;
+    /* Convert the second argument into count */
+    long count;
+    if (args.length == 1) {
+        count = length - begin;
+    } else {
+        double dcount = ScriptRuntime.toInteger(args[1]);
+        if (dcount < 0) {
+            count = 0;
+        } else if (dcount > (length - begin)) {
+            count = length - begin;
+        } else {
+            count = (long) dcount;
+        }
+        argc--;
+    }
+    long end = begin + count;
+    /* If there are elements to remove, put them into the return value. */
+    Object result;
+    if (count != 0) {
+        if (count == 1 && (cx.getLanguageVersion() == Context.VERSION_1_2)) {
+            /*
+                 * JS lacks "list context", whereby in Perl one turns the
+                 * single scalar that's spliced out into an array just by
+                 * assigning it to @single instead of $single, or by using it
+                 * as Perl push's first argument, for instance.
+                 *
+                 * JS1.2 emulated Perl too closely and returned a non-Array for
+                 * the single-splice-out case, requiring callers to test and
+                 * wrap in [] if necessary.  So JS1.3, default, and other
+                 * versions all return an array of length 1 for uniformity.
+                 */
+            result = getElem(cx, thisObj, begin);
+        } else {
+            if (denseMode) {
+                int intLen = (int) (end - begin);
+                Object[] copy = new Object[intLen];
+                System.arraycopy(na.dense, (int) begin, copy, 0, intLen);
+                result = cx.newArray(scope, copy);
+            } else {
+                Scriptable resultArray = ScriptRuntime.newObject(cx, scope, "Array", null);
+                for (long last = begin; last != end; last++) {
+                    Object temp = getElem(cx, thisObj, last);
+                    setElem(cx, resultArray, last - begin, temp);
+                }
+                result = resultArray;
+            }
+        }
+    } else {
+        // (count == 0)
+        if (cx.getLanguageVersion() == Context.VERSION_1_2) {
+            /* Emulate C JS1.2; if no elements are removed, return undefined. */
+            result = Undefined.instance;
+        } else {
+            result = ScriptRuntime.newObject(cx, scope, "Array", null);
+        }
+    }
+    /* Find the direction (up or down) to copy and make way for argv. */
+    long delta = argc - count;
+    if (denseMode && length + delta < Integer.MAX_VALUE && na.ensureCapacity((int) (length + delta))) {
+        System.arraycopy(na.dense, (int) end, na.dense, (int) (begin + argc), (int) (length - end));
+        if (argc > 0) {
+            System.arraycopy(args, 2, na.dense, (int) begin, argc);
+        }
+        if (delta < 0) {
+            Arrays.fill(na.dense, (int) (length + delta), (int) length, NOT_FOUND);
+        }
+        na.length = length + delta;
+        return result;
+    }
+    if (delta > 0) {
+        for (long last = length - 1; last >= end; last--) {
+            Object temp = getElem(cx, thisObj, last);
+            setElem(cx, thisObj, last + delta, temp);
+        }
+    } else if (delta < 0) {
+        for (long last = end; last < length; last++) {
+            Object temp = getElem(cx, thisObj, last);
+            setElem(cx, thisObj, last + delta, temp);
+        }
+    }
+    /* Copy from argv into the hole to complete the splice. */
+    int argoffset = args.length - argc;
+    for (int i = 0; i < argc; i++) {
+        setElem(cx, thisObj, begin + i, args[i + argoffset]);
+    }
+    /* Update length in case we deleted elements from the end. */
+    setLengthProperty(cx, thisObj, length + delta);
+    return result;
+}

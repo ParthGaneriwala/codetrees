@@ -1,0 +1,65 @@
+public void handleRequest(SipRequest request) throws IOException, ServletException {
+    Session session = null;
+    if (request.isInitial()) {
+        SipAppContext appContext = (SipAppContext) request.getHandlerAttribute(ID.CONTEXT_ATTRIBUTE);
+        SipServletHolder handler = ((SipServletHandler) appContext.getServletHandler()).findHolder(request);
+        if (handler == null) {
+            Log.debug("SIP application {} has no matching servlet for {}", appContext.getName(), request.getMethod());
+            if (!request.isAck()) {
+                SipResponse response = (SipResponse) request.createResponse(SipServletResponse.SC_NOT_FOUND);
+                response.to().setParameter(SipParams.TAG, ID.newTag());
+                ((ServerTransaction) request.getTransaction()).send(response);
+            }
+            return;
+        }
+        AppSession appSession;
+        String key = (String) request.getHandlerAttribute(ID.SESSION_KEY_ATTRIBUTE);
+        if (key != null) {
+            String id = ID.getIdFromKey(appContext.getName(), key);
+            appSession = request.getCallSession().getAppSession(id);
+            if (appSession == null)
+                appSession = request.getCallSession().createAppSession(appContext, id);
+        } else {
+            appSession = request.getCallSession().createAppSession(appContext, ID.newAppSessionId());
+        }
+        session = appSession.createSession();
+        session.setHandler(handler);
+        session.setSubscriberURI(request.getSubscriberURI());
+        session.setRegion(request.getRegion());
+        if (Log.isDebugEnabled())
+            Log.debug("new session {}", session);
+    } else {
+        session = request.getCallSession().findSession(request);
+        if (session == null) {
+            if (!request.isAck()) {
+                SipResponse response = (SipResponse) request.createResponse(SipServletResponse.SC_CALL_LEG_DONE);
+                ((ServerTransaction) request.getTransaction()).send(response);
+            }
+            return;
+        }
+    }
+    if (request.isInvite()) {
+        SipResponse response = (SipResponse) request.createResponse(SipServletResponse.SC_TRYING);
+        ((ServerTransaction) request.getTransaction()).send(response);
+    }
+    request.setSession(session);
+    try {
+        session.handleRequest(request);
+    } catch (Exception e) {
+        if (!request.isAck() && !request.isCommitted()) {
+            int code = SipServletResponse.SC_SERVER_INTERNAL_ERROR;
+            if (e instanceof SipException)
+                code = ((SipException) e).getCode();
+            SipServletResponse response;
+            if (code == SipServletResponse.SC_SERVER_INTERNAL_ERROR) {
+                response = request.createResponse(SipServletResponse.SC_SERVER_INTERNAL_ERROR, "Error in handler: " + e.getMessage());
+                ExceptionUtil.fillStackTrace(response, e);
+            } else {
+                response = request.createResponse(code);
+            }
+            response.send();
+        } else {
+            Log.debug(e);
+        }
+    }
+}

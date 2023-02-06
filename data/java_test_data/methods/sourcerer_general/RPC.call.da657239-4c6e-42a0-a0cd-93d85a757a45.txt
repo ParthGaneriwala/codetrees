@@ -1,0 +1,39 @@
+public Writable call(Writable param, long receivedTime) throws IOException {
+    try {
+        Invocation call = (Invocation) param;
+        if (verbose)
+            log("Call: " + call);
+        Method method = implementation.getMethod(call.getMethodName(), call.getParameterClasses());
+        long startTime = System.currentTimeMillis();
+        Object value = method.invoke(instance, call.getParameters());
+        int processingTime = (int) (System.currentTimeMillis() - startTime);
+        int qTime = (int) (startTime - receivedTime);
+        LOG.debug("Served: " + call.getMethodName() + " queueTime= " + qTime + " procesingTime= " + processingTime);
+        rpcMetrics.rpcQueueTime.inc(qTime);
+        rpcMetrics.rpcProcessingTime.inc(processingTime);
+        MetricsTimeVaryingRate m = rpcMetrics.metricsList.get(call.getMethodName());
+        if (m != null) {
+            m.inc(processingTime);
+        } else {
+            rpcMetrics.metricsList.put(call.getMethodName(), new MetricsTimeVaryingRate(call.getMethodName()));
+            m = rpcMetrics.metricsList.get(call.getMethodName());
+            m.inc(processingTime);
+        }
+        if (verbose)
+            log("Return: " + value);
+        return new ObjectWritable(method.getReturnType(), value);
+    } catch (InvocationTargetException e) {
+        Throwable target = e.getTargetException();
+        if (target instanceof IOException) {
+            throw (IOException) target;
+        } else {
+            IOException ioe = new IOException(target.toString());
+            ioe.setStackTrace(target.getStackTrace());
+            throw ioe;
+        }
+    } catch (Throwable e) {
+        IOException ioe = new IOException(e.toString());
+        ioe.setStackTrace(e.getStackTrace());
+        throw ioe;
+    }
+}

@@ -1,0 +1,73 @@
+public void doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    // Determine the project container to use
+    Project project = PortalUtils.findProject(request);
+    // Check the user's permissions
+    User user = PortalUtils.getUser(request);
+    try {
+        // Get the urls to display
+        ArrayList<HashMap> urlList = new ArrayList<HashMap>();
+        String[] urls = request.getPreferences().getValues(PREF_URLS, new String[0]);
+        for (String urlPreference : urls) {
+            XMLUtils xml = new XMLUtils("<values>" + urlPreference + "</values>", true);
+            ArrayList<Element> items = new ArrayList<Element>();
+            XMLUtils.getAllChildren(xml.getDocumentElement(), items);
+            HashMap<String, String> url = new HashMap<String, String>();
+            for (Element thisItem : items) {
+                String name = thisItem.getTagName();
+                String value = thisItem.getTextContent();
+                if (value.contains("${")) {
+                    Template template = new Template(value);
+                    for (String templateVariable : template.getVariables()) {
+                        String[] variable = templateVariable.split("\\.");
+                        template.addParseElement("${" + templateVariable + "}", ObjectUtils.getParam(PortalUtils.getGeneratedData(request, variable[0]), variable[1]));
+                    }
+                    value = template.getParsedText();
+                }
+                url.put(name, value);
+            }
+            // Determine if the url can be shown
+            boolean valid = true;
+            // See if there are any special rules
+            if (url.containsKey("rule")) {
+                String rule = url.get("rule");
+                if ("userCanRequestToJoin".equals(rule)) {
+                    boolean canRequestToJoin = TeamMemberUtils.userCanRequestToJoin(user, project);
+                    if (!canRequestToJoin) {
+                        valid = false;
+                    }
+                } else if ("userCanJoin".equals(rule)) {
+                    // TODO: Update the code that adds the user, and set the team member status to pending, then remove the membership required part
+                    boolean canJoin = TeamMemberUtils.userCanJoin(user, project);
+                    if (!canJoin) {
+                        valid = false;
+                    }
+                } else {
+                    LOG.error("Rule not found: " + rule);
+                    valid = false;
+                }
+            }
+            if (valid) {
+                // Add to the list
+                urlList.add(url);
+            }
+        }
+        request.setAttribute(URL_LIST, urlList);
+        // Only output the portlet if there are any urls to show
+        if (urlList.size() > 0) {
+            // Don't show the portlet on the user's own page
+            if (user.getProfileProjectId() != project.getId()) {
+                // Let the view know if this is a user profile
+                if (project.getProfile()) {
+                    request.setAttribute(IS_USER_PROFILE, "true");
+                }
+                // Show the view
+                PortletContext context = getPortletContext();
+                PortletRequestDispatcher requestDispatcher = context.getRequestDispatcher(MEMBER_JOIN_PROFILE_FORM);
+                requestDispatcher.include(request, response);
+            }
+        }
+    } catch (Exception e) {
+        LOG.error("doView", e);
+        throw new PortletException(e.getMessage());
+    }
+}

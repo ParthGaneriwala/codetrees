@@ -1,0 +1,100 @@
+public String doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    try {
+        String defaultView = VIEW_PAGE1;
+        // Set global preferences
+        request.setAttribute(TITLE, request.getPreferences().getValue(PREF_TITLE, null));
+        String limitString = request.getPreferences().getValue(PREF_LIMIT, "-1");
+        String hasMoreURL = request.getPreferences().getValue(PREF_HAS_MORE_URL, null);
+        request.setAttribute(HAS_MORE_URL, hasMoreURL);
+        int limit = -1;
+        if (StringUtils.hasText(limitString)) {
+            limit = Integer.parseInt(limitString);
+        }
+        String categoryName = PortalUtils.getPageView(request);
+        Connection db = PortalUtils.useConnection(request);
+        int categoryId = -1;
+        if (StringUtils.hasText(categoryName) && !"all".equals(categoryName)) {
+            ProjectCategoryList categories = (ProjectCategoryList) request.getAttribute(Constants.REQUEST_TAB_CATEGORY_LIST);
+            categoryId = categories.getIdFromValue(categoryName);
+            if (categoryId == -1) {
+                return null;
+            }
+        }
+        request.setAttribute(CATEGORY_NAME, categoryName);
+        // Get the tag name from the url
+        String tagName = PortalUtils.getPageParameter(request);
+        request.setAttribute(TAG_NAME, tagName);
+        request.setAttribute(NORMALIZED_TAG, StringUtils.replace(tagName, " ", "-"));
+        // Get the projects that match a tag
+        TagList projectListByTag = new TagList();
+        projectListByTag.setInstanceId(PortalUtils.getInstance(request).getId());
+        if (PortalUtils.canShowSensitiveData(request) && PortalUtils.getUser(request).getId() > 0) {
+            projectListByTag.setForParticipant(Constants.TRUE);
+        } else {
+            // Use the most generic settings since this portlet is cached
+            projectListByTag.setForGuest(Constants.TRUE);
+        }
+        projectListByTag.setTableName(Project.TABLE);
+        projectListByTag.setTag(StringUtils.replace(tagName, "-", " "));
+        // @todo Fix showing disabled category projects
+        projectListByTag.setCategoryId(categoryId);
+        projectListByTag.setUniqueField(Project.PRIMARY_KEY);
+        projectListByTag.buildList(db);
+        // Building the project list
+        ProjectList projectList = new ProjectList();
+        if (projectListByTag.size() > 0) {
+            StringBuffer projectIdStringBuffer = new StringBuffer();
+            Iterator<Tag> projectTagItr = projectListByTag.iterator();
+            while (projectTagItr.hasNext()) {
+                Tag tag = projectTagItr.next();
+                projectIdStringBuffer.append(tag.getLinkItemId());
+                if (projectTagItr.hasNext()) {
+                    projectIdStringBuffer.append(",");
+                }
+            }
+            projectList.setProjectIdsString(projectIdStringBuffer.toString());
+            PagedListInfo projectListInfo = new PagedListInfo();
+            if (StringUtils.hasText(limitString)) {
+                projectListInfo.setItemsPerPage(limit);
+            } else {
+                projectListInfo.setItemsPerPage(-1);
+            }
+            String[] params = PortalUtils.getPageParameters(request);
+            // page/tag/{categoryName}/{tagName}/{pageOffset} OR page/tag/{categoryName}/{tagName}/{sortCriteria}
+            if (params != null && params.length == 2) {
+                String paramString = params[1];
+                if (StringUtils.isNumber(paramString)) {
+                    projectListInfo.setCurrentPage(Integer.parseInt(paramString));
+                } else {
+                    setSortCriteria(projectListInfo, paramString);
+                }
+            }
+            // page/tag/{categoryName}/{tagName}/{sortCriteria}/{pageOffset}
+            if (params != null && params.length == 3) {
+                String sortCriteria = params[1];
+                setSortCriteria(projectListInfo, sortCriteria);
+                String paramString = params[2];
+                if (StringUtils.isNumber(paramString)) {
+                    projectListInfo.setCurrentPage(Integer.parseInt(paramString));
+                }
+            }
+            projectList.setPagedListInfo(projectListInfo);
+            // Show only the listings that the user has access to
+            if (PortalUtils.canShowSensitiveData(request) && PortalUtils.getUser(request).getId() > 0) {
+                projectList.setForParticipant(Constants.TRUE);
+            } else {
+                // Use the most generic settings since this portlet is cached
+                projectList.setPublicOnly(true);
+            }
+            projectList.setProfileEnabled(Constants.TRUE);
+            projectList.setBuildImages(true);
+            projectList.buildList(db);
+        }
+        request.setAttribute(PROJECT_LIST_BY_TAG, projectList);
+        // JSP view
+        return defaultView;
+    } catch (Exception e) {
+        e.printStackTrace();
+        throw new PortletException(e);
+    }
+}

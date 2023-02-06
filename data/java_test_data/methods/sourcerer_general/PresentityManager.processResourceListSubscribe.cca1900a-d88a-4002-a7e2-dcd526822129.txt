@@ -1,0 +1,62 @@
+private int processResourceListSubscribe(Request request, Dialog dialog, int expires) {
+    logger.debug("PresenceServer, processResourceListSubscribe");
+    String resourceListURI = getKey((Message) request, "To");
+    String subscriberKey = getKey((Message) request, "From");
+    String subscriberId = dialog.getDialogId();
+    int responseCode;
+    // Check if ResourceListSubscriber already exists. In that case
+    // just add the new subscriber
+    ResourceList resourceList = (ResourceList) subscribers.get(resourceListURI);
+    if (resourceList != null) {
+        // authorize
+        responseCode = resourceList.authorize(subscriberKey, Request.SUBSCRIBE);
+        SubscriberMultipart subscriber = new SubscriberMultipart(subscriberKey, dialog, expires);
+        subscriber.setExpires(expires);
+        subscriber.setSubscriptionState("active");
+        subscriber.updateNotifyBody(resourceList.getNotifyBody());
+        if (expires > 0) {
+            subscribers.put((Object) subscriberId, (Object) subscriber);
+            resourceList.addSubscriber(subscriberKey, subscriberId, "active");
+        }
+    } else {
+        // We have to parse the resourcelist and get all Notifiers and start
+        // all
+        // VirtualSubscriptions
+        File resourceListFile = new File(resourceListDir, resourceListURI);
+        if (resourceListFile.length() < 1) {
+            return Response.NOT_FOUND;
+        }
+        resourceList = new ResourceList(resourceListURI, null, expires, resourceListFile);
+        SubscriberMultipart subscriber = new SubscriberMultipart(subscriberKey, dialog, expires);
+        subscriber.setRlmiFile(resourceListFile);
+        // Parse file and retrieve a list of all entities
+        Vector entities = xmlResourceListParser.getNotifiers(resourceListFile);
+        Iterator it = entities.iterator();
+        while (it.hasNext()) {
+            String uri = (String) it.next();
+            // 1. Is it a notifier? => notifier.addSubscriber(resourceList);
+            Notifier notifier = (Notifier) notifiers.get(uri);
+            synchronized (notifier) {
+                if (notifier != null) {
+                    subscriber.updateNotifyBody(notifier.getFullState());
+                    if (expires > 0)
+                        // resourcelists have no dialog, URL is used instead
+                        notifier.addSubscriber(resourceList.getSubscriberURL(), resourceList.getSubscriberURL(), // instead
+                        "active");
+                    continue;
+                }
+            }
+            // 2. Is it another resourceList?
+            ResourceList parentResourceList = (ResourceList) subscribers.get(uri);
+            synchronized (parentResourceList) {
+                if (parentResourceList != null) {
+                    continue;
+                }
+            }
+        // 3. Is it external?
+        // 4. Are we responsible for it, but it hasn't registered?
+        }
+        responseCode = Response.OK;
+    }
+    return responseCode;
+}

@@ -1,0 +1,81 @@
+@Override
+public void trainOnInstanceImpl(Instance instance) {
+    int dim = instance.numValues();
+    timestamp++;
+    // 0. Initialize
+    if (!initialized) {
+        if (buffer.size() < bufferSize) {
+            buffer.add(new ClustreamKernel(instance, dim, timestamp, t, m));
+            return;
+        } else {
+            for (int i = 0; i < buffer.size(); i++) {
+                kernels[i] = new ClustreamKernel(new DenseInstance(1.0, buffer.get(i).getCenter()), dim, timestamp, t, m);
+            }
+            buffer.clear();
+            initialized = true;
+            return;
+        }
+    }
+    // 1. Determine closest kernel
+    ClustreamKernel closestKernel = null;
+    double minDistance = Double.MAX_VALUE;
+    for (int i = 0; i < kernels.length; i++) {
+        // System.out.println(i+" "+kernels[i].getWeight()+" "+kernels[i].getDeviation());
+        double distance = distance(instance.toDoubleArray(), kernels[i].getCenter());
+        if (distance < minDistance) {
+            closestKernel = kernels[i];
+            minDistance = distance;
+        }
+    }
+    // 2. Check whether instance fits into closestKernel
+    double radius = 0.0;
+    if (closestKernel.getWeight() == 1) {
+        // Special case: estimate radius by determining the distance to the
+        // next closest cluster
+        radius = Double.MAX_VALUE;
+        double[] center = closestKernel.getCenter();
+        for (int i = 0; i < kernels.length; i++) {
+            if (kernels[i] == closestKernel) {
+                continue;
+            }
+            double distance = distance(kernels[i].getCenter(), center);
+            radius = Math.min(distance, radius);
+        }
+    } else {
+        radius = closestKernel.getRadius();
+    }
+    if (minDistance < radius) {
+        // Date fits, put into kernel and be happy
+        closestKernel.insert(instance, timestamp);
+        return;
+    }
+    // 3. Date does not fit, we need to free
+    // some space to insert a new kernel
+    // Kernels before this can be forgotten
+    long threshold = timestamp - timeWindow;
+    // 3.1 Try to forget old kernels
+    for (int i = 0; i < kernels.length; i++) {
+        if (kernels[i].getRelevanceStamp() < threshold) {
+            kernels[i] = new ClustreamKernel(instance, dim, timestamp, t, m);
+            return;
+        }
+    }
+    // 3.2 Merge closest two kernels
+    int closestA = 0;
+    int closestB = 0;
+    minDistance = Double.MAX_VALUE;
+    for (int i = 0; i < kernels.length; i++) {
+        double[] centerA = kernels[i].getCenter();
+        for (int j = i + 1; j < kernels.length; j++) {
+            double dist = distance(centerA, kernels[j].getCenter());
+            if (dist < minDistance) {
+                minDistance = dist;
+                closestA = i;
+                closestB = j;
+            }
+        }
+    }
+    assert (closestA != closestB);
+    kernels[closestA].add(kernels[closestB]);
+    kernels[closestB] = new ClustreamKernel(instance, dim, timestamp, t, m);
+}

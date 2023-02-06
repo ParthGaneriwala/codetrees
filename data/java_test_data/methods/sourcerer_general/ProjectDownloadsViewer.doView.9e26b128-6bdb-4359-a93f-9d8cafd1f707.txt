@@ -1,0 +1,68 @@
+public String doView(RenderRequest request, RenderResponse response) throws Exception {
+    String defaultView = VIEW_PAGE1;
+    request.setAttribute(TITLE, request.getPreferences().getValue(PREF_TITLE, ""));
+    String category = request.getPreferences().getValue(PREF_PROJECT_CATEGORY, null);
+    String limit = request.getPreferences().getValue(PREF_LIMIT, "5");
+    User user = getUser(request);
+    Connection db = useConnection(request);
+    // Look for project documents
+    FileItemList fileItemList = new FileItemList();
+    fileItemList.setLinkModuleId(Constants.PROJECTS_FILES);
+    // Use folders for the ui
+    FileFolderList folderList = new FileFolderList();
+    folderList.setLinkModuleId(Constants.PROJECTS_FILES);
+    // Use a pagedList for limiting and sorting records
+    PagedListInfo projectFileListInfo = getPagedListInfo(request, "projectFileListInfo");
+    if (StringUtils.hasText(limit) && StringUtils.isNumber(limit)) {
+        projectFileListInfo.setItemsPerPage(limit);
+    }
+    projectFileListInfo.setColumnToSortBy("modified DESC");
+    fileItemList.setPagedListInfo(projectFileListInfo);
+    // Filter the records
+    fileItemList.setFeaturedFilesOnly(Constants.TRUE);
+    // Check if a category is specified
+    if (StringUtils.hasText(category)) {
+        ProjectCategory projectCategory = null;
+        ProjectCategoryList categories = new ProjectCategoryList();
+        categories.setEnabled(true);
+        categories.setTopLevelOnly(true);
+        categories.setCategoryDescriptionLowerCase(category);
+        categories.buildList(db);
+        if (categories.size() == 0) {
+            throw new PortletException("Category not found");
+        }
+        projectCategory = categories.get(0);
+        fileItemList.setProjectCategoryId(projectCategory.getId());
+        fileItemList.setPublicProjectFiles(Constants.TRUE);
+        fileItemList.buildList(db);
+        // Load the folder list
+        folderList.setProjectCategoryId(projectCategory.getId());
+        folderList.setPublicProjectFolders(Constants.TRUE);
+        folderList.buildList(db);
+    } else {
+        // Use a project if one can be found, otherwise use public files only
+        Project project = findProject(request);
+        if (project != null) {
+            // A project was found in the scope
+            if (!ProjectUtils.hasAccess(project.getId(), user, "project-documents-view")) {
+                throw new PortletException("Unauthorized to view in this project");
+            }
+            fileItemList.setLinkItemId(project.getId());
+            // Load the folder list so user can see other files in the document folders
+            folderList.setLinkItemId(project.getId());
+            folderList.buildList(db);
+            request.setAttribute(SHOW_ALL_DOWNLOADS_LINK, request.getPreferences().getValue(PREF_SHOW_ALL_DOWNLOADS_LINK, "true"));
+            request.setAttribute(PROJECT, project);
+        } else {
+            // No project, no category so look across categories
+            fileItemList.setPublicProjectFiles(Constants.TRUE);
+        }
+        fileItemList.buildList(db);
+    }
+    if (fileItemList.size() == 0) {
+        return null;
+    }
+    request.setAttribute(FOLDER_LIST, folderList);
+    request.setAttribute(FILE_LIST, fileItemList);
+    return defaultView;
+}

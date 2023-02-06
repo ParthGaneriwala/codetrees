@@ -1,0 +1,47 @@
+@Override
+protected Result evaluate(final LogicContext context, final Integer patientId, final Map<String, Object> parameters) throws LogicException {
+    Result result = new Result();
+    // list of all dates with missing data
+    List<Date> dates = new ArrayList<Date>();
+    // time frame for the adherence is six month
+    Calendar calendar = Calendar.getInstance();
+    calendar.add(Calendar.MONTH, -6);
+    Date sixMonthsAgo = calendar.getTime();
+    EncounterWithRestrictionRule encounterWithRestrictionRule = new EncounterWithStringRestrictionRule();
+    Result encounterResults = encounterWithRestrictionRule.eval(context, patientId, parameters);
+    Boolean perfect = Boolean.FALSE;
+    Concept noConcept = CacheUtils.getConcept(EvaluableNameConstants.NO);
+    Concept allConcept = CacheUtils.getConcept(EvaluableNameConstants.ALL);
+    for (Result encounterResult : encounterResults) {
+        if (encounterResult.getResultDate().after(sixMonthsAgo)) {
+            ObsWithRestrictionRule obsWithRestrictionRule = new ObsWithStringRestrictionRule();
+            parameters.put(EvaluableConstants.OBS_ENCOUNTER, Arrays.asList(encounterResult.getResultObject()));
+            parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.ANTIRETROVIRAL_ADHERENCE_IN_PAST_WEEK, EvaluableNameConstants.OVERALL_DRUG_ADHERENCE_IN_LAST_MONTH));
+            Result adherenceResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+            Concept arvAdherenceConcept = CacheUtils.getConcept(EvaluableNameConstants.ANTIRETROVIRAL_ADHERENCE_IN_PAST_WEEK);
+            Concept overallAdherenceConcept = CacheUtils.getConcept(EvaluableNameConstants.OVERALL_DRUG_ADHERENCE_IN_LAST_MONTH);
+            Boolean monthAdherence = Boolean.TRUE;
+            Boolean weekAdherence = Boolean.TRUE;
+            for (Result adherenceResult : adherenceResults) {
+                Obs obs = (Obs) adherenceResult.getResultObject();
+                Concept adherenceConcept = adherenceResult.toConcept();
+                if (OpenmrsUtil.nullSafeEquals(arvAdherenceConcept, obs.getConcept()) && !OpenmrsUtil.nullSafeEquals(adherenceConcept, allConcept))
+                    weekAdherence = Boolean.FALSE;
+                if (OpenmrsUtil.nullSafeEquals(overallAdherenceConcept, obs.getConcept()) && !OpenmrsUtil.nullSafeEquals(adherenceConcept, noConcept))
+                    monthAdherence = Boolean.FALSE;
+            }
+            if (CollectionUtils.isEmpty(adherenceResults) || CollectionUtils.size(adherenceResults) < 2)
+                dates.add(encounterResult.getResultDate());
+            else {
+                perfect = monthAdherence && weekAdherence;
+                if (!perfect)
+                    return new Result("Imperfect Adherence");
+            }
+        }
+    }
+    if (CollectionUtils.isNotEmpty(dates))
+        result.setValueText(formatDate(dates));
+    else if (perfect)
+        result.setValueText("Perfect Adherence");
+    return result;
+}

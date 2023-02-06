@@ -1,0 +1,122 @@
+private static void parseItemElement3(Element item, Connection db, int indent, int projectId, int requirementId, int enteredBy, int modifiedBy, int itemPosition, int priorityPosition, int assignedToPosition, int effortPosition, int startPosition, int endPosition, int folderPosition, int percentPosition) throws Exception {
+    // Get the values for the item
+    ArrayList valuesList = new ArrayList();
+    Element valuesElement = XMLUtils.getFirstChild(item, "values");
+    XMLUtils.getAllChildren(valuesElement, valuesList);
+    boolean isFolder = false;
+    // Default this item to a folder if it has children
+    Element childrenElement = XMLUtils.getFirstChild(item, "children");
+    if (childrenElement != null) {
+        isFolder = true;
+    }
+    // If it does not have children, see if there is an explicit folderPosition
+    if (!isFolder && folderPosition > -1) {
+        isFolder = "checked".equals(extractText3((Element) valuesList.get(folderPosition)));
+    }
+    if (isFolder) {
+        // Insert the folder
+        AssignmentFolder folder = new AssignmentFolder();
+        folder.setProjectId(projectId);
+        folder.setRequirementId(requirementId);
+        folder.setIndent(indent);
+        folder.setEnteredBy(enteredBy);
+        folder.setModifiedBy(modifiedBy);
+        // Topic
+        if (itemPosition > -1) {
+            folder.setName(extractText3((Element) valuesList.get(itemPosition)));
+        }
+        // TODO: Check for notes...
+        folder.insert(db);
+        if (System.getProperty("DEBUG") != null) {
+            System.out.println("AssignmentOmniOutliner3Importer-> Folder Inserted: " + folder.getId());
+        }
+    } else {
+        // Insert the assignment
+        Assignment assignment = new Assignment();
+        assignment.setProjectId(projectId);
+        assignment.setRequirementId(requirementId);
+        assignment.setIndent(indent);
+        assignment.setEnteredBy(enteredBy);
+        assignment.setModifiedBy(modifiedBy);
+        // Topic
+        if (itemPosition > -1) {
+            assignment.setRole(extractText3((Element) valuesList.get(itemPosition)));
+        }
+        // Effort
+        if (effortPosition > -1) {
+            assignment.setEstimatedLoe(extractText3((Element) valuesList.get(effortPosition)));
+            if (assignment.getEstimatedLoeTypeId() == -1) {
+                assignment.setEstimatedLoeTypeId(2);
+            }
+        }
+        // Start Date
+        if (startPosition > -1) {
+            String tmp = extractText3((Element) valuesList.get(startPosition));
+            if (tmp != null && tmp.indexOf("00:00:00") > -1) {
+                tmp = tmp.substring(0, tmp.indexOf("00:00:00") + 8);
+            }
+            assignment.setEstStartDate(tmp);
+        }
+        // End Date
+        if (endPosition > -1) {
+            String tmp = extractText3((Element) valuesList.get(endPosition));
+            if (tmp != null && tmp.indexOf("00:00:00") > -1) {
+                tmp = tmp.substring(0, tmp.indexOf("00:00:00") + 8);
+            }
+            assignment.setDueDate(tmp);
+        }
+        // Priority
+        if (priorityPosition > -1) {
+            assignment.setPriorityId(extractText3((Element) valuesList.get(priorityPosition)));
+        }
+        // Make sure a valid priority is set
+        if (assignment.getPriorityId() < 1 || assignment.getPriorityId() > 3) {
+            assignment.setPriorityId(2);
+        }
+        // Assigned To
+        if (assignedToPosition > -1) {
+            assignment.addUsers(extractText3((Element) valuesList.get(assignedToPosition)));
+        }
+        // Make sure user is on team, before adding, else unset the field
+        if (!assignment.hasValidTeam(db)) {
+            assignment.getAssignedUserList().clear();
+        }
+        // Status (default to Not Started)
+        assignment.setStatusId(1);
+        // Completed
+        if ("checked".equals(item.getAttribute("state"))) {
+            // Item is complete
+            assignment.setStatusId(5);
+            if (percentPosition == -1) {
+                assignment.setPercentComplete(100);
+            }
+        }
+        // Percent (overrides completion)
+        if (percentPosition > -1) {
+            assignment.setPercentComplete(extractText3((Element) valuesList.get(percentPosition)));
+        }
+        // If incomplete, but work has been done, then set to In Progress
+        if (assignment.getPercentComplete() > 0 && assignment.getStatusId() == 1) {
+            assignment.setStatusId(2);
+        }
+        // TODO: Check for notes...
+        assignment.insert(db);
+        if (System.getProperty("DEBUG") != null) {
+            System.out.println("AssignmentOmniOutliner3Importer-> Assignment Inserted: " + assignment.getId());
+        }
+    }
+    // See if there are children, then parse the children items
+    if (childrenElement != null) {
+        ArrayList itemList = new ArrayList();
+        XMLUtils.getAllChildren(childrenElement, itemList);
+        if (System.getProperty("DEBUG") != null) {
+            System.out.println("AssignmentOmniOutliner3Importer-> Children items: " + itemList.size());
+        }
+        // Go through the items, for each item see if it has children, with items, etc.
+        Iterator itemIterator = itemList.iterator();
+        while (itemIterator.hasNext()) {
+            Element itemElement = (Element) itemIterator.next();
+            parseItemElement3(itemElement, db, (indent + 1), projectId, requirementId, enteredBy, modifiedBy, itemPosition, priorityPosition, assignedToPosition, effortPosition, startPosition, endPosition, folderPosition, percentPosition);
+        }
+    }
+}

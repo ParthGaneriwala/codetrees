@@ -1,0 +1,58 @@
+/* ------------------------------------------------------------ */
+protected void onResponseComplete() throws IOException {
+    super.onResponseComplete();
+    if (!isRunning())
+        return;
+    if (_disconnecting) {
+        Message error = _msgPool.newMessage();
+        error.put(Bayeux.SUCCESSFUL_FIELD, Boolean.FALSE);
+        error.put("failure", "expired");
+        metaHandshake(false, false, error);
+        try {
+            stop();
+        } catch (Exception e) {
+            Log.ignore(e);
+        }
+        return;
+    }
+    if (getResponseStatus() == 200 && _responses != null && _responses.length > 0) {
+        MessageImpl response = (MessageImpl) _responses[0];
+        boolean successful = response.isSuccessful();
+        // Get advice if there is any
+        Map adviceField = (Map) response.get(Bayeux.ADVICE_FIELD);
+        if (adviceField != null)
+            _advice = new Advice(adviceField);
+        if (successful) {
+            _handshook = true;
+            if (Log.isDebugEnabled())
+                Log.debug("Successful handshake, sending connect");
+            _clientId = (String) response.get(Bayeux.CLIENT_FIELD);
+            metaHandshake(true, _handshook, response);
+            _pull = new Connect();
+            send(_pull, false);
+        } else {
+            metaHandshake(false, false, response);
+            _handshook = false;
+            if (_advice != null && _advice.isReconnectNone())
+                throw new IOException("Handshake failed with advice reconnect=none :" + _responses[0]);
+            else if (_advice != null && _advice.isReconnectHandshake()) {
+                _pull = new Handshake();
+                if (!send(_pull, true))
+                    throw new IOException("Handshake, retries exhausted");
+            } else // assume retry = reconnect?
+            {
+                _pull = new Connect();
+                if (!send(_pull, true))
+                    throw new IOException("Connect after handshake, retries exhausted");
+            }
+        }
+    } else {
+        Message error = _msgPool.newMessage();
+        error.put(Bayeux.SUCCESSFUL_FIELD, Boolean.FALSE);
+        error.put("status", new Integer(getResponseStatus()));
+        error.put("content", getResponseContent());
+        metaHandshake(false, false, error);
+        resend(true);
+    }
+    recycle();
+}

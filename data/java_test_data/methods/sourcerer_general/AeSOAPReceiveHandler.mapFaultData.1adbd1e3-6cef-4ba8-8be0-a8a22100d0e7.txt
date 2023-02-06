@@ -1,0 +1,45 @@
+public IAeWebServiceResponse mapFaultData(IAeExtendedMessageContext aContext, IAeWebServiceResponse aResponse) throws AeBusinessProcessException {
+    try {
+        SOAPEnvelope env = createEnvelope();
+        SOAPBody body = env.getBody();
+        SOAPFault fault = (SOAPFault) body.addFault();
+        QName code = aResponse.getErrorCode();
+        fault.setFaultCode(env.createName(code.getLocalPart(), null, code.getNamespaceURI()));
+        fault.setFaultString(aResponse.getErrorString());
+        if (aResponse.getMessageData() != null) {
+            Detail detail = fault.addDetail();
+            IAeMessageData data = AeDataConverter.convert(aResponse.getMessageData());
+            // there can only be one part name
+            String partName = (String) data.getPartNames().next();
+            Object partData = data.getData(partName);
+            // If data is of type document, ok to set the data
+            if (partData instanceof Document) {
+                Element element = ((Document) partData).getDocumentElement();
+                detail.appendChild(detail.getOwnerDocument().importNode(element, true));
+            } else {
+                // The WS-I Basic Profile requires that fault messages' single part
+                // is defined as a schema element. If we get here then we're going
+                // to be replying with a non-compliant fault message.
+                // Our fault routing logic extends the WS-I Basic Profile spec to
+                // allow for an xsi:type attribute to indicate the type. This is
+                // done to account for non-compliant web services.
+                SOAPElement detailElement = detail.addChildElement(partName);
+                detailElement.addTextNode(partData.toString());
+                QName faultMessage = data.getMessageType();
+                IAeProcessPlan plan = getProcessPlan(AeMessageContext.convert(aContext));
+                AeBPELExtendedWSDLDef def = AeWSDLDefHelper.getWSDLDefinitionForMsg(plan, faultMessage);
+                if (def != null) {
+                    Message wsdlMessage = def.getMessage(faultMessage);
+                    Part part = wsdlMessage.getPart(partName);
+                    // validation turned off so in order to avoid a NPE, I'll check for null.
+                    if (part.getTypeName() != null) {
+                        AeXmlUtil.declareXsiType(detailElement, part.getTypeName());
+                    }
+                }
+            }
+        }
+        return createWsResponse(aResponse, env);
+    } catch (Exception ex) {
+        throw new AeBusinessProcessException(ex.getLocalizedMessage(), ex);
+    }
+}

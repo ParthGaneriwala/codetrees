@@ -1,0 +1,184 @@
+public void asignarCargaDiaria() {
+    List<Cobro> cobrosAsignados = new ArrayList<Cobro>();
+    List<Llamada__c> llamadasAsignados = new ArrayList<Llamada__c>();
+    Map<String, Integer> mapMorasCargaDiaria = new HashMap<String, Integer>();
+    try {
+        Empresa empresa = this.obtenerConfiguracionEmpresa(codEmpresa);
+        if (empresa != null) {
+            logger.info("Empresa: " + empresa.getName() + ".");
+            logger.info("	Paso 2: Obtener cartera diaria");
+            List<Cobro> cobros = this.obtenerCobrosCargaDiaria(empresa.getId());
+            if (cobros != null && cobros.size() > 0) {
+                logger.info("		Num Cobros del ciclo: " + cobros.size());
+                logger.info("	Paso 3: Separar cobros por cartera");
+                for (Iterator<Cobro> iterC = cobros.iterator(); iterC.hasNext(); ) {
+                    Cobro cobro = iterC.next();
+                    if (cobro.getCobro__c().getInfo_Cuenta__r() != null && cobro.getCobro__c().getInfo_Cuenta__r().getRecordTypeId() != null) {
+                        // Lo coloca en la cartera que le corresponde
+                        boolean clasificado = false;
+                        for (Cartera cartera : empresa.getCarteras()) {
+                            for (Producto producto : cartera.getProductos()) {
+                                if (producto.getRecordTypeInfoCuenta() != null && producto.getRecordTypeInfoCuenta().getID().equals(cobro.getCobro__c().getInfo_Cuenta__r().getRecordTypeId().getID())) {
+                                    cobro.setIdProducto(producto.getId());
+                                    cobro.getCobro__c().setConf_Info_Producto__c(producto.getId());
+                                    cartera.getCobros().add(cobro);
+                                    clasificado = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!clasificado) {
+                            logger.error("Cobro " + cobro.getCobro__c().getName() + " no pertenece a ningun producto de la empresa");
+                            iterC.remove();
+                        }
+                    } else {
+                        logger.error("Cobro " + cobro.getCobro__c().getName() + " no pertenece a ningun producto de la empresa");
+                        iterC.remove();
+                    }
+                }
+                logger.info("	Paso 4: Asignando Nivel de Mora a los cobros");
+                for (Cartera cartera : empresa.getCarteras()) {
+                    for (Iterator<Cobro> iterC = cartera.getCobros().iterator(); iterC.hasNext(); ) {
+                        Cobro cobro = iterC.next();
+                        // Los
+                        double nivelMora = cobro.getCobro__c().getTC_Nivel_Mora_Consolidado_Real__c();
+                        if (nivelMora >= numDiasMinCategoriaI && nivelMora <= numDiasMaxCategoriaI) {
+                            nivelMora = nivelMora - numDiasMaxCategoriaI;
+                        }
+                        Mora mora = this.obtenerMora(cartera.getMoras(), nivelMora);
+                        if (mora != null) {
+                            cobro.getCobro__c().setConf_Info_Mora__c(mora.getId());
+                            cobro.setIdRecordTypeLlamada(mora.getRecordTypeLlamada());
+                            // Se supone solo deberian ser los de premora
+                            if (!mapMorasCargaDiaria.containsKey(mora.getId().getID())) {
+                                mapMorasCargaDiaria.put(mora.getId().getID(), 0);
+                            }
+                        } else {
+                            logger.error("Cobro " + cobro.getCobro__c().getName() + " no pertenece a ninguna mora de la empresa");
+                            iterC.remove();
+                        }
+                    }
+                }
+                if (mapMorasCargaDiaria.size() > 0) {
+                    logger.info("	Paso 5: Asignando Ciclo a los cobros");
+                    Map<String, Ciclo__c> mapCiclos = this.obtenerCiclosAbiertos(empresa.getId());
+                    for (Cartera cartera : empresa.getCarteras()) {
+                        for (Iterator<Cobro> iterC = cartera.getCobros().iterator(); iterC.hasNext(); ) {
+                            Cobro cobro = iterC.next();
+                            String cicloCobro = Util.obtenerPeridoCompleto(!Double.isNaN(cobro.getCobro__c().getTC_Ciclo__c()) ? (int) cobro.getCobro__c().getTC_Ciclo__c() : 0, cobro.getCobro__c().getTC_Periodo__c());
+                            if (mapCiclos.containsKey(cicloCobro)) {
+                                Ciclo__c ciclo = mapCiclos.get(cicloCobro);
+                                cobro.getCobro__c().setTC_Ciclo_Pertenece__c(ciclo.getId());
+                                int tamanoCartera = 0;
+                                if (!Double.isNaN(ciclo.getTC_Tamano_Cartera__c())) {
+                                    tamanoCartera = (int) ciclo.getTC_Tamano_Cartera__c();
+                                }
+                                tamanoCartera++;
+                            }
+                        }
+                    }
+                    logger.info("	Paso 6: Separa los cobros de MP y los de NMP");
+                    for (Cartera cartera : empresa.getCarteras()) {
+                        if (cartera.tieneMarcadorPredictivo()) {
+                            Map<String, String> mapClientes = new HashMap<String, String>();
+                            // Ordenar lista de cobros por cliente asc y luego por nivel de mora consolidado o por matriz de pesos desc
+                            Collections.sort(cartera.getCobros(), new ClienteMoraComparator());
+                            for (Iterator<Cobro> iterC = cartera.getCobros().iterator(); iterC.hasNext(); ) {
+                                Cobro cobro = iterC.next();
+                                iterC.remove();
+                                if (cobro.getCobro__c().getCliente__c() == null) {
+                                    if (this.esMoraMarcadorPredictivo(cobro.getCobro__c().getConf_Info_Mora__c(), cartera.getMoras())) {
+                                        cobro.getCobro__c().setIsMarcadorPredictivo__c(true);
+                                        cartera.getCobrosMP().add(cobro);
+                                    } else {
+                                        cobro.getCobro__c().setIsMarcadorPredictivo__c(false);
+                                        cartera.getCobrosNMP().add(cobro);
+                                    }
+                                } else {
+                                    if (!mapClientes.containsKey(cobro.getCobro__c().getCliente__c().getID())) {
+                                        mapClientes.put(cobro.getCobro__c().getCliente__c().getID(), cobro.getCobro__c().getCliente__c().getID());
+                                        List<Cobro> cobrosCliente = new ArrayList<Cobro>();
+                                        cobrosCliente.add(cobro);
+                                        cobrosCliente.addAll(obtenerCobrosMismoCliente(cobro, cartera.getCobros()));
+                                        if (this.esMoraMarcadorPredictivo(cobro.getCobro__c().getConf_Info_Mora__c(), cartera.getMoras())) {
+                                            cobro.getCobro__c().setIsMarcadorPredictivo__c(true);
+                                            cartera.getCobrosMP().addAll(cobrosCliente);
+                                        } else {
+                                            cobro.getCobro__c().setIsMarcadorPredictivo__c(false);
+                                            cartera.getCobrosNMP().addAll(cobrosCliente);
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            cartera.getCobrosNMP().addAll(cartera.getCobros());
+                        }
+                        cartera.getCobros().clear();
+                    }
+                    List<Agente> agentes = this.obtenerAgentes(empresa.getId(), mapMorasCargaDiaria);
+                    // Coloca la carga que llevan los agentes
+                    for (Agente agente : agentes) {
+                        agente.setNumGestionesPrevias(this.obtenerNumCobrosPrevios(agente.getId()));
+                    }
+                    // Colas
+                    Map<String, Integer> mapMorasMP = new HashMap<String, Integer>();
+                    for (Cartera cartera : empresa.getCarteras()) {
+                        for (Mora mora : cartera.getMoras()) {
+                            if (mora.isMarcadorPredictivo()) {
+                                mapMorasMP.put(mora.getId().getID(), 0);
+                            }
+                        }
+                    }
+                    List<Cola> colas = this.obtenerColas(empresa.getId(), mapMorasMP);
+                    logger.info("	Paso 8: Asignar cobros a agentes");
+                    for (Cartera cartera : empresa.getCarteras()) {
+                        logger.info("-----------------------------------------------");
+                        logger.info("-----------------------------------------------");
+                        logger.info("		cartera: " + cartera.getName());
+                        logger.info("		Total de cobros NMP: " + cartera.getCobrosNMP().size());
+                        logger.info("		Total de cobros MP: " + cartera.getCobrosMP().size());
+                        if (cartera.getCobrosNMP().size() > 0) {
+                            cartera.getLlamadasSinAgente().addAll(this.asignarCarteraNMP(empresa.getId(), empresa.getCargaMaximaDiariaAgente(), empresa.getMetodoPago(), cartera.getCobrosNMP(), agentes, cartera.getMoras()));
+                        }
+                        if (cartera.getCobrosMP().size() > 0) {
+                            cartera.getLlamadasSinAgente().addAll(this.asignarCarteraMP(empresa.getId(), empresa.getCargaMaximaDiariaAgente(), empresa.getMetodoPago(), cartera.getCobrosMP(), colas));
+                        }
+                        logger.info("-----------------------------------------------");
+                        logger.info("-----------------------------------------------");
+                    }
+                    logger.info("");
+                    logger.info("	Paso 8: Obtiene las llamadas de los agentes");
+                    llamadasAsignados.addAll(this.obtenerLlamadasAgentes(agentes));
+                    for (Cartera cartera : empresa.getCarteras()) {
+                        cobrosAsignados.addAll(cartera.getCobrosMP());
+                        cobrosAsignados.addAll(cartera.getCobrosNMP());
+                        llamadasAsignados.addAll(cartera.getLlamadasSinAgente());
+                    }
+                    logger.info("");
+                    logger.info("	Paso 9: Guardar asignacion");
+                    this.guadarAsignacionSalesforce(cobrosAsignados, llamadasAsignados);
+                    logger.info("");
+                    logger.info("	Paso 10: Actualizando ciclos");
+                    List<Ciclo__c> ciclos = new ArrayList<Ciclo__c>();
+                    for (String key : mapCiclos.keySet()) {
+                        Ciclo__c ciclo = mapCiclos.get(key);
+                        Ciclo__c newCiclo = new Ciclo__c();
+                        newCiclo.setId(ciclo.getId());
+                        newCiclo.setTC_Tamano_Cartera__c(ciclo.getTC_Tamano_Cartera__c());
+                        ciclos.add(newCiclo);
+                    }
+                    this.actualizarRegistros(ciclos);
+                } else {
+                    logger.error("	Error, no se encontraron cobros para asignar(De acuerdo a la conf de la empresa).");
+                }
+            } else {
+                logger.error("	Error, no se encontraron cobros para la asignaci�n diaria.");
+            }
+        // End cobros>0
+        } else {
+            logger.error("No se encontr� la configuraci�n de la empresa.");
+        }
+    } catch (Exception e) {
+        logger.error(e);
+    }
+}

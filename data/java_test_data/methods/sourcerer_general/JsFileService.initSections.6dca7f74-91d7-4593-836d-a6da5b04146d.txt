@@ -1,0 +1,70 @@
+public void initSections(String levelOneRealPath, String levelOneJsRealPath, String levelOneJsFileName, String levelTwoJsFileName, String templateRealPathFileName) throws CardException, SQLException, IOException {
+    // 注意，首先执行数据库操作，如果数据库操作失败则回滚，并不再执行生成文件夹和文件的操作
+    try {
+        // A.读入获取固定的一级栏目信息
+        // B.读入levelone.properties文件中的一级栏目目录和标题
+        ResourceBundle levelOnesConfig = ConfigUtils.getLevelOnesConfig();
+        if (null == levelOnesConfig) {
+            throw new CardException("levelone.properties文件不存在！");
+        }
+        Set<String> keySet = levelOnesConfig.keySet();
+        String[] arrLevelOneFolders = keySet.toArray(new String[] {});
+        String[] arrLevelOneTitles = new String[arrLevelOneFolders.length];
+        Section[] sections = new Section[arrLevelOneFolders.length];
+        for (int i = 0; i < arrLevelOneFolders.length; i++) {
+            arrLevelOneTitles[i] = levelOnesConfig.getString(arrLevelOneFolders[i]);
+            sections[i] = new Section();
+            sections[i].setTitle(arrLevelOneTitles[i]);
+            sections[i].setParentId(0L);
+            sections[i].setStatus(1);
+            sections[i].setFolderName(arrLevelOneFolders[i]);
+        }
+        openCon();
+        con.setAutoCommit(false);
+        SectionDAO dao = new SectionDAO(con);
+        // 从数据库中读取所有一级栏目
+        List<Section> levelOnesList = dao.queryLevelOne();
+        // B.将一级栏目信息批量插入数据库
+        for (Section s : sections) {
+            if (levelOnesList.size() > 0) {
+                break;
+            }
+            if (null == dao.queryLevelOneByTitleOrFolderName(s.getTitle(), s.getFolderName())) {
+                dao.insertLevelOne(s);
+            }
+        }
+        // 创建一级栏目目录
+        for (Section s : levelOnesList) {
+            String levelOneRealDirPath = StringUtils.join(new String[] { levelOneRealPath, File.separator, s.getFolderName() });
+            FileUtils.makeDir(levelOneRealDirPath);
+        }
+        // D.创建levelone.js文件
+        String realJsPathFileName = StringUtils.join(new String[] { levelOneJsRealPath, File.separator, levelOneJsFileName });
+        LevelOneUtils.createLevelOneSectionsJSFile(realJsPathFileName, levelOnesList, LevelOneUtils.getStaticLevelOnesInfo());
+        // 从数据库中读取所有二级栏目
+        for (Section s : levelOnesList) {
+            List<Section> levelTwosList = dao.queryLevelTwo(s.getSectionId());
+            // 创建二级栏目js文件
+            String levelTwoRealPathJsFileName = StringUtils.join(new String[] { levelOneRealPath, File.separator, s.getFolderName(), File.separator, levelTwoJsFileName });
+            LevelTwoUtils.createLevelTwoJsFile(levelTwoRealPathJsFileName, levelTwosList);
+            // 创建二级栏目html文件
+            for (Section levelTwo : levelTwosList) {
+                String levelTwoFileName = levelTwo.getFileName();
+                int dotLastIndex = levelTwoFileName.lastIndexOf(".");
+                String extendFileName = levelTwoFileName.substring(dotLastIndex + 1);
+                if (!StringUtils.equals(extendFileName, "html")) {
+                    continue;
+                }
+                String staticRealPathFileName = StringUtils.join(new String[] { levelOneRealPath, File.separator, levelTwoFileName.replace('/', File.separatorChar) });
+                LevelTwoUtils.createLevelTwoStaticFile(templateRealPathFileName, staticRealPathFileName, new String[] { ConfigUtils.getAppConfig("titleFlag"), ConfigUtils.getAppConfig("contentFlag") }, new String[] { levelTwo.getTitle(), levelTwo.getFileContent() });
+            }
+        }
+        con.commit();
+    } catch (CardException e) {
+        con.rollback();
+        e.printStackTrace();
+        throw e;
+    } finally {
+        closeCon();
+    }
+}

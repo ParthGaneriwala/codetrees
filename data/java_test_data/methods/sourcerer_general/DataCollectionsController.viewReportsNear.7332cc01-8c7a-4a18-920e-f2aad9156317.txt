@@ -1,0 +1,50 @@
+@RequestMapping(value = DATA_INFO_BASE + "/{id}" + DATA_RESULTS_SUFFIX + DATA_NEARBY_SUFFIX, method = RequestMethod.GET)
+public String viewReportsNear(@PathVariable("id") String id, @RequestParam("dataKeys") String keyStr, @RequestParam(value = "bookmark", required = false) String bookmark, @RequestParam(value = "maxResults", required = false) String maxR, @RequestParam("lat") float lat, @RequestParam("lon") float lon, @RequestParam("maxDist") float maxdist, @RequestParam("locationDataKey") String locationDataKey, HttpServletRequest request, Model model) {
+    DataCollectionInfo info = DataCollectionInfo.byKey(id);
+    UserService us = UserServiceFactory.getUserService();
+    com.google.appengine.api.users.User currentUser = us.getCurrentUser();
+    if (currentUser != null)
+        info.setUser(currentUser);
+    if (info != null) {
+        PersistenceManager pm = PMF.get().getPersistenceManager();
+        int max = 50;
+        if (maxR != null) {
+            try {
+                max = Integer.parseInt(maxR);
+            } catch (NumberFormatException nfe) {
+                nfe.printStackTrace();
+            }
+        }
+        List<LocationDataItem> near = LocationDataItem.nearby(lat, lon, max, maxdist, info.getId(), locationDataKey);
+        List<String> reportKeys = new ArrayList<String>();
+        for (LocationDataItem item : near) {
+            reportKeys.add(item.getReportId());
+        }
+        String[] keys = keyStr.split(",");
+        Map<String, Type> types = info.getDataKeyTypes();
+        List all = new ArrayList();
+        for (String key : keys) {
+            Type type = types.get(key);
+            if (type != null) {
+                Class c = type.getPersister().getStorageClass();
+                List results = null;
+                Query query = pm.newQuery("select from " + c.getName() + " where rids.contains(reportId) && dataKey==k");
+                query.declareParameters("java.util.List rids, String k");
+                query.setRange(0, max + 1);
+                if (bookmark != null) {
+                    Cursor cursor = Cursor.fromWebSafeString(bookmark);
+                    Map<String, Object> extensionMap = new HashMap<String, Object>();
+                    extensionMap.put(JDOCursorHelper.CURSOR_EXTENSION, cursor);
+                    query.setExtensions(extensionMap);
+                }
+                results = (List) query.execute(reportKeys, key);
+                all.addAll(results);
+            }
+        }
+        all.addAll(near);
+        model.addAttribute("results", all);
+    } else {
+    // handle invalid report
+    }
+    return "jsonView";
+}

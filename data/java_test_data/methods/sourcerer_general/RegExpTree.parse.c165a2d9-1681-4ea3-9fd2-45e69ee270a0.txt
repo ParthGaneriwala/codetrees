@@ -1,0 +1,98 @@
+RegExpTree parse() {
+    // Collects ["foo", "bar", "baz"] for /foo|bar|baz/.
+    ImmutableList.Builder<RegExpTree> alternatives = null;
+    // The last item parsed within an alternation.
+    RegExpTree preceder = null;
+    topLoop: while (pos < limit) {
+        char ch = pattern.charAt(pos);
+        RegExpTree atom;
+        switch(ch) {
+            case '[':
+                atom = parseCharset();
+                break;
+            case '(':
+                atom = parseParenthetical();
+                break;
+            case ')':
+                break topLoop;
+            case '\\':
+                atom = parseEscape();
+                break;
+            case '^':
+            case '$':
+                atom = new Anchor(ch);
+                ++pos;
+                break;
+            case '.':
+                // We represent . as a character set to make it easy to simplify
+                // things like /.|[\r\n]/.
+                atom = DOT_CHARSET;
+                ++pos;
+                break;
+            case '|':
+                // An alternative may be empty as in /foo||bar/.
+                // The '|' is consumed below.
+                atom = Empty.INSTANCE;
+                break;
+            default:
+                // Find a run of concatenated characters to avoid building a
+                // tree node per literal character.
+                int start = pos;
+                int end = pos + 1;
+                charsLoop: while (end < limit) {
+                    switch(pattern.charAt(end)) {
+                        case '[':
+                        case '(':
+                        case ')':
+                        case '\\':
+                        case '^':
+                        case '$':
+                        case '|':
+                        case '.':
+                        case '*':
+                        case '+':
+                        case '?':
+                        case '{':
+                            break charsLoop;
+                        default:
+                            // operator parser below has the right precedence.
+                            if (end + 1 >= limit || !isRepetitionStart(pattern.charAt(end + 1))) {
+                                ++end;
+                            } else {
+                                break charsLoop;
+                            }
+                    }
+                }
+                atom = new Text(pattern.substring(start, end));
+                pos = end;
+                break;
+        }
+        if (pos < limit && isRepetitionStart(pattern.charAt(pos))) {
+            atom = parseRepetition(atom);
+        }
+        if (preceder == null) {
+            preceder = atom;
+        } else {
+            preceder = new Concatenation(preceder, atom);
+        }
+        // next alternative.
+        if (pos < limit && pattern.charAt(pos) == '|') {
+            if (alternatives == null) {
+                alternatives = ImmutableList.builder();
+            }
+            alternatives.add(preceder);
+            preceder = null;
+            ++pos;
+        }
+    }
+    // An alternative may have no parsed content blank as in /foo|/.
+    if (preceder == null) {
+        preceder = Empty.INSTANCE;
+    }
+    if (alternatives != null) {
+        alternatives.add(preceder);
+        return new Alternation(alternatives.build());
+    } else {
+        return preceder;
+    }
+}

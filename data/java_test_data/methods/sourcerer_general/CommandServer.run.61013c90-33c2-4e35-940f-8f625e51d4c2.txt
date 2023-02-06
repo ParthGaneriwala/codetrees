@@ -1,0 +1,91 @@
+public void run() {
+    ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    String cwd = null;
+    String commandPath = null;
+    List<String> params = new ArrayList<String>();
+    boolean parseSuccessful = false;
+    boolean stdinPresent = false;
+    try {
+        // 5 second read timeout pre-key
+        socket.setSoTimeout(5000);
+        InputStream is = socket.getInputStream();
+        DataInputStream dis = new DataInputStream(is);
+        int ident = dis.readInt();
+        if (ident != expectedIdent) {
+            // Not the expected client.
+            socket.close();
+            return;
+        }
+        // first read key.
+        // read a max of activator.key.length() bytes.
+        byte[] keybuf = new byte[activator.key.length() + 1];
+        int rlen = 0;
+        while (rlen < keybuf.length) {
+            int n = is.read(keybuf, rlen, keybuf.length - rlen);
+            if (n == -1)
+                break;
+            rlen += n;
+        }
+        String key = new String(keybuf, 0, keybuf.length - 1);
+        if (!key.equals(activator.key)) {
+            // No way.
+            socket.close();
+            return;
+        }
+        // bump read timeout up to 1 minute
+        socket.setSoTimeout(60000);
+        int c;
+        while ((c = is.read()) != -1) {
+            if (c == 0) {
+                if (buf.size() > 0) {
+                    // End of token
+                    if (cwd == null) {
+                        cwd = buf.toString();
+                    } else if (commandPath == null) {
+                        commandPath = buf.toString();
+                    } else {
+                        String param = buf.toString();
+                        if ("-".equals(param)) {
+                            stdinPresent = true;
+                        } else {
+                            params.add(buf.toString());
+                        }
+                    }
+                    buf.reset();
+                } else {
+                    parseSuccessful = commandPath != null;
+                    break;
+                }
+            } else {
+                buf.write(c);
+            }
+        }
+        if (parseSuccessful) {
+            PrintStream out = new PrintStream(new PrefixedOutputStream(socket.getOutputStream(), 'O'), true);
+            PrintStream err = new PrintStream(new PrefixedOutputStream(socket.getOutputStream(), 'E'), true);
+            OutputStream status = new PrefixedOutputStream(socket.getOutputStream(), 'S');
+            CommandInvocation ci = new CommandInvocation(out, err, stdinPresent ? is : null, new File(cwd), params.toArray(new String[params.size()]));
+            Thread.currentThread().setName("SHCMD - " + commandPath);
+            CommandShell shell = activator.getCommandShell();
+            int sc = 1;
+            if (shell == null) {
+                ci.err.println("CommandShell unavailable.");
+            } else {
+                try {
+                    sc = shell.executeCommand(commandPath, ci);
+                } catch (CommandNotFoundException e) {
+                    err.println("Command not found: " + commandPath);
+                }
+            }
+            status.write(String.valueOf(sc).getBytes());
+            status.flush();
+        }
+    } catch (IOException e) {
+    // Don't do anything, we'll just close the connection in the finally.
+    } finally {
+        try {
+            socket.close();
+        } catch (IOException e) {
+        }
+    }
+}

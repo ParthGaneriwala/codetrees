@@ -1,0 +1,153 @@
+// ------------------------------------------------------------------------
+public void checkGPS(GeoEvent oldFix, GeoEvent newFix) {
+    // 'newFix' will contain a valid fix, but verify anyway
+    if ((newFix == null) || !newFix.isValid()) {
+        return;
+    }
+    /* check motion start/stop */
+    // - send start/stop/in-motion event
+    boolean isCurrentlyMoving = false;
+    // kph/meters
+    double defMotionStart = Props.getDouble(Props.PROP_MOTION_START, 0, 0.0);
+    // Props.PROP_GPS_MIN_SPEED should already be accounted for
+    if (defMotionStart > 0.0) {
+        /* first fix */
+        if ((this.lastMotionFix == null) || !this.lastMotionFix.isValid()) {
+            // first initialization of the 'last' motion fix
+            newFix.copyTo(this.lastMotionFix);
+        }
+        // 'this.lastMotionFix' contains a valid fix at this point
+        /* currently moving? */
+        isCurrentlyMoving = _checkIsMoving(this.lastMotionFix, newFix, defMotionStart, this.isInMotion);
+        if (isCurrentlyMoving) {
+            // I am moving
+            // reset stopped time
+            this.lastStoppedTimer = 0L;
+            this.lastStoppedFix.invalidate();
+            // update:
+            newFix.copyTo(this.lastMotionFix);
+            if (!this.isInMotion) {
+                // I wasn't moving before, but now I am
+                this.isInMotion = true;
+                // start "in-motion" timer
+                this.lastInMotionMessageTimer = DateTime.getTimerSec();
+                // send 'start' event
+                this._queueMotionEvent(MOTION_START_PRIORITY, STATUS_MOTION_START, newFix);
+            } else {
+            // continued in-motion
+            }
+        } else {
+            // no longer moving
+            if (this.isInMotion) {
+                // I was moving, but I'm not anymore
+                if (this.lastStoppedTimer <= 0L) {
+                    // start "stopped" timer (first non-moving sample)
+                    this.lastStoppedTimer = DateTime.getTimerSec();
+                    newFix.copyTo(this.lastStoppedFix);
+                // this will be reset again if we start moving before time expires
+                } else {
+                    // seconds
+                    int defMotionStop = (int) Props.getLong(Props.PROP_MOTION_STOP, 0, 0L);
+                    if (DateTime.isTimerExpired(this.lastStoppedTimer, defMotionStop)) {
+                        // time expired, we are now officially NOT moving
+                        this.isInMotion = false;
+                        // update:
+                        newFix.copyTo(this.lastMotionFix);
+                        // send 'stop' event
+                        // 0=after_delay, 1=when_stopped
+                        int defStopType = (int) Props.getLong(Props.PROP_MOTION_STOP_TYPE, 0, 0L);
+                        if (defStopType == 0) {
+                            this._queueMotionEvent(MOTION_STOP_PRIORITY, STATUS_MOTION_STOP, newFix);
+                        } else {
+                            this._queueMotionEvent(MOTION_STOP_PRIORITY, STATUS_MOTION_STOP, this.lastStoppedFix);
+                        }
+                        this.lastStoppedTimer = 0L;
+                        this.lastStoppedFix.invalidate();
+                    }
+                }
+            } else {
+            // still not moving
+            }
+        }
+    } else {
+        // this is necessary in case "start/stop" events were turned off while moving
+        this.isInMotion = false;
+    }
+    // - send "dormant" events while not moving
+    if (this.isInMotion) {
+        // moving (between start/stop) ['isCurrentlyMoving' may be false]
+        long defMotionInterval = Props.getLong(Props.PROP_MOTION_IN_MOTION, 0, 0L);
+        if (defMotionInterval > 0L) {
+            // In-motion interval has been defined.  We want in-motion events.
+            if (defMotionInterval < Constants.MIN_IN_MOTION_INTERVAL) {
+                // in-motion interval is too small, reset to minimum value
+                defMotionInterval = Constants.MIN_IN_MOTION_INTERVAL;
+                Props.setLong(Props.PROP_MOTION_IN_MOTION, 0, defMotionInterval);
+            }
+            // 0=after_delay, 1=when_stopped
+            int defStopType = (int) Props.getLong(Props.PROP_MOTION_STOP_TYPE, 0, 0L);
+            if ((defStopType != 0) && !isCurrentlyMoving) {
+            // 'defStopType' states that in-motion messages are to be generated iff actually moving,
+            // and were not currently moving.
+            } else if (DateTime.isTimerExpired(this.lastInMotionMessageTimer, defMotionInterval)) {
+                // we're moving, and the in-motion interval has expired
+                this.lastInMotionMessageTimer = DateTime.getTimerSec();
+                // send in-motion message
+                this._queueMotionEvent(IN_MOTION_PRIORITY, STATUS_MOTION_IN_MOTION, newFix);
+            }
+        }
+        this.lastDormantMessageTimer = 0L;
+        this.dormantCount = 0L;
+    } else {
+        // not moving (outside start/stop)
+        // if Props.PROP_MOTION_START is '0', then 'dormant' will always be in effect.
+        long defDormantInterval = Props.getLong(Props.PROP_MOTION_DORMANT_INTRVL, 0, 0L);
+        if (defDormantInterval > 0L) {
+            if (defDormantInterval < Constants.MIN_DORMANT_INTERVAL) {
+                defDormantInterval = Constants.MIN_DORMANT_INTERVAL;
+                Props.setLong(Props.PROP_MOTION_DORMANT_INTRVL, 0, defDormantInterval);
+            }
+            long maxDormantCount = Props.getLong(Props.PROP_MOTION_DORMANT_COUNT, 0, 0L);
+            if ((maxDormantCount <= 0L) || (this.dormantCount < maxDormantCount)) {
+                if (this.lastDormantMessageTimer <= 0L) {
+                    // initialize dormant timer
+                    this.lastDormantMessageTimer = DateTime.getTimerSec();
+                    this.dormantCount = 0L;
+                } else if (DateTime.isTimerExpired(this.lastDormantMessageTimer, defDormantInterval)) {
+                    this.lastDormantMessageTimer = DateTime.getTimerSec();
+                    // send dormant message
+                    this._queueMotionEvent(DORMANT_PRIORITY, STATUS_MOTION_DORMANT, newFix);
+                    this.dormantCount++;
+                }
+            }
+        }
+    }
+    /* check excessive speed */
+    // kph
+    double defMaxSpeed = Props.getDouble(Props.PROP_MOTION_EXCESS_SPEED, 0, 0.0);
+    if (defMaxSpeed > 0.0) {
+        // maxSpeed is defined
+        boolean isCurrentlyExceedingSpeed = (newFix.getSpeedKPH() >= defMaxSpeed) ? true : false;
+        if (isCurrentlyExceedingSpeed) {
+            // I'm currently exceeding maxSpeed
+            if (!this.isExceedingSpeed) {
+                // I wasn't exceeding maxSpeed before, but now I am
+                this.isExceedingSpeed = true;
+                this._queueMotionEvent(EXCESS_SPEED_PRIORITY, STATUS_MOTION_EXCESS_SPEED, newFix);
+            } else {
+            // I'm still exceeding maxSpeed
+            }
+        } else {
+            // I'm currently not exceeding maxSpeed
+            if (this.isExceedingSpeed) {
+                // I was exceeding maxSpeed before, but now I'm not
+                this.isExceedingSpeed = false;
+            } else {
+            // I'm still not exceeding maxSpeed
+            }
+        }
+    } else {
+        // this is necessary in case "speeding" events were turned off while speeding
+        this.isExceedingSpeed = false;
+    }
+}

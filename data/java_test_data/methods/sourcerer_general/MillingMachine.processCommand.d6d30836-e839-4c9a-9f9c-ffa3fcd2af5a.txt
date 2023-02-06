@@ -1,0 +1,81 @@
+private String processCommand(String command) throws RuntimeException {
+    if (simulating) {
+        log.info("Command: " + command);
+        if (command.equals("L")) {
+            String s = "X Axis: Location:  " + xLocation + "  Delay: " + xDelay + "  Steps per Inch: " + xInch + "  Holding Current: " + (xHold ? "1" : "0") + "\n" + "Y Axis: Location:  " + yLocation + "  Delay: " + yDelay + "  Steps per Inch: " + yInch + "  Holding Current: " + (yHold ? "1" : "0") + "\n" + "Z Axis: Location:  " + zLocation + "  Delay: " + zDelay + "  Steps per Inch: " + zInch + "  Holding Current: " + (zHold ? "1" : "0") + "\n" + "Drill=" + (drillRelay ? "1" : "0") + "\n" + "Vacuum=" + (vacuumRelay ? "1" : "0") + "\n" + "Limit Switch: X-axis min=0 max=0\n" + "Limit Switch: Y-axis min=0 max=0\n" + "Limit Switch: Z-axis min=0 max=0\n$ ";
+            return s;
+        }
+        if (command.equals("F")) {
+            return "Vince's SIMULATED Firmware V1.1\n$ ";
+        }
+        Pattern moveAxis = Pattern.compile("[XYZ][+-][0-9]{3}");
+        if (command.startsWith("M")) {
+            // Special case to simulate a Brownout for any move from 5,5
+            if (xLocation == 5 && yLocation == 5) {
+                String response = "xyxy\n" + "Vince's CNC MILL V1.1\n" + "\n" + "BROWNOUT RESET" + "\n" + "\n" + "\n$ ";
+                throw new MillingException(response, MillingException.BROWNOUT_ERROR);
+            }
+            // parse out the movements requested
+            StringBuffer response = new StringBuffer();
+            Matcher m = moveAxis.matcher(command);
+            while (m.find()) {
+                String axis = m.group();
+                int n = Integer.parseInt(axis.substring(2, 5));
+                while (n > 0) {
+                    response.append(axis.substring(0, 1).toLowerCase());
+                    n--;
+                }
+            }
+            response.append("\n$ ");
+            return response.toString();
+        }
+        return "$ ";
+    } else {
+        try {
+            // Do the real thing
+            try {
+                openPort();
+            } catch (Exception e) {
+                log.debug("could not open port!", e);
+                throw new MillingException("Failed to open port!", MillingException.COMM_FAILURE);
+            }
+            // Send the command
+            log.debug("Sent: " + command);
+            portPrinter.print(command + "\n\r");
+            portPrinter.flush();
+            // read input until "$ " is received
+            StringBuffer response = new StringBuffer();
+            char lastChar = ' ';
+            while (lastChar != '$') {
+                lastChar = (char) portReader.read();
+                response.append(lastChar);
+            }
+            log.debug("Received: " + response);
+            if (response.indexOf("SERIAL RECEIVE ABORT") != -1) {
+                // its a serial abort
+                throw new MillingException(response.toString(), MillingException.SERIAL_ABORT);
+            }
+            if (response.indexOf("LIMIT ERROR") != -1) {
+                // its a limit switch error
+                throw new MillingException(response.toString(), MillingException.LIMIT_ERROR);
+            }
+            if (response.indexOf("BROWNOUT RESET") != -1) {
+                // its a brownout reset error
+                throw new MillingException(response.toString(), MillingException.BROWNOUT_ERROR);
+            }
+            if (response.indexOf("Invalid Command") != -1) {
+                // its an invalid command (which means a comm problem usually
+                throw new MillingException(response.toString(), MillingException.INVALID_COMMAND);
+            }
+            if (response.indexOf("Command not implemented yet") != -1) {
+                // its a unimplemented command - comm error or old firmware
+                throw new MillingException(response.toString(), MillingException.NOT_IMPLEMENTED);
+            }
+            return response.toString();
+        } catch (MillingException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException("Processing Command: " + command, e);
+        }
+    }
+}

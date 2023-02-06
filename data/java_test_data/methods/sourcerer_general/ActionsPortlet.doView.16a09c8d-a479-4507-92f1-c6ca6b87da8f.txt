@@ -1,0 +1,93 @@
+public void doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    try {
+        // Define the current view
+        String defaultView = VIEW_PAGE;
+        // Get preferences
+        request.setAttribute(TITLE, request.getPreferences().getValue(PREF_TITLE, null));
+        User thisUser = PortalUtils.getUser(request);
+        // Get the urls to display
+        ArrayList<HashMap> urlList = new ArrayList<HashMap>();
+        String[] urls = request.getPreferences().getValues(PREF_URLS, new String[0]);
+        for (String urlPreference : urls) {
+            XMLUtils xml = new XMLUtils("<values>" + urlPreference + "</values>", true);
+            ArrayList<Element> items = new ArrayList<Element>();
+            XMLUtils.getAllChildren(xml.getDocumentElement(), items);
+            HashMap<String, String> url = new HashMap<String, String>();
+            for (Element thisItem : items) {
+                String name = thisItem.getTagName();
+                String value = thisItem.getTextContent();
+                url.put(name, value);
+            }
+            // Determine the secure URL if requested
+            if (url.containsKey("href")) {
+                String thisUrl = url.get("href");
+                if (!thisUrl.startsWith("http")) {
+                    if ("true".equals(url.get("secure"))) {
+                        // If the portal has SSL enabled...
+                        boolean ssl = "true".equals(PortalUtils.getApplicationPrefs(request).get("SSL"));
+                        url.put("href", "http" + (ssl ? "s" : "") + "://" + PortalUtils.getServerDomainNameAndPort(request) + request.getContextPath() + thisUrl);
+                    } else {
+                        // The context path
+                        url.put("href", request.getContextPath() + thisUrl);
+                    }
+                }
+            }
+            // Determine if the url can be shown
+            boolean valid = true;
+            // See if there are any special rules
+            if (url.containsKey("rule")) {
+                String rule = url.get("rule");
+                if ("isLoggedIn".equals(rule)) {
+                    if (!(thisUser.getId() > 0)) {
+                        valid = false;
+                    }
+                }
+                if ("isLoggedOut".equals(rule)) {
+                    if (thisUser.getId() > 0) {
+                        valid = false;
+                    }
+                }
+                if ("isAdmin".equals(rule)) {
+                    if (!thisUser.getAccessAdmin()) {
+                        valid = false;
+                    }
+                }
+                if ("canStartProjects".equals(rule)) {
+                    if (!thisUser.getAccessAddProjects()) {
+                        valid = false;
+                    }
+                }
+            }
+            // Determine if the rule requires an enabled category
+            if (url.containsKey("categoryEnabled")) {
+                // Get the category list
+                ProjectCategoryList projectCategoryList = (ProjectCategoryList) request.getAttribute(Constants.REQUEST_TAB_CATEGORY_LIST);
+                // Get the specific category
+                ProjectCategory projectCategory = projectCategoryList.getFromValue(url.get("categoryEnabled"));
+                if (projectCategory == null || !projectCategory.getEnabled()) {
+                    valid = false;
+                }
+            }
+            // Global disable
+            if (url.containsKey("enabled")) {
+                if ("false".equals(url.get("enabled"))) {
+                    valid = false;
+                }
+            }
+            // If valid, add it to the list
+            if (valid) {
+                urlList.add(url);
+            }
+        }
+        request.setAttribute(URL_LIST, urlList);
+        // Only output the portlet if there are any urls to show
+        if (urlList.size() > 0) {
+            // JSP view
+            PortletContext context = getPortletContext();
+            PortletRequestDispatcher requestDispatcher = context.getRequestDispatcher(defaultView);
+            requestDispatcher.include(request, response);
+        }
+    } catch (Exception e) {
+        throw new PortletException(e.getMessage());
+    }
+}

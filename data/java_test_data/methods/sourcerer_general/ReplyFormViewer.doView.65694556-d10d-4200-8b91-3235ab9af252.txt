@@ -1,0 +1,65 @@
+public String doView(RenderRequest request, RenderResponse response) throws Exception {
+    // The JSP to show upon success
+    String defaultView = VIEW_PAGE;
+    // General display preferences
+    request.setAttribute(TITLE, request.getPreferences().getValue(PREF_TITLE, "Topic"));
+    // Determine the project container to use
+    Project project = findProject(request);
+    // Determine the record to show
+    int recordId = getPageViewAsInt(request);
+    // Check the user executing the action
+    User user = getUser(request);
+    // Determine the database connection
+    Connection db = useConnection(request);
+    // Check the request for the record and provide a value for the request scope
+    Reply thisReply = (Reply) PortalUtils.getFormBean(request, REPLY, Reply.class);
+    // Decide if adding or updating
+    if (recordId > -1) {
+        // Modifying an existing record so load the record for modifying
+        LOG.debug("Updating a reply");
+        thisReply = new Reply(db, recordId);
+        // Additional permission check to allow owner of the message to edit
+        if (!ProjectUtils.hasAccess(project.getId(), user, "project-discussion-messages-edit") && thisReply.getEnteredBy() != user.getId()) {
+            throw new PortletException("Unauthorized to modify this record");
+        }
+        request.setAttribute(REPLY, thisReply);
+    } else {
+        LOG.debug("Adding a reply");
+        // Check permission for adding
+        if (!ProjectUtils.hasAccess(project.getId(), user, "project-discussion-messages-reply")) {
+            throw new PortletException("Unauthorized to add this record");
+        }
+        // Determine the message that is being replied to
+        String replyToValue = request.getParameter("replyTo");
+        if (replyToValue != null) {
+            int replyToId = Integer.parseInt(replyToValue);
+            thisReply.setReplyToId(replyToId);
+            // Prepare the reply for quoting
+            Reply quoteMessage = new Reply(db, thisReply.getReplyToId());
+            User quoteUser = UserUtils.loadUser(quoteMessage.getEnteredBy());
+            String messageToQuote = quoteUser.getNameFirstLastInitial() + " wrote:" + lf + quoteMessage.getBody() + lf + "-----" + lf + lf;
+            request.setAttribute(MESSAGE_TO_QUOTE, messageToQuote);
+            request.setAttribute(QUOTE_MESSAGE, "true");
+            thisReply.setIssueId(quoteMessage.getIssueId());
+            thisReply.setCategoryId(quoteMessage.getCategoryId());
+        }
+        // Determine the topic when adding
+        String topicValue = request.getParameter("topic");
+        if (topicValue != null) {
+            int topicId = Integer.parseInt(topicValue);
+            thisReply.setIssueId(topicId);
+        }
+    }
+    // Load the topic for display
+    Topic topic = new Topic(db, thisReply.getIssueId(), project.getId());
+    request.setAttribute(TOPIC, topic);
+    if (recordId == -1) {
+        // Auto-set a reply subject
+        thisReply.setSubject("RE: " + topic.getSubject());
+    }
+    // Load the forum for display
+    Forum forum = new Forum(db, topic.getCategoryId(), project.getId());
+    request.setAttribute(FORUM, forum);
+    // JSP view
+    return defaultView;
+}

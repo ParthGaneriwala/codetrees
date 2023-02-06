@@ -1,0 +1,88 @@
+protected Vector parseRange(HttpServletRequest request, HttpServletResponse response, ResourceInfo resourceInfo) throws IOException {
+    // Checking If-Range
+    String headerValue = request.getHeader("If-Range");
+    if (headerValue != null) {
+        long headerValueTime = (-1L);
+        try {
+            headerValueTime = request.getDateHeader("If-Range");
+        } catch (Exception e) {
+            ;
+        }
+        String eTag = getETag(resourceInfo);
+        long lastModified = resourceInfo.date;
+        if (headerValueTime == (-1L)) {
+            // etag, then the entire entity is returned.
+            if (!eTag.equals(headerValue.trim())) {
+                return null;
+            }
+        } else {
+            // is returned.
+            if (lastModified > (headerValueTime + 1000)) {
+                return null;
+            }
+        }
+    }
+    long fileLength = resourceInfo.length;
+    if (fileLength == 0) {
+        return null;
+    }
+    // Retrieving the range header (if any is specified
+    String rangeHeader = request.getHeader("Range");
+    if (rangeHeader == null) {
+        return null;
+    }
+    // of adding new ones).
+    if (!rangeHeader.startsWith("bytes")) {
+        response.addHeader("Content-Range", "bytes */" + fileLength);
+        response.sendError(HttpServletResponse.SC_REQUESTED_RANGE_NOT_SATISFIABLE);
+        return null;
+    }
+    rangeHeader = rangeHeader.substring(6);
+    // Vector which will contain all the ranges which are successfully
+    // parsed.
+    Vector result = new Vector();
+    StringTokenizer commaTokenizer = new StringTokenizer(rangeHeader, ",");
+    // Parsing the range list
+    while (commaTokenizer.hasMoreTokens()) {
+        String rangeDefinition = commaTokenizer.nextToken().trim();
+        Range currentRange = new Range();
+        currentRange.length = fileLength;
+        int dashPos = rangeDefinition.indexOf('-');
+        if (dashPos == -1) {
+            response.addHeader("Content-Range", "bytes */" + fileLength);
+            response.sendError(HttpServletResponse.SC_REQUESTED_RANGE_NOT_SATISFIABLE);
+            return null;
+        }
+        if (dashPos == 0) {
+            try {
+                long offset = Long.parseLong(rangeDefinition);
+                currentRange.start = fileLength + offset;
+                currentRange.end = fileLength - 1;
+            } catch (NumberFormatException e) {
+                response.addHeader("Content-Range", "bytes */" + fileLength);
+                response.sendError(HttpServletResponse.SC_REQUESTED_RANGE_NOT_SATISFIABLE);
+                return null;
+            }
+        } else {
+            try {
+                currentRange.start = Long.parseLong(rangeDefinition.substring(0, dashPos));
+                if (dashPos < rangeDefinition.length() - 1) {
+                    currentRange.end = Long.parseLong(rangeDefinition.substring(dashPos + 1, rangeDefinition.length()));
+                } else {
+                    currentRange.end = fileLength - 1;
+                }
+            } catch (NumberFormatException e) {
+                response.addHeader("Content-Range", "bytes */" + fileLength);
+                response.sendError(HttpServletResponse.SC_REQUESTED_RANGE_NOT_SATISFIABLE);
+                return null;
+            }
+        }
+        if (!currentRange.validate()) {
+            response.addHeader("Content-Range", "bytes */" + fileLength);
+            response.sendError(HttpServletResponse.SC_REQUESTED_RANGE_NOT_SATISFIABLE);
+            return null;
+        }
+        result.addElement(currentRange);
+    }
+    return result;
+}

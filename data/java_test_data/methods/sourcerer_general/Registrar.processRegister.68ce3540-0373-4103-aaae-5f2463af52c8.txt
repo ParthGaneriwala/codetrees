@@ -1,0 +1,181 @@
+/**
+ * **************************************************************************
+ */
+/**
+ * **************************************************************************
+ */
+public synchronized void processRegister(Request request, SipProvider sipProvider, ServerTransaction serverTransaction) {
+    try {
+        MessageFactory messageFactory = proxy.getMessageFactory();
+        String key = getKey(request);
+        // Add the key if it is a new user:
+        if (logger.isDebugEnabled()) {
+            logger.debug("Registrar, processRegister(), key: \"" + key + "\"");
+        }
+        if (key == null) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Registrar, processRegister(), key is null" + " 400 INVALID REQUEST replied");
+            }
+            Response response = messageFactory.createResponse(Response.BAD_REQUEST, request);
+            if (serverTransaction != null)
+                serverTransaction.sendResponse(response);
+            else
+                sipProvider.sendResponse(response);
+            return;
+        }
+        if (!hasContactHeaders(request)) {
+            Vector contactHeaders = getContactHeaders(key);
+            Response response = messageFactory.createResponse(Response.OK, request);
+            if (contactHeaders != null) {
+                for (int i = 0; i < contactHeaders.size(); i++) {
+                    ContactHeader contact = (ContactHeader) contactHeaders.elementAt(i);
+                    response.addHeader(contact);
+                }
+            }
+            if (serverTransaction != null)
+                serverTransaction.sendResponse(response);
+            else
+                sipProvider.sendResponse(response);
+            if (logger.isDebugEnabled()) {
+                logger.debug("Registrar, processRegister(), response sent:" + response.toString());
+            }
+            return;
+        }
+        // bug report by Alistair Coles
+        if (hasStar(request)) {
+            Vector contactHeaders = getContactHeaders(key);
+            if (contactHeaders.size() > 1) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Registrar, processRegister(), more than one contact header" + " is present at the same time as a wild card." + " 400 INVALID REQUEST replied");
+                }
+                Response response = messageFactory.createResponse(Response.BAD_REQUEST, request);
+                if (serverTransaction != null)
+                    serverTransaction.sendResponse(response);
+                else
+                    sipProvider.sendResponse(response);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Registrar, processRegister(), response sent:");
+                    logger.debug(response.toString());
+                }
+                return;
+            }
+            if (!hasExpiresZero(request)) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Registrar, processRegister(), expires time different from" + " 0 with a wild card." + " 400 INVALID REQUEST replied");
+                }
+                Response response = messageFactory.createResponse(Response.BAD_REQUEST, request);
+                if (serverTransaction != null)
+                    serverTransaction.sendResponse(response);
+                else
+                    sipProvider.sendResponse(response);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Registrar, processRegister(), response sent:");
+                    logger.debug(response.toString());
+                }
+                return;
+            }
+            if (logger.isDebugEnabled()) {
+                logger.debug("Registrar, processRegister(), (* and expires=0) " + " we remove the registration!!");
+            }
+            registrationsTable.removeRegistration(key);
+            Response response = messageFactory.createResponse(Response.OK, request);
+            if (serverTransaction != null)
+                serverTransaction.sendResponse(response);
+            else
+                sipProvider.sendResponse(response);
+            if (logger.isDebugEnabled()) {
+                logger.debug("Registrar, processRegister(), response sent:");
+                logger.debug(response.toString());
+            }
+            return;
+        }
+        if (registrationsTable.hasRegistration(key)) {
+            registrationsTable.updateRegistration(key, request);
+            if (proxy.getConfiguration().rfc2543Compatible && key.indexOf(":5060") < 0) {
+                // 
+                // Hack for Cisco IP Phone which registers incorrectly
+                // by not specifying :5060.
+                // 
+                key += ":5060";
+                logger.warn("CISCO IP PHONE FIX:  " + "Updating proper registration for " + key);
+                registrationsTable.updateRegistration(key, request);
+            }
+            Vector contactHeaders = getContactHeaders(key);
+            Response response = messageFactory.createResponse(Response.OK, request);
+            try {
+                if (hasExpiresZero(request)) {
+                    response.addHeader(request.getHeader(ExpiresHeader.NAME));
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            if (contactHeaders != null) {
+                for (int i = 0; i < contactHeaders.size(); i++) {
+                    ContactHeader contact = (ContactHeader) contactHeaders.elementAt(i);
+                    response.addHeader(contact);
+                }
+            }
+            if (serverTransaction != null)
+                serverTransaction.sendResponse(response);
+            else
+                sipProvider.sendResponse(response);
+            if (logger.isDebugEnabled()) {
+                logger.debug("Registrar, processRegister(), response sent:");
+                logger.debug(response.toString());
+            }
+        } else {
+            // Let's check the Expires header:
+            if (hasExpiresZero(request)) {
+                // This message is lost....
+                proxy.getPresenceServer();
+                logger.debug("Registrar, processRegister(), " + "we don't have any record for this REGISTER.");
+                Response response = messageFactory.createResponse(Response.OK, request);
+                if (serverTransaction != null)
+                    serverTransaction.sendResponse(response);
+                else
+                    sipProvider.sendResponse(response);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Registrar, processRegister(), response sent:");
+                    logger.debug(response.toString());
+                }
+                return;
+            }
+            registrationsTable.addRegistration(key, request);
+            if (proxy.getConfiguration().rfc2543Compatible && key.indexOf(":5060") < 0) {
+                // 
+                // Hack for Cisco IP Phone which registers incorrectly
+                // by not specifying :5060.
+                // 
+                key += ":5060";
+                logger.warn("CISCO IP PHONE FIX:  " + "adding proper registration for " + key);
+                registrationsTable.addRegistration(key, request);
+            }
+            if (proxy.isPresenceServer()) {
+                PresenceServer presenceServer = proxy.getPresenceServer();
+                logger.debug("Registrar, processRegister(), " + "  we have to check if we have some SUBSCRIBE stored.");
+            }
+            Vector contactHeaders = getContactHeaders(key);
+            Response response = messageFactory.createResponse(Response.OK, request);
+            if (contactHeaders != null) {
+                for (int i = 0; i < contactHeaders.size(); i++) {
+                    ContactHeader contact = (ContactHeader) contactHeaders.elementAt(i);
+                    response.addHeader(contact);
+                }
+            }
+            if (serverTransaction != null)
+                serverTransaction.sendResponse(response);
+            else
+                sipProvider.sendResponse(response);
+            if (logger.isDebugEnabled()) {
+                logger.debug("Registrar, processRegister(), response sent:");
+                logger.debug(response.toString());
+            }
+        }
+    } catch (IOException ex) {
+        logger.error("Registrar exception raised:", ex);
+    } catch (SipException ex) {
+        logger.error("Registrar exception raised:", ex);
+    } catch (Exception ex) {
+        logger.fatal("Registrar, processRegister(), internal error, " + "exception raised:", ex);
+    }
+}

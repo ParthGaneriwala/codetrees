@@ -1,0 +1,40 @@
+private void fetchBlockByteRange(LocatedBlock block, long start, long end, byte[] buf, int offset) throws IOException {
+    // 
+    // Connect to best DataNode for desired Block, with potential offset
+    // 
+    Socket dn = null;
+    int numAttempts = block.getLocations().length;
+    IOException ioe = null;
+    while (dn == null && numAttempts-- > 0) {
+        DNAddrPair retval = chooseDataNode(block);
+        DatanodeInfo chosenNode = retval.info;
+        InetSocketAddress targetAddr = retval.addr;
+        BlockReader reader = null;
+        try {
+            dn = socketFactory.createSocket();
+            dn.connect(targetAddr, socketTimeout);
+            dn.setSoTimeout(socketTimeout);
+            int len = (int) (end - start + 1);
+            reader = BlockReader.newBlockReader(dn, src, block.getBlock().getBlockId(), block.getBlock().getGenerationStamp(), start, len, buffersize, verifyChecksum, clientName);
+            int nread = reader.readAll(buf, offset, len);
+            if (nread != len) {
+                throw new IOException("truncated return from reader.read(): " + "excpected " + len + ", got " + nread);
+            }
+            return;
+        } catch (ChecksumException e) {
+            ioe = e;
+            LOG.warn("fetchBlockByteRange(). Got a checksum exception for " + src + " at " + block.getBlock() + ":" + e.getPos() + " from " + chosenNode.getName());
+            reportChecksumFailure(src, block.getBlock(), chosenNode);
+        } catch (IOException e) {
+            ioe = e;
+            LOG.warn("Failed to connect to " + targetAddr + " for file " + src + " for block " + block.getBlock().getBlockId() + ":" + StringUtils.stringifyException(e));
+        } finally {
+            IOUtils.closeStream(reader);
+            IOUtils.closeSocket(dn);
+            dn = null;
+        }
+        // Put chosen node into dead list, continue
+        addToDeadNodes(chosenNode);
+    }
+    throw (ioe == null) ? new IOException("Could not read data") : ioe;
+}

@@ -1,0 +1,145 @@
+protected Text createText(String origText, final TextLayout layout, Color4f color, int effect, int effectSize, Color4f effectColor, final int length, boolean useAdvance) {
+    // determine the size of our rendered text
+    final Dimension size = new Dimension();
+    Rectangle2D bounds = layout.getBounds();
+    // computation and rendering
+    if (effect == OUTLINE || effect == GLOW || _isMacOS) {
+        bounds = layout.getOutline(null).getBounds();
+    }
+    if (useAdvance) {
+        size.width = (int) Math.round(Math.max(bounds.getX(), 0) + layout.getAdvance());
+    } else {
+        size.width = (int) Math.round(Math.max(bounds.getX(), 0) + bounds.getWidth());
+    }
+    size.height = (int) (layout.getLeading() + layout.getAscent() + layout.getDescent());
+    // blank text results in a zero sized bounds, bump it up to 1x1 to avoid freakout by the
+    // BufferedImage
+    size.width = Math.max(size.width, 1);
+    size.height = Math.max(size.height, 1);
+    switch(effect) {
+        case SHADOW:
+            size.width += effectSize;
+            size.height += effectSize;
+            break;
+        case OUTLINE:
+            size.width += effectSize * 2;
+            size.height += effectSize * 2;
+            break;
+        case GLOW:
+            size.width += effectSize * 2;
+            size.height += effectSize * 2;
+            break;
+    }
+    // render the text into the image
+    BufferedImage bimage = new BufferedImage(size.width, size.height, BufferedImage.TYPE_4BYTE_ABGR);
+    Graphics2D gfx = bimage.createGraphics();
+    try {
+        if (effect == OUTLINE) {
+            if (_antialias) {
+                gfx.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            }
+            float tx = effectSize - 1;
+            float ty = layout.getAscent() + effectSize;
+            gfx.translate(tx, ty);
+            if (effectSize > 1) {
+                gfx.setColor(new Color(effectColor.r, effectColor.g, effectColor.b, effectColor.a));
+                Stroke oldstroke = gfx.getStroke();
+                gfx.setStroke(new BasicStroke(effectSize, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                gfx.draw(layout.getOutline(null));
+                gfx.setStroke(oldstroke);
+            }
+            gfx.setColor(new Color(color.r, color.g, color.b, color.a));
+            gfx.fill(layout.getOutline(null));
+            if (effectSize == 1) {
+                gfx.setColor(new Color(effectColor.r, effectColor.g, effectColor.b, effectColor.a));
+                gfx.draw(layout.getOutline(null));
+            }
+        } else if (effect == GLOW) {
+            // draw the background of the glow
+            char[] chars = origText.toCharArray();
+            int ox = 0;
+            for (char c : chars) {
+                BufferedImage img = getGlowBackground(c, size.height, effectColor, effectSize);
+                gfx.drawImage(img, null, ox, 0);
+                ox += (img.getWidth() - effectSize * 2);
+            }
+            // draw the foreground of the glow
+            ox = effectSize;
+            for (char c : chars) {
+                if (c != '\n' && c != '\r') {
+                    BufferedImage img = getGlowForeground(c, size.height, color, effectSize);
+                    gfx.drawImage(img, null, ox, 0);
+                    ox += img.getWidth();
+                }
+            }
+        } else {
+            // if we're antialiasing, we need to set a custom compositing rule to avoid
+            // incorrectly blending with the blank background
+            Composite ocomp = gfx.getComposite();
+            if (_antialias) {
+                gfx.setComposite(AlphaComposite.SrcOut);
+                // explicitly activate anti-aliasing
+                if (_isMacOS) {
+                    gfx.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                }
+            }
+            int dx = 0;
+            if (effect == SHADOW) {
+                gfx.setColor(new Color(effectColor.r, effectColor.g, effectColor.b, effectColor.a));
+                float tx = effectSize - 1;
+                float ty = layout.getAscent() + effectSize;
+                if (_isMacOS) {
+                    gfx.translate(tx, ty);
+                    gfx.fill(layout.getOutline(null));
+                    gfx.translate(-tx, -ty);
+                } else {
+                    layout.draw(gfx, tx, ty);
+                }
+                dx = 1;
+                gfx.setComposite(ocomp);
+            }
+            gfx.setColor(new Color(color.r, color.g, color.b, color.a));
+            if (_isMacOS) {
+                gfx.translate(dx, layout.getAscent());
+                gfx.fill(layout.getOutline(null));
+            } else {
+                layout.draw(gfx, dx, layout.getAscent());
+            }
+        }
+    } finally {
+        gfx.dispose();
+    }
+    // TODO: render into a properly sized image in the first place and create a JME Image
+    // directly
+    final Image image = new Image(bimage);
+    // wrap it all up in the right object
+    return new Text() {
+
+        public int getLength() {
+            return length;
+        }
+
+        public Dimension getSize() {
+            return size;
+        }
+
+        public int getHitPos(int x, int y) {
+            TextHitInfo info = layout.hitTestChar(x, y);
+            return info.getInsertionIndex();
+        }
+
+        public int getCursorPos(int index) {
+            Shape[] carets = layout.getCaretShapes(index);
+            Rectangle2D bounds = carets[0].getBounds2D();
+            return (int) Math.round(bounds.getX() + bounds.getWidth() / 2);
+        }
+
+        public void render(Renderer renderer, int x, int y, float alpha) {
+            image.render(renderer, x, y, alpha);
+        }
+
+        public void render(Renderer renderer, int x, int y, int w, int h, float alpha) {
+            image.render(renderer, x, y, w, h, alpha);
+        }
+    };
+}

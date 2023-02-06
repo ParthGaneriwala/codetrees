@@ -1,0 +1,76 @@
+/*. . . . . . . . . . . . . . . . . . . . . . . . . . . . . .*/
+public void build_table_entries(parse_action_table act_table, parse_reduce_table reduce_table) throws internal_error {
+    parse_action_row our_act_row;
+    parse_reduce_row our_red_row;
+    lalr_item itm;
+    parse_action act, other_act;
+    symbol sym;
+    terminal_set conflict_set = new terminal_set();
+    /* pull out our rows from the tables */
+    our_act_row = act_table.under_state[index()];
+    our_red_row = reduce_table.under_state[index()];
+    /* consider each item in our state */
+    for (Enumeration i = items().all(); i.hasMoreElements(); ) {
+        itm = (lalr_item) i.nextElement();
+        /* if its completed (dot at end) then reduce under the lookahead */
+        if (itm.dot_at_end()) {
+            act = new reduce_action(itm.the_production());
+            /* consider each lookahead symbol */
+            for (int t = 0; t < terminal.number(); t++) {
+                /* skip over the ones not in the lookahead */
+                if (!itm.lookahead().contains(t))
+                    continue;
+                /* if we don't already have an action put this one in */
+                if (our_act_row.under_term[t].kind() == parse_action.ERROR) {
+                    our_act_row.under_term[t] = act;
+                } else {
+                    /* we now have at least one conflict */
+                    terminal term = terminal.find(t);
+                    other_act = our_act_row.under_term[t];
+                    /* if the other act was not a shift */
+                    if ((other_act.kind() != parse_action.SHIFT) && (other_act.kind() != parse_action.NONASSOC)) {
+                        /* if we have lower index hence priority, replace it*/
+                        if (itm.the_production().index() < ((reduce_action) other_act).reduce_with().index()) {
+                            /* replace the action */
+                            our_act_row.under_term[t] = act;
+                        }
+                    } else {
+                        /*  Check precedences,see if problem is correctable */
+                        if (fix_with_precedence(itm.the_production(), t, our_act_row, act)) {
+                            term = null;
+                        }
+                    }
+                    if (term != null) {
+                        conflict_set.add(term);
+                    }
+                }
+            }
+        }
+    }
+    /* consider each outgoing transition */
+    for (lalr_transition trans = transitions(); trans != null; trans = trans.next()) {
+        /* if its on an terminal add a shift entry */
+        sym = trans.on_symbol();
+        if (!sym.is_non_term()) {
+            act = new shift_action(trans.to_state());
+            /* if we don't already have an action put this one in */
+            if (our_act_row.under_term[sym.index()].kind() == parse_action.ERROR) {
+                our_act_row.under_term[sym.index()] = act;
+            } else {
+                /* we now have at least one conflict */
+                production p = ((reduce_action) our_act_row.under_term[sym.index()]).reduce_with();
+                /* shift always wins */
+                if (!fix_with_precedence(p, sym.index(), our_act_row, act)) {
+                    our_act_row.under_term[sym.index()] = act;
+                    conflict_set.add(terminal.find(sym.index()));
+                }
+            }
+        } else {
+            /* for non terminals add an entry to the reduce-goto table */
+            our_red_row.under_non_term[sym.index()] = trans.to_state();
+        }
+    }
+    /* if we end up with conflict(s), report them */
+    if (!conflict_set.empty())
+        report_conflicts(conflict_set);
+}

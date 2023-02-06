@@ -1,0 +1,64 @@
+public final void actionPerformed(ActionEvent event) {
+    if (busy)
+        return;
+    String line = getCurrentLine();
+    currentCommand = (currentCommand + line).trim();
+    if (currentCommand.length() != 0) {
+        history.add(line);
+        // ensure space at the beginning of every line, because
+        append("\n");
+        // line properties do not work otherwise
+        markCurrentAs(TextEvalSyntaxView.OUTPUT, Boolean.TRUE);
+        firstTry = true;
+        // don't allow input while we're thinking
+        setEditable(false);
+        busy = true;
+        if (textParser == null) {
+            textParser = new TextAnalyzer(new ClassLoaderResolver(frame.getProject().getClassLoader()), frame.getPackage().getQualifiedName(), TextEvalPane.this);
+        }
+        String retType = textParser.parseCommand(currentCommand);
+        wrappedResult = (retType != null && retType.length() != 0);
+        // see if any variables were declared
+        if (retType == null) {
+            currentCommand = textParser.getAmendedCommand();
+            List<DeclaredVar> declaredVars = textParser.getDeclaredVars();
+            if (declaredVars != null) {
+                Iterator<DeclaredVar> i = declaredVars.iterator();
+                while (i.hasNext()) {
+                    if (newlyDeclareds == null) {
+                        newlyDeclareds = new ArrayList<CodepadVar>();
+                    }
+                    if (autoInitializedVars == null) {
+                        autoInitializedVars = new ArrayList<String>();
+                    }
+                    DeclaredVar dv = i.next();
+                    String declaredName = dv.getName();
+                    if (getLocalVar(declaredName) != null) {
+                        // The variable has already been declared
+                        String errMsg = Config.getString("pkgmgr.codepad.redefinedVar");
+                        errMsg = Utility.mergeStrings(errMsg, declaredName);
+                        showErrorMsg(errMsg);
+                        removeNewlyDeclareds();
+                        return;
+                    }
+                    CodepadVar cpv = new CodepadVar(dv.getName(), dv.getDeclaredType(), dv.isFinal());
+                    newlyDeclareds.add(cpv);
+                    localVars.add(cpv);
+                    // a warning to that effect, once the command has completed.
+                    if (!dv.isInitialized()) {
+                        autoInitializedVars.add(dv.getName());
+                    }
+                }
+            }
+        }
+        invoker = new Invoker(frame, TextEvalPane.this, currentCommand, TextEvalPane.this);
+        invoker.setImports(textParser.getImportStatements());
+        if (!invoker.doFreeFormInvocation(retType)) {
+            // Invocation failed
+            firstTry = false;
+            putError("Invocation failed.");
+        }
+    } else {
+        markAs(TextEvalSyntaxView.OUTPUT, Boolean.TRUE);
+    }
+}

@@ -1,0 +1,65 @@
+public void init() throws IOException {
+    outputDir = conf.get("chukwaCollector.outputDir", "/chukwa");
+    int rotateInterval = conf.getInt("chukwaCollector.rotateInterval", // defaults to 5 minutes
+    1000 * 60 * 5);
+    // check if they've told us the file system to use
+    String fsname = conf.get("writer.hdfs.filesystem");
+    if (fsname == null || fsname.equals("")) {
+        // otherwise try to get the filesystem from org.fit.hiai.hadoop
+        fsname = conf.get("fs.default.name");
+    }
+    log.info("rotateInterval is " + rotateInterval);
+    log.info("ENABLE_ROTATION is " + ENABLE_ROTATION);
+    log.info("outputDir is " + outputDir);
+    log.info("fsname is " + fsname);
+    log.info("filesystem type from org.fit.hiai.hadoop-default.xml is " + conf.get("fs.hdfs.impl"));
+    if (fsname == null) {
+        log.error("no filesystem name");
+        throw new IOException("no filesystem");
+    }
+    try {
+        fs = FileSystem.get(new URI(fsname), conf);
+        if (fs == null) {
+            log.error("can't connect to HDFS at " + fs.getUri());
+            return;
+        } else
+            log.info("filesystem is " + fs.getUri());
+    } catch (IOException e) {
+        log.error("can't connect to HDFS, trying default file system instead (likely to be local)", e);
+        try {
+            fs = FileSystem.get(conf);
+        } catch (IOException err) {
+            log.error("can't connect to default file system either", e);
+        }
+    } catch (URISyntaxException e) {
+        log.error("problem generating new URI from config setting");
+        return;
+    }
+    calendar.setTimeInMillis(System.currentTimeMillis());
+    int minutes = calendar.get(Calendar.MINUTE);
+    // number of minutes at current time
+    // 'tens' digit of current time
+    int dec = minutes / 10;
+    // 'units' digit
+    int m = minutes - (dec * 10);
+    if (m < 5) {
+        m = 5 - m;
+    } else {
+        m = 10 - m;
+    }
+    log.info("Current date [" + calendar.getTime().toString() + "] next schedule [" + m + "]");
+    rotate();
+    timer = new Timer();
+    if (ENABLE_ROTATION) {
+        log.info("sink rotation enabled, rotating every " + rotateInterval + " millis");
+        timer.schedule(new TimerTask() {
+
+            public void run() {
+                rotate();
+            }
+        }, Math.min(rotateInterval, m * 60 * 1000), rotateInterval);
+        statTimer = new Timer();
+    } else
+        log.warn("sink rotation is OFF!!");
+    statTimer.schedule(new StatReportingTask(), 1000, 60 * 1000);
+}

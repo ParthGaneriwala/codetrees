@@ -1,0 +1,162 @@
+public void aplicarPagos(ID empresaId, Date fecha) throws Exception {
+    logger.debug("Dentro del gestor de pagos de tarjetas");
+    Map<String, Integer> pagosPositivosMap = new HashMap<String, Integer>();
+    Map<String, Integer> pagosNegativosMap = new HashMap<String, Integer>();
+    List<Pago__c> pagos = this.obtenerPagos(empresaId, fecha);
+    try {
+        if (pagos != null && pagos.size() > 0) {
+            // Agrupa los pagos en pagos positivos y (negativos o reversiones)
+            for (Iterator<Pago__c> iterPagos = pagos.iterator(); iterPagos.hasNext(); ) {
+                Pago__c pago = iterPagos.next();
+                if (pago.getMonto__c() >= 0) {
+                    if (!pagosPositivosMap.containsKey(pago.getCobro__c().getID())) {
+                        pagosPositivosMap.put(pago.getCobro__c().getID(), 0);
+                    }
+                } else {
+                    if (!pagosNegativosMap.containsKey(pago.getCobro__c().getID())) {
+                        pagosNegativosMap.put(pago.getCobro__c().getID(), 0);
+                    }
+                }
+            }
+            // Procesa los pagos positivos
+            if (pagosPositivosMap.size() > 0) {
+                List<Cobro__c> cobros = this.obtenerCobrosPagosPositivos(pagosPositivosMap);
+                List<Cobro__c> cobrosRehabilitar = new ArrayList<Cobro__c>();
+                for (Iterator<Cobro__c> iterCobros = cobros.iterator(); iterCobros.hasNext(); ) {
+                    float montoDolares = 0;
+                    float montoLempiras = 0;
+                    boolean pagoValidoUSD = true;
+                    boolean pagoValidoHNL = true;
+                    Cobro__c cobro = iterCobros.next();
+                    if (cobro.getPagos__r() != null && cobro.getPagos__r().getSize() > 0) {
+                        for (int i = 0; i < cobro.getPagos__r().getRecords().length; i++) {
+                            Pago__c pago = (Pago__c) cobro.getPagos__r().getRecords()[i];
+                            // sumar segun la divisa.
+                            if (pago.getCurrencyIsoCode().equals(Constantes.MONEDA_DOLARES)) {
+                                montoDolares += pago.getMonto__c();
+                            } else {
+                                if (pago.getCurrencyIsoCode().equals(Constantes.MONEDA_LEMPIRAS)) {
+                                    montoLempiras += pago.getMonto__c();
+                                }
+                            }
+                        }
+                    }
+                    // Verifica pago minimo en dolares
+                    if (cobro.getTC_Ciclo__c() >= Constantes.CICLO_60) {
+                        // Recuperaciones
+                        if (cobro.getTC_Pago_Contado_USD__c() > 0) {
+                            if ((float) montoDolares < (float) cobro.getTC_Pago_Contado_USD__c()) {
+                                pagoValidoUSD = false;
+                            }
+                        }
+                    } else {
+                        // Ciclo Normal
+                        if (cobro.getTC_Pago_Minimo_USD__c() > 0 && cobro.getTC_Nivel_Mora_USD__c() > 0) {
+                            if ((float) montoDolares < (float) cobro.getTC_Pago_Minimo_USD__c()) {
+                                pagoValidoUSD = false;
+                            }
+                        }
+                    }
+                    // Verifica pago minimo en lempiras
+                    if (cobro.getTC_Ciclo__c() >= Constantes.CICLO_60) {
+                        // Recuperaciones
+                        if (cobro.getTC_Pago_Contado_Local__c() > 0) {
+                            if ((float) montoLempiras < (float) cobro.getTC_Pago_Contado_Local__c()) {
+                                pagoValidoHNL = false;
+                            }
+                        }
+                    } else {
+                        if (cobro.getTC_Pago_Minimo_Local__c() > 0 && cobro.getTC_Nivel_Mora_Local__c() > 0) {
+                            if ((float) montoLempiras < (float) cobro.getTC_Pago_Minimo_Local__c()) {
+                                pagoValidoHNL = false;
+                            }
+                        }
+                    }
+                    // Rehabilita la cuenta
+                    if (pagoValidoUSD && pagoValidoHNL) {
+                        Cobro__c cobroTemp = new Cobro__c();
+                        cobroTemp.setId(cobro.getId());
+                        cobroTemp.setEstado_Cobro__c(Constantes.COBRO_REHABILITADO);
+                        cobroTemp.setFecha_Rehabilitacion__c(new Date());
+                        cobrosRehabilitar.add(cobroTemp);
+                    }
+                }
+                // for
+                if (cobrosRehabilitar.size() > 0) {
+                    logger.info("Rehabilitando cobros (" + cobrosRehabilitar.size() + ").");
+                    this.rehabilitarCobros(cobrosRehabilitar);
+                }
+            }
+            // Procesa los pagos negativos
+            if (pagosNegativosMap.size() > 0) {
+                List<Cobro__c> cobros = this.obtenerCobrosPagosNegativos(pagosNegativosMap);
+                List<Cobro__c> cobrosAbrir = new ArrayList<Cobro__c>();
+                for (Iterator<Cobro__c> iterCobros = cobros.iterator(); iterCobros.hasNext(); ) {
+                    double montoDolares = 0;
+                    double montoLempiras = 0;
+                    boolean pagoValidoUSD = true;
+                    boolean pagoValidoHNL = true;
+                    Cobro__c cobro = iterCobros.next();
+                    if (cobro.getPagos__r() != null && cobro.getPagos__r().getSize() > 0) {
+                        for (int i = 0; i < cobro.getPagos__r().getRecords().length; i++) {
+                            Pago__c pago = (Pago__c) cobro.getPagos__r().getRecords()[i];
+                            // sumar segun la divisa.
+                            if (pago.getCurrencyIsoCode().equals(Constantes.MONEDA_DOLARES)) {
+                                montoDolares += pago.getMonto__c();
+                            } else {
+                                if (pago.getCurrencyIsoCode().equals(Constantes.MONEDA_LEMPIRAS)) {
+                                    montoLempiras += pago.getMonto__c();
+                                }
+                            }
+                        }
+                    }
+                    if (cobro.getTC_Ciclo__c() >= Constantes.CICLO_60) {
+                        // Recuperaciones
+                        if (cobro.getTC_Pago_Contado_USD__c() > 0) {
+                            if ((float) montoDolares < (float) cobro.getTC_Pago_Contado_USD__c()) {
+                                pagoValidoUSD = false;
+                            }
+                        }
+                    } else {
+                        // Ciclo Normal
+                        if (cobro.getTC_Pago_Minimo_USD__c() > 0 && cobro.getTC_Nivel_Mora_USD__c() > 0) {
+                            if ((float) montoDolares < (float) cobro.getTC_Pago_Minimo_USD__c()) {
+                                pagoValidoUSD = false;
+                            }
+                        }
+                    }
+                    // Verifica pago minimo en lempiras
+                    if (cobro.getTC_Ciclo__c() >= Constantes.CICLO_60) {
+                        // Recuperaciones
+                        if (cobro.getTC_Pago_Contado_Local__c() > 0) {
+                            if ((float) montoLempiras < (float) cobro.getTC_Pago_Contado_Local__c()) {
+                                pagoValidoHNL = false;
+                            }
+                        }
+                    } else {
+                        if (cobro.getTC_Pago_Minimo_Local__c() > 0 && cobro.getTC_Nivel_Mora_Local__c() > 0) {
+                            if ((float) montoLempiras < (float) cobro.getTC_Pago_Minimo_Local__c()) {
+                                pagoValidoHNL = false;
+                            }
+                        }
+                    }
+                    // Abre la cuenta y rehabilita las llamadas, ademas actualiza la estadistica de cuentas rehabilitadas
+                    if (!pagoValidoUSD || !pagoValidoHNL) {
+                        Cobro__c cobroTemp = new Cobro__c();
+                        cobroTemp.setId(cobro.getId());
+                        cobroTemp.setEstado_Cobro__c(Constantes.COBRO_ABIERTO);
+                        cobroTemp.addFieldsToNull(campoFechaRehabilitacion);
+                        cobrosAbrir.add(cobroTemp);
+                    }
+                }
+                if (cobrosAbrir.size() > 0) {
+                    logger.info("Abriendo cobros (" + cobrosAbrir.size() + ").");
+                    this.revertirRehabilitacionCobro(cobrosAbrir);
+                }
+            }
+        }
+    } catch (Exception e) {
+        logger.error(e);
+        System.err.println(e);
+    }
+}

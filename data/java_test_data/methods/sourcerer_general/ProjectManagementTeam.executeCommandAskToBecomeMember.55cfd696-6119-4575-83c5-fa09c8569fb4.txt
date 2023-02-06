@@ -1,0 +1,67 @@
+public String executeCommandAskToBecomeMember(ActionContext context) {
+    Connection db = null;
+    String errorMessage = null;
+    String projectIdStr = context.getRequest().getParameter("pid");
+    boolean isNotify = DatabaseUtils.parseBoolean(context.getRequest().getParameter("notification"));
+    int emailUpdateSchedule = Integer.parseInt(context.getRequest().getParameter("emailNotification"));
+    User user = getUser(context);
+    Project targetProject = null;
+    int projectId = -1;
+    try {
+        db = getConnection(context);
+        if (projectIdStr == null) {
+            errorMessage = "Project id (pid) must be specified.";
+        } else if (user == null || user.getId() == -1) {
+            errorMessage = "User must be logged in to join.";
+        } else {
+            projectId = Integer.parseInt(context.getRequest().getParameter("pid"));
+            // Project permissions
+            targetProject = retrieveAuthorizedProject(projectId, context);
+            // userCanRequestToJoin rule
+            boolean canRequestToJoin = TeamMemberUtils.userCanRequestToJoin(user, targetProject);
+            if (!canRequestToJoin) {
+                return "PermissionError";
+            }
+        }
+        if (errorMessage != null) {
+            context.getRequest().setAttribute("actionError", errorMessage);
+            return "TeamERROR";
+        } else {
+            // Check for an existing team member record if the status is less then joined update to joined and save
+            TeamMemberList members = new TeamMemberList();
+            members.setProjectId(projectId);
+            members.setUserId(user.getId());
+            members.buildList(db);
+            if (members.size() == 0) {
+                TeamMember member = new TeamMember();
+                member.setProjectId(projectId);
+                member.setUserId(user.getId());
+                if (targetProject.getFeatures().getAllowParticipants()) {
+                    member.setUserLevel(getUserLevel(TeamMember.PARTICIPANT));
+                } else {
+                    member.setUserLevel(getUserLevel(TeamMember.GUEST));
+                }
+                // if a user profile, set to TeamMember.MEMBER
+                User ownerOfTargetProject = UserUtils.loadUser(targetProject.getOwner());
+                if (ownerOfTargetProject.getProfileProjectId() == targetProject.getId()) {
+                    member.setUserLevel(getUserLevel(TeamMember.MEMBER));
+                }
+                member.setStatus(TeamMember.STATUS_JOINED_NEEDS_APPROVAL);
+                member.setEnteredBy(user.getId());
+                member.setModifiedBy(user.getId());
+                member.setNotification(isNotify);
+                member.setEmailUpdatesSchedule(emailUpdateSchedule);
+                member.insert(db);
+                processInsertHook(context, member);
+            } else if (members.size() > 0) {
+                context.getRequest().setAttribute("actionError", "You are already a team member");
+                return "TeamERROR";
+            }
+            context.getRequest().setAttribute("project", targetProject);
+        }
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return "SystemError";
+    }
+    return "AskToBecomeMemberOK";
+}

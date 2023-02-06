@@ -1,0 +1,49 @@
+public void testInjection() throws IOException {
+    MiniDFSCluster cluster = null;
+    String testFile = "/replication-test-file";
+    Path testPath = new Path(testFile);
+    byte[] buffer = new byte[1024];
+    for (int i = 0; i < buffer.length; i++) {
+        buffer[i] = '1';
+    }
+    try {
+        Configuration conf = new Configuration();
+        conf.set("dfs.replication", Integer.toString(numDataNodes));
+        conf.setInt("io.bytes.per.checksum", checksumSize);
+        conf.setBoolean(SimulatedFSDataset.CONFIG_PROPERTY_SIMULATED, true);
+        // first time format
+        cluster = new MiniDFSCluster(0, conf, numDataNodes, true, true, null, null);
+        cluster.waitActive();
+        DFSClient dfsClient = new DFSClient(new InetSocketAddress("localhost", cluster.getNameNodePort()), conf);
+        writeFile(cluster.getFileSystem(), testPath, numDataNodes);
+        waitForBlockReplication(testFile, dfsClient.namenode, numDataNodes, 20);
+        Block[][] blocksList = cluster.getAllBlockReports();
+        cluster.shutdown();
+        cluster = null;
+        /* Start the MiniDFSCluster with more datanodes since once a writeBlock
+       * to a datanode node fails, same block can not be written to it
+       * immediately. In our case some replication attempts will fail.
+       */
+        LOG.info("Restarting minicluster");
+        conf = new Configuration();
+        conf.setBoolean(SimulatedFSDataset.CONFIG_PROPERTY_SIMULATED, true);
+        conf.set("dfs.safemode.threshold.pct", "0.0f");
+        cluster = new MiniDFSCluster(0, conf, numDataNodes * 2, false, true, null, null);
+        Set<Block> uniqueBlocks = new HashSet<Block>();
+        for (int i = 0; i < blocksList.length; ++i) {
+            for (int j = 0; j < blocksList[i].length; ++j) {
+                uniqueBlocks.add(blocksList[i][j]);
+            }
+        }
+        // Insert all the blocks in the first data node
+        LOG.info("Inserting " + uniqueBlocks.size() + " blocks");
+        Block[] blocks = uniqueBlocks.toArray(new Block[uniqueBlocks.size()]);
+        cluster.injectBlocks(0, blocks);
+        dfsClient = new DFSClient(new InetSocketAddress("localhost", cluster.getNameNodePort()), conf);
+        waitForBlockReplication(testFile, dfsClient.namenode, numDataNodes, -1);
+    } finally {
+        if (cluster != null) {
+            cluster.shutdown();
+        }
+    }
+}

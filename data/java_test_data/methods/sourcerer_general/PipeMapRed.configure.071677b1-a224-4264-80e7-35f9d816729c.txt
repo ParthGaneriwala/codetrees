@@ -1,0 +1,51 @@
+public void configure(JobConf job) {
+    try {
+        String argv = getPipeCommand(job);
+        joinDelay_ = job.getLong("stream.joindelay.milli", 0);
+        job_ = job;
+        fs_ = FileSystem.get(job_);
+        nonZeroExitIsFailure_ = job_.getBoolean("stream.non.zero.exit.is.failure", true);
+        doPipe_ = getDoPipe();
+        if (!doPipe_)
+            return;
+        setStreamJobDetails(job);
+        String[] argvSplit = splitArgs(argv);
+        String prog = argvSplit[0];
+        File currentDir = new File(".").getAbsoluteFile();
+        if (new File(prog).isAbsolute()) {
+        // we don't own it. Hope it is executable
+        } else {
+            FileUtil.chmod(new File(currentDir, prog).toString(), "a+x");
+        }
+        // 
+        if (!new File(argvSplit[0]).isAbsolute()) {
+            PathFinder finder = new PathFinder("PATH");
+            finder.prependPathComponent(currentDir.toString());
+            File f = finder.getAbsolutePath(argvSplit[0]);
+            if (f != null) {
+                argvSplit[0] = f.getAbsolutePath();
+            }
+            f = null;
+        }
+        logprintln("PipeMapRed exec " + Arrays.asList(argvSplit));
+        Environment childEnv = (Environment) StreamUtil.env().clone();
+        addJobConfToEnvironment(job_, childEnv);
+        addEnvironment(childEnv, job_.get("stream.addenvironment"));
+        // add TMPDIR environment variable with the value of java.io.tmpdir
+        envPut(childEnv, "TMPDIR", System.getProperty("java.io.tmpdir"));
+        // Start the process
+        ProcessBuilder builder = new ProcessBuilder(argvSplit);
+        builder.environment().putAll(childEnv.toMap());
+        sim = builder.start();
+        clientOut_ = new DataOutputStream(new BufferedOutputStream(sim.getOutputStream(), BUFFER_SIZE));
+        clientIn_ = new DataInputStream(new BufferedInputStream(sim.getInputStream(), BUFFER_SIZE));
+        clientErr_ = new DataInputStream(new BufferedInputStream(sim.getErrorStream()));
+        startTime_ = System.currentTimeMillis();
+        errThread_ = new MRErrorThread();
+        errThread_.start();
+    } catch (Exception e) {
+        logStackTrace(e);
+        LOG.error("configuration exception", e);
+        throw new RuntimeException("configuration exception", e);
+    }
+}

@@ -1,0 +1,51 @@
+void checkpoint(boolean defrag) throws HsqlException {
+    if (filesReadOnly) {
+        return;
+    }
+    database.logger.appLog.logContext(SimpleLog.LOG_NORMAL, "start");
+    deleteNewAndOldFiles();
+    if (cache != null) {
+        if (forceDefrag()) {
+            defrag = true;
+        }
+        if (defrag) {
+            try {
+                cache.defrag();
+            } catch (Exception e) {
+            }
+        } else {
+            cache.close(true);
+            try {
+                cache.backupFile();
+            } catch (IOException e1) {
+                deleteNewBackup();
+                cache.open(false);
+                return;
+            }
+            cache.open(false);
+        }
+    }
+    writeScript(false);
+    properties.setDBModified(HsqlDatabaseProperties.FILES_NEW);
+    closeLog();
+    deleteLog();
+    renameNewScript();
+    renameNewBackup();
+    properties.setDBModified(HsqlDatabaseProperties.FILES_MODIFIED);
+    if (dbLogWriter == null) {
+        return;
+    }
+    openLog();
+    Session[] sessions = database.sessionManager.getAllSessions();
+    try {
+        for (int i = 0; i < sessions.length; i++) {
+            Session session = sessions[i];
+            if (session.isAutoCommit() == false) {
+                dbLogWriter.writeLogStatement(session, session.getAutoCommitStatement());
+            }
+        }
+    } catch (IOException e) {
+        throw Trace.error(Trace.FILE_IO_ERROR, logFileName);
+    }
+    database.logger.appLog.logContext(SimpleLog.LOG_NORMAL, "end");
+}

@@ -1,0 +1,304 @@
+private void processSpecial(String inString) throws BadSpecial, QuitNow, SQLException, SqlToolError {
+    if (inString.equals("\\")) {
+        throw new BadSpecial(rb.getString(SqltoolRB.SPECIAL_UNSPECIFIED));
+    }
+    Matcher m = specialPattern.matcher(plMode ? dereference(inString, false) : inString);
+    if (!m.matches()) {
+        throw new BadSpecial(rb.getString(SqltoolRB.SPECIAL_MALFORMAT));
+    // I think it's impossible to get here, since the pattern is
+    // so liberal.
+    }
+    if (m.groupCount() < 1 || m.groupCount() > 2) {
+        // Failed assertion
+        throw new RuntimeException("Pattern matched, yet captured " + m.groupCount() + " groups");
+    }
+    String arg1 = m.group(1);
+    String other = ((m.groupCount() > 1) ? m.group(2) : null);
+    switch(arg1.charAt(0)) {
+        case 'q':
+            enforce1charSpecial(arg1, 'q');
+            if (other != null) {
+                throw new QuitNow(other);
+            }
+            throw new QuitNow();
+        case 'H':
+            enforce1charSpecial(arg1, 'H');
+            htmlMode = !htmlMode;
+            stdprintln(rb.getString(SqltoolRB.HTML_MODE, Boolean.toString(htmlMode)));
+            return;
+        case 'm':
+            if (arg1.equals("m?") || (arg1.equals("m") && other != null && other.equals("?"))) {
+                stdprintln(DSV_OPTIONS_TEXT + LS + DSV_M_SYNTAX_MSG);
+                return;
+            }
+            if (arg1.length() != 1 || other == null) {
+                throw new BadSpecial(DSV_M_SYNTAX_MSG);
+            }
+            boolean noComments = other.charAt(other.length() - 1) == '*';
+            String skipPrefix = null;
+            if (noComments) {
+                other = other.substring(0, other.length() - 1).trim();
+                if (other.length() < 1) {
+                    throw new BadSpecial(DSV_M_SYNTAX_MSG);
+                }
+            } else {
+                skipPrefix = dsvSkipPrefix;
+            }
+            int colonIndex = other.indexOf(" :");
+            if (colonIndex > -1 && colonIndex < other.length() - 2) {
+                skipPrefix = other.substring(colonIndex + 2);
+                other = other.substring(0, colonIndex).trim();
+            }
+            importDsv(other, skipPrefix);
+            return;
+        case 'x':
+            if (arg1.equals("x?") || (arg1.equals("x") && other != null && other.equals("?"))) {
+                stdprintln(DSV_OPTIONS_TEXT + LS + DSV_X_SYNTAX_MSG);
+                return;
+            }
+            try {
+                if (arg1.length() != 1 || other == null) {
+                    throw new BadSpecial(DSV_X_SYNTAX_MSG);
+                }
+                String tableName = ((other.indexOf(' ') > 0) ? null : other);
+                if (dsvTargetFile == null && tableName == null) {
+                    throw new BadSpecial(rb.getString(SqltoolRB.DSV_TARGETFILE_DEMAND));
+                }
+                File dsvFile = new File((dsvTargetFile == null) ? (tableName + ".dsv") : dsvTargetFile);
+                pwDsv = new PrintWriter((charset == null) ? (new OutputStreamWriter(new FileOutputStream(dsvFile))) : (new OutputStreamWriter(new FileOutputStream(dsvFile), charset)));
+                // Replace with just "(new FileOutputStream(file), charset)"
+                // once use defaultCharset from Java 1.5 in charset init.
+                // above.
+                ResultSet rs = curConn.createStatement().executeQuery((tableName == null) ? other : ("SELECT * FROM " + tableName));
+                List colList = new ArrayList();
+                int[] incCols = null;
+                if (dsvSkipCols != null) {
+                    Set skipCols = new HashSet();
+                    String[] skipColsArray = dsvSkipCols.split("\\s*\\Q" + dsvColDelim + "\\E\\s*");
+                    for (int i = 0; i < skipColsArray.length; i++) {
+                        skipCols.add(skipColsArray[i].toLowerCase());
+                    }
+                    ResultSetMetaData rsmd = rs.getMetaData();
+                    for (int i = 1; i <= rsmd.getColumnCount(); i++) {
+                        if (!skipCols.remove(rsmd.getColumnName(i).toLowerCase())) {
+                            colList.add(new Integer(i));
+                        }
+                    }
+                    if (colList.size() < 1) {
+                        throw new BadSpecial(rb.getString(SqltoolRB.DSV_NOCOLSLEFT, dsvSkipCols));
+                    }
+                    if (skipCols.size() > 0) {
+                        throw new BadSpecial(rb.getString(SqltoolRB.DSV_SKIPCOLS_MISSING, skipCols.toString()));
+                    }
+                    incCols = new int[colList.size()];
+                    for (int i = 0; i < incCols.length; i++) {
+                        incCols[i] = ((Integer) colList.get(i)).intValue();
+                    }
+                }
+                displayResultSet(null, rs, incCols, null);
+                pwDsv.flush();
+                stdprintln(rb.getString(SqltoolRB.FILE_WROTECHARS, Long.toString(dsvFile.length()), dsvFile.toString()));
+            } catch (FileNotFoundException e) {
+                throw new BadSpecial(rb.getString(SqltoolRB.FILE_WRITEFAIL, other), e);
+            } catch (UnsupportedEncodingException e) {
+                throw new BadSpecial(rb.getString(SqltoolRB.FILE_WRITEFAIL, other), e);
+            } finally {
+                // Reset all state changes
+                if (pwDsv != null) {
+                    pwDsv.close();
+                }
+                pwDsv = null;
+            }
+            return;
+        case 'd':
+            if (arg1.equals("d?") || (arg1.equals("d") && other != null && other.equals("?"))) {
+                stdprintln(D_OPTIONS_TEXT);
+                return;
+            }
+            if (arg1.length() == 2) {
+                listTables(arg1.charAt(1), other);
+                return;
+            }
+            if (arg1.length() == 1 && other != null)
+                try {
+                    int space = other.indexOf(' ');
+                    if (space < 0) {
+                        describe(other, null);
+                    } else {
+                        describe(other.substring(0, space), other.substring(space + 1).trim());
+                    }
+                    return;
+                } catch (SQLException se) {
+                    throw new BadSpecial(rb.getString(SqltoolRB.METADATA_FETCH_FAIL), se);
+                }
+            throw new BadSpecial(rb.getString(SqltoolRB.SPECIAL_D_LIKE));
+        case 'o':
+            enforce1charSpecial(arg1, 'o');
+            if (other == null) {
+                if (pwQuery == null) {
+                    throw new BadSpecial(rb.getString(SqltoolRB.OUTPUTFILE_NONETOCLOSE));
+                }
+                closeQueryOutputStream();
+                return;
+            }
+            if (pwQuery != null) {
+                stdprintln(rb.getString(SqltoolRB.OUTPUTFILE_REOPENING));
+                closeQueryOutputStream();
+            }
+            try {
+                pwQuery = new PrintWriter((charset == null) ? (new OutputStreamWriter(new FileOutputStream(other, true))) : (new OutputStreamWriter(new FileOutputStream(other, true), charset)));
+                // Replace with just "(new FileOutputStream(file), charset)"
+                // once use defaultCharset from Java 1.5 in charset init.
+                // above.
+                /* Opening in append mode, so it's possible that we will
+                     * be adding superfluous <HTML> and <BODY> tags.
+                     * I think that browsers can handle that */
+                pwQuery.println((htmlMode ? ("<HTML>" + LS + "<!--") : "#") + " " + (new java.util.Date()) + ".  " + rb.getString(SqltoolRB.OUTPUTFILE_HEADER, getClass().getName()) + (htmlMode ? (" -->" + LS + LS + "<BODY>") : LS));
+                pwQuery.flush();
+            } catch (Exception e) {
+                throw new BadSpecial(rb.getString(SqltoolRB.FILE_WRITEFAIL, other), e);
+            }
+            return;
+        case 'i':
+            enforce1charSpecial(arg1, 'i');
+            if (other == null) {
+                throw new BadSpecial(rb.getString(SqltoolRB.SQLFILE_NAME_DEMAND));
+            }
+            try {
+                SqlFile sf = new SqlFile(new File(other), false, userVars);
+                sf.recursed = true;
+                // Share the possiblyUncommitted state
+                sf.possiblyUncommitteds = possiblyUncommitteds;
+                sf.plMode = plMode;
+                sf.execute(curConn, continueOnError);
+            } catch (ContinueException ce) {
+                throw ce;
+            } catch (BreakException be) {
+                String beMessage = be.getMessage();
+                // Handle "file" and plain breaks (by doing nothing)
+                if (beMessage != null && !beMessage.equals("file")) {
+                    throw be;
+                }
+            } catch (QuitNow qn) {
+                throw qn;
+            } catch (Exception e) {
+                throw new BadSpecial(rb.getString(SqltoolRB.SQLFILE_EXECUTE_FAIL, other), e);
+            }
+            return;
+        case 'p':
+            enforce1charSpecial(arg1, 'p');
+            if (other == null) {
+                stdprintln(true);
+            } else {
+                stdprintln(other, true);
+            }
+            return;
+        case 'a':
+            enforce1charSpecial(arg1, 'a');
+            if (other != null) {
+                curConn.setAutoCommit(Boolean.valueOf(other).booleanValue());
+            }
+            stdprintln(rb.getString(SqltoolRB.A_SETTING, Boolean.toString(curConn.getAutoCommit())));
+            return;
+        case '=':
+            enforce1charSpecial(arg1, '=');
+            curConn.commit();
+            possiblyUncommitteds.set(false);
+            stdprintln(rb.getString(SqltoolRB.COMMITTED));
+            return;
+        case 'b':
+            if (arg1.length() == 1) {
+                if (other != null) {
+                    throw new BadSpecial(rb.getString(SqltoolRB.SPECIAL_B_MALFORMAT));
+                }
+                fetchBinary = true;
+                return;
+            }
+            if (arg1.charAt(1) == 'p') {
+                if (other != null) {
+                    throw new BadSpecial(rb.getString(SqltoolRB.SPECIAL_B_MALFORMAT));
+                }
+                doPrepare = true;
+                return;
+            }
+            if ((arg1.charAt(1) != 'd' && arg1.charAt(1) != 'l') || other == null) {
+                throw new BadSpecial(rb.getString(SqltoolRB.SPECIAL_B_MALFORMAT));
+            }
+            File file = new File(other);
+            try {
+                if (arg1.charAt(1) == 'd') {
+                    dump(file);
+                } else {
+                    binBuffer = SqlFile.loadBinary(file);
+                    stdprintln(rb.getString(SqltoolRB.BINARY_LOADEDBYTESINTO, binBuffer.length));
+                }
+            } catch (BadSpecial bs) {
+                throw bs;
+            } catch (IOException ioe) {
+                throw new BadSpecial(rb.getString(SqltoolRB.BINARY_FILEFAIL, other), ioe);
+            }
+            return;
+        case '*':
+        case 'c':
+            enforce1charSpecial(arg1, '=');
+            if (other != null) {
+                // But remember that we have to abort on some I/O errors.
+                continueOnError = Boolean.valueOf(other).booleanValue();
+            }
+            stdprintln(rb.getString(SqltoolRB.C_SETTING, Boolean.toString(continueOnError)));
+            return;
+        case '?':
+            stdprintln(rb.getString(SqltoolRB.SPECIAL_HELP));
+            return;
+        case '!':
+            // N.b. This DOES NOT HANDLE UNIX shell wildcards, since there
+            // is no UNIX shell involved.
+            // Doesn't make sense to incur overhead of a shell without
+            // stdin capability.
+            // Can't provide stdin to the executed program because
+            // the forked program could gobble up program input,
+            // depending on how SqlTool was invoked, nested scripts,
+            // etc.
+            // I'd like to execute the user's default shell if they
+            // ran "\!" with no argument, but (a) there is no portable
+            // way to determine the user's default or login shell; and
+            // (b) shell is useless without stdin ability.
+            InputStream stream;
+            byte[] ba = new byte[1024];
+            String extCommand = ((arg1.length() == 1) ? "" : arg1.substring(1)) + ((arg1.length() > 1 && other != null) ? " " : "") + ((other == null) ? "" : other);
+            if (extCommand.trim().length() < 1)
+                throw new BadSpecial(rb.getString(SqltoolRB.BANG_INCOMPLETE));
+            try {
+                Runtime runtime = Runtime.getRuntime();
+                Process proc = ((wincmdPattern == null) ? runtime.exec(extCommand) : runtime.exec(genWinArgs(extCommand)));
+                proc.getOutputStream().close();
+                int i;
+                stream = proc.getInputStream();
+                while ((i = stream.read(ba)) > 0) {
+                    stdprint(new String(ba, 0, i));
+                }
+                stream.close();
+                stream = proc.getErrorStream();
+                while ((i = stream.read(ba)) > 0) {
+                    errprint(new String(ba, 0, i));
+                }
+                stream.close();
+                if (proc.waitFor() != 0) {
+                    throw new BadSpecial(rb.getString(SqltoolRB.BANG_COMMAND_FAIL, extCommand));
+                }
+            } catch (BadSpecial bs) {
+                throw bs;
+            } catch (Exception e) {
+                throw new BadSpecial(rb.getString(SqltoolRB.BANG_COMMAND_FAIL, extCommand), e);
+            }
+            return;
+        case '.':
+            enforce1charSpecial(arg1, '.');
+            rawMode = RAW_EMPTY;
+            if (interactive) {
+                stdprintln(RAW_LEADIN_MSG);
+            }
+            return;
+    }
+    throw new BadSpecial(rb.getString(SqltoolRB.SPECIAL_UNKNOWN, Character.toString(arg1.charAt(0))));
+}

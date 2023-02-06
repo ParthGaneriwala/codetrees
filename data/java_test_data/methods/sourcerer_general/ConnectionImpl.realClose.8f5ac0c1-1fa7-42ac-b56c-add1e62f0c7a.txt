@@ -1,0 +1,71 @@
+public void realClose(boolean calledExplicitly, boolean issueRollback, boolean skipLocalTeardown, Throwable reason) throws SQLException {
+    SQLException sqlEx = null;
+    if (this.isClosed()) {
+        return;
+    }
+    this.forceClosedReason = reason;
+    try {
+        if (!skipLocalTeardown) {
+            if (!getAutoCommit() && issueRollback) {
+                try {
+                    rollback();
+                } catch (SQLException ex) {
+                    sqlEx = ex;
+                }
+            }
+            reportMetrics();
+            if (getUseUsageAdvisor()) {
+                if (!calledExplicitly) {
+                    String message = "Connection implicitly closed by Driver. You should call Connection.close() from your code to free resources more efficiently and avoid resource leaks.";
+                    this.eventSink.consumeEvent(new ProfilerEvent(// $NON-NLS-1$
+                    ProfilerEvent.TYPE_WARN, // $NON-NLS-1$
+                    "", this.getCatalog(), this.getId(), -1, -1, System.currentTimeMillis(), 0, Constants.MILLIS_I18N, null, this.pointOfOrigin, message));
+                }
+                long connectionLifeTime = System.currentTimeMillis() - this.connectionCreationTimeMillis;
+                if (connectionLifeTime < 500) {
+                    String message = "Connection lifetime of < .5 seconds. You might be un-necessarily creating short-lived connections and should investigate connection pooling to be more efficient.";
+                    this.eventSink.consumeEvent(new ProfilerEvent(// $NON-NLS-1$
+                    ProfilerEvent.TYPE_WARN, // $NON-NLS-1$
+                    "", this.getCatalog(), this.getId(), -1, -1, System.currentTimeMillis(), 0, Constants.MILLIS_I18N, null, this.pointOfOrigin, message));
+                }
+            }
+            try {
+                closeAllOpenStatements();
+            } catch (SQLException ex) {
+                sqlEx = ex;
+            }
+            if (this.io != null) {
+                try {
+                    this.io.quit();
+                } catch (Exception e) {
+                    ;
+                }
+            }
+        } else {
+            this.io.forceClose();
+        }
+        if (this.statementInterceptors != null) {
+            for (int i = 0; i < this.statementInterceptors.size(); i++) {
+                ((StatementInterceptorV2) this.statementInterceptors.get(i)).destroy();
+            }
+        }
+        if (this.exceptionInterceptor != null) {
+            this.exceptionInterceptor.destroy();
+        }
+    } finally {
+        this.openStatements = null;
+        this.io = null;
+        this.statementInterceptors = null;
+        this.exceptionInterceptor = null;
+        ProfilerEventHandlerFactory.removeInstance(this);
+        synchronized (this) {
+            if (this.cancelTimer != null) {
+                this.cancelTimer.cancel();
+            }
+        }
+        this.isClosed = true;
+    }
+    if (sqlEx != null) {
+        throw sqlEx;
+    }
+}

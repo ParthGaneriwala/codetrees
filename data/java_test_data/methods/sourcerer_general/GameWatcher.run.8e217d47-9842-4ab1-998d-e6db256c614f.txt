@@ -1,0 +1,83 @@
+@Override
+public void run() {
+    theClient.logger.print_info("Game Watcher Is Running! ");
+    try {
+        watching = true;
+        ClientServerProtocol prot = new ClientServerProtocol(ClientServerProtocol.msgType.CLIENT);
+        Isocket = new ServerSocket(theClient.getWatchPort());
+        watchSocket = Isocket.accept();
+        watcherIn = new BufferedReader(new InputStreamReader(watchSocket.getInputStream()));
+        // set the timeout to read
+        watchSocket.setSoTimeout((int) (moveTime * 1000));
+        String inputLine = null;
+        super.initTimers();
+        plays = red;
+        writeToScreen("Waiting for a transmit message...", MsgType.info);
+        while (watching) {
+            this.updatePlayerTimer(plays.getTimer(), 2);
+            while ((inputLine = watcherIn.readLine()) != null) {
+                if (inputLine.equals("")) {
+                    break;
+                }
+                if (inputLine == null) {
+                    throw new IOException();
+                }
+                theClient.logger.print_info("Transmition received: " + inputLine);
+                String[] parsed = prot.parseCommand(inputLine);
+                if (parsed == null) {
+                    theClient.logger.print_error(prot.result + ". Bad move report received!");
+                } else if (parsed[0].equals(ClientServerProtocol.GAMEMOVE)) {
+                    Color c = (parsed[3].equals(red.getColor().getColorStr())) ? Color.RED : Color.BLUE;
+                    String playingName = (parsed[1].equals(this.bluePlayer)) ? this.redPlayer : this.bluePlayer;
+                    try {
+                        state = gameBoard.playColumn(Integer.parseInt(parsed[2]), c);
+                        SwingUtilities.invokeAndWait(new BoardGUI.Painter(((BoardGUI) gameBoard).getColumnsFil(), Integer.parseInt(parsed[2]), c, slots));
+                        writeToScreen("Waiting for " + playingName + " turn...", MsgType.info);
+                    } catch (Exception e) {
+                        popupDialog("Bad move or other problem: " + e.getMessage(), MsgType.error);
+                    }
+                } else if (parsed[0].equals(ClientServerProtocol.GAMEREPORT)) {
+                    winner = parseReport(parsed);
+                    if (winner != null) {
+                        if (winner.equals(Game.gameWinner.NO_WINNER)) {
+                            writeToScreen("There is no winner!", MsgType.info);
+                        } else {
+                            writeToScreen(winner + " is the winner!", MsgType.info);
+                        }
+                        throw new GameEndedException();
+                    } else {
+                        theClient.logger.print_error("Don't understand who is the winner");
+                        throw new GameEndedException();
+                    }
+                } else if (parsed[0].equals(ClientServerProtocol.MOVE_TIME)) {
+                    plays.getTimer().updateTimer(Integer.parseInt(parsed[1]));
+                    this.updatePlayerTimer(plays.getTimer(), 2);
+                    timeUpdated = true;
+                    continue;
+                } else if (parsed[0].equals(ClientServerProtocol.DENIED)) {
+                    popupDialog("Cannot watch this game, sorry", MsgType.error);
+                    throw new GameEndedException();
+                } else {
+                    theClient.logger.print_error("I don't understand what transmitter send");
+                    throw new GameEndedException();
+                }
+            }
+            if (timeUpdated) {
+                timeUpdated = false;
+                continue;
+            }
+            super.nextPlayer();
+        }
+    } catch (SocketTimeoutException e) {
+        theClient.logger.print_info(e.getMessage() + ". Stopping watching...");
+        popupDialog("Connection Timeout , something went wrong , please reconnect!", MsgType.error);
+    } catch (IOException e) {
+        theClient.logger.print_info(e.getMessage() + ". Stopping watching...");
+    // writeToScreen("The other player closed the connection!");
+    } catch (GameEndedException myExc) {
+        theClient.logger.print_info("The game is over!");
+    } finally {
+        this.stopTimers();
+        this.stopWatching();
+    }
+}

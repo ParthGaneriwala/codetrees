@@ -1,0 +1,69 @@
+// 
+// TO DO: Investigate using NIO to do this faster
+private void storeReader(MysqlIO mysql, int parameterIndex, Buffer packet, Reader inStream) throws SQLException {
+    String forcedEncoding = this.connection.getClobCharacterEncoding();
+    String clobEncoding = (forcedEncoding == null ? this.connection.getEncoding() : forcedEncoding);
+    int maxBytesChar = 2;
+    if (clobEncoding != null) {
+        if (!clobEncoding.equals("UTF-16")) {
+            maxBytesChar = this.connection.getMaxBytesPerChar(clobEncoding);
+            if (maxBytesChar == 1) {
+                // for safety
+                maxBytesChar = 2;
+            }
+        } else {
+            maxBytesChar = 4;
+        }
+    }
+    char[] buf = new char[BLOB_STREAM_READ_BUF_SIZE / maxBytesChar];
+    int numRead = 0;
+    int bytesInPacket = 0;
+    int totalBytesRead = 0;
+    int bytesReadAtLastSend = 0;
+    int packetIsFullAt = this.connection.getBlobSendChunkSize();
+    try {
+        packet.clear();
+        packet.writeByte((byte) MysqlDefs.COM_LONG_DATA);
+        packet.writeLong(this.serverStatementId);
+        packet.writeInt((parameterIndex));
+        boolean readAny = false;
+        while ((numRead = inStream.read(buf)) != -1) {
+            readAny = true;
+            byte[] valueAsBytes = StringUtils.getBytes(buf, null, clobEncoding, this.connection.getServerCharacterEncoding(), 0, numRead, this.connection.parserKnowsUnicode(), getExceptionInterceptor());
+            packet.writeBytesNoNull(valueAsBytes, 0, valueAsBytes.length);
+            bytesInPacket += valueAsBytes.length;
+            totalBytesRead += valueAsBytes.length;
+            if (bytesInPacket >= packetIsFullAt) {
+                bytesReadAtLastSend = totalBytesRead;
+                mysql.sendCommand(MysqlDefs.COM_LONG_DATA, null, packet, true, null, 0);
+                bytesInPacket = 0;
+                packet.clear();
+                packet.writeByte((byte) MysqlDefs.COM_LONG_DATA);
+                packet.writeLong(this.serverStatementId);
+                packet.writeInt((parameterIndex));
+            }
+        }
+        if (totalBytesRead != bytesReadAtLastSend) {
+            mysql.sendCommand(MysqlDefs.COM_LONG_DATA, null, packet, true, null, 0);
+        }
+        if (!readAny) {
+            mysql.sendCommand(MysqlDefs.COM_LONG_DATA, null, packet, true, null, 0);
+        }
+    } catch (IOException ioEx) {
+        SQLException sqlEx = SQLError.createSQLException(Messages.getString(// $NON-NLS-1$
+        "ServerPreparedStatement.24") + ioEx.toString(), SQLError.SQL_STATE_GENERAL_ERROR, getExceptionInterceptor());
+        sqlEx.initCause(ioEx);
+        throw sqlEx;
+    } finally {
+        if (this.connection.getAutoClosePStmtStreams()) {
+            if (inStream != null) {
+                try {
+                    inStream.close();
+                } catch (IOException ioEx) {
+                    // ignore
+                    ;
+                }
+            }
+        }
+    }
+}

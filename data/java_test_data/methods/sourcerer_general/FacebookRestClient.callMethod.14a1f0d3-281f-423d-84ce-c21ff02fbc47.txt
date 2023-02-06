@@ -1,0 +1,42 @@
+protected Document callMethod(FacebookMethod method, Collection<Pair<String, CharSequence>> paramPairs) throws FacebookException, IOException {
+    HashMap<String, CharSequence> params = new HashMap<String, CharSequence>(2 * method.numTotalParams());
+    params.put("method", method.methodName());
+    params.put("api_key", _apiKey);
+    params.put("v", TARGET_API_VERSION);
+    if (method.requiresSession()) {
+        params.put("call_id", Long.toString(System.currentTimeMillis()));
+        params.put("session_key", _sessionKey);
+    }
+    CharSequence oldVal;
+    for (Pair<String, CharSequence> p : paramPairs) {
+        oldVal = params.put(p.first, p.second);
+        if (oldVal != null)
+            System.err.printf("For parameter %s, overwrote old value %s with new value %s.", p.first, oldVal, p.second);
+    }
+    assert (!params.containsKey("sig"));
+    String signature = generateSignature(FacebookSignatureUtil.convert(params.entrySet()), method.requiresSession());
+    params.put("sig", signature);
+    try {
+        DocumentBuilder builder = DocumentBuilderFactory.newInstance().newDocumentBuilder();
+        boolean doHttps = this.isDesktop() && FacebookMethod.AUTH_GET_SESSION.equals(method);
+        InputStream data = method.takesFile() ? postFileRequest(method.methodName(), params) : postRequest(method.methodName(), params, doHttps, true);
+        Document doc = builder.parse(data);
+        doc.normalizeDocument();
+        stripEmptyTextNodes(doc);
+        if (isDebug())
+            // TEST
+            FacebookRestClient.printDom(doc, method.methodName() + "| ");
+        NodeList errors = doc.getElementsByTagName(ERROR_TAG);
+        if (errors.getLength() > 0) {
+            int errorCode = Integer.parseInt(errors.item(0).getFirstChild().getFirstChild().getTextContent());
+            String message = errors.item(0).getFirstChild().getNextSibling().getTextContent();
+            throw new FacebookException(errorCode, message);
+        }
+        return doc;
+    } catch (javax.xml.parsers.ParserConfigurationException ex) {
+        System.err.println("huh?" + ex);
+    } catch (org.xml.sax.SAXException ex) {
+        throw new IOException("error parsing xml");
+    }
+    return null;
+}

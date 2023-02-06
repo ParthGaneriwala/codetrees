@@ -1,0 +1,95 @@
+public void put(Key key, Value<byte[]> value) {
+    CacheBlock block = map.get(key);
+    long keyOffset2Len = 0;
+    if (block == null) {
+        // write a new block
+        ChannelStore channel = list.get(curIndex);
+        int size = findBlockSize(value.getData().length);
+        byte[] keyBytes = toKeyBytes(key);
+        lock.lock();
+        boolean add = true;
+        try {
+            block = makeBlock(channel.getTotalRecord(), size, value.getData().length, 1L, value.getNode());
+            CacheBlock tmp = map.putIfAbsent(key, block);
+            // reassing block from tmp, no longer new block
+            if (tmp != null) {
+                checkVersion(tmp, value);
+                // check if tmp's block size can hold data
+                if (tmp.getBlockSize() < value.getData().length)
+                    copyBlock(tmp, block);
+                else
+                    // other wise add is false
+                    add = false;
+                // change pointer
+                block = tmp;
+            } else {
+                // add mode
+                keyOffset2Len = convertOffset4Len(channel.getKeyOffset(), keyBytes.length);
+                // update offset position
+                channel.setTotalRecord(channel.getTotalRecord() + 1);
+                channel.setDataOffset(channel.getDataOffset() + size);
+                channel.setKeyOffset(channel.getKeyOffset() + keyBytes.length);
+            }
+            // update node
+            block.setNode(value.getNode());
+            // update cache data
+            block.setData(value.getData());
+        } finally {
+            lock.unlock();
+        }
+        try {
+            // base on add mode
+            if (!add)
+                channel.writeExistBlock(block);
+            else
+                channel.writeNewBlock(block, keyOffset2Len, keyBytes);
+        } catch (IOException ex) {
+            logger.error(ex.getMessage(), ex);
+            throw new StoreException(ex.getMessage());
+        }
+    } else {
+        // lock on block
+        synchronized (block) {
+            // double check , in case deleted
+            if (map.get(key) == null)
+                map.put(key, block);
+            ChannelStore channel = getChannel(block);
+            // only validate for vrsion no exist, means > 0
+            checkVersion(block, value);
+            block.setNode(value.getNode());
+            block.setData(value.getData());
+            block.setDataLen(value.getData().length);
+            // if ( block.getData() == null ) {
+            checkFileSize(block.getDataOffset(), value.getData().length);
+            if (value.getData().length > block.getBlockSize()) {
+                int size = findBlockSize(value.getData().length);
+                // record overflow
+                overflow.addAndGet(size);
+                byte[] keyBytes = toKeyBytes(key);
+                lock.lock();
+                try {
+                    block.setDataOffset(channel.getDataOffset());
+                    block.setBlockSize(size);
+                    block.setDataLen(value.getData().length);
+                    channel.setDataOffset(channel.getDataOffset() + size);
+                } finally {
+                    lock.unlock();
+                }
+                keyOffset2Len = convertOffset4Len(channel.getKeyOffset(), keyBytes.length);
+                try {
+                    channel.writeNewBlock(block, keyOffset2Len, keyBytes);
+                } catch (IOException ex) {
+                    logger.error(ex.getMessage(), ex);
+                    throw new StoreException(ex.getMessage());
+                }
+            } else {
+                try {
+                    channel.writeExistBlock(block);
+                } catch (IOException ex) {
+                    logger.error(ex.getMessage(), ex);
+                    throw new StoreException(ex.getMessage());
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,38 @@
+@Override
+protected Result evaluate(final LogicContext context, final Integer patientId, final Map<String, Object> parameters) throws LogicException {
+    Result result = new Result();
+    PregnancyDateRule pregnancyDateRule = new PregnancyDateRule();
+    Result pregnancyDateResults = pregnancyDateRule.eval(context, patientId, parameters);
+    if (CollectionUtils.isNotEmpty(pregnancyDateResults)) {
+        Result pregnancyDateResult = pregnancyDateResults.latest();
+        Date pregnancyDate = pregnancyDateResult.toDatetime();
+        ObsWithRestrictionRule obsWithRestrictionRule = new ObsWithStringRestrictionRule();
+        parameters.put(EvaluableConstants.OBS_FETCH_SIZE, 1);
+        List<String> conceptNames = Arrays.asList(EvaluableNameConstants.HIV_ENZYME_IMMUNOASSAY_QUALITATIVE, EvaluableNameConstants.HIV_RAPID_TEST_QUALITATIVE);
+        // fetch the latest elisa or rapid elisa
+        parameters.put(EvaluableConstants.OBS_CONCEPT, conceptNames);
+        Boolean elisaExists = Boolean.FALSE;
+        Result elisaResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+        if (CollectionUtils.isNotEmpty(elisaResults)) {
+            Result elisaResult = elisaResults.latest();
+            Concept positiveConcept = CacheUtils.getConcept(EvaluableNameConstants.POSITIVE);
+            if (OpenmrsUtil.nullSafeEquals(elisaResult.toConcept(), positiveConcept))
+                elisaExists = Boolean.TRUE;
+            if (elisaResult.getResultDate().after(pregnancyDate))
+                elisaExists = Boolean.TRUE;
+        }
+        if (!elisaExists) {
+            parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.TESTS_ORDERED));
+            parameters.put(EvaluableConstants.OBS_VALUE_CODED, conceptNames);
+            Result testResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+            Calendar calendar = Calendar.getInstance();
+            calendar.add(Calendar.MONTH, -1);
+            Date lastMonth = calendar.getTime();
+            Boolean displayReminder = Boolean.TRUE;
+            // if no test or the test was ordered more than one months ago, then show the reminder
+            if (CollectionUtils.isEmpty(testResults) || testResults.getResultDate().before(lastMonth))
+                result.add(new Result(String.valueOf(parameters.get(ReminderParameters.DISPLAYED_REMINDER_TEXT))));
+        }
+    }
+    return result;
+}

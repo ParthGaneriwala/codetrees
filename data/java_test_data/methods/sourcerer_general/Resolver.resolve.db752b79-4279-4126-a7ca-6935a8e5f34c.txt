@@ -1,0 +1,397 @@
+// public int parse
+@SuppressWarnings({ "fallthrough", "unchecked" })
+public /**
+ * Process a set of Actions that are dependent upon each other, and
+ * if all of them succeed run them. Dependent actions are actions that
+ * are only allowed to run if the other ones run too (like pushing an
+ * object, which will only work if both the pusher and the pushed
+ * object can move). This method has two steps. First, it runs through
+ * all of the rules associated with each Action (as determined by the
+ * "parse" function). If all of them return Constants.SUCCESS, then
+ * it goes ahead ahead and runs the "inworld" function of the Action,
+ * passes the Action on to the RepresentationResolver to handle the
+ * "inrepresentation" function, and if the Action needs to send
+ * another Action to be handled by the other players and/or the
+ * server, that Action is added to a list of Actions to send through
+ * the IO. (An example of this last case is with the "move" Action,
+ * which determines where to move the GameElement and then sends a
+ * "move to" Action through IO so that the (other) Clients don't have
+ * to recalculate anything. They can just move the element to its new
+ * location.)
+ * If a rule does not return "Constants.SUCCESS" for one reason or
+ * another, this method looks at what the rule _did_ return and
+ * handles the situation accordingly. (See below for the different
+ * return codes.)
+ *
+ * @param _rules a two-dimensional array of each array of rules
+ * associated with each action
+ * @param _actions an array of all of the actions to resolve
+ * @param _relevantElements an array of the IncrementedArrays holding
+ * all of the GameElements that might be relevant to each action.
+ * @see ScriptEngine
+ * @see IncrementedArray
+ * @return whether the resolving was successfully completed or had
+ * some other return code.
+ */
+int resolve(Rule[][] _rules, Action[] _actions, IncrementedArray<GameElement>[] _relevantElements) {
+    IncrementedArray<Action> actionsToSend = new IncrementedArray<Action>(Constants.DEFAULT_ACTIONS_TO_SEND);
+    IncrementedArray returnVals;
+    int status;
+    int i;
+    Action currentAction;
+    boolean runAgain = false;
+    GameElement[] nouns, other;
+    GameElement subject, directObject, indirectObject;
+    // Run the following for each Action...
+    for (i = 0; i < _actions.length; i++) {
+        currentAction = _actions[i];
+        /* Here, we grab the Action's nouns, which should be of the form:
+			 *
+			 * 	subject, directObject, indirectObject
+			 *
+			 * ... and through them into individual variables
+			 * (e.g., "subject"). The idea is that we want to pass the easiest
+			 * terminology onto the scripts (since those are created by
+			 * advanced users). Thus, rule and action scripts receive a
+			 * "subject," a "directObject," an "indirectObject," and an array
+			 * of "other" GameElements (if the list is longer than three,
+			 * the extras are stored as "other" just so that we don't lose
+			 * them), and if any of these don't exist, they are passed as
+			 * null.
+			 *
+			 * We do this by assuming that any Action will only have a
+			 * direct object if it also has a subject, and it will only have
+			 * an indirect object if it also has a direct object (since none
+			 * of our actions to date can have the former without the latter).
+			 * Thus, we switch on the length of the nouns array, and allow
+			 * fallthrough. That is, our case defaults to a length of "more
+			 * than three," and sets the "other" Object to something other
+			 * than null. It then _does not break_, so it runs the code in
+			 * the next case (length of 3) too. At length three, we set
+			 * "indirectObject," and then again don't break. Thus, if the
+			 * length of the "nouns" array is three or more, the switch will
+			 * also run the code for the length of two. At that length, we
+			 * set the "directObject," and again (surprise!) don't break. Now,
+			 * if the array is of length two or greater, the switch will also
+			 * run the code for the length of one. At that length, we set the
+			 * "subject," and break. In all, we can handle any length of
+			 * "nouns" array without any repetition.
+			 */
+        nouns = currentAction.getNouns();
+        subject = directObject = indirectObject = null;
+        other = null;
+        if (nouns != null) {
+            switch(nouns.length) {
+                default:
+                    other = new GameElement[nouns.length - 3];
+                    System.arraycopy(nouns, 3, other, 0, other.length);
+                case 3:
+                    indirectObject = nouns[2];
+                case 2:
+                    directObject = nouns[1];
+                case 1:
+                    subject = nouns[0];
+                    break;
+            }
+        }
+        // Go through each rule associated with this action...
+        for (Rule rule : _rules[i]) {
+            try {
+                /* Put everything we need into the rule script and then run
+					 * it (using "eval").
+					 */
+                ScriptEngine engine = manager.getEngineByName(rule.language());
+                // Assume that the action will succeed
+                status = Constants.SUCCESS;
+                engine.put("action", currentAction);
+                // currently unused
+                engine.put("owner", rule.owner());
+                engine.put("subject", subject);
+                engine.put("directObject", directObject);
+                engine.put("indirectObject", indirectObject);
+                engine.put("other", other);
+                engine.put("relevant", _relevantElements[i]);
+                engine.put("argv", currentAction.parameters().pack());
+                engine.put("status", status);
+                engine.eval(rule.function());
+                /* Get the status back out of the engine. Because many scripts
+					 * have dynamic typing, setting the status to an int does not
+					 * guarantee that we won't get something else out, so (just to
+					 * be safe), we check if the status is an Integer or a Double.
+					 * Either way, we can just grab the intValue of it.
+					 *
+					 * The status tells us whether the rule succeeded or whether
+					 * it had some complications.
+					 */
+                Object _status = engine.get("status");
+                if (_status instanceof Integer)
+                    status = ((Integer) _status).intValue();
+                else if (_status instanceof Double)
+                    status = ((Double) _status).intValue();
+                /* One complication that could occur is that the rule
+					 * discovers that, for this action to succeed, it depends on
+					 * _another_ action that we had not previously considered. In
+					 * this case, we need to start over, taking that Action into
+					 * account. It is the rule's responsibility to add the Action
+					 * to the "dependentActions" of the Action that is currently
+					 * running. But, to avoid confusion and recoursion, we want
+					 * to store all dependent Actions in one place, so we put them
+					 * all in the dependentActions of the first action in our
+					 * array (see the "parse" method for why this Action is
+					 * special).
+					 */
+                if (status == Constants.NEW_DEPENDENCY) {
+                    if (// if we're not already in the first action
+                    i != 0) {
+                        /* Add the dependentActions of the currentAction to the
+							 * dependentActions of the first Action in our array,
+							 * then clear the dependentActions of the currentAction.
+							 */
+                        _actions[0].getDependentActions().add(currentAction.getDependentActions());
+                        currentAction.clearDependentActions();
+                    }
+                    /* We need to do everything over again to take account of
+						 * the new dependency... We don't simply cancel here because
+						 * it's still possible that another Action will completely
+						 * fail (see next check), in which case, we don't need to
+						 * run anything again after all.
+						 */
+                    runAgain = true;
+                } else /* Any other case, currently, except success, we consider to
+					 * be failure. We don't need to go any further. None of these
+					 * Actions will succeed (because they all depend on each
+					 * other).
+					 */
+                if (status != Constants.SUCCESS)
+                    return status;
+            }/* All scripts throw rather generic exceptions called
+				 * ScriptExceptions.
+				 * Here, we catch it and print what we can and that we got an
+				 * error while analyzing rules.
+				 */
+             catch (ScriptException se) {
+                myLogger.message("Script error: " + se.getMessage() + "\n", true);
+                myLogger.message("Error in Resolver (rules)\n", true);
+            }
+        }
+    // for(Rule rule : _rules[i])
+    }
+    /* So, we've gone through every Action and none of them have
+		 * completely failed. Now, if we have any new dependencies (or, for
+		 * the future, any other reason to rerun the parsing/resolving of
+		 * a set of dependent Actions), we put the primary Action onto the
+		 * beginning of the stack and return to be rerun from the beginning.
+		 */
+    if (runAgain) {
+        actionStack.push(_actions[0]);
+        return Constants.NEW_DEPENDENCY;
+    }
+    /* Okay, so we've succeeded at all of our rule-checking. Now, lets
+		 * run each action.
+		 */
+    myLogger.message("Resolver is starting to handle actions...\n", false);
+    for (i = 0; i < _actions.length; i++) {
+        currentAction = _actions[i];
+        // If this Action has an "inworld" function that needs to run...
+        if (currentAction.getWorldFunction() != null) {
+            /* For an explanation of this code, see the comment on it when
+				 * we did the same thing for rules.
+				 */
+            nouns = currentAction.getNouns();
+            other = null;
+            subject = directObject = indirectObject = null;
+            if (nouns != null) {
+                switch(nouns.length) {
+                    default:
+                        other = new GameElement[nouns.length - 3];
+                        System.arraycopy(nouns, 3, other, 0, other.length);
+                    case 3:
+                        indirectObject = nouns[2];
+                    case 2:
+                        directObject = nouns[1];
+                    case 1:
+                        subject = nouns[0];
+                        break;
+                }
+            }
+            /* This code should look very similar to the "eval" we did on
+				 * rules above. The only differences are: not as much
+				 * information is passed (it is assumed, for example, that the
+				 * action script does not need to know about the Action itself
+				 * or about the relevant GameElements around it). It also has
+				 * a "returnVals" IncrementedArray that is passed into it. The
+				 * idea behind this variable is that action scripts need to
+				 * communicate with the Resolver more heavily than the rule
+				 * scripts did. For example, because the action scripts don't
+				 * have access to the World, adding a GameElement to the World
+				 * is impossible for them to do. Instead, an action script can
+				 * set its status to Constants.ADD_ELEMENTS and then put as
+				 * many GameElements into the IncrementedArray as it wants, and
+				 * the Resolver will add them all to the World itself. For more,
+				 * see the handling of "status" below.
+				 */
+            StringFunction worldFunc = currentAction.getWorldFunction();
+            try {
+                returnVals = new IncrementedArray(Constants.DEFAULT_RETURN_VALS_LENGTH);
+                status = Constants.SUCCESS;
+                ScriptEngine engine = manager.getEngineByName(worldFunc.getLanguage());
+                engine.put("subject", subject);
+                engine.put("directObject", directObject);
+                engine.put("indirectObject", indirectObject);
+                engine.put("other", other);
+                engine.put("argv", currentAction.parameters().pack());
+                engine.put("returnVals", returnVals);
+                engine.put("status", status);
+                engine.eval(worldFunc.getFunction());
+                currentAction.setLastRun(new Date());
+                Object _status = engine.get("status");
+                if (_status instanceof Integer)
+                    status = ((Integer) _status).intValue();
+                else if (_status instanceof Double)
+                    status = ((Double) _status).intValue();
+                /* One status that an action script might return is
+					 * Constants.ADD_ELEMENTS. As described above, this allows
+					 * action scripts to add GameElements to the World through
+					 * the Resolver. Here, we go through each Object in the
+					 * returnVals array, and add it to the World. We also, in
+					 * order to make life easier for script-writers can accept a
+					 * new GameElement in two forms. First, we can accept the
+					 * GameElement itself. Second, we can accept a "message" that
+					 * contains all of the important aspects of a GameElement:
+					 * the new id of the GameElement, its type, its position, and
+					 * its facing. Please note that this last way of creating new
+					 * GameElements hasn't been tested yet and is currently
+					 * unused. When we do start using it (to allow arbitrary
+					 * Actions to create their own GameElements (like a "magic
+					 * mushroom" spell), it will likely change around a bit.
+					 */
+                if (status == Constants.ADD_ELEMENTS) {
+                    GameElement newElement = null;
+                    for (i = 0; i < returnVals.length; i++) {
+                        Object _message = returnVals.get(i);
+                        /* Info about a GameElement rather than a GameElement
+							 * itself...
+							 */
+                        if (_message instanceof Object[]) {
+                            Object[] elementInfo = (Object[]) _message;
+                            int start = 0;
+                            int _id = ((Integer) elementInfo[start++]).intValue();
+                            int _type;
+                            if (elementInfo[start] instanceof String) {
+                                _type = elementFactory.getType((String) elementInfo[start++]);
+                            } else {
+                                _type = ((Integer) elementInfo[start++]).intValue();
+                            }
+                            float[] _pos = (float[]) elementInfo[start++];
+                            float[] _fac = (float[]) elementInfo[start++];
+                            newElement = elementFactory.getGameElement(_type);
+                            newElement.id(_id);
+                            newElement.setPosition(_pos);
+                            newElement.setFacing(_fac);
+                        } else /* The GameElement itself! */
+                        if (_message instanceof GameElement) {
+                            // So much easier!
+                            newElement = (GameElement) _message;
+                        }
+                        // player character.
+                        if (// so that the avatars have different colors!
+                        newElement.id() < Constants.ELEMENT_ID_PADDING + Constants.MAX_CONNECTIONS + 1)
+                            newElement.attribute("color", Constants.getColorByClientID(newElement.id()));
+                        // Add it!
+                        world.addElement(newElement);
+                    }
+                // for(i = 0; i < returnVals.length; i++)
+                } else /* Another thing that action scripts have trouble doing on
+					 * their own is removing elements from the World. If they
+					 * return Constants.REMOVE_ELEMENTS, we do that for them.
+					 */
+                if (status == Constants.REMOVE_ELEMENTS) {
+                    for (i = 0; i < returnVals.length; i++) {
+                        Object _message = returnVals.get(i);
+                        world.removeElement((GameElement) _message);
+                    }
+                } else /* An action script might determine that it needs to run
+					 * again, for example with the 'jump' Action that has two
+					 * parts, an upward part and a downward part. The first is
+					 * run, and a parameter is set in the Action to indicate that
+					 * it has happened. Then, Constants.HANDLE_AGAIN is returned
+					 * so that the Action is run again. This second time, the
+					 * script sees that the first part has already run, so it runs
+					 * the second (downward) part.
+					 *
+					 * The returnVal in this case is the amount of time in
+					 * milliseconds to wait before running the Action again.
+					 * (See the "run" method in this class to see how this
+					 * information is used.) Again, we aren't sure what type the
+					 * return will be, so we test for Integer and Double, but the
+					 * value will always be an int.
+					 */
+                if (status == Constants.HANDLE_AGAIN) {
+                    Object ret_value = returnVals.get(0);
+                    if (ret_value instanceof Integer)
+                        currentAction.setDelay(((Integer) ret_value).intValue());
+                    else if (ret_value instanceof Double)
+                        currentAction.setDelay(((Double) ret_value).intValue());
+                    addAction(currentAction);
+                } else /* An action might tell the game is over or that the user
+					 * wants to quit for another reason, in which case the
+					 * Resolver exits.
+					 */
+                if (status == Constants.QUIT) {
+                    System.exit(0);
+                }
+                /* Now, that this action has succeeded, if it includes a
+					 * "toSend" (an Action that it wants to send on -- to the
+					 * Clients if it is the Server and to the Server if it is one
+					 * of the Clients), we want to add it to our list of things to
+					 * send on.
+					 */
+                if (currentAction.getToSend() != null) {
+                    actionsToSend.add(currentAction.getToSend());
+                }
+            }/* All scripts throw rather generic exceptions called
+				 * ScriptExceptions.
+				 * Here, we catch it and print what we can and that we got an
+				 * error while analyzing actions.
+				 */
+             catch (ScriptException se) {
+                myLogger.message("Script error: " + se.getMessage() + "\n", true);
+                myLogger.message("Error in Resolver (actions)\n", true);
+            }
+        }
+        /* If this Action has an "inrepresentation" function, and if the
+			 * Resolver has a RepresentationResolver set, send the Action on
+			 * to be handled by the RepresentationResolver.
+			 */
+        if (currentAction.getRepFunction() != null && repResolver != null) {
+            repResolver.resolve(currentAction);
+        }
+    }
+    /* Great. We've gotten through all of the rules and all of the
+		 * actions. Now, all that's left is sending what needs to be sent.
+		 * We assume that the "io" variable is not null because both the
+		 * Client and the Server (the only two things to create a Resolver)
+		 * also set that variable.
+		 */
+    if (actionsToSend.length > 0) {
+        /* To save us a lot of communication space, there is a condenced
+			 * version of an Action called a "WritableAction." We send an
+			 * IncrementedArray of those instead of an IncrementedArray of
+			 * Actions.
+			 * The main optimization is that it sends a GameElement's ID
+			 * rather than the entire GameElement (since the other end already
+			 * knows everything about the GameElement). The only exception is
+			 * when we are creating new GameElements. In these cases, the
+			 * WritableAction knows to write the whole GameElement to be
+			 * passed along. (This too, could be optimized, to not send the
+			 * Shapes, for example, but it has not been.)
+			 */
+        IncrementedArray<WritableAction> write_actions = new IncrementedArray<WritableAction>(actionsToSend.length);
+        for (i = 0; i < actionsToSend.length; i++) {
+            write_actions.add(new WritableAction(actionsToSend.get(i)));
+        }
+        io.send(write_actions);
+    }
+    /* We're done! And succeeded! */
+    return Constants.SUCCESS;
+}

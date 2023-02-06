@@ -1,0 +1,62 @@
+public boolean execute(ComponentContext context) {
+    boolean result = false;
+    Connection db = null;
+    try {
+        // @note the db connection isn't obtained yet
+        TeamMember thisMember = (TeamMember) context.getThisObject();
+        // load the user who created this member record
+        User user = UserUtils.loadUser(thisMember.getEnteredBy());
+        Project userProfile = ProjectUtils.loadProject(user.getProfileProjectId());
+        // load the user that is being invited
+        User member = UserUtils.loadUser(thisMember.getUserId());
+        Project memberProfile = ProjectUtils.loadProject(member.getProfileProjectId());
+        if (memberProfile == null) {
+            throw new Exception("Member doesn't have a profile for recording history; skipping");
+        }
+        // load the project profile
+        Project projectProfile = ProjectUtils.loadProject(thisMember.getProjectId());
+        // Use the database connection since everything is now ready...
+        db = getConnection(context);
+        if (thisMember.getStatus() == TeamMember.STATUS_PENDING) {
+            // Prepare the wiki links
+            context.setParameter("user", WikiLink.generateLink(userProfile));
+            context.setParameter("member", WikiLink.generateLink(memberProfile));
+            context.setParameter("profile", WikiLink.generateLink(projectProfile));
+            // Insert the history
+            ProjectHistory history = new ProjectHistory();
+            history.setEnteredBy(user.getId());
+            history.setProjectId(thisMember.getProjectId());
+            history.setLinkObject(ProjectHistoryList.INVITES_OBJECT);
+            history.setEventType(ProjectHistoryList.INVITE_MEMBER_EVENT);
+            history.setLinkItemId(thisMember.getId());
+            history.setDescription(context.getParameter(HISTORY_INVITE_TEXT));
+            history.insert(db);
+        } else if (thisMember.getStatus() == TeamMember.STATUS_ADDED) {
+            // user joined a particular project
+            // Prepare the wiki links
+            context.setParameter("member", WikiLink.generateLink(memberProfile));
+            context.setParameter("profile", WikiLink.generateLink(projectProfile));
+            // Insert the history
+            ProjectHistory history = new ProjectHistory();
+            history.setEnteredBy(member.getId());
+            history.setProjectId(thisMember.getProjectId());
+            history.setLinkObject(ProjectHistoryList.MEMBER_OBJECT);
+            history.setEventType(ProjectHistoryList.BECOME_PROFILE_FAN_EVENT);
+            history.setLinkItemId(thisMember.getId());
+            if (projectProfile.getProfile()) {
+                // This is a friend request
+                history.setDescription(context.getParameter(HISTORY_FRIEND_TEXT));
+            } else {
+                // This is everything else
+                history.setDescription(context.getParameter(HISTORY_FAN_TEXT));
+            }
+            history.insert(db);
+        }
+        result = true;
+    } catch (Exception e) {
+        LOG.warn("Save error", e);
+    } finally {
+        freeConnection(context, db);
+    }
+    return result;
+}

@@ -1,0 +1,64 @@
+public boolean downloadBlock(String url, File file) throws IOException {
+    long localFileSize = 0;
+    long remoteFileSize = 0;
+    BufferedInputStream in = null;
+    RandomAccessFile out = null;
+    HttpMethod request = null;
+    try {
+        if (file.exists()) {
+            localFileSize = file.length();
+        }
+        HttpClient client = new HttpClient();
+        request = new GetMethod(url);
+        if (localFileSize > 0) {
+            // server must support partial content for resume
+            request.addRequestHeader("Range", "bytes=" + localFileSize + "-");
+            if (client.executeMethod(request) != HttpStatus.SC_PARTIAL_CONTENT) {
+                return false;
+            }
+        } else if (client.executeMethod(request) != HttpStatus.SC_OK) {
+            // response not ok
+            return false;
+        }
+        Header contentLengthHeader = request.getResponseHeader("content-length");
+        if (contentLengthHeader == null) {
+            return false;
+        }
+        remoteFileSize = Long.parseLong(contentLengthHeader.getValue());
+        System.out.println("Local file size is " + localFileSize + " bytes.");
+        System.out.println("Remote file size is " + remoteFileSize + " bytes.");
+        System.out.println("Bytes Remaining " + (remoteFileSize - localFileSize) + " bytes.");
+        if (localFileSize != remoteFileSize) {
+            in = new BufferedInputStream(request.getResponseBodyAsStream());
+            out = new RandomAccessFile(file, "rw");
+            out.seek(localFileSize);
+            int offset = 0;
+            int len = 4096;
+            /*
+                *
+                * Len is 4 K is the max we can receive in one go.
+                * Webserver dictates e.g. in a .NET application running in Windows 2002 server as of 01-August-2003 would be
+                * dictated by the maxRequestLength setting in the machine.config file or web.config file and is the total amount of
+                * data that can be sent through HTTP Post to the server.
+                * The default is 4MB (4096)...and is generally set low so that your server will not
+                * be overwhelmed by possible DoS attacks.
+                *
+                * The test link below will be set at 1460 by the provider of the test link i.e. apache.mirror.positive-internet.com
+                */
+            int bytes = 0;
+            byte[] block = new byte[len];
+            while ((bytes = in.read(block, offset, len)) > -1) {
+                out.write(block, 0, bytes);
+            }
+        }
+        return file.length() == remoteFileSize;
+    } finally {
+        try {
+            if (out != null) {
+                out.close();
+            }
+        } catch (IOException ioe) {
+        }
+        request.releaseConnection();
+    }
+}

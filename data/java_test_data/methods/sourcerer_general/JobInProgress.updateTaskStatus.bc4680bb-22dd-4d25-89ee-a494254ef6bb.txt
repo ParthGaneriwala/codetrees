@@ -1,0 +1,88 @@
+// //////////////////////////////////////////////////
+// Status update methods
+public synchronized void updateTaskStatus(TaskInProgress tip, TaskStatus status, JobTrackerInstrumentation metrics) {
+    // save old progress
+    double oldProgress = tip.getProgress();
+    boolean wasRunning = tip.isRunning();
+    boolean wasComplete = tip.isComplete();
+    boolean wasPending = tip.isOnlyCommitPending();
+    TaskAttemptID taskid = status.getTaskID();
+    // as SUCCEEDED.
+    if (wasComplete && (status.getRunState() == TaskStatus.State.SUCCEEDED)) {
+        status.setRunState(TaskStatus.State.KILLED);
+    }
+    boolean change = tip.updateStatus(status);
+    if (change) {
+        TaskStatus.State state = status.getRunState();
+        TaskTrackerStatus ttStatus = this.jobtracker.getTaskTracker(status.getTaskTracker());
+        String httpTaskLogLocation = null;
+        if (null != ttStatus) {
+            String host;
+            if (NetUtils.getStaticResolution(ttStatus.getHost()) != null) {
+                host = NetUtils.getStaticResolution(ttStatus.getHost());
+            } else {
+                host = ttStatus.getHost();
+            }
+            httpTaskLogLocation = "http://" + host + ":" + ttStatus.getHttpPort();
+        // + "/tasklog?plaintext=true&taskid=" + status.getTaskID();
+        }
+        TaskCompletionEvent taskEvent = null;
+        if (state == TaskStatus.State.SUCCEEDED) {
+            taskEvent = new TaskCompletionEvent(taskCompletionEventTracker, taskid, tip.idWithinJob(), status.getIsMap() && !tip.isCleanupTask() && !tip.isSetupTask(), TaskCompletionEvent.Status.SUCCEEDED, httpTaskLogLocation);
+            taskEvent.setTaskRunTime((int) (status.getFinishTime() - status.getStartTime()));
+            tip.setSuccessEventNumber(taskCompletionEventTracker);
+        } else if (state == TaskStatus.State.COMMIT_PENDING) {
+            // ask the task to commit.
+            if (!wasComplete && !wasPending) {
+                tip.doCommit(taskid);
+            }
+            return;
+        } else // For a failed task update the JT datastructures.
+        if (state == TaskStatus.State.FAILED || state == TaskStatus.State.KILLED) {
+            // Get the event number for the (possibly) previously successful
+            // task. If there exists one, then set that status to OBSOLETE
+            int eventNumber;
+            if ((eventNumber = tip.getSuccessEventNumber()) != -1) {
+                TaskCompletionEvent t = this.taskCompletionEvents.get(eventNumber);
+                if (t.getTaskAttemptId().equals(taskid))
+                    t.setTaskStatus(TaskCompletionEvent.Status.OBSOLETE);
+            }
+            // Tell the job to fail the relevant task
+            failedTask(tip, taskid, status, ttStatus, wasRunning, wasComplete, metrics);
+            // Did the task failure lead to tip failure?
+            TaskCompletionEvent.Status taskCompletionStatus = (state == TaskStatus.State.FAILED) ? TaskCompletionEvent.Status.FAILED : TaskCompletionEvent.Status.KILLED;
+            if (tip.isFailed()) {
+                taskCompletionStatus = TaskCompletionEvent.Status.TIPFAILED;
+            }
+            taskEvent = new TaskCompletionEvent(taskCompletionEventTracker, taskid, tip.idWithinJob(), status.getIsMap() && !tip.isCleanupTask() && !tip.isSetupTask(), taskCompletionStatus, httpTaskLogLocation);
+        }
+        // b. TIP.completedTask *does not* throw _any_ exception at all.
+        if (taskEvent != null) {
+            this.taskCompletionEvents.add(taskEvent);
+            taskCompletionEventTracker++;
+            if (state == TaskStatus.State.SUCCEEDED) {
+                completedTask(tip, status, metrics);
+            }
+        }
+    }
+    // 
+    if (LOG.isDebugEnabled()) {
+        LOG.debug("Taking progress for " + tip.getTIPId() + " from " + oldProgress + " to " + tip.getProgress());
+    }
+    if (!tip.isCleanupTask() && !tip.isSetupTask()) {
+        double progressDelta = tip.getProgress() - oldProgress;
+        if (tip.isMapTask()) {
+            if (maps.length == 0) {
+                this.status.setMapProgress(1.0f);
+            } else {
+                this.status.setMapProgress((float) (this.status.mapProgress() + progressDelta / maps.length));
+            }
+        } else {
+            if (reduces.length == 0) {
+                this.status.setReduceProgress(1.0f);
+            } else {
+                this.status.setReduceProgress((float) (this.status.reduceProgress() + (progressDelta / reduces.length)));
+            }
+        }
+    }
+}

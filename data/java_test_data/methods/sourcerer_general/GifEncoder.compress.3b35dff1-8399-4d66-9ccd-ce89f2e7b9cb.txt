@@ -1,0 +1,62 @@
+void compress(int init_bits, OutputStream outs) throws IOException {
+    int fcode;
+    int i;
+    int c;
+    int ent;
+    int disp;
+    int hsize_reg;
+    int hshift;
+    // Set up the globals:  g_init_bits - initial number of bits
+    g_init_bits = init_bits;
+    // Set up the necessary values
+    clear_flg = false;
+    n_bits = g_init_bits;
+    maxcode = MAXCODE(n_bits);
+    ClearCode = 1 << (init_bits - 1);
+    EOFCode = ClearCode + 1;
+    free_ent = ClearCode + 2;
+    char_init();
+    ent = GIFNextPixel();
+    hshift = 0;
+    for (fcode = hsize; fcode < 65536; fcode *= 2) ++hshift;
+    // set hash code range bound
+    hshift = 8 - hshift;
+    hsize_reg = hsize;
+    // clear hash table
+    cl_hash(hsize_reg);
+    output(ClearCode, outs);
+    outer_loop: while ((c = GIFNextPixel()) != EOF) {
+        fcode = (c << maxbits) + ent;
+        // xor hashing
+        i = (c << hshift) ^ ent;
+        if (htab[i] == fcode) {
+            ent = codetab[i];
+            continue;
+        } else if (// non-empty slot
+        htab[i] >= 0) {
+            // secondary hash (after G. Knott)
+            disp = hsize_reg - i;
+            if (i == 0)
+                disp = 1;
+            do {
+                if ((i -= disp) < 0)
+                    i += hsize_reg;
+                if (htab[i] == fcode) {
+                    ent = codetab[i];
+                    continue outer_loop;
+                }
+            } while (htab[i] >= 0);
+        }
+        output(ent, outs);
+        ent = c;
+        if (free_ent < maxmaxcode) {
+            // code -> hashtable
+            codetab[i] = free_ent++;
+            htab[i] = fcode;
+        } else
+            cl_block(outs);
+    }
+    // Put out the final code.
+    output(ent, outs);
+    output(EOFCode, outs);
+}

@@ -1,0 +1,118 @@
+private void gerarRelatorioGeral(SitioPro sitio, String basePath, Date dataGerada) throws Exception {
+    logger.debug("Gerando relatorio do sitio " + sitio.getUrlInicial());
+    logger.info("os relatorios serao gravados na pasta '" + basePath + "'");
+    // Colocar o cabecalho
+    String htmlRelatorio = "";
+    SimpleDateFormat simpleDateFormat = new SimpleDateFormat("HH:mm:ss dd/MM/yyyy");
+    htmlRelatorio += "Relatorio de " + simpleDateFormat.format(dataGerada) + "\n";
+    logger.info("Consultando os relatorios do banco de dados");
+    List<RelatorioAcessibilidadePro> listaRelatorio = relatorioDao.listarRelatorios(sitio, dataGerada);
+    gerarRelatorioResumoPaginaErros(listaRelatorio, basePath);
+    // Condensar os erros
+    logger.info("Condensando os erros de html");
+    int totIdErroHtml = 0;
+    // gera um id por descricao de erro
+    HashMap<String, Integer> erroHtml2Id = new HashMap<String, Integer>(300);
+    HashMap<Integer, String> relatorioPorErroHtml = new HashMap<Integer, String>();
+    HashMap<Integer, HashSet<Long>> relatorioPorErroHtmlPaginaExistente = new HashMap<Integer, HashSet<Long>>();
+    String relatorioHtmlGeral = "";
+    int tot = listaRelatorio.size();
+    for (int i = 0; i < tot; i++) {
+        RelatorioAcessibilidadePro relatorio = listaRelatorio.get(i);
+        for (ErrosRegraPro erroRegraHtml : relatorio.getListErroXHTML()) {
+            Integer idErroHtml = erroHtml2Id.get(erroRegraHtml.getTexto());
+            String link = "<a href=\"../../" + PadraoNumerico.completarZeros(relatorio.getPagina().getIdPagina(), 5) + ".html\">" + PadraoNumerico.completarZeros(relatorio.getPagina().getIdPagina(), 5) + "</a><br />";
+            if (idErroHtml == null) {
+                // erro novo
+                totIdErroHtml++;
+                erroHtml2Id.put(erroRegraHtml.getTexto(), totIdErroHtml);
+                HashSet<Long> contemPagina = new HashSet<Long>();
+                contemPagina.add(relatorio.getPagina().getIdPagina());
+                relatorioPorErroHtmlPaginaExistente.put(totIdErroHtml, contemPagina);
+                relatorioPorErroHtml.put(totIdErroHtml, link);
+                relatorioHtmlGeral += "<a href=\"erroHtml_" + totIdErroHtml + ".html\">" + erroRegraHtml.getTexto() + "</a><hr />";
+            } else {
+                // verificar se a pagina esta listada
+                if (!relatorioPorErroHtmlPaginaExistente.get(idErroHtml).contains(relatorio.getPagina().getIdPagina())) {
+                    String temp = relatorioPorErroHtml.get(idErroHtml) + link;
+                    relatorioPorErroHtml.put(idErroHtml, temp);
+                }
+            }
+        }
+    }
+    G_File arqRelatorioHtmlGeral = new G_File(basePath + "defaultHtmlGeral.html");
+    arqRelatorioHtmlGeral.write(relatorioHtmlGeral);
+    ArrayList<Integer> listKey = new ArrayList<Integer>(relatorioPorErroHtml.keySet());
+    for (Integer key : listKey) {
+        G_File arq = new G_File(basePath + "erroHtml_" + key + ".html");
+        arq.write(relatorioPorErroHtml.get(key));
+    }
+    logger.info("Consultando erros p1");
+    List<ErroOuAvisoPro> listaP1 = erroOuAvisoDao.getErrosP1Acessibilidade(sitio, dataGerada);
+    htmlRelatorio += "Total p1 = " + listaP1.size() + "\n";
+    logger.info("Consultando erros p2");
+    List<ErroOuAvisoPro> listaP2 = erroOuAvisoDao.getErrosP2Acessibilidade(sitio, dataGerada);
+    htmlRelatorio += "Total p2 = " + listaP2.size() + "\n";
+    logger.info("Consultando erros p3");
+    List<ErroOuAvisoPro> listaP3 = erroOuAvisoDao.getErrosP3Acessibilidade(sitio, dataGerada);
+    htmlRelatorio += "Total p3 = " + listaP3.size() + "\n";
+    htmlRelatorio += "Geral " + (listaP1.size() + listaP2.size() + listaP3.size()) + "\n";
+    logger.info("Consultando erros Html");
+    List<ErroOuAvisoPro> listaHtml = erroOuAvisoDao.getErrosHtml(sitio, dataGerada);
+    htmlRelatorio += "Total html = <a href=\"defaultHtmlGeral.html\">" + listaHtml.size() + "</a>\n";
+    logger.info("Gerando pagina com erros de html");
+    HashMap<String, Integer> contaQtd = new HashMap<String, Integer>();
+    for (ErroOuAvisoPro erro : listaP1) {
+        Integer res = contaQtd.get(erro.getCodTextoRegra());
+        if (res == null) {
+            contaQtd.put(erro.getCodTextoRegra(), 1);
+        } else {
+            contaQtd.put(erro.getCodTextoRegra(), res + 1);
+        }
+    }
+    for (ErroOuAvisoPro erro : listaP2) {
+        Integer res = contaQtd.get(erro.getCodTextoRegra());
+        if (res == null) {
+            contaQtd.put(erro.getCodTextoRegra(), 1);
+        } else {
+            contaQtd.put(erro.getCodTextoRegra(), res + 1);
+        }
+    }
+    for (ErroOuAvisoPro erro : listaP3) {
+        Integer res = contaQtd.get(erro.getCodTextoRegra());
+        if (res == null) {
+            contaQtd.put(erro.getCodTextoRegra(), 1);
+        } else {
+            contaQtd.put(erro.getCodTextoRegra(), res + 1);
+        }
+    }
+    int paginasDistintas = 0;
+    HashSet<Long> pagListada = new HashSet<Long>(3000);
+    List<String> mapKeys = new ArrayList<String>(contaQtd.keySet());
+    Collections.sort(mapKeys);
+    RegrasHardCodedEmag regras = new RegrasHardCodedEmag();
+    for (String key : mapKeys) {
+        logger.info("Consolidando erros de regra " + key);
+        String erroDesc = key + ": " + regras.getTextoRegra(key);
+        htmlRelatorio += erroDesc + "\n\t<a href=\"erro" + key + ".html\">" + contaQtd.get(key) + "</a>";
+        List<PaginaPro> paginas = erroOuAvisoDao.getListPaginaComErro(key, sitio, dataGerada);
+        String htmlListaPaginas = erroDesc + "<hr />";
+        int n = 0;
+        for (PaginaPro pagina : paginas) {
+            if (!pagListada.contains(pagina.getIdPagina())) {
+                paginasDistintas++;
+                pagListada.add(pagina.getIdPagina());
+            }
+            htmlListaPaginas += ++n + " - <a href=\"../../" + PadraoNumerico.completarZeros(pagina.getIdPagina(), 5) + ".html\">";
+            htmlListaPaginas += PadraoNumerico.completarZeros(pagina.getIdPagina(), 5) + "</a> &nbsp; <a href=\"" + pagina.getUrl() + "\">Original '" + pagina.getUrl() + "'</a> <br />";
+        }
+        G_File erroX = new G_File(basePath + "erro" + key + ".html");
+        erroX.write(htmlListaPaginas);
+        htmlRelatorio += " distribu&iacute;dos em " + paginas.size() + " p&aacute;ginas\n";
+    }
+    htmlRelatorio += "Total de paginas distintas com erro " + paginasDistintas + "\n";
+    htmlRelatorio += gerarRelatorioLinguagem(sitio);
+    G_File relatorio = new G_File(basePath + "default.html");
+    relatorio.write("<pre>" + htmlRelatorio + "</pre>");
+    logger.debug("Ok terminado");
+}

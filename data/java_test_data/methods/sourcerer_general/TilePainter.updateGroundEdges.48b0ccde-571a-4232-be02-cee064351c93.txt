@@ -1,0 +1,61 @@
+protected void updateGroundEdges(CoordSet coords, CoordSet inner, ConfigReference<GroundConfig> ground, int elevation, boolean revise) {
+    GroundConfig config = _cfgmgr.getConfig(GroundConfig.class, ground);
+    GroundConfig.Original original = (config == null) ? null : config.getOriginal(_cfgmgr);
+    // if no config, just erase the coordinates
+    if (original == null) {
+        removeEntries(coords);
+        return;
+    }
+    // divide the coordinates up by case/rotation pairs
+    HashMap<IntTuple, CoordSet> sets = new HashMap<IntTuple, CoordSet>();
+    for (Coord coord : coords) {
+        TileEntry entry = _scene.getTileEntry(coord.x, coord.y);
+        if (entry != null && !original.isEdge(entry, elevation)) {
+            Paint paint = _scene.getPaint(coord.x, coord.y);
+            if (paint == null || paint.type == Paint.Type.WALL) {
+                continue;
+            }
+            GroundConfig oconfig = paint.getConfig(_cfgmgr, GroundConfig.class);
+            GroundConfig.Original ooriginal = (oconfig == null) ? null : oconfig.getOriginal(_cfgmgr);
+            if (ooriginal == null || ooriginal.priority >= original.priority) {
+                continue;
+            }
+        }
+        IntTuple tuple = original.getEdgeCaseRotations(_scene, ground, coord.x, coord.y, elevation);
+        if (tuple != null && (revise || !original.isEdge(entry, tuple, elevation))) {
+            CoordSet set = sets.get(tuple);
+            if (set == null) {
+                sets.put(tuple, set = new CoordSet());
+            }
+            set.add(coord);
+        }
+    }
+    // add edge tiles as appropriate
+    Rectangle region = new Rectangle();
+    Paint paint = new Paint(Paint.Type.EDGE, ground, elevation);
+    OUTER: for (Map.Entry<IntTuple, CoordSet> entry : sets.entrySet()) {
+        IntTuple tuple = entry.getKey();
+        CoordSet set = entry.getValue();
+        while (!set.isEmpty()) {
+            set.getLargestRegion(region);
+            TileEntry tentry = original.createEdge(_cfgmgr, tuple, region.width, region.height, elevation);
+            if (tentry == null) {
+                // no appropriate tiles
+                continue OUTER;
+            }
+            Coord coord = tentry.getLocation();
+            set.pickRandom(region.width, region.height, coord);
+            TileConfig.Original tconfig = tentry.getConfig(_cfgmgr);
+            int twidth = tentry.getWidth(tconfig);
+            int theight = tentry.getHeight(tconfig);
+            addEntry(tentry, region.set(coord.x, coord.y, twidth, theight), paint);
+            set.removeAll(region);
+        }
+    }
+    // if there's a base ground config, expand the edges and update again
+    if (original.base != null) {
+        CoordSet combined = new CoordSet(inner);
+        combined.addAll(coords);
+        updateGroundEdges(combined.getBorder(), combined, original.base, elevation, revise);
+    }
+}

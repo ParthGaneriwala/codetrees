@@ -1,0 +1,153 @@
+// }}}
+// {{{ handleRule() method
+private boolean handleRule(ParserRule checkRule, boolean end) {
+    // {{{ Some rules can only match in certain locations
+    if (!end) {
+        if (null == checkRule.upHashChars) {
+            if (checkRule.upHashChar != null && (pos + checkRule.upHashChar.length() < line.array.length) && !checkHashString(checkRule)) {
+                return false;
+            }
+        } else {
+            if (-1 == Arrays.binarySearch(checkRule.upHashChars, Character.toUpperCase(line.array[pos]))) {
+                return false;
+            }
+        }
+    }
+    int offset = (checkRule.action & ParserRule.MARK_PREVIOUS) != 0 ? lastOffset : pos;
+    int posMatch = end ? checkRule.endPosMatch : checkRule.startPosMatch;
+    if ((posMatch & ParserRule.AT_LINE_START) == ParserRule.AT_LINE_START) {
+        if (offset != line.offset) {
+            return false;
+        }
+    } else if ((posMatch & ParserRule.AT_WHITESPACE_END) == ParserRule.AT_WHITESPACE_END) {
+        if (offset != whitespaceEnd) {
+            return false;
+        }
+    } else if ((posMatch & ParserRule.AT_WORD_START) == ParserRule.AT_WORD_START) {
+        if (offset != lastOffset) {
+            return false;
+        }
+    }
+    // }}}
+    int matchedChars = 1;
+    CharSequence charSeq = null;
+    Matcher match = null;
+    // {{{ See if the rule's start or end sequence matches here
+    if (!end || (checkRule.action & ParserRule.MARK_FOLLOWING) == 0) {
+        // the end cannot be a regular expression
+        if ((checkRule.action & ParserRule.REGEXP) == 0 || end) {
+            if (end) {
+                if (context.spanEndSubst != null)
+                    pattern.array = context.spanEndSubst;
+                else
+                    pattern.array = checkRule.end;
+            } else
+                pattern.array = checkRule.start;
+            pattern.offset = 0;
+            pattern.count = pattern.array.length;
+            matchedChars = pattern.count;
+            if (!SyntaxUtilities.regionMatches(context.rules.getIgnoreCase(), line, pos, pattern.array)) {
+                return false;
+            }
+        } else {
+            // note that all regexps start with \A so they only
+            // match the start of the string
+            // int matchStart = pos - line.offset;
+            charSeq = new SegmentCharSequence(line, pos - line.offset, line.count - (pos - line.offset));
+            match = checkRule.startRegexp.matcher(charSeq);
+            if (!match.lookingAt()) {
+                return false;
+            } else if (match.start() != 0) {
+                throw new InternalError("Can't happen");
+            } else {
+                matchedChars = match.end();
+                /* workaround for hang if match was
+					 * zero-width. not sure if there is
+					 * a better way to handle this */
+                if (matchedChars == 0)
+                    matchedChars = 1;
+            }
+        }
+    }
+    // {{{ Check for an escape sequence
+    if ((checkRule.action & ParserRule.IS_ESCAPE) == ParserRule.IS_ESCAPE) {
+        pos += pattern.count;
+    } else // {{{ Handle start of rule
+    if (!end) {
+        if (context.inRule != null)
+            handleRule(context.inRule, true);
+        markKeyword((checkRule.action & ParserRule.MARK_PREVIOUS) != ParserRule.MARK_PREVIOUS);
+        switch(checkRule.action & ParserRule.MAJOR_ACTIONS) {
+            // {{{ SEQ
+            case ParserRule.SEQ:
+                context.spanEndSubst = null;
+                if ((checkRule.action & ParserRule.REGEXP) != 0) {
+                    handleTokenWithSpaces(tokenHandler, checkRule.token, pos - line.offset, matchedChars, context);
+                } else {
+                    tokenHandler.handleToken(line, checkRule.token, pos - line.offset, matchedChars, context);
+                }
+                // ruleset from the end of the SEQ onwards
+                if (checkRule.delegate != null) {
+                    context = new LineContext(checkRule.delegate, context.parent);
+                    keywords = context.rules.getKeywords();
+                }
+                break;
+            // {{{ SPAN, EOL_SPAN
+            case ParserRule.SPAN:
+            case ParserRule.EOL_SPAN:
+                context.setInRule(checkRule);
+                byte tokenType = matchToken(checkRule, context.inRule, context);
+                if ((checkRule.action & ParserRule.REGEXP) != 0) {
+                    handleTokenWithSpaces(tokenHandler, tokenType, pos - line.offset, matchedChars, context);
+                } else {
+                    tokenHandler.handleToken(line, tokenType, pos - line.offset, matchedChars, context);
+                }
+                char[] spanEndSubst = null;
+                /* substitute result of matching the rule start
+				 * into the end string.
+				 *
+				 * eg, in shell script mode, <<\s*(\w+) is
+				 * matched into \<$1\> to construct rules for
+				 * highlighting read-ins like this <<EOF
+				 * ...
+				 * EOF
+				 */
+                if (charSeq != null && checkRule.end != null) {
+                    spanEndSubst = substitute(match, checkRule.end);
+                }
+                context.spanEndSubst = spanEndSubst;
+                context = new LineContext(checkRule.delegate, context);
+                keywords = context.rules.getKeywords();
+                break;
+            // {{{ MARK_FOLLOWING
+            case ParserRule.MARK_FOLLOWING:
+                tokenHandler.handleToken(line, matchToken(checkRule, checkRule, context), pos - line.offset, pattern.count, context);
+                context.spanEndSubst = null;
+                context.setInRule(checkRule);
+                break;
+            // {{{ MARK_PREVIOUS
+            case ParserRule.MARK_PREVIOUS:
+                context.spanEndSubst = null;
+                if (pos != lastOffset) {
+                    tokenHandler.handleToken(line, checkRule.token, lastOffset - line.offset, pos - lastOffset, context);
+                }
+                tokenHandler.handleToken(line, matchToken(checkRule, checkRule, context), pos - line.offset, pattern.count, context);
+                break;
+            // }}}
+            default:
+                throw new InternalError("Unhandled major action");
+        }
+        // move pos to last character of match sequence
+        pos += matchedChars - 1;
+        lastOffset = pos + 1;
+    // break out of inner for loop to check next char
+    } else // {{{ Handle end of MARK_FOLLOWING
+    if ((context.inRule.action & ParserRule.MARK_FOLLOWING) != 0) {
+        if (pos != lastOffset) {
+            tokenHandler.handleToken(line, context.inRule.token, lastOffset - line.offset, pos - lastOffset, context);
+        }
+        lastOffset = pos;
+        context.setInRule(null);
+    }
+    return true;
+}

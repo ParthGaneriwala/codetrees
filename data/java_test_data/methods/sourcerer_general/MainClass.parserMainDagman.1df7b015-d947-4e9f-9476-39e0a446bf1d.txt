@@ -1,0 +1,119 @@
+public static void parserMainDagman() {
+    if (GlobalVar.isFreshRun()) {
+        GlobalVar.setJobs(GlobalVar.getDagParser().getJobs());
+        // Iterate through all nodes
+        for (int i = 0; i < GlobalVar.getDagParser().getNodeList().size(); i++) {
+            // Parse each condor file
+            CondorParser topar = new CondorParser(GlobalVar.getDagDirectory() + GlobalVar.getDagParser().getNodeList().get(i).getFile(0));
+            // Build Job, Data staging is handled within job
+            ArrayList<ArrayList<Token>> list = topar.parse();
+            for (int j = 0; j < list.size(); j++) {
+                Job JsdlJob = new Job();
+                JsdlJob.buildAttributes(list.get(j), localDir);
+                // Write to xml file
+                // TODO Extra files never get used in the dagman/submit portion
+                String xmlName;
+                if (j == 0)
+                    xmlName = GlobalVar.getDagDirectory() + GlobalVar.getDagParser().getNodeList().get(i).getFile(0) + ".xml";
+                else {
+                    xmlName = GlobalVar.getDagDirectory() + GlobalVar.getDagParser().getNodeList().get(i).getFile(0) + "-" + j + ".xml";
+                    // associate new file with node
+                    File tempFile = new File(GlobalVar.getDagParser().getNodeList().get(i).getFile(0) + "-" + j);
+                    GlobalVar.getDagParser().getNodeList().get(i).addFile(tempFile);
+                }
+                WriteXmlFile newXML = new WriteXmlFile(JsdlJob, xmlName);
+                // Data Staging
+                // Stage Data In
+                DataStaging stagerIn = new DataStaging(JsdlJob.stageInFiles, GlobalVar.getGenesisDir(), GlobalVar.getWorkingDir() + "/CondorTemp" + JsdlJob.initialdir, localDir);
+                stagerIn.stageIn();
+                // Add files to list of files to stage out
+                GlobalVar.addStageOutFiles(JsdlJob.stageOutFiles);
+                GlobalVar.addStageInFiles(JsdlJob.stageInFiles);
+            }
+        }
+        int currentID = 3;
+        for (int i = 0; i < GlobalVar.getDagParser().getNodeList().size(); i++) {
+            for (int j = 0; j < GlobalVar.getDagParser().getNodeList().get(i).getNumberOfFiles(); j++) {
+                GlobalVar.getDagParser().getNodeList().get(i).setStatusID(j, currentID);
+                currentID += 1;
+            }
+        }
+        System.out.println("Gui refresh");
+        TheGUI2.refreshStatusList();
+        // execute jobs that have no dependencies
+        while (!GlobalVar.getJobs().isEmpty()) {
+            Node tempNode = GlobalVar.getJobs().remove();
+            for (int i = 0; i < tempNode.getNumberOfFiles(); i++) {
+                String id = GridInteraction.submitJob(stdin, stdout, brCleanUp, localDir + tempNode.getFile(i) + ".xml", GlobalVar.getQueue(), GlobalVar.getWorkingDir(), tempNode.getName() + i);
+                tempNode.addID(id, i);
+                tempNode.setStatus(i, "Submitted");
+                GlobalVar.addSubmittedJob(id);
+            }
+            // tempNode.setStatus("Submitted");
+            GlobalVar.getRunningJobs().add(tempNode);
+        }
+    }
+    // Get status and launch new jobs as they can be run
+    while (!GlobalVar.getRunningJobs().isEmpty()) {
+        String status = "-1";
+        String realStatus = "-1";
+        // check their status
+        for (Iterator<Node> iter = GlobalVar.getRunningJobs().iterator(); iter.hasNext(); ) {
+            Node tempNode = iter.next();
+            // status from grid
+            status = "finished";
+            for (int i = 0; i < tempNode.getNumberOfFiles(); i++) {
+                realStatus = GridInteraction.jobStatus(stdin, stdout, brCleanUp, GlobalVar.getQueue(), tempNode.getID(i)).toLowerCase();
+                if (!realStatus.equals("finished")) {
+                    status = "In Progress";
+                }
+                tempNode.setStatus(i, realStatus);
+            }
+            if (status.toLowerCase().equals("finished")) {
+                // remove job from node
+                // make sure all of the nodes jobs are done
+                tempNode.completeJob();
+                // gets updated list of
+                GlobalVar.setJobs(GlobalVar.getDagParser().getUpdatedJobs(tempNode.getName()));
+                // nodes to
+                // run
+                iter.remove();
+            } else if (status.toLowerCase().equals("error")) {
+            // Rescue the dag?
+            }
+        }
+        // execute jobs that can now run
+        while (!GlobalVar.getJobs().isEmpty()) {
+            Node tempNode = GlobalVar.getJobs().remove();
+            if (!tempNode.isCompleted()) {
+                for (int i = 0; i < tempNode.getNumberOfFiles(); i++) {
+                    String id = GridInteraction.submitJob(stdin, stdout, brCleanUp, localDir + tempNode.getFile(i) + ".xml", GlobalVar.getQueue(), GlobalVar.getWorkingDir(), tempNode.getName() + i);
+                    tempNode.addID(id, i);
+                    tempNode.setStatus(i, "Submitted");
+                    GlobalVar.addSubmittedJob(id);
+                }
+                GlobalVar.getRunningJobs().add(tempNode);
+            }
+        }
+        // sleep, the grid only updates its status every 30 seconds(?)
+        try {
+            // the grid only updates its status every 30(?) seconds
+            Thread.sleep(5000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        // check to see if the run should be stopped and grid jobs killed
+        if (GlobalVar.getStopFlag()) {
+            if (GlobalVar.isCleanRun()) {
+                GridInteraction.cleanUpJobs(stdin, stdout, brCleanUp, GlobalVar.getStageInFiles(), GlobalVar.getStageOutFiles());
+            } else {
+                GlobalVar.setStopFlag(false);
+            }
+        }
+    }
+    // Stage Out all data files
+    DataStaging stagerOut = new DataStaging(GlobalVar.getStageOutFiles(), GlobalVar.getGenesisDir(), GlobalVar.getWorkingDir(), localDir);
+    stagerOut.stageOut(stdin, stdout);
+    // Add code to ask if we want to clean up tmp on grid
+    GlobalVar.setAppStatus("Complete");
+}

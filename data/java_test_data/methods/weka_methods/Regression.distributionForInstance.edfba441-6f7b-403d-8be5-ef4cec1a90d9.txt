@@ -1,0 +1,133 @@
+public double[] distributionForInstance(Instance inst) throws Exception {
+    if (!m_initialized) {
+        mapToMiningSchema(inst.dataset());
+    }
+    double[] preds = null;
+    if (m_miningSchema.getFieldsAsInstances().classAttribute().isNumeric()) {
+        preds = new double[1];
+    } else {
+        preds = new double[m_miningSchema.getFieldsAsInstances().classAttribute().numValues()];
+    }
+    // create an array of doubles that holds values from the incoming
+    // instance; in order of the fields in the mining schema. We will
+    // also handle missing values and outliers here.
+    // System.err.println(inst);
+    double[] incoming = m_fieldsMap.instanceToSchema(inst, m_miningSchema);
+    // scan for missing values. If there are still missing values after instanceToSchema(),
+    // then missing value handling has been deferred to the PMML scheme. The specification
+    // (Regression PMML 3.2) seems to contradict itself with regards to classification and categorical
+    // variables. In one place it states that if a categorical variable is missing then
+    // variable_name=value is 0 for any value. Further down in the document it states: "if
+    // one or more of the y_j cannot be evaluated because the value in one of the referenced
+    // fields is missing, then the following formulas (for computing p_j) do not apply. In
+    // that case the predictions are defined by the priorProbability values in the Target
+    // element".
+    // In this implementation we will default to information in the Target element (default
+    // value for numeric prediction and prior probabilities for classification). If there is
+    // no Target element defined, then an Exception is thrown.
+    boolean hasMissing = false;
+    for (int i = 0; i < incoming.length; i++) {
+        if (i != m_miningSchema.getFieldsAsInstances().classIndex() && Utils.isMissingValue(incoming[i])) {
+            hasMissing = true;
+            break;
+        }
+    }
+    if (hasMissing) {
+        if (!m_miningSchema.hasTargetMetaData()) {
+            String message = "[Regression] WARNING: Instance to predict has missing value(s) but " + "there is no missing value handling meta data and no " + "prior probabilities/default value to fall back to. No " + "prediction will be made (" + ((m_miningSchema.getFieldsAsInstances().classAttribute().isNominal() || m_miningSchema.getFieldsAsInstances().classAttribute().isString()) ? "zero probabilities output)." : "NaN output).");
+            if (m_log == null) {
+                System.err.println(message);
+            } else {
+                m_log.logMessage(message);
+            }
+            if (m_miningSchema.getFieldsAsInstances().classAttribute().isNumeric()) {
+                preds[0] = Utils.missingValue();
+            }
+            return preds;
+        } else {
+            // use prior probablilities/default value
+            TargetMetaInfo targetData = m_miningSchema.getTargetMetaData();
+            if (m_miningSchema.getFieldsAsInstances().classAttribute().isNumeric()) {
+                preds[0] = targetData.getDefaultValue();
+            } else {
+                Instances miningSchemaI = m_miningSchema.getFieldsAsInstances();
+                for (int i = 0; i < miningSchemaI.classAttribute().numValues(); i++) {
+                    preds[i] = targetData.getPriorProbability(miningSchemaI.classAttribute().value(i));
+                }
+            }
+            return preds;
+        }
+    } else {
+        // loop through the RegressionTables
+        for (int i = 0; i < m_regressionTables.length; i++) {
+            m_regressionTables[i].predict(preds, incoming);
+        }
+        // Now apply the normalization
+        switch(m_normalizationMethod) {
+            case NONE:
+                // nothing to be done
+                break;
+            case SIMPLEMAX:
+                Utils.normalize(preds);
+                break;
+            case SOFTMAX:
+                for (int i = 0; i < preds.length; i++) {
+                    preds[i] = Math.exp(preds[i]);
+                }
+                if (preds.length == 1) {
+                    // hack for those models that do binary logistic regression as
+                    // a numeric prediction model
+                    preds[0] = preds[0] / (preds[0] + 1.0);
+                } else {
+                    Utils.normalize(preds);
+                }
+                break;
+            case LOGIT:
+                for (int i = 0; i < preds.length; i++) {
+                    preds[i] = 1.0 / (1.0 + Math.exp(-preds[i]));
+                }
+                Utils.normalize(preds);
+                break;
+            case PROBIT:
+                for (int i = 0; i < preds.length; i++) {
+                    preds[i] = weka.core.matrix.Maths.pnorm(preds[i]);
+                }
+                Utils.normalize(preds);
+                break;
+            case CLOGLOG:
+                // note this is supposed to be illegal for regression
+                for (int i = 0; i < preds.length; i++) {
+                    preds[i] = 1.0 - Math.exp(-Math.exp(-preds[i]));
+                }
+                Utils.normalize(preds);
+                break;
+            case EXP:
+                for (int i = 0; i < preds.length; i++) {
+                    preds[i] = Math.exp(preds[i]);
+                }
+                Utils.normalize(preds);
+                break;
+            case LOGLOG:
+                // note this is supposed to be illegal for regression
+                for (int i = 0; i < preds.length; i++) {
+                    preds[i] = Math.exp(-Math.exp(-preds[i]));
+                }
+                Utils.normalize(preds);
+                break;
+            case CAUCHIT:
+                for (int i = 0; i < preds.length; i++) {
+                    preds[i] = 0.5 + (1.0 / Math.PI) * Math.atan(preds[i]);
+                }
+                Utils.normalize(preds);
+                break;
+            default:
+                throw new Exception("[Regression] unknown normalization method");
+        }
+        // then apply any min, max, rescaling etc.
+        if (m_miningSchema.getFieldsAsInstances().classAttribute().isNumeric() && m_miningSchema.hasTargetMetaData()) {
+            TargetMetaInfo targetData = m_miningSchema.getTargetMetaData();
+            preds[0] = targetData.applyMinMaxRescaleCast(preds[0]);
+        }
+    }
+    return preds;
+}

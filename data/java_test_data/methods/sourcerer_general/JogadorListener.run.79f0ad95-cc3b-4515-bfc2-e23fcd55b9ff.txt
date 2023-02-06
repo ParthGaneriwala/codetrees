@@ -1,0 +1,117 @@
+public void run() {
+    ServerSocket serverSocket = null;
+    try {
+        byte[] buffer = new byte[128];
+        /* aguarda conexao do cliente */
+        serverSocket = new ServerSocket(porta);
+        serverSocket.setSoTimeout(TIMEOUT);
+        serverSocket.setReceiveBufferSize(8192 * 100);
+        System.out.println("Servidor: Aguardando conexao de cliente aceito...");
+        socket = serverSocket.accept();
+        /* pega entrada e saida */
+        out = socket.getOutputStream();
+        in = socket.getInputStream();
+        /* envia para o jogador as informacoes do estado do jogo */
+        java.util.List jogadores = Main.nucleo.getJogadores();
+        for (java.util.Iterator i = jogadores.iterator(); i.hasNext(); ) {
+            Jogador j = (Jogador) i.next();
+            if (!j.equals(jogador)) {
+                enviar(new Conexao(j));
+                long t = System.currentTimeMillis();
+                while (System.currentTimeMillis() - t < 250) ;
+                if (j.getEstado() != EstadoJogador.NORMAL)
+                    enviar(new EstadoJogador(j));
+            }
+        }
+        /* avisa a todos que jogador se conectou */
+        Main.nucleo.broadcast(jogador, new Conexao(jogador));
+        /* loop infinito */
+        while (!socket.isClosed()) {
+            /* Le algum pacote oriundo do jogador */
+            Pacote pacote = Pacote.ler(in);
+            if (pacote == null)
+                /* desconectou */
+                break;
+            /* Trata pacote */
+            switch(pacote.getID()) {
+                case ChatPublicoToServidor.ID:
+                    System.out.println(jogador.getNome() + ": " + ((ChatPublicoToServidor) pacote).getTexto());
+                    /* broadcast */
+                    Main.nucleo.broadcast(jogador, new ChatPublicoToCliente(jogador.getId(), ((ChatPublicoToServidor) pacote).getTexto()));
+                    break;
+                case Convite.ID:
+                    System.out.println(jogador.getNome() + " convida " + Main.nucleo.getNome(((Convite) pacote).getIdJogador()));
+                    /* encaminha */
+                    Main.nucleo.enviar(((Convite) pacote).getIdJogador(), new Convite(jogador.getId()));
+                    break;
+                case RespostaConvite.ID:
+                    System.out.println(jogador.getNome() + " responde ao convite de " + Main.nucleo.getNome(((RespostaConvite) pacote).getIdJogador()) + ": " + ((((RespostaConvite) pacote).getResposta() == RespostaConvite.ACEITOU) ? "Sim" : "Não"));
+                    /* encaminha */
+                    Main.nucleo.enviar(((RespostaConvite) pacote).getIdJogador(), new RespostaConvite(jogador.getId(), ((RespostaConvite) pacote).getResposta()));
+                    /* verifica qual é a resposta */
+                    if (((RespostaConvite) pacote).getResposta() == RespostaConvite.ACEITOU) {
+                        /* dois jogadores jogando */
+                        Main.nucleo.getJogador(((RespostaConvite) pacote).getIdJogador()).setEstado(EstadoJogador.JOGANDO);
+                        Main.nucleo.getJogador(((RespostaConvite) pacote).getIdJogador()).setJogandoCom(jogador.getId());
+                        jogador.setEstado(EstadoJogador.JOGANDO);
+                        jogador.setJogandoCom(((RespostaConvite) pacote).getIdJogador());
+                        /* broadcasts dos estados */
+                        Main.nucleo.broadcast(jogador, new EstadoJogador(((RespostaConvite) pacote).getIdJogador(), EstadoJogador.JOGANDO));
+                        Main.nucleo.broadcast(jogador, new EstadoJogador(jogador.getId(), EstadoJogador.JOGANDO));
+                    }
+                    break;
+                case ChatPrivado.ID:
+                    System.out.println("De " + jogador.getNome() + " para " + Main.nucleo.getNome(jogador.getJogandoCom()) + ": " + ((ChatPrivado) pacote).getTexto());
+                    /* encaminha */
+                    Main.nucleo.enviar(jogador.getJogandoCom(), pacote);
+                    break;
+                case Chute.ID:
+                    System.out.println(jogador.getNome() + " enviou chute para " + Main.nucleo.getNome(jogador.getJogandoCom()));
+                    /* encaminha */
+                    Main.nucleo.enviar(jogador.getJogandoCom(), pacote);
+                    break;
+                case FimJogo.ID:
+                    System.out.println("Fim do jogo de " + jogador.getNome() + "(" + FimJogo.strMotivo[((FimJogo) pacote).getMotivo()] + ") e " + Main.nucleo.getNome(jogador.getJogandoCom()));
+                    /* encaminha se eh desistencia */
+                    if (((FimJogo) pacote).getMotivo() == FimJogo.DESISTENCIA)
+                        Main.nucleo.enviar(jogador.getJogandoCom(), pacote);
+                    /* seta estados */
+                    jogador.setEstado(EstadoJogador.NORMAL);
+                    Main.nucleo.getJogador(jogador.getJogandoCom()).setEstado(EstadoJogador.NORMAL);
+                    /* broadcasts dos estados */
+                    Main.nucleo.broadcast(jogador, new EstadoJogador(jogador.getJogandoCom(), EstadoJogador.NORMAL));
+                    Main.nucleo.broadcast(jogador, new EstadoJogador(jogador.getId(), EstadoJogador.NORMAL));
+                    break;
+                default:
+                    System.err.println("Jogador: Pacote recebido de jogador " + socket + " é invalido: " + pacote.getID());
+                    /* finaliza conexao */
+                    in.close();
+                    out.close();
+                    socket.close();
+                    serverSocket.close();
+                    break;
+            }
+        }
+        System.out.println("Jogador: Jogador " + jogador.getNome() + " se desconectou");
+        /* retira este listener do nucleo */
+        Main.nucleo.removerJogador(jogador.getId());
+        /* avisa a todos que jogador se desconectou */
+        Main.nucleo.broadcast(jogador, new EstadoJogador(jogador.getId(), EstadoJogador.DESCONECTADO));
+    } catch (java.net.SocketTimeoutException ex) {
+        System.err.println("Cliente nao respondeu a resposta de conexao dentro de " + TIMEOUT + " millisegundos.");
+        if (serverSocket != null)
+            try {
+                serverSocket.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        /* retira este listener do nucleo */
+        Main.nucleo.removerJogador(jogador.getId());
+        /* avisa a todos que jogador se desconectou */
+        Main.nucleo.broadcast(jogador, new EstadoJogador(jogador.getId(), EstadoJogador.DESCONECTADO));
+    } catch (SocketException ex) {
+        ex.printStackTrace();
+    } catch (IOException ex) {
+        ex.printStackTrace();
+    }
+}

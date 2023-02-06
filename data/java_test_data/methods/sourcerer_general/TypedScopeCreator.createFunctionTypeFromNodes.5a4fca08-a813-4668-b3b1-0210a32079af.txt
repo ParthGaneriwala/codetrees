@@ -1,0 +1,69 @@
+private FunctionType createFunctionTypeFromNodes(@Nullable Node rValue, @Nullable String name, @Nullable JSDocInfo info, @Nullable Node lvalueNode) {
+    FunctionType functionType = null;
+    // Global ctor aliases should be registered with the type registry.
+    if (rValue != null && rValue.isQualifiedName() && scope.isGlobal()) {
+        Var var = scope.getVar(rValue.getQualifiedName());
+        if (var != null && var.getType() != null && var.getType().isFunctionType()) {
+            FunctionType aliasedType = var.getType().toMaybeFunctionType();
+            if ((aliasedType.isConstructor() || aliasedType.isInterface()) && !aliasedType.isNativeObjectType()) {
+                functionType = aliasedType;
+                if (name != null && scope.isGlobal()) {
+                    typeRegistry.declareType(name, functionType.getInstanceType());
+                }
+            }
+        }
+    }
+    if (functionType == null) {
+        Node errorRoot = rValue == null ? lvalueNode : rValue;
+        boolean isFnLiteral = rValue != null && rValue.getType() == Token.FUNCTION;
+        Node fnRoot = isFnLiteral ? rValue : null;
+        Node parametersNode = isFnLiteral ? rValue.getFirstChild().getNext() : null;
+        Node fnBlock = isFnLiteral ? parametersNode.getNext() : null;
+        if (info != null && info.hasType()) {
+            JSType type = info.getType().evaluate(scope, typeRegistry);
+            // Known to be not null since we have the FUNCTION token there.
+            type = type.restrictByNotNullOrUndefined();
+            if (type.isFunctionType()) {
+                functionType = type.toMaybeFunctionType();
+                functionType.setJSDocInfo(info);
+            }
+        }
+        if (functionType == null) {
+            // Find the type of any overridden function.
+            Node ownerNode = NodeUtil.getBestLValueOwner(lvalueNode);
+            String ownerName = NodeUtil.getBestLValueName(ownerNode);
+            Var ownerVar = null;
+            String propName = null;
+            ObjectType ownerType = null;
+            if (ownerName != null) {
+                ownerVar = scope.getVar(ownerName);
+                if (ownerVar != null) {
+                    ownerType = ObjectType.cast(ownerVar.getType());
+                }
+                if (name != null) {
+                    propName = name.substring(ownerName.length() + 1);
+                }
+            }
+            FunctionType overriddenPropType = null;
+            if (ownerType != null && propName != null) {
+                overriddenPropType = findOverriddenFunction(ownerType, propName);
+            }
+            FunctionTypeBuilder builder = new FunctionTypeBuilder(name, compiler, errorRoot, sourceName, scope).setSourceNode(fnRoot).inferFromOverriddenFunction(overriddenPropType, parametersNode).inferTemplateTypeName(info).inferReturnType(info).inferInheritance(info);
+            // Infer the context type.
+            boolean searchedForThisType = false;
+            if (ownerType != null && ownerType.isFunctionPrototypeType()) {
+                builder.inferThisType(info, ownerType.getOwnerFunction().getInstanceType());
+                searchedForThisType = true;
+            } else if (ownerNode != null && ownerNode.getType() == Token.THIS) {
+                builder.inferThisType(info, ownerNode.getJSType());
+                searchedForThisType = true;
+            }
+            if (!searchedForThisType) {
+                builder.inferThisType(info);
+            }
+            functionType = builder.inferParameterTypes(parametersNode, info).inferReturnStatementsAsLastResort(fnBlock).buildAndRegister();
+        }
+    }
+    // all done
+    return functionType;
+}

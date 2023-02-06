@@ -1,0 +1,65 @@
+public void run() {
+    log.debug("Started ThreadManager");
+    final boolean[] interrupted = new boolean[] { false };
+    /*
+             * Create a cancel event trigger, so all the managed threads can be cancelled if required.
+             */
+    final CancelEventTrigger cancelEventTrigger = new CancelEventTrigger() {
+
+        private static final long serialVersionUID = 6328417466929608235L;
+
+        public void cancelTask(Object eventSource) {
+            log.debug("Cancel task invoked on ThreadManager");
+            // Flag that this ThreadManager class should shutdown.
+            interrupted[0] = true;
+            // Set force interrupt flag for all runnables.
+            forceInterruptAllRunnables();
+        }
+    };
+    // Actual thread management happens in the code block below.
+    try {
+        // Start some threads
+        startPendingThreads();
+        // Create the thread's watcher object.
+        ThreadWatcher threadWatcher = new ThreadWatcher();
+        threadWatcher.setThreadsCompletedRatio(0, runnables.length, cancelEventTrigger);
+        fireStartEvent(threadWatcher);
+        // still active (ie hasn't finished its work)
+        while (!interrupted[0] && getPendingThreadCount() > 0) {
+            try {
+                Thread.sleep(sleepTime);
+                if (interrupted[0]) {
+                // Do nothing, we've been interrupted during sleep.
+                } else {
+                    // Fire progress event.
+                    int completedThreads = runnables.length - getPendingThreadCount();
+                    threadWatcher.setThreadsCompletedRatio(completedThreads, runnables.length, cancelEventTrigger);
+                    List completedResults = getNewlyCompletedResults();
+                    fireProgressEvent(threadWatcher, completedResults);
+                    // Start more threads.
+                    startPendingThreads();
+                }
+            } catch (InterruptedException e) {
+                interrupted[0] = true;
+                forceInterruptAllRunnables();
+            }
+        }
+        if (interrupted[0]) {
+            fireCancelEvent();
+        } else {
+            int completedThreads = runnables.length - getPendingThreadCount();
+            threadWatcher.setThreadsCompletedRatio(completedThreads, runnables.length, cancelEventTrigger);
+            List completedResults = getNewlyCompletedResults();
+            fireProgressEvent(threadWatcher, completedResults);
+            if (completedResults.size() > 0) {
+                log.debug(completedResults.size() + " threads have recently completed");
+            }
+            fireCompletedEvent();
+        }
+    } catch (Throwable t) {
+        log.error("A thread failed with an exception. Firing ERROR event and cancelling all threads", t);
+        // Set force interrupt flag for all runnables.
+        forceInterruptAllRunnables();
+        fireErrorEvent(t);
+    }
+}

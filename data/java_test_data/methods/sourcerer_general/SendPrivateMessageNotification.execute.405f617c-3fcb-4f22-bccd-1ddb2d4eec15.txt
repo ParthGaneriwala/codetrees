@@ -1,0 +1,76 @@
+public boolean execute(ComponentContext context) {
+    boolean result = false;
+    try {
+        ArrayList<Integer> users = new ArrayList<Integer>();
+        // Add project leads
+        Project thisProject = (Project) context.getAttribute(PROJECT);
+        PrivateMessage thisPrivateMessage = (PrivateMessage) context.getThisObject();
+        User senderUser = UserUtils.loadUser(thisPrivateMessage.getEnteredBy());
+        String url = context.getParameter(URL);
+        Key key = (Key) context.getAttribute("TEAM.KEY");
+        Configuration freeMarkerConfiguration = (Configuration) context.getAttribute(ComponentContext.FREEMARKER_CONFIGURATION);
+        // Go through userIds set as attributes
+        String includeList = (String) context.getAttribute(USERS_TO_IDS);
+        if (includeList != null) {
+            StringTokenizer st = new StringTokenizer(includeList, ",");
+            while (st.hasMoreTokens()) {
+                Integer id = Integer.parseInt(st.nextToken().trim());
+                if (!users.contains(id)) {
+                    users.add(id);
+                }
+            }
+        }
+        // Send the message(s)
+        if (users.size() > 0) {
+            SMTPMessage message = SMTPMessageFactory.createSMTPMessageInstance(context.getApplicationPrefs());
+            message.setFrom(context.getParameter("EMAILADDRESS"));
+            message.setType("text/html");
+            // Send to each user
+            Iterator userList = users.iterator();
+            while (userList.hasNext()) {
+                Integer id = (Integer) userList.next();
+                User teamMemberUser = UserUtils.loadUser(id.intValue());
+                String email = teamMemberUser.getEmail();
+                // Initialize the message template
+                Template inviteSubject = null;
+                Template inviteBody = null;
+                // Set the data model
+                Map subjectMappings = new HashMap();
+                subjectMappings.put("user", senderUser);
+                Map bodyMappings = new HashMap();
+                bodyMappings.put("site", new HashMap());
+                ((Map) bodyMappings.get("site")).put("title", context.getApplicationPrefs().get("TITLE"));
+                bodyMappings.put("project", thisProject);
+                bodyMappings.put("user", senderUser);
+                bodyMappings.put("teamMember", teamMemberUser);
+                bodyMappings.put("private", new HashMap());
+                ((Map) bodyMappings.get("private")).put("message", StringUtils.toHtmlValue(thisPrivateMessage.getBody()));
+                bodyMappings.put("link", new HashMap());
+                ((Map) bodyMappings.get("link")).put("info", url);
+                ((Map) bodyMappings.get("link")).put("projectMessages", url + "/show/" + thisProject.getUniqueId() + "/message/inbox/" + thisPrivateMessage.getId());
+                inviteSubject = freeMarkerConfiguration.getTemplate("project_private_message_subject-text.ftl");
+                inviteBody = freeMarkerConfiguration.getTemplate("project_private_message_body-html.ftl");
+                // Set the subject from the template
+                StringWriter inviteSubjectTextWriter = new StringWriter();
+                inviteSubject.process(subjectMappings, inviteSubjectTextWriter);
+                message.setSubject(inviteSubjectTextWriter.toString());
+                // Set the body from the template
+                StringWriter inviteBodyTextWriter = new StringWriter();
+                inviteBody.process(bodyMappings, inviteBodyTextWriter);
+                message.setBody(inviteBodyTextWriter.toString());
+                message.setTo(email);
+                message.setType("text/html");
+                int emailResult = message.send();
+                if (emailResult == 0) {
+                    LOG.debug("email sent successfully to " + teamMemberUser.getNameFirstLast());
+                } else {
+                    LOG.debug("email not sent to " + teamMemberUser.getNameFirstLast());
+                }
+            }
+        }
+        result = true;
+    } catch (Exception e) {
+        e.printStackTrace(System.out);
+    }
+    return result;
+}

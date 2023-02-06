@@ -1,0 +1,226 @@
+public void solveTOI(final BBTimeStep step) {
+    // Reserve an island and a queue for TOI island solution.
+    BBIsland island = new BBIsland(m_bodyCount, maxTOIContactsPerIsland, maxTOIJointsPerIsland, m_contactManager.m_contactListener);
+    // Simple one pass queue
+    // Relies on the fact that we're only making one pass
+    // through and each body can only be pushed/popped once.
+    // To push:
+    // queue[queueStart+queueSize++] = newElement;
+    // To pop:
+    // poppedElement = queue[queueStart++];
+    // --queueSize;
+    int queueCapacity = m_bodyCount;
+    BBBody[] queue = new BBBody[queueCapacity];
+    for (BBBody b = m_bodyList; b != null; b = b.m_next) {
+        b.m_flags &= ~BBBody.e_islandFlag;
+        b.m_sweep.t0 = 0.0f;
+    }
+    for (BBContact c = m_contactManager.m_contactList; c != null; c = c.m_next) {
+        // Invalidate TOI
+        c.m_flags &= ~(BBContact.e_toiFlag | BBContact.e_islandFlag);
+    }
+    for (BBJoint j = m_jointList; j != null; j = j.m_next) {
+        j.m_islandFlag = false;
+    }
+    // Find TOI events and solve them.
+    for (; ; ) {
+        // Find the first TOI.
+        BBContact minContact = null;
+        float minTOI = 1.0f;
+        for (BBContact c = m_contactManager.m_contactList; c != null; c = c.m_next) {
+            // Can this contact generate a solid TOI contact?
+            if (!c.isSolid() || !c.isContinuous()) {
+                continue;
+            }
+            // TODO_ERIN keep a counter on the contact, only respond to M TOIs per contact.
+            float toi = 1.0f;
+            if ((c.m_flags & BBContact.e_toiFlag) != 0) {
+                // This contact has a valid cached TOI.
+                toi = c.m_toi;
+            } else {
+                // Compute the TOI for this contact.
+                BBFixture s1 = c.getFixtureA();
+                BBFixture s2 = c.getFixtureB();
+                BBBody b1 = s1.getBody();
+                BBBody b2 = s2.getBody();
+                if ((b1.isStatic() || b1.isSleeping()) & (b2.isStatic() || b2.isSleeping())) {
+                    continue;
+                }
+                // Put the sweeps onto the same time interval.
+                float t0 = b1.m_sweep.t0;
+                if (b1.m_sweep.t0 < b2.m_sweep.t0) {
+                    t0 = b2.m_sweep.t0;
+                    b1.m_sweep.advance(t0);
+                } else if (b2.m_sweep.t0 < b1.m_sweep.t0) {
+                    t0 = b1.m_sweep.t0;
+                    b2.m_sweep.advance(t0);
+                }
+                assert (t0 < 1.0f);
+                // Compute the time of impact.
+                toi = c.ComputeTOI(b1.m_sweep, b2.m_sweep);
+                assert (0.0f <= toi & toi <= 1.0f);
+                // If the TOI is in range ...
+                if (0.0f < toi & toi < 1.0f) {
+                    // Interpolate on the actual range.
+                    toi = min((1.0f - toi) * t0 + toi, 1.0f);
+                }
+                c.m_toi = toi;
+                c.m_flags |= BBContact.e_toiFlag;
+            }
+            if (FLT_EPSILON < toi & toi < minTOI) {
+                // This is the minimum TOI found so far.
+                minContact = c;
+                minTOI = toi;
+            }
+        }
+        if (minContact == null || 1.0f - 100.0f * FLT_EPSILON < minTOI) {
+            // No more TOI events. Done!
+            break;
+        }
+        // advance the bodies to the TOI.
+        BBFixture s1 = minContact.getFixtureA();
+        BBFixture s2 = minContact.getFixtureB();
+        BBBody b1 = s1.getBody();
+        BBBody b2 = s2.getBody();
+        BBSweep backup1 = b1.m_sweep;
+        BBSweep backup2 = b2.m_sweep;
+        b1.advance(minTOI);
+        b2.advance(minTOI);
+        // The TOI contact likely has some new contact points.
+        minContact.Update(m_contactManager.m_contactListener);
+        minContact.m_flags &= ~BBContact.e_toiFlag;
+        // Is the contact solid?
+        if (!minContact.isSolid()) {
+            // Restore the sweeps.
+            b1.m_sweep = backup1;
+            b2.m_sweep = backup2;
+            b1.synchronizeTransform();
+            b2.synchronizeTransform();
+            continue;
+        }
+        // Did numerical issues prevent a contact point from being generated?
+        if (!minContact.isTouching()) {
+            // Give up on this TOI.
+            continue;
+        }
+        // Build the TOI island. We need a dynamic seed.
+        BBBody seed = b1;
+        if (seed.isStatic()) {
+            seed = b2;
+        }
+        // Reset island and queue.
+        island.Clear();
+        // starting index for queue
+        int queueStart = 0;
+        // elements in queue
+        int queueSize = 0;
+        queue[queueStart + queueSize++] = seed;
+        seed.m_flags |= BBBody.e_islandFlag;
+        // Perform a breadth first search (BFS) on the contact/joint graph.
+        while (queueSize > 0) {
+            // Grab the next body off the stack and add it to the island.
+            BBBody b = queue[queueStart++];
+            --queueSize;
+            island.add(b);
+            // Make sure the body is awake.
+            b.m_flags &= ~BBBody.e_sleepFlag;
+            // propagate islands across static bodies.
+            if (b.isStatic()) {
+                continue;
+            }
+            // Search all contacts connected to this body.
+            for (BBContactEdge cEdge = b.m_contactList; cEdge != null; cEdge = cEdge.next) {
+                // Does the TOI island still have space for contacts?
+                if (island.m_contactCount == island.m_contactCapacity) {
+                    break;
+                }
+                // Has this contact already been added to an island?
+                if ((cEdge.contact.m_flags & BBContact.e_islandFlag) != 0) {
+                    continue;
+                }
+                // Skip separate, sensor, or disabled contacts.
+                if (!cEdge.contact.isSolid() || !cEdge.contact.isTouching()) {
+                    continue;
+                }
+                island.add(cEdge.contact);
+                cEdge.contact.m_flags |= BBContact.e_islandFlag;
+                // Update other body.
+                BBBody other = cEdge.other;
+                // Was the other body already added to this island?
+                if ((other.m_flags & BBBody.e_islandFlag) != 0) {
+                    continue;
+                }
+                // March forward, this can do no harm since this is the min TOI.
+                if (!other.isStatic()) {
+                    other.advance(minTOI);
+                    other.wakeUp();
+                }
+                assert (queueStart + queueSize < queueCapacity);
+                queue[queueStart + queueSize] = other;
+                ++queueSize;
+                other.m_flags |= BBBody.e_islandFlag;
+            }
+            for (BBJointEdge jEdge = b.m_jointList; jEdge != null; jEdge = jEdge.next) {
+                if (island.m_jointCount == island.m_jointCapacity) {
+                    continue;
+                }
+                if (jEdge.joint.m_islandFlag) {
+                    continue;
+                }
+                island.add(jEdge.joint);
+                jEdge.joint.m_islandFlag = true;
+                BBBody other = jEdge.other;
+                if ((other.m_flags & BBBody.e_islandFlag) != 0) {
+                    continue;
+                }
+                if (!other.isStatic()) {
+                    other.advance(minTOI);
+                    other.wakeUp();
+                }
+                assert (queueStart + queueSize < queueCapacity);
+                queue[queueStart + queueSize] = other;
+                ++queueSize;
+                other.m_flags |= BBBody.e_islandFlag;
+            }
+        }
+        BBTimeStep subStep = new BBTimeStep();
+        subStep.warmStarting = false;
+        subStep.dt = (1.0f - minTOI) * step.dt;
+        subStep.inv_dt = 1.0f / subStep.dt;
+        subStep.dtRatio = 0.0f;
+        subStep.velocityIterations = step.velocityIterations;
+        subStep.positionIterations = step.positionIterations;
+        island.solveTOI(subStep);
+        // Post solve cleanup.
+        for (int i = 0; i < island.m_bodyCount; ++i) {
+            // Allow bodies to participate in future TOI islands.
+            BBBody b = island.m_bodies[i];
+            b.m_flags &= ~BBBody.e_islandFlag;
+            if ((b.m_flags & BBBody.e_sleepFlag) != 0) {
+                continue;
+            }
+            if (b.isStatic()) {
+                continue;
+            }
+            // Update fixtures (for broad-phase).
+            b.synchronizeFixtures();
+            // may not be in the island because they were not touching.
+            for (BBContactEdge ce = b.m_contactList; ce != null; ce = ce.next) {
+                ce.contact.m_flags &= ~BBContact.e_toiFlag;
+            }
+        }
+        for (int i = 0; i < island.m_contactCount; ++i) {
+            // Allow contacts to participate in future TOI islands.
+            BBContact c = island.m_contacts[i];
+            c.m_flags &= ~(BBContact.e_toiFlag | BBContact.e_islandFlag);
+        }
+        for (int i = 0; i < island.m_jointCount; ++i) {
+            // Allow joints to participate in future TOI islands.
+            BBJoint j = island.m_joints[i];
+            j.m_islandFlag = false;
+        }
+        // Commit fixture proxy movements to the broad-phase so that new contacts are created.
+        // Also, some contacts can be destroyed.
+        m_contactManager.findNewContacts();
+    }
+}

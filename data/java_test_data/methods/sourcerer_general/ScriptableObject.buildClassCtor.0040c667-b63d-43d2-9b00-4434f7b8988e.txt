@@ -1,0 +1,167 @@
+static <T extends Scriptable> BaseFunction buildClassCtor(Scriptable scope, Class<T> clazz, boolean sealed, boolean mapInheritance) throws IllegalAccessException, InstantiationException, InvocationTargetException {
+    Method[] methods = FunctionObject.getMethodList(clazz);
+    for (int i = 0; i < methods.length; i++) {
+        Method method = methods[i];
+        if (!method.getName().equals("init"))
+            continue;
+        Class<?>[] parmTypes = method.getParameterTypes();
+        if (parmTypes.length == 3 && parmTypes[0] == ScriptRuntime.ContextClass && parmTypes[1] == ScriptRuntime.ScriptableClass && parmTypes[2] == Boolean.TYPE && Modifier.isStatic(method.getModifiers())) {
+            Object[] args = { Context.getContext(), scope, sealed ? Boolean.TRUE : Boolean.FALSE };
+            method.invoke(null, args);
+            return null;
+        }
+        if (parmTypes.length == 1 && parmTypes[0] == ScriptRuntime.ScriptableClass && Modifier.isStatic(method.getModifiers())) {
+            Object[] args = { scope };
+            method.invoke(null, args);
+            return null;
+        }
+    }
+    // If we got here, there isn't an "init" method with the right
+    // parameter types.
+    Constructor<?>[] ctors = clazz.getConstructors();
+    Constructor<?> protoCtor = null;
+    for (int i = 0; i < ctors.length; i++) {
+        if (ctors[i].getParameterTypes().length == 0) {
+            protoCtor = ctors[i];
+            break;
+        }
+    }
+    if (protoCtor == null) {
+        throw Context.reportRuntimeError1("msg.zero.arg.ctor", clazz.getName());
+    }
+    Scriptable proto = (Scriptable) protoCtor.newInstance(ScriptRuntime.emptyArgs);
+    String className = proto.getClassName();
+    // Set the prototype's prototype, trying to map Java inheritance to JS
+    // prototype-based inheritance if requested to do so.
+    Scriptable superProto = null;
+    if (mapInheritance) {
+        Class<? super T> superClass = clazz.getSuperclass();
+        if (ScriptRuntime.ScriptableClass.isAssignableFrom(superClass) && !Modifier.isAbstract(superClass.getModifiers())) {
+            Class<? extends Scriptable> superScriptable = extendsScriptable(superClass);
+            String name = ScriptableObject.defineClass(scope, superScriptable, sealed, mapInheritance);
+            if (name != null) {
+                superProto = ScriptableObject.getClassPrototype(scope, name);
+            }
+        }
+    }
+    if (superProto == null) {
+        superProto = ScriptableObject.getObjectPrototype(scope);
+    }
+    proto.setPrototype(superProto);
+    // Find out whether there are any methods that begin with
+    // "js". If so, then only methods that begin with special
+    // prefixes will be defined as JavaScript entities.
+    final String functionPrefix = "jsFunction_";
+    final String staticFunctionPrefix = "jsStaticFunction_";
+    final String getterPrefix = "jsGet_";
+    final String setterPrefix = "jsSet_";
+    final String ctorName = "jsConstructor";
+    Member ctorMember = findAnnotatedMember(methods, JSConstructor.class);
+    if (ctorMember == null) {
+        ctorMember = findAnnotatedMember(ctors, JSConstructor.class);
+    }
+    if (ctorMember == null) {
+        ctorMember = FunctionObject.findSingleMethod(methods, ctorName);
+    }
+    if (ctorMember == null) {
+        if (ctors.length == 1) {
+            ctorMember = ctors[0];
+        } else if (ctors.length == 2) {
+            if (ctors[0].getParameterTypes().length == 0)
+                ctorMember = ctors[1];
+            else if (ctors[1].getParameterTypes().length == 0)
+                ctorMember = ctors[0];
+        }
+        if (ctorMember == null) {
+            throw Context.reportRuntimeError1("msg.ctor.multiple.parms", clazz.getName());
+        }
+    }
+    FunctionObject ctor = new FunctionObject(className, ctorMember, scope);
+    if (ctor.isVarArgsMethod()) {
+        throw Context.reportRuntimeError1("msg.varargs.ctor", ctorMember.getName());
+    }
+    ctor.initAsConstructor(scope, proto);
+    Method finishInit = null;
+    HashSet<String> names = new HashSet<String>(methods.length);
+    for (Method method : methods) {
+        if (method == ctorMember) {
+            continue;
+        }
+        String name = method.getName();
+        if (name.equals("finishInit")) {
+            Class<?>[] parmTypes = method.getParameterTypes();
+            if (parmTypes.length == 3 && parmTypes[0] == ScriptRuntime.ScriptableClass && parmTypes[1] == FunctionObject.class && parmTypes[2] == ScriptRuntime.ScriptableClass && Modifier.isStatic(method.getModifiers())) {
+                finishInit = method;
+                continue;
+            }
+        }
+        // ignore any compiler generated methods.
+        if (name.indexOf('$') != -1)
+            continue;
+        if (name.equals(ctorName))
+            continue;
+        Annotation annotation = null;
+        String prefix = null;
+        if (method.isAnnotationPresent(JSFunction.class)) {
+            annotation = method.getAnnotation(JSFunction.class);
+        } else if (method.isAnnotationPresent(JSStaticFunction.class)) {
+            annotation = method.getAnnotation(JSStaticFunction.class);
+        } else if (method.isAnnotationPresent(JSGetter.class)) {
+            annotation = method.getAnnotation(JSGetter.class);
+        } else if (method.isAnnotationPresent(JSSetter.class)) {
+            continue;
+        }
+        if (annotation == null) {
+            if (name.startsWith(functionPrefix)) {
+                prefix = functionPrefix;
+            } else if (name.startsWith(staticFunctionPrefix)) {
+                prefix = staticFunctionPrefix;
+            } else if (name.startsWith(getterPrefix)) {
+                prefix = getterPrefix;
+            } else if (annotation == null) {
+                // we deal with that when we see the getter
+                continue;
+            }
+        }
+        String propName = getPropertyName(name, prefix, annotation);
+        if (names.contains(propName)) {
+            throw Context.reportRuntimeError2("duplicate.defineClass.name", name, propName);
+        }
+        names.add(propName);
+        name = propName;
+        if (annotation instanceof JSGetter || prefix == getterPrefix) {
+            if (!(proto instanceof ScriptableObject)) {
+                throw Context.reportRuntimeError2("msg.extend.scriptable", proto.getClass().toString(), name);
+            }
+            Method setter = findSetterMethod(methods, name, setterPrefix);
+            int attr = ScriptableObject.PERMANENT | ScriptableObject.DONTENUM | (setter != null ? 0 : ScriptableObject.READONLY);
+            ((ScriptableObject) proto).defineProperty(name, null, method, setter, attr);
+            continue;
+        }
+        boolean isStatic = annotation instanceof JSStaticFunction || prefix == staticFunctionPrefix;
+        if (isStatic && !Modifier.isStatic(method.getModifiers())) {
+            throw Context.reportRuntimeError("jsStaticFunction must be used with static method.");
+        }
+        FunctionObject f = new FunctionObject(name, method, proto);
+        if (f.isVarArgsConstructor()) {
+            throw Context.reportRuntimeError1("msg.varargs.fun", ctorMember.getName());
+        }
+        defineProperty(isStatic ? ctor : proto, name, f, DONTENUM);
+        if (sealed) {
+            f.sealObject();
+        }
+    }
+    // Call user code to complete initialization if necessary.
+    if (finishInit != null) {
+        Object[] finishArgs = { scope, ctor, proto };
+        finishInit.invoke(null, finishArgs);
+    }
+    // Seal the object if necessary.
+    if (sealed) {
+        ctor.sealObject();
+        if (proto instanceof ScriptableObject) {
+            ((ScriptableObject) proto).sealObject();
+        }
+    }
+    return ctor;
+}

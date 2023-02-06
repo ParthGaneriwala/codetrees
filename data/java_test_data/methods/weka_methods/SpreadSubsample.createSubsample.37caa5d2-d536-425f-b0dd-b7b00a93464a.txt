@@ -1,0 +1,96 @@
+private void createSubsample() {
+    int classI = getInputFormat().classIndex();
+    // Sort according to class attribute.
+    getInputFormat().sort(classI);
+    // Determine where each class starts in the sorted dataset
+    int[] classIndices = getClassIndices();
+    // Get the existing class distribution
+    int[] counts = new int[getInputFormat().numClasses()];
+    double[] weights = new double[getInputFormat().numClasses()];
+    int min = -1;
+    for (int i = 0; i < getInputFormat().numInstances(); i++) {
+        Instance current = getInputFormat().instance(i);
+        if (current.classIsMissing() == false) {
+            counts[(int) current.classValue()]++;
+            weights[(int) current.classValue()] += current.weight();
+        }
+    }
+    // Convert from total weight to average weight
+    for (int i = 0; i < counts.length; i++) {
+        if (counts[i] > 0) {
+            weights[i] = weights[i] / counts[i];
+        }
+    /*
+       * System.err.println("Class:" + i + " " +
+       * getInputFormat().classAttribute().value(i) + " Count:" + counts[i] +
+       * " Total:" + weights[i] * counts[i] + " Avg:" + weights[i]);
+       */
+    }
+    // find the class with the minimum number of instances
+    int minIndex = -1;
+    for (int i = 0; i < counts.length; i++) {
+        if ((min < 0) && (counts[i] > 0)) {
+            min = counts[i];
+            minIndex = i;
+        } else if ((counts[i] < min) && (counts[i] > 0)) {
+            min = counts[i];
+            minIndex = i;
+        }
+    }
+    if (min < 0) {
+        System.err.println("SpreadSubsample: *warning* none of the classes have any values in them.");
+        return;
+    }
+    // determine the new distribution
+    int[] new_counts = new int[getInputFormat().numClasses()];
+    for (int i = 0; i < counts.length; i++) {
+        new_counts[i] = (int) Math.abs(Math.min(counts[i], min * m_DistributionSpread));
+        if (i == minIndex) {
+            if (m_DistributionSpread > 0 && m_DistributionSpread < 1.0) {
+                // don't undersample the minority class!
+                new_counts[i] = counts[i];
+            }
+        }
+        if (m_DistributionSpread == 0) {
+            new_counts[i] = counts[i];
+        }
+        if (m_MaxCount > 0) {
+            new_counts[i] = Math.min(new_counts[i], m_MaxCount);
+        }
+    }
+    // Sample without replacement
+    Random random = new Random(m_RandomSeed);
+    Hashtable<String, String> t = new Hashtable<String, String>();
+    for (int j = 0; j < new_counts.length; j++) {
+        double newWeight = 1.0;
+        if (m_AdjustWeights && (new_counts[j] > 0)) {
+            newWeight = weights[j] * counts[j] / new_counts[j];
+        /*
+         * System.err.println("Class:" + j + " " +
+         * getInputFormat().classAttribute().value(j) + " Count:" + counts[j] +
+         * " Total:" + weights[j] * counts[j] + " Avg:" + weights[j] +
+         * " NewCount:" + new_counts[j] + " NewAvg:" + newWeight);
+         */
+        }
+        for (int k = 0; k < new_counts[j]; k++) {
+            boolean ok = false;
+            do {
+                int index = classIndices[j] + random.nextInt(classIndices[j + 1] - classIndices[j]);
+                // Have we used this instance before?
+                if (t.get("" + index) == null) {
+                    // if not, add it to the hashtable and use it
+                    t.put("" + index, "");
+                    ok = true;
+                    if (index >= 0) {
+                        Instance newInst = (Instance) getInputFormat().instance(index).copy();
+                        if (m_AdjustWeights) {
+                            newInst.setWeight(newWeight);
+                        }
+                        // No need to copy instance
+                        push(newInst, false);
+                    }
+                }
+            } while (!ok);
+        }
+    }
+}

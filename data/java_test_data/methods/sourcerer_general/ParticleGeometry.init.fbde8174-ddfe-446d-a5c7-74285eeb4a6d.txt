@@ -1,0 +1,56 @@
+protected void init(GlContext ctx, PassDescriptor[] passes) {
+    // determine whether any of the passes require normals
+    boolean normals = false;
+    for (PassDescriptor pass : passes) {
+        normals |= pass.normals;
+    }
+    // create the base arrays
+    HashMap<String, ClientArray> vertexAttribArrays = new HashMap<String, ClientArray>(0);
+    HashIntMap<ClientArray> texCoordArrays = new HashIntMap<ClientArray>();
+    ClientArray texCoordArray = new ClientArray(2, (FloatBuffer) null);
+    texCoordArrays.put(0, texCoordArray);
+    ClientArray colorArray = new ClientArray(4, (FloatBuffer) null);
+    ClientArray normalArray = normals ? new ClientArray(3, (FloatBuffer) null) : null;
+    ClientArray vertexArray = new ClientArray(3, (FloatBuffer) null);
+    // put them in a list and compute the offsets and stride
+    ArrayList<ClientArray> arrays = GeometryUtil.createList(vertexAttribArrays, texCoordArrays, colorArray, normalArray, vertexArray);
+    _stride = GeometryUtil.updateOffsetsAndStride(arrays) / 4;
+    _texCoordOffset = (int) (texCoordArray.offset / 4);
+    _colorOffset = (int) (colorArray.offset / 4);
+    _normalOffset = normals ? (int) (normalArray.offset / 4) : -1;
+    _vertexOffset = (int) (vertexArray.offset / 4);
+    // (re)create the data array if necessary
+    _data = (_config.data == null) ? null : _config.data.get();
+    if (_data == null) {
+        int size = _particles.length * getParticleVertexCount() * _stride;
+        _config.data = new SoftReference<float[]>(_data = new float[size]);
+    }
+    // use a VBO if possible
+    BufferObject elementArrayBuffer = null;
+    if (GLContext.getCapabilities().GL_ARB_vertex_buffer_object) {
+        _arrayBuffer = new BufferObject(ctx.getRenderer());
+        _floatArray = getScratchBuffer(_data.length);
+        // (re)create the shared element array buffer if necessary
+        elementArrayBuffer = (_config.elementArrayBuffer == null) ? null : _config.elementArrayBuffer.get();
+        if (elementArrayBuffer == null) {
+            _config.elementArrayBuffer = new SoftReference<BufferObject>(elementArrayBuffer = new BufferObject(ctx.getRenderer()));
+            elementArrayBuffer.setData(createIndices());
+        }
+        _drawCommand = SimpleBatch.createDrawBufferElements(getMode(), 0, 0, 0, GL11.GL_UNSIGNED_SHORT, 0L);
+    } else {
+        _floatArray = BufferUtils.createFloatBuffer(_data.length);
+        // (re)create the shared index buffer if necessary
+        ShortBuffer indices = (_config.indices == null) ? null : _config.indices.get();
+        if (indices == null) {
+            _config.indices = new SoftReference<ShortBuffer>(indices = createIndices());
+        }
+        _drawCommand = SimpleBatch.createDrawShortElements(getMode(), 0, 0, indices);
+    }
+    // set the array references
+    for (ClientArray array : arrays) {
+        array.arrayBuffer = _arrayBuffer;
+        array.floatArray = (_arrayBuffer == null) ? _floatArray : null;
+    }
+    // create the array states
+    _arrayStates = GeometryUtil.createArrayStates(vertexAttribArrays, texCoordArrays, colorArray, normalArray, vertexArray, elementArrayBuffer, passes);
+}

@@ -1,0 +1,57 @@
+protected void handleEvent(Event event) {
+    final Component target = event.getTarget();
+    final String triggerEventName = event.getName();
+    final List tmplist = new ArrayList(_dataTargets.size());
+    // fire onSave for each binding
+    for (final Iterator it = _dataTargets.iterator(); it.hasNext(); ) {
+        final BindingInfo bi = (BindingInfo) it.next();
+        final Component dt = bi.getComponent();
+        final Binding binding = bi.getBinding();
+        final DataBinder binder = binding.getBinder();
+        final Component dataTarget = DataBinder.isTemplate(dt) ? DataBinder.lookupClone(target, dt) : dt;
+        // then binder.lookupClone() will return null dataTarget.
+        if (dataTarget != null) {
+            final Object[] vals = binding.getAttributeValues(dataTarget);
+            if (vals != null) {
+                tmplist.add(new BindingInfo(binding, dataTarget, vals));
+                Events.sendEvent(new BindingSaveEvent("onBindingSave", dataTarget, target, binding, vals[0]));
+            }
+        } else {
+            // bi.getComponent a template and a null dataTarget, meaning all collection items has to
+            // be handled. Search the owner to iterate all cloned items.
+            final List clones = scanClones(binder, dt);
+            for (final Iterator itc = clones.iterator(); itc.hasNext(); ) {
+                final Component dataTarget1 = (Component) itc.next();
+                final Object[] vals = binding.getAttributeValues(dataTarget1);
+                if (vals != null) {
+                    tmplist.add(new BindingInfo(binding, dataTarget1, vals));
+                    Events.sendEvent(new BindingSaveEvent("onBindingSave", dataTarget1, target, binding, vals[0]));
+                }
+            }
+        }
+    }
+    // fire onValidate for target component
+    Events.sendEvent(new Event("onBindingValidate", target));
+    // saveAttribute for each binding
+    Component loadOnSaveProxy = null;
+    Component dataTarget = null;
+    DataBinder binder = null;
+    final List loadOnSaveInfos = new ArrayList(tmplist.size());
+    for (final Iterator it = tmplist.iterator(); it.hasNext(); ) {
+        final BindingInfo bi = (BindingInfo) it.next();
+        dataTarget = bi.getComponent();
+        final Binding binding = bi.getBinding();
+        if (binder == null) {
+            binder = binding.getBinder();
+        }
+        final Object[] vals = bi.getAttributeValues();
+        binding.saveAttributeValue(dataTarget, vals, loadOnSaveInfos, triggerEventName);
+        if (loadOnSaveProxy == null && dataTarget.isListenerAvailable("onLoadOnSave", true)) {
+            loadOnSaveProxy = dataTarget;
+        }
+    }
+    // feature#2990932, allow disable load-on-save mechanism
+    if (loadOnSaveProxy != null && binder.isLoadOnSave()) {
+        Events.postEvent(new Event("onLoadOnSave", loadOnSaveProxy, loadOnSaveInfos));
+    }
+}

@@ -1,0 +1,66 @@
+protected void applyFiltering(String connType, int[] selectedAtts, Instances data, Integer setNum, Integer maxSetNum) throws WekaException {
+    if (isStopRequested()) {
+        return;
+    }
+    if (getStepManager().numOutgoingConnectionsOfType(connType) == 0) {
+        return;
+    }
+    int[] finalSet = new int[selectedAtts.length];
+    boolean adjust = (m_isDoingXVal || m_isRanking) && ((!(m_evaluatorTemplate instanceof UnsupervisedSubsetEvaluator) && !(m_evaluatorTemplate instanceof UnsupervisedAttributeEvaluator)) || m_evaluatorTemplate instanceof AttributeTransformer);
+    if (m_isRanking) {
+        int numToSelect = m_numToSelectStore.get(setNum != null ? setNum : -1);
+        finalSet = new int[numToSelect];
+        if (data.classIndex() >= 0) {
+            if (adjust) {
+                // one more for the class
+                finalSet = new int[numToSelect + 1];
+                finalSet[numToSelect] = data.classIndex();
+            } else {
+                finalSet = new int[numToSelect];
+            }
+        }
+        for (int i = 0; i < numToSelect; i++) {
+            finalSet[i] = selectedAtts[i];
+        }
+    } else {
+        if (adjust) {
+            // one more for the class
+            finalSet = new int[selectedAtts.length + 1];
+            finalSet[selectedAtts.length] = data.classIndex();
+        }
+        for (int i = 0; i < selectedAtts.length; i++) {
+            finalSet[i] = selectedAtts[i];
+        }
+    }
+    try {
+        Instances reduced = null;
+        AttributeTransformer transformer = m_transformerStore.get(setNum != null ? setNum : -1);
+        if (transformer != null) {
+            reduced = new Instances(transformer.transformedHeader(), data.numInstances());
+            for (int i = 0; i < data.numInstances(); i++) {
+                reduced.add(transformer.convertInstance(data.instance(i)));
+            }
+        } else {
+            Remove r = new Remove();
+            r.setAttributeIndicesArray(finalSet);
+            r.setInvertSelection(true);
+            r.setInputFormat(data);
+            reduced = weka.filters.Filter.useFilter(data, r);
+        }
+        if (!isStopRequested()) {
+            String message = "Filtering " + connType + " (" + data.relationName();
+            if (setNum != null && maxSetNum != null) {
+                message += ", set " + setNum + " of " + maxSetNum;
+            }
+            message += ")";
+            getStepManager().statusMessage(message);
+            getStepManager().logBasic(message);
+            Data output = new Data(connType, reduced);
+            output.setPayloadElement(StepManager.CON_AUX_DATA_SET_NUM, setNum);
+            output.setPayloadElement(StepManager.CON_AUX_DATA_MAX_SET_NUM, maxSetNum);
+            getStepManager().outputData(output);
+        }
+    } catch (Exception ex) {
+        throw new WekaException(ex);
+    }
+}

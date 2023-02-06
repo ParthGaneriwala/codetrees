@@ -1,0 +1,75 @@
+public ResultSet getProcedureColumns(String catalog, String schemaPattern, String procedureNamePattern, String columnNamePattern) throws SQLException {
+    if (!this.conn.versionMeetsMinimum(5, 4, 0)) {
+        return super.getProcedureColumns(catalog, schemaPattern, procedureNamePattern, columnNamePattern);
+    }
+    if (!this.hasParametersView) {
+        return super.getProcedureColumns(catalog, schemaPattern, procedureNamePattern, columnNamePattern);
+    }
+    if ((procedureNamePattern == null) || (procedureNamePattern.length() == 0)) {
+        if (this.conn.getNullNamePatternMatchesAll()) {
+            procedureNamePattern = "%";
+        } else {
+            throw SQLError.createSQLException("Procedure name pattern can not be NULL or empty.", SQLError.SQL_STATE_ILLEGAL_ARGUMENT, getExceptionInterceptor());
+        }
+    }
+    String db = null;
+    if (catalog == null) {
+        if (this.conn.getNullCatalogMeansCurrent()) {
+            db = this.database;
+        }
+    } else {
+        db = catalog;
+    }
+    // Here's what we get from MySQL ...
+    // SPECIFIC_CATALOG                             NULL
+    // SPECIFIC_SCHEMA                              db17
+    // SPECIFIC_NAME                                p
+    // ORDINAL_POSITION                             1
+    // PARAMETER_MODE                               OUT
+    // PARAMETER_NAME                               a
+    // DATA_TYPE                                    int
+    // CHARACTER_MAXIMUM_LENGTH                     NULL
+    // CHARACTER_OCTET_LENGTH                       NULL
+    // CHARACTER_SET_NAME                           NULL
+    // COLLATION_NAME                               NULL
+    // NUMERIC_PRECISION                            10
+    // NUMERIC_SCALE                                0
+    // DTD_IDENTIFIER                               int(11)
+    StringBuffer sqlBuf = new StringBuffer("SELECT SPECIFIC_SCHEMA AS PROCEDURE_CAT, " + "NULL AS `PROCEDURE_SCHEM`, " + "SPECIFIC_NAME AS `PROCEDURE_NAME`, " + "PARAMETER_NAME AS `COLUMN_NAME`, " + "CASE WHEN PARAMETER_MODE = 'IN' THEN " + procedureColumnIn + " WHEN PARAMETER_MODE='OUT' THEN " + procedureColumnOut + " WHEN PARAMETER_MODE='INOUT' THEN " + procedureColumnInOut + " WHEN ORDINAL_POSITION=0 THEN " + procedureColumnReturn + " ELSE " + procedureColumnUnknown + " END AS `COLUMN_TYPE`, ");
+    // DATA_TYPE
+    MysqlDefs.appendJdbcTypeMappingQuery(sqlBuf, "DATA_TYPE");
+    sqlBuf.append(" AS `DATA_TYPE`, ");
+    // TYPE_NAME
+    if (conn.getCapitalizeTypeNames()) {
+        sqlBuf.append("UPPER(CASE WHEN LOCATE('unsigned', DATA_TYPE) != 0 AND LOCATE('unsigned', DATA_TYPE) = 0 THEN CONCAT(DATA_TYPE, ' unsigned') ELSE DATA_TYPE END) AS `TYPE_NAME`,");
+    } else {
+        sqlBuf.append("CASE WHEN LOCATE('unsigned', DATA_TYPE) != 0 AND LOCATE('unsigned', DATA_TYPE) = 0 THEN CONCAT(DATA_TYPE, ' unsigned') ELSE DATA_TYPE END AS `TYPE_NAME`,");
+    }
+    // PRECISION</B> int => precision
+    sqlBuf.append("NUMERIC_PRECISION AS `PRECISION`, ");
+    // LENGTH</B> int => length in bytes of data
+    sqlBuf.append("CASE WHEN LCASE(DATA_TYPE)='date' THEN 10 WHEN LCASE(DATA_TYPE)='time' THEN 8 WHEN LCASE(DATA_TYPE)='datetime' THEN 19 WHEN LCASE(DATA_TYPE)='timestamp' THEN 19 WHEN CHARACTER_MAXIMUM_LENGTH IS NULL THEN NUMERIC_PRECISION WHEN CHARACTER_MAXIMUM_LENGTH > " + Integer.MAX_VALUE + " THEN " + Integer.MAX_VALUE + " ELSE CHARACTER_MAXIMUM_LENGTH END AS LENGTH, ");
+    // SCALE</B> short => scale
+    sqlBuf.append("NUMERIC_SCALE AS `SCALE`, ");
+    // RADIX</B> short => radix
+    sqlBuf.append("10 AS RADIX,");
+    sqlBuf.append(procedureNullableUnknown + " AS `NULLABLE`, " + " NULL AS `REMARKS` " + "FROM INFORMATION_SCHEMA.PARAMETERS WHERE " + "SPECIFIC_SCHEMA LIKE ? AND SPECIFIC_NAME LIKE ? AND (PARAMETER_NAME LIKE ? OR PARAMETER_NAME IS NULL) " + "ORDER BY SPECIFIC_SCHEMA, SPECIFIC_NAME, ORDINAL_POSITION");
+    java.sql.PreparedStatement pStmt = null;
+    try {
+        pStmt = prepareMetaDataSafeStatement(sqlBuf.toString());
+        if (db != null) {
+            pStmt.setString(1, db);
+        } else {
+            pStmt.setString(1, "%");
+        }
+        pStmt.setString(2, procedureNamePattern);
+        pStmt.setString(3, columnNamePattern);
+        ResultSet rs = executeMetadataQuery(pStmt);
+        ((com.mysql.jdbc.ResultSetInternalMethods) rs).redefineFieldsForDBMD(createProcedureColumnsFields());
+        return rs;
+    } finally {
+        if (pStmt != null) {
+            pStmt.close();
+        }
+    }
+}

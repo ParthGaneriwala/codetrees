@@ -1,0 +1,140 @@
+void forEach(Object catalogStr) throws SQLException {
+    ResultSet results = null;
+    try {
+        if (!conn.versionMeetsMinimum(5, 0, 2)) {
+            try {
+                results = stmt.executeQuery("SHOW TABLES FROM " + quotedId + catalogStr.toString() + quotedId + " LIKE '" + tableNamePat + "'");
+            } catch (SQLException sqlEx) {
+                if (SQLError.SQL_STATE_COMMUNICATION_LINK_FAILURE.equals(sqlEx.getSQLState())) {
+                    throw sqlEx;
+                }
+                return;
+            }
+        } else {
+            try {
+                results = stmt.executeQuery("SHOW FULL TABLES FROM " + quotedId + catalogStr.toString() + quotedId + " LIKE '" + tableNamePat + "'");
+            } catch (SQLException sqlEx) {
+                if (SQLError.SQL_STATE_COMMUNICATION_LINK_FAILURE.equals(sqlEx.getSQLState())) {
+                    throw sqlEx;
+                }
+                return;
+            }
+        }
+        boolean shouldReportTables = false;
+        boolean shouldReportViews = false;
+        boolean shouldReportSystemTables = false;
+        if (types == null || types.length == 0) {
+            shouldReportTables = true;
+            shouldReportViews = true;
+            shouldReportSystemTables = true;
+        } else {
+            for (int i = 0; i < types.length; i++) {
+                if ("TABLE".equalsIgnoreCase(types[i])) {
+                    shouldReportTables = true;
+                }
+                if ("VIEW".equalsIgnoreCase(types[i])) {
+                    shouldReportViews = true;
+                }
+                if ("SYSTEM TABLE".equalsIgnoreCase(types[i])) {
+                    shouldReportSystemTables = true;
+                }
+            }
+        }
+        int typeColumnIndex = 0;
+        boolean hasTableTypes = false;
+        if (conn.versionMeetsMinimum(5, 0, 2)) {
+            try {
+                // Both column names have been in use in the
+                // source tree
+                // so far....
+                typeColumnIndex = results.findColumn("table_type");
+                hasTableTypes = true;
+            } catch (SQLException sqlEx) {
+                // 
+                try {
+                    typeColumnIndex = results.findColumn("Type");
+                    hasTableTypes = true;
+                } catch (SQLException sqlEx2) {
+                    hasTableTypes = false;
+                }
+            }
+        }
+        TreeMap tablesOrderedByName = null;
+        TreeMap viewsOrderedByName = null;
+        while (results.next()) {
+            byte[][] row = new byte[5][];
+            row[0] = (catalogStr.toString() == null) ? null : s2b(catalogStr.toString());
+            row[1] = null;
+            row[2] = results.getBytes(1);
+            row[4] = new byte[0];
+            if (hasTableTypes) {
+                String tableType = results.getString(typeColumnIndex);
+                if (("table".equalsIgnoreCase(tableType) || "base table".equalsIgnoreCase(tableType)) && shouldReportTables) {
+                    boolean reportTable = false;
+                    if (!operatingOnInformationSchema && shouldReportTables) {
+                        row[3] = TABLE_AS_BYTES;
+                        reportTable = true;
+                    } else if (operatingOnInformationSchema && shouldReportSystemTables) {
+                        row[3] = SYSTEM_TABLE_AS_BYTES;
+                        reportTable = true;
+                    }
+                    if (reportTable) {
+                        if (tablesOrderedByName == null) {
+                            tablesOrderedByName = new TreeMap();
+                        }
+                        tablesOrderedByName.put(results.getString(1), row);
+                    }
+                } else if ("system view".equalsIgnoreCase(tableType) && shouldReportSystemTables) {
+                    row[3] = SYSTEM_TABLE_AS_BYTES;
+                    if (tablesOrderedByName == null) {
+                        tablesOrderedByName = new TreeMap();
+                    }
+                    tablesOrderedByName.put(results.getString(1), row);
+                } else if ("view".equalsIgnoreCase(tableType) && shouldReportViews) {
+                    row[3] = VIEW_AS_BYTES;
+                    if (viewsOrderedByName == null) {
+                        viewsOrderedByName = new TreeMap();
+                    }
+                    viewsOrderedByName.put(results.getString(1), row);
+                } else if (!hasTableTypes) {
+                    // punt?
+                    row[3] = TABLE_AS_BYTES;
+                    if (tablesOrderedByName == null) {
+                        tablesOrderedByName = new TreeMap();
+                    }
+                    tablesOrderedByName.put(results.getString(1), row);
+                }
+            } else {
+                if (shouldReportTables) {
+                    // Pre-MySQL-5.0.1, tables only
+                    row[3] = TABLE_AS_BYTES;
+                    if (tablesOrderedByName == null) {
+                        tablesOrderedByName = new TreeMap();
+                    }
+                    tablesOrderedByName.put(results.getString(1), row);
+                }
+            }
+        }
+        if (tablesOrderedByName != null) {
+            Iterator tablesIter = tablesOrderedByName.values().iterator();
+            while (tablesIter.hasNext()) {
+                tuples.add(new ByteArrayRow((byte[][]) tablesIter.next(), getExceptionInterceptor()));
+            }
+        }
+        if (viewsOrderedByName != null) {
+            Iterator viewsIter = viewsOrderedByName.values().iterator();
+            while (viewsIter.hasNext()) {
+                tuples.add(new ByteArrayRow((byte[][]) viewsIter.next(), getExceptionInterceptor()));
+            }
+        }
+    } finally {
+        if (results != null) {
+            try {
+                results.close();
+            } catch (Exception ex) {
+                ;
+            }
+            results = null;
+        }
+    }
+}

@@ -1,0 +1,86 @@
+private synchronized int computeReplicationWork(int blocksToProcess) throws IOException {
+    int scheduledReplicationCount = 0;
+    synchronized (neededReplications) {
+        // # of blocks to process equals either twice the number of live
+        // data-nodes or the number of under-replicated blocks whichever is less
+        blocksToProcess = Math.min(blocksToProcess, neededReplications.size());
+        if (blocksToProcess == 0)
+            return scheduledReplicationCount;
+        // Go through all blocks that need replications.
+        // Select source and target nodes for replication.
+        Iterator<Block> neededReplicationsIterator = neededReplications.iterator();
+        // skip to the first unprocessed block, which is at replIndex
+        for (int i = 0; i < replIndex && neededReplicationsIterator.hasNext(); i++) {
+            neededReplicationsIterator.next();
+        }
+        // process blocks
+        for (int blkCnt = 0; blkCnt < blocksToProcess; blkCnt++, replIndex++) {
+            if (!neededReplicationsIterator.hasNext()) {
+                // start from the beginning
+                replIndex = 0;
+                blocksToProcess = Math.min(blocksToProcess, neededReplications.size());
+                if (blkCnt >= blocksToProcess)
+                    break;
+                neededReplicationsIterator = neededReplications.iterator();
+                assert neededReplicationsIterator.hasNext() : "neededReplications should not be empty.";
+            }
+            Block block = neededReplicationsIterator.next();
+            // block should belong to a file
+            INodeFile fileINode = blocksMap.getINode(block);
+            // abandoned block or block reopened for append
+            if (fileINode == null || fileINode.isUnderConstruction()) {
+                // remove from neededReplications
+                neededReplicationsIterator.remove();
+                replIndex--;
+                continue;
+            }
+            int requiredReplication = fileINode.getReplication();
+            // get a source data-node
+            List<DatanodeDescriptor> containingNodes = new ArrayList<DatanodeDescriptor>();
+            NumberReplicas numReplicas = new NumberReplicas();
+            DatanodeDescriptor srcNode = chooseSourceDatanode(block, containingNodes, numReplicas);
+            if (// block can not be replicated from any node
+            srcNode == null)
+                continue;
+            // do not schedule more if enough replicas is already pending
+            int numEffectiveReplicas = numReplicas.liveReplicas() + pendingReplications.getNumReplicas(block);
+            if (numEffectiveReplicas >= requiredReplication) {
+                // remove from neededReplications
+                neededReplicationsIterator.remove();
+                replIndex--;
+                NameNode.stateChangeLog.info("BLOCK* " + "Removing block " + block + " from neededReplications as it does not belong to any file.");
+                continue;
+            }
+            // choose replication targets
+            int maxTargets = maxReplicationStreams - srcNode.getNumberOfBlocksToBeReplicated();
+            assert maxTargets > 0 : "Datanode " + srcNode.getName() + " should have not been selected as a source for replication.";
+            DatanodeDescriptor[] targets = replicator.chooseTarget(Math.min(requiredReplication - numEffectiveReplicas, maxTargets), srcNode, containingNodes, null, block.getNumBytes());
+            if (targets.length == 0)
+                continue;
+            // Add block to the to be replicated list
+            srcNode.addBlockToBeReplicated(block, targets);
+            scheduledReplicationCount++;
+            for (DatanodeDescriptor dn : targets) {
+                dn.incBlocksScheduled();
+            }
+            // replications that fail after an appropriate amount of time.
+            if (numEffectiveReplicas + targets.length >= requiredReplication) {
+                // remove from neededReplications
+                neededReplicationsIterator.remove();
+                replIndex--;
+                pendingReplications.add(block, targets.length);
+                NameNode.stateChangeLog.debug("BLOCK* block " + block + " is moved from neededReplications to pendingReplications");
+            }
+            if (NameNode.stateChangeLog.isInfoEnabled()) {
+                StringBuffer targetList = new StringBuffer("datanode(s)");
+                for (int k = 0; k < targets.length; k++) {
+                    targetList.append(' ');
+                    targetList.append(targets[k].getName());
+                }
+                NameNode.stateChangeLog.info("BLOCK* ask " + srcNode.getName() + " to replicate " + block + " to " + targetList);
+                NameNode.stateChangeLog.debug("BLOCK* neededReplications = " + neededReplications.size() + " pendingReplications = " + pendingReplications.size());
+            }
+        }
+    }
+    return scheduledReplicationCount;
+}

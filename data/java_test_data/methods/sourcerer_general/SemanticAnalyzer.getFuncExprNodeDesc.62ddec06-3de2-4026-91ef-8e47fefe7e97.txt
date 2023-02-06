@@ -1,0 +1,42 @@
+public static exprNodeDesc getFuncExprNodeDesc(String udfName, List<exprNodeDesc> children) {
+    // Find the corresponding method
+    ArrayList<Class<?>> argumentClasses = new ArrayList<Class<?>>(children.size());
+    for (int i = 0; i < children.size(); i++) {
+        exprNodeDesc child = children.get(i);
+        assert (child != null);
+        TypeInfo childTypeInfo = child.getTypeInfo();
+        assert (childTypeInfo != null);
+        argumentClasses.add(childTypeInfo.getPrimitiveClass());
+    }
+    Method udfMethod = FunctionRegistry.getUDFMethod(udfName, false, argumentClasses);
+    if (udfMethod == null)
+        return null;
+    ArrayList<exprNodeDesc> ch = new ArrayList<exprNodeDesc>();
+    Class<?>[] pTypes = udfMethod.getParameterTypes();
+    for (int i = 0; i < children.size(); i++) {
+        exprNodeDesc desc = children.get(i);
+        Class<?> pType = ObjectInspectorUtils.generalizePrimitive(pTypes[i]);
+        if (desc instanceof exprNodeNullDesc) {
+            exprNodeConstantDesc newCh = new exprNodeConstantDesc(TypeInfoFactory.getPrimitiveTypeInfo(pType), null);
+            ch.add(newCh);
+        } else if (pType.isAssignableFrom(desc.getTypeInfo().getPrimitiveClass())) {
+            // no type conversion needed
+            ch.add(desc);
+        } else {
+            // must be implicit type conversion
+            Class<?> from = argumentClasses.get(i);
+            Class<?> to = pType;
+            assert (FunctionRegistry.implicitConvertable(from, to));
+            Method m = FunctionRegistry.getUDFMethod(to.getName(), true, from);
+            assert (m != null);
+            Class<? extends UDF> c = FunctionRegistry.getUDFClass(to.getName());
+            assert (c != null);
+            // get the conversion method
+            ArrayList<exprNodeDesc> conversionArg = new ArrayList<exprNodeDesc>(1);
+            conversionArg.add(desc);
+            ch.add(new exprNodeFuncDesc(TypeInfoFactory.getPrimitiveTypeInfo(pType), c, m, conversionArg));
+        }
+    }
+    exprNodeFuncDesc desc = new exprNodeFuncDesc(TypeInfoFactory.getPrimitiveTypeInfo(udfMethod.getReturnType()), FunctionRegistry.getUDFClass(udfName), udfMethod, ch);
+    return desc;
+}

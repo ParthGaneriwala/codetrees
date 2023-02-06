@@ -1,0 +1,133 @@
+@Override
+protected void doExecute(String finalLocation, ActionInvocation invocation) throws Exception {
+    if (this.format == null) {
+        this.format = FORMAT_PDF;
+    }
+    if (dataSource == null) {
+        String message = "No dataSource specified...";
+        LOG.error(message);
+        throw new WebWorkException(message);
+    }
+    if (LOG.isDebugEnabled()) {
+        LOG.debug("Creating JasperReport for dataSource = " + dataSource + ", format = " + this.format);
+    }
+    HttpServletRequest request = (HttpServletRequest) invocation.getInvocationContext().get(ServletActionContext.HTTP_REQUEST);
+    HttpServletResponse response = (HttpServletResponse) invocation.getInvocationContext().get(ServletActionContext.HTTP_RESPONSE);
+    // construct the data source for the report
+    OgnlValueStack stack = invocation.getStack();
+    OgnlValueStackDataSource stackDataSource = new OgnlValueStackDataSource(stack, dataSource);
+    format = conditionalParse(format, invocation);
+    dataSource = conditionalParse(dataSource, invocation);
+    if (contentDisposition != null) {
+        contentDisposition = conditionalParse(contentDisposition, invocation);
+    }
+    if (documentName != null) {
+        documentName = conditionalParse(documentName, invocation);
+    }
+    // (Map) ActionContext.getContext().getSession().get("IMAGES_MAP");
+    if (!TextUtils.stringSet(format)) {
+        format = FORMAT_PDF;
+    }
+    if (!"contype".equals(request.getHeader("User-Agent"))) {
+        // Determine the directory that the report file is in and set the reportDirectory parameter
+        // For WW 2.1.7:
+        // ServletContext servletContext = ((ServletConfig) invocation.getInvocationContext().get(ServletActionContext.SERVLET_CONFIG)).getServletContext();
+        ServletContext servletContext = (ServletContext) invocation.getInvocationContext().get(ServletActionContext.SERVLET_CONTEXT);
+        String systemId = servletContext.getRealPath(finalLocation);
+        Map parameters = new OgnlValueStackShadowMap(stack);
+        File directory = new File(systemId.substring(0, systemId.lastIndexOf(File.separator)));
+        parameters.put("reportDirectory", directory);
+        parameters.put(JRParameter.REPORT_LOCALE, invocation.getInvocationContext().getLocale());
+        if (StringUtils.isNotBlank(this.parameters)) {
+            String[] ss = this.parameters.split(",");
+            if (ss != null) {
+                for (String s : ss) {
+                    ParameterEntry pe = new ParameterEntry(s);
+                    parameters.put(pe.getKey(), stack.findValue(pe.getValue()));
+                }
+            }
+        }
+        byte[] output;
+        JasperPrint jasperPrint;
+        // Fill the report and produce a print object
+        try {
+            JasperReport jasperReport = (JasperReport) JRLoader.loadObject(systemId);
+            jasperPrint = JasperFillManager.fillReport(jasperReport, parameters, stackDataSource);
+        } catch (JRException e) {
+            LOG.error("Error building report for uri " + systemId, e);
+            throw new ServletException(e.getMessage(), e);
+        }
+        // Export the print object to the desired output format
+        try {
+            if (contentDisposition != null || documentName != null) {
+                final StringBuffer tmp = new StringBuffer();
+                tmp.append((contentDisposition == null) ? "inline" : contentDisposition);
+                if (documentName != null) {
+                    tmp.append("; filename=");
+                    tmp.append(documentName);
+                    tmp.append(".");
+                    tmp.append(format.toLowerCase());
+                }
+                response.setHeader("Content-disposition", tmp.toString());
+            }
+            if (format.equals(FORMAT_PDF)) {
+                response.setContentType("application/pdf");
+                // response.setHeader("Content-disposition", "inline; filename=report.pdf");
+                output = JasperExportManager.exportReportToPdf(jasperPrint);
+            } else {
+                JRExporter exporter;
+                if (format.equals(FORMAT_CSV)) {
+                    response.setContentType("text/plain");
+                    exporter = new JRCsvExporter();
+                } else if (format.equals(FORMAT_HTML)) {
+                    response.setContentType("text/html");
+                    // IMAGES_MAPS seems to be only supported as "backward compatible" from JasperReports 1.1.0
+                    Map imagesMap = new HashMap();
+                    request.getSession(true).setAttribute("IMAGES_MAP", imagesMap);
+                    exporter = new JRHtmlExporter();
+                    exporter.setParameter(JRHtmlExporterParameter.IMAGES_MAP, imagesMap);
+                    exporter.setParameter(JRHtmlExporterParameter.IMAGES_URI, request.getContextPath() + imageServletUrl);
+                    // Needed to support chart images:
+                    exporter.setParameter(JRExporterParameter.JASPER_PRINT, jasperPrint);
+                    request.getSession().setAttribute("net.sf.jasperreports.j2ee.jasper_print", jasperPrint);
+                } else if (format.equals(FORMAT_XLS)) {
+                    response.setContentType("application/vnd.ms-excel");
+                    exporter = new JRXlsExporter();
+                } else if (format.equals(FORMAT_XML)) {
+                    response.setContentType("text/xml");
+                    exporter = new JRXmlExporter();
+                } else {
+                    throw new ServletException("Unknown report format: " + format);
+                }
+                output = exportReportToBytes(jasperPrint, exporter);
+            }
+        } catch (JRException e) {
+            String message = "Error producing " + format + " report for uri " + systemId;
+            LOG.error(message, e);
+            throw new ServletException(e.getMessage(), e);
+        }
+        response.setContentLength(output.length);
+        ServletOutputStream ouputStream;
+        try {
+            ouputStream = response.getOutputStream();
+            ouputStream.write(output);
+            ouputStream.flush();
+            ouputStream.close();
+        } catch (IOException e) {
+            LOG.error("Error writing report output", e);
+            throw new ServletException(e.getMessage(), e);
+        }
+    } else {
+        // Code to handle "contype" request from IE
+        try {
+            ServletOutputStream outputStream;
+            response.setContentType("application/pdf");
+            response.setContentLength(0);
+            outputStream = response.getOutputStream();
+            outputStream.close();
+        } catch (IOException e) {
+            LOG.error("Error writing report output", e);
+            throw new ServletException(e.getMessage(), e);
+        }
+    }
+}

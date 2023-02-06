@@ -1,0 +1,48 @@
+public static boolean closeAllBuffers(View view, boolean isExiting) {
+    if (view != null)
+        view.getEditPane().saveCaretInfo();
+    boolean dirty = false;
+    Buffer buffer = buffersFirst;
+    while (buffer != null) {
+        if (buffer.isDirty()) {
+            dirty = true;
+            break;
+        }
+        buffer = buffer.next;
+    }
+    if (dirty) {
+        boolean ok = new CloseDialog(view).isOK();
+        if (!ok)
+            return false;
+    }
+    // Wait for pending I/O requests
+    VFSManager.waitForRequests();
+    if (VFSManager.errorOccurred())
+        return false;
+    // close remaining buffers (the close dialog only deals with
+    // dirty ones)
+    buffer = buffersFirst;
+    // zero it here so that BufferTabs doesn't have any problems
+    buffersFirst = buffersLast = null;
+    bufferHash.clear();
+    bufferCount = 0;
+    while (buffer != null) {
+        if (!buffer.isNewFile()) {
+            Integer _caret = (Integer) buffer.getProperty(Buffer.CARET);
+            int caret = _caret == null ? 0 : _caret.intValue();
+            BufferHistory.setEntry(buffer.getPath(), caret, (Selection[]) buffer.getProperty(Buffer.SELECTION), buffer.getStringProperty(JEditBuffer.ENCODING), buffer.getMode().getName());
+        }
+        buffer.close();
+        DisplayManager.bufferClosed(buffer);
+        if (!isExiting) {
+            EditBus.send(new BufferUpdate(buffer, view, BufferUpdate.CLOSED));
+        }
+        if (jEdit.getBooleanProperty("persistentMarkers"))
+            buffer.updateMarkersFile(view);
+        buffer = buffer.next;
+    }
+    if (!isExiting)
+        newFile(view);
+    PerspectiveManager.setPerspectiveDirty(true);
+    return true;
+}

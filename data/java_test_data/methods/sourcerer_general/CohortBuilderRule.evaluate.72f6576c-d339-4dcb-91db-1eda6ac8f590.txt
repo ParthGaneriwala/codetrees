@@ -1,0 +1,54 @@
+@Override
+protected Result evaluate(final LogicContext context, final Integer patientId, final Map<String, Object> parameters) {
+    Result result = new Result();
+    String dateString = DATE_CUTOFF_POINT;
+    Date initialDate = RuleUtils.parse(dateString, null);
+    if (initialDate != null) {
+        Calendar calendar = Calendar.getInstance();
+        calendar.setTime(initialDate);
+        calendar.add(Calendar.MONTH, 5);
+        Date cutoffDate = calendar.getTime();
+        EncounterWithRestrictionRule encounterWithRestrictionRule = new EncounterWithStringRestrictionRule();
+        parameters.put(EvaluableConstants.ENCOUNTER_FETCH_SIZE, 1);
+        parameters.put(EvaluableConstants.ENCOUNTER_LOCATION, Arrays.asList(ENCOUNTER_LOCATION_MTRH_MODULE_4, ENCOUNTER_LOCATION_TURBO, ENCOUNTER_LOCATION_KITALE, ENCOUNTER_LOCATION_WEBUYE));
+        Result encounterResults = encounterWithRestrictionRule.eval(context, patientId, parameters);
+        if (CollectionUtils.isNotEmpty(encounterResults) && encounterResults.getResultDate().after(cutoffDate)) {
+            Result encounterResult = encounterResults.latest();
+            Encounter encounter = (Encounter) encounterResult.getResultObject();
+            Location encounterLocation = encounter.getLocation();
+            Patient patient = Context.getPatientService().getPatient(patientId);
+            Integer age = patient.getAge();
+            if (age != null && age >= 6 && age <= 14) {
+                Result obsResult = null;
+                ObsWithRestrictionRule obsWithRestrictionRule = new ObsWithStringRestrictionRule();
+                parameters.put(EvaluableConstants.OBS_FETCH_SIZE, 1);
+                parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.PROBLEM_ADDED));
+                parameters.put(EvaluableConstants.OBS_VALUE_CODED, Arrays.asList(EvaluableNameConstants.HIV_INFECTED));
+                Result problemAddedResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+                if (CollectionUtils.isNotEmpty(problemAddedResults))
+                    obsResult = problemAddedResults.latest();
+                parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.HIV_TEST_RESULT_THIS_VISIT));
+                parameters.put(EvaluableConstants.OBS_VALUE_CODED, Arrays.asList(EvaluableNameConstants.POSITIVE));
+                Result hivTestResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+                if (CollectionUtils.isNotEmpty(hivTestResults))
+                    obsResult = hivTestResults.latest();
+                parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.HIV_ENZYME_IMMUNOASSAY_QUALITATIVE));
+                parameters.put(EvaluableConstants.OBS_VALUE_CODED, Arrays.asList(EvaluableNameConstants.POSITIVE));
+                Result elisaResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+                if (CollectionUtils.isNotEmpty(elisaResults))
+                    obsResult = elisaResults.latest();
+                parameters.put(EvaluableConstants.OBS_FETCH_SIZE, 2);
+                parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.HIV_DNA_POLYMERASE_CHAIN_REACTION_QUALITATIVE));
+                parameters.put(EvaluableConstants.OBS_VALUE_CODED, Arrays.asList(EvaluableNameConstants.POSITIVE));
+                Result polymeraseResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+                if (CollectionUtils.size(polymeraseResults) >= 2)
+                    obsResult = polymeraseResults.latest();
+                if (obsResult != null) {
+                    Obs obs = (Obs) obsResult.getResultObject();
+                    result.add(new Result(encounterResult.getResultDate(), null, null, obs.getConcept(), obs.getObsDatetime(), obs.getObsId().doubleValue(), encounter.getLocation().getName(), obs.getValueCoded()));
+                }
+            }
+        }
+    }
+    return result;
+}

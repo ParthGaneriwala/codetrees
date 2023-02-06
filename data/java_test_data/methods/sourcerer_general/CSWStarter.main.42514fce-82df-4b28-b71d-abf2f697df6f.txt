@@ -1,0 +1,81 @@
+public static void main(String[] args) throws Exception {
+    // -Dserver_ssl_port=
+    // -Dserver_hlp_port=
+    // -Dsecure=
+    boolean secure = Boolean.parseBoolean(System.getProperty("secure", "true"));
+    int server_ssl_port = Integer.parseInt(System.getProperty("server_ssl_port", "7443"));
+    int server_hlp_port = Integer.parseInt(System.getProperty("server_hlp_port", "7080"));
+    long memstart = Runtime.getRuntime().freeMemory();
+    long start = System.currentTimeMillis();
+    // Make sure there is only one instance at anytime
+    try {
+        CSWStopper.main(args);
+    } catch (Exception e) {
+        // May not run...
+        log.info("Server may not be running previously..." + e.getLocalizedMessage());
+    }
+    // System.setProperty("file.encoding", "utf-8"); - This must be set when JVM starts...
+    // Load all relavent jars..
+    OnStartInitialize.addJarsFromFolder("lib");
+    OnStartInitialize.addJarsFromFolder(CSWConstants.driverDirectory);
+    CSWConstants.setDBProperties();
+    // First time
+    FirstTimeRunOnce.firstTimeInit();
+    // Reload again
+    OnStartInitialize.addJarsFromFolder(CSWConstants.driverDirectory);
+    // Initialize
+    OnStartInitialize.Initialize();
+    // Server
+    Server server = new Server();
+    SslSelectChannelConnector ssl_connector = null;
+    SelectChannelConnector connector = null;
+    if (secure) {
+        // SSL Servlet Context
+        ssl_connector = new SslSelectChannelConnector();
+        ssl_connector.setKeystore(CSWConstants.propDirectory + "csw.ks");
+        ssl_connector.setKeyPassword("cs7pass");
+        ssl_connector.setTruststore(CSWConstants.propDirectory + "csw.ks");
+        ssl_connector.setTrustPassword("cs7pass");
+        ssl_connector.setPort(server_ssl_port);
+    // Mutual Authentication disabled...
+    // ssl_connector.setNeedClientAuth(true);
+    } else {
+        connector = new SelectChannelConnector();
+        connector.setPort(server_hlp_port);
+    }
+    ServletContextHandler servletCtxHandler = new ServletContextHandler(ServletContextHandler.SESSIONS);
+    servletCtxHandler.setContextPath("/csw");
+    servletCtxHandler.setServer(server);
+    servletCtxHandler.addServlet(new ServletHolder(new ActionDispatcher()), "/*");
+    // Help context
+    SelectChannelConnector help_connector = new SelectChannelConnector();
+    help_connector.setPort(server_hlp_port);
+    ResourceHandler resHandler = new ResourceHandler();
+    resHandler.setDirectoriesListed(false);
+    resHandler.setWelcomeFiles(new String[] { "index.html", "index.htm" });
+    resHandler.setResourceBase("default-help");
+    resHandler.setServer(server);
+    ContextHandler ctxHandler = new ContextHandler();
+    ctxHandler.setContextPath("/help");
+    ctxHandler.setHandler(resHandler);
+    // Resource context
+    ResourceHandler resHandler2 = new ResourceHandler();
+    resHandler2.setDirectoriesListed(false);
+    resHandler2.setWelcomeFiles(new String[] { "index.html", "index.htm" });
+    resHandler2.setResourceBase("default-res");
+    resHandler2.setServer(server);
+    ContextHandler ctxHandler2 = new ContextHandler();
+    ctxHandler2.setContextPath("/res");
+    ctxHandler2.setHandler(resHandler2);
+    if (secure)
+        server.setConnectors(new Connector[] { ssl_connector, help_connector });
+    else
+        server.setConnectors(new Connector[] { connector, help_connector });
+    HandlerCollection hl = new HandlerCollection();
+    hl.setHandlers(new Handler[] { ctxHandler, ctxHandler2, servletCtxHandler });
+    server.setHandler(hl);
+    server.start();
+    server.join();
+    Log.info("Church Software server started in " + (System.currentTimeMillis() - start) + " ms.");
+    Log.info("Available free memory: " + (memstart - Runtime.getRuntime().freeMemory()) + " bytes.");
+}

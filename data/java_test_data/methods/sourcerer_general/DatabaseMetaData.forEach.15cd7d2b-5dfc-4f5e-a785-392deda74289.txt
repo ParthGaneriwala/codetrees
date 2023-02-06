@@ -1,0 +1,89 @@
+void forEach(Object catalogStr) throws SQLException {
+    ResultSet fkresults = null;
+    try {
+        /*
+							 * Get foreign key information for table
+							 */
+        if (conn.versionMeetsMinimum(3, 23, 50)) {
+            fkresults = extractForeignKeyFromCreateTable(catalogStr.toString(), null);
+        } else {
+            StringBuffer queryBuf = new StringBuffer("SHOW TABLE STATUS FROM ");
+            queryBuf.append(quotedId);
+            queryBuf.append(catalogStr.toString());
+            queryBuf.append(quotedId);
+            fkresults = stmt.executeQuery(queryBuf.toString());
+        }
+        String foreignTableWithCase = getTableNameWithCase(foreignTable);
+        String primaryTableWithCase = getTableNameWithCase(primaryTable);
+        /*
+							 * Parse imported foreign key information
+							 */
+        String dummy;
+        while (fkresults.next()) {
+            String tableType = fkresults.getString("Type");
+            if ((tableType != null) && (tableType.equalsIgnoreCase("innodb") || tableType.equalsIgnoreCase(SUPPORTS_FK))) {
+                String comment = fkresults.getString("Comment").trim();
+                if (comment != null) {
+                    StringTokenizer commentTokens = new StringTokenizer(comment, ";", false);
+                    if (commentTokens.hasMoreTokens()) {
+                        dummy = commentTokens.nextToken();
+                    // Skip InnoDB comment
+                    }
+                    while (commentTokens.hasMoreTokens()) {
+                        String keys = commentTokens.nextToken();
+                        LocalAndReferencedColumns parsedInfo = parseTableStatusIntoLocalAndReferencedColumns(keys);
+                        int keySeq = 0;
+                        Iterator referencingColumns = parsedInfo.localColumnsList.iterator();
+                        Iterator referencedColumns = parsedInfo.referencedColumnsList.iterator();
+                        while (referencingColumns.hasNext()) {
+                            String referencingColumn = removeQuotedId(referencingColumns.next().toString());
+                            // one tuple for each table
+                            // between
+                            // parenthesis
+                            byte[][] tuple = new byte[14][];
+                            tuple[4] = ((foreignCatalog == null) ? null : s2b(foreignCatalog));
+                            tuple[5] = ((foreignSchema == null) ? null : s2b(foreignSchema));
+                            dummy = fkresults.getString(// FKTABLE_NAME
+                            "Name");
+                            if (dummy.compareTo(foreignTableWithCase) != 0) {
+                                continue;
+                            }
+                            tuple[6] = s2b(dummy);
+                            // FKCOLUMN_NAME
+                            tuple[7] = s2b(referencingColumn);
+                            tuple[0] = ((primaryCatalog == null) ? null : s2b(primaryCatalog));
+                            tuple[1] = ((primarySchema == null) ? null : s2b(primarySchema));
+                            // the right table
+                            if (parsedInfo.referencedTable.compareTo(primaryTableWithCase) != 0) {
+                                continue;
+                            }
+                            // PKTABLE_NAME
+                            tuple[2] = s2b(parsedInfo.referencedTable);
+                            tuple[3] = s2b(removeQuotedId(referencedColumns.next().toString()));
+                            tuple[8] = Integer.toString(keySeq).getBytes();
+                            int[] actions = getForeignKeyActions(keys);
+                            tuple[9] = Integer.toString(actions[1]).getBytes();
+                            tuple[10] = Integer.toString(actions[0]).getBytes();
+                            // FK_NAME
+                            tuple[11] = null;
+                            // PK_NAME
+                            tuple[12] = null;
+                            tuple[13] = Integer.toString(java.sql.DatabaseMetaData.importedKeyNotDeferrable).getBytes();
+                            tuples.add(new ByteArrayRow(tuple, getExceptionInterceptor()));
+                            keySeq++;
+                        }
+                    }
+                }
+            }
+        }
+    } finally {
+        if (fkresults != null) {
+            try {
+                fkresults.close();
+            } catch (Exception sqlEx) {
+                AssertionFailedException.shouldNotHappen(sqlEx);
+            }
+            fkresults = null;
+        }
+    }
+}

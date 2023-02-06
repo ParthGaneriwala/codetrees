@@ -1,0 +1,192 @@
+private boolean configureClientCharacterSet(boolean dontCheckServerMatch) throws SQLException {
+    String realJavaEncoding = getEncoding();
+    boolean characterSetAlreadyConfigured = false;
+    try {
+        if (versionMeetsMinimum(4, 1, 0)) {
+            characterSetAlreadyConfigured = true;
+            setUseUnicode(true);
+            configureCharsetProperties();
+            // we need to do this again
+            realJavaEncoding = getEncoding();
+            try {
+                if (props != null && props.getProperty("com.mysql.jdbc.faultInjection.serverCharsetIndex") != null) {
+                    this.io.serverCharsetIndex = Integer.parseInt(props.getProperty("com.mysql.jdbc.faultInjection.serverCharsetIndex"));
+                }
+                String serverEncodingToSet = CharsetMapping.INDEX_TO_CHARSET[this.io.serverCharsetIndex];
+                if (serverEncodingToSet == null || serverEncodingToSet.length() == 0) {
+                    if (realJavaEncoding != null) {
+                        // user knows best, try it
+                        setEncoding(realJavaEncoding);
+                    } else {
+                        throw SQLError.createSQLException("Unknown initial character set index '" + this.io.serverCharsetIndex + "' received from server. Initial client character set can be forced via the 'characterEncoding' property.", SQLError.SQL_STATE_GENERAL_ERROR, getExceptionInterceptor());
+                    }
+                }
+                // "latin1" on MySQL-4.1.0+ is actually CP1252, not ISO8859_1
+                if (versionMeetsMinimum(4, 1, 0) && "ISO8859_1".equalsIgnoreCase(serverEncodingToSet)) {
+                    serverEncodingToSet = "Cp1252";
+                }
+                setEncoding(serverEncodingToSet);
+            } catch (ArrayIndexOutOfBoundsException outOfBoundsEx) {
+                if (realJavaEncoding != null) {
+                    // user knows best, try it
+                    setEncoding(realJavaEncoding);
+                } else {
+                    throw SQLError.createSQLException("Unknown initial character set index '" + this.io.serverCharsetIndex + "' received from server. Initial client character set can be forced via the 'characterEncoding' property.", SQLError.SQL_STATE_GENERAL_ERROR, getExceptionInterceptor());
+                }
+            }
+            if (getEncoding() == null) {
+                // punt?
+                setEncoding("ISO8859_1");
+            }
+            // 
+            if (getUseUnicode()) {
+                if (realJavaEncoding != null) {
+                    // 
+                    if (realJavaEncoding.equalsIgnoreCase("UTF-8") || realJavaEncoding.equalsIgnoreCase("UTF8")) {
+                        // charset names are case-sensitive
+                        boolean utf8mb4Supported = versionMeetsMinimum(5, 5, 2);
+                        boolean useutf8mb4 = false;
+                        if (utf8mb4Supported) {
+                            useutf8mb4 = ((this.io.serverCharsetIndex == 45) && (this.io.serverCharsetIndex == 45));
+                        }
+                        if (!getUseOldUTF8Behavior()) {
+                            if (dontCheckServerMatch || !characterSetNamesMatches("utf8") || (utf8mb4Supported && !characterSetNamesMatches("utf8mb4"))) {
+                                execSQL(null, "SET NAMES " + (useutf8mb4 ? "utf8mb4" : "utf8"), -1, null, DEFAULT_RESULT_SET_TYPE, DEFAULT_RESULT_SET_CONCURRENCY, false, this.database, null, false);
+                            }
+                        } else {
+                            execSQL(null, "SET NAMES latin1", -1, null, DEFAULT_RESULT_SET_TYPE, DEFAULT_RESULT_SET_CONCURRENCY, false, this.database, null, false);
+                        }
+                        setEncoding(realJavaEncoding);
+                    } else /* not utf-8 */
+                    {
+                        String mysqlEncodingName = CharsetMapping.getMysqlEncodingForJavaEncoding(realJavaEncoding.toUpperCase(Locale.ENGLISH), this);
+                        if (mysqlEncodingName != null) {
+                            if (dontCheckServerMatch || !characterSetNamesMatches(mysqlEncodingName)) {
+                                execSQL(null, "SET NAMES " + mysqlEncodingName, -1, null, DEFAULT_RESULT_SET_TYPE, DEFAULT_RESULT_SET_CONCURRENCY, false, this.database, null, false);
+                            }
+                        }
+                        // Switch driver's encoding now, since the server
+                        // knows what we're sending...
+                        // 
+                        setEncoding(realJavaEncoding);
+                    }
+                } else if (getEncoding() != null) {
+                    // Tell the server we'll use the server default charset
+                    // to send our
+                    // queries from now on....
+                    String mysqlEncodingName = CharsetMapping.getMysqlEncodingForJavaEncoding(getEncoding().toUpperCase(Locale.ENGLISH), this);
+                    if (getUseOldUTF8Behavior()) {
+                        mysqlEncodingName = "latin1";
+                    }
+                    if (dontCheckServerMatch || !characterSetNamesMatches(mysqlEncodingName)) {
+                        execSQL(null, "SET NAMES " + mysqlEncodingName, -1, null, DEFAULT_RESULT_SET_TYPE, DEFAULT_RESULT_SET_CONCURRENCY, false, this.database, null, false);
+                    }
+                    realJavaEncoding = getEncoding();
+                }
+            }
+            // 
+            // We know how to deal with any charset coming back from
+            // the database, so tell the server not to do conversion
+            // if the user hasn't 'forced' a result-set character set
+            // 
+            String onServer = null;
+            boolean isNullOnServer = false;
+            if (this.serverVariables != null) {
+                onServer = (String) this.serverVariables.get("character_set_results");
+                isNullOnServer = onServer == null || "NULL".equalsIgnoreCase(onServer) || onServer.length() == 0;
+            }
+            if (getCharacterSetResults() == null) {
+                // 
+                if (!isNullOnServer) {
+                    execSQL(null, "SET character_set_results = NULL", -1, null, DEFAULT_RESULT_SET_TYPE, DEFAULT_RESULT_SET_CONCURRENCY, false, this.database, null, false);
+                    if (!this.usingCachedConfig) {
+                        this.serverVariables.put(JDBC_LOCAL_CHARACTER_SET_RESULTS, null);
+                    }
+                } else {
+                    if (!this.usingCachedConfig) {
+                        this.serverVariables.put(JDBC_LOCAL_CHARACTER_SET_RESULTS, onServer);
+                    }
+                }
+            } else {
+                if (getUseOldUTF8Behavior()) {
+                    execSQL(null, "SET NAMES " + "latin1", -1, null, DEFAULT_RESULT_SET_TYPE, DEFAULT_RESULT_SET_CONCURRENCY, false, this.database, null, false);
+                }
+                String charsetResults = getCharacterSetResults();
+                String mysqlEncodingName = null;
+                if ("UTF-8".equalsIgnoreCase(charsetResults) || "UTF8".equalsIgnoreCase(charsetResults)) {
+                    mysqlEncodingName = "utf8";
+                } else {
+                    mysqlEncodingName = CharsetMapping.getMysqlEncodingForJavaEncoding(charsetResults.toUpperCase(Locale.ENGLISH), this);
+                }
+                if (!mysqlEncodingName.equalsIgnoreCase((String) this.serverVariables.get("character_set_results"))) {
+                    StringBuffer setBuf = new StringBuffer("SET character_set_results = ".length() + mysqlEncodingName.length());
+                    setBuf.append("SET character_set_results = ").append(mysqlEncodingName);
+                    execSQL(null, setBuf.toString(), -1, null, DEFAULT_RESULT_SET_TYPE, DEFAULT_RESULT_SET_CONCURRENCY, false, this.database, null, false);
+                    if (!this.usingCachedConfig) {
+                        this.serverVariables.put(JDBC_LOCAL_CHARACTER_SET_RESULTS, mysqlEncodingName);
+                    }
+                } else {
+                    if (!this.usingCachedConfig) {
+                        this.serverVariables.put(JDBC_LOCAL_CHARACTER_SET_RESULTS, onServer);
+                    }
+                }
+            }
+            if (getConnectionCollation() != null) {
+                StringBuffer setBuf = new StringBuffer("SET collation_connection = ".length() + getConnectionCollation().length());
+                setBuf.append("SET collation_connection = ").append(getConnectionCollation());
+                execSQL(null, setBuf.toString(), -1, null, DEFAULT_RESULT_SET_TYPE, DEFAULT_RESULT_SET_CONCURRENCY, false, this.database, null, false);
+            }
+        } else {
+            // Use what the server has specified
+            // so we don't get
+            realJavaEncoding = getEncoding();
+        // swapped out in the finally
+        // block....
+        }
+    } finally {
+        // Failsafe, make sure that the driver's notion of character
+        // encoding matches what the user has specified.
+        // 
+        setEncoding(realJavaEncoding);
+    }
+    /**
+     * Check if we need a CharsetEncoder for escaping codepoints that are
+     * transformed to backslash (0x5c) in the connection encoding.
+     */
+    try {
+        CharsetEncoder enc = Charset.forName(getEncoding()).newEncoder();
+        CharBuffer cbuf = CharBuffer.allocate(1);
+        ByteBuffer bbuf = ByteBuffer.allocate(1);
+        cbuf.put("\u00a5");
+        cbuf.position(0);
+        enc.encode(cbuf, bbuf, true);
+        if (bbuf.get(0) == '\\') {
+            requiresEscapingEncoder = true;
+        } else {
+            cbuf.clear();
+            bbuf.clear();
+            cbuf.put("\u20a9");
+            cbuf.position(0);
+            enc.encode(cbuf, bbuf, true);
+            if (bbuf.get(0) == '\\') {
+                requiresEscapingEncoder = true;
+            }
+        }
+    } catch (java.nio.charset.UnsupportedCharsetException ucex) {
+        // fallback to String API - for Java 1.4
+        try {
+            byte[] bbuf = new String("\u00a5").getBytes(getEncoding());
+            if (bbuf[0] == '\\') {
+                requiresEscapingEncoder = true;
+            } else {
+                bbuf = new String("\u20a9").getBytes(getEncoding());
+                if (bbuf[0] == '\\') {
+                    requiresEscapingEncoder = true;
+                }
+            }
+        } catch (UnsupportedEncodingException ueex) {
+            throw SQLError.createSQLException("Unable to use encoding: " + getEncoding(), SQLError.SQL_STATE_GENERAL_ERROR, ueex, getExceptionInterceptor());
+        }
+    }
+    return characterSetAlreadyConfigured;
+}

@@ -1,0 +1,80 @@
+public void run() {
+    String tstr = "g567867iyuk";
+    peer.ThreadCounter tc;
+    if (!peer.Config.ThreadStrTable.containsKey(tstr)) {
+        tc = new peer.ThreadCounter();
+        peer.Config.ThreadStrTable.put(tstr, tc);
+    }
+    tc = (ThreadCounter) peer.Config.ThreadStrTable.get(tstr);
+    tc.conut++;
+    System.out.println("����DBNodeListSynThread");
+    try {
+        ds = new DatagramSocket();
+        ds.setSoTimeout(3000);
+    } catch (SocketException e1) {
+        e1.printStackTrace();
+    }
+    while (run) {
+        if (end) {
+            run = false;
+        }
+        byte[] data = new byte[1024];
+        DatagramPacket dp = new DatagramPacket(data, data.length);
+        DBSynMessage1 syn1 = new DBSynMessage1(mdb, eventOffset);
+        syn1.setDstAddress(peer.Config.cIp);
+        syn1.setDstPort(peer.Config.cPort);
+        try {
+            ds.send(syn1.getDatagramPacket());
+            ds.receive(dp);
+        } catch (IOException e1) {
+            continue;
+        }
+        int ver = peer.tools.MessageCheck.checkVer(dp);
+        int sType = peer.tools.MessageCheck.checkSType(dp);
+        if (ver == peer.Config.ver) {
+            if (sType == peer.tools.MessageType.sType_DBSynMessage2) {
+                DBSynMessage2 syn2 = null;
+                try {
+                    syn2 = new DBSynMessage2(dp);
+                } catch (UnknownHostException e) {
+                    e.printStackTrace();
+                    continue;
+                }
+                eventOffset = syn2.getEventOffset();
+                DBNodeIdent[] joinDBNode = syn2.getJoinDBNode();
+                DBNodeIdent[] quitDBNode = syn2.getQuitDBNode();
+                for (int i = 0; i < joinDBNode.length; i++) {
+                    DBNode n = new DBNode(hpg.mdb, joinDBNode[i].ip, joinDBNode[i].port);
+                    hpg.addDBGroupMember(joinDBNode[i], n);
+                    System.out.println("������ݿ�ڵ� " + n.getPort());
+                }
+                for (int i = 0; i < quitDBNode.length; i++) {
+                    DBNode n = new DBNode(hpg.mdb, quitDBNode[i].ip, quitDBNode[i].port);
+                    hpg.addDBGroupMember(quitDBNode[i], n);
+                    System.out.println("�Ƴ����ݿ�ڵ� " + n.getPort());
+                }
+                if (castAvail()) {
+                    castNow();
+                }
+            } else if (sType == peer.tools.MessageType.sType_DBSynMessage3) {
+                DBSynMessage3 syn3 = new DBSynMessage3(mdb, dp);
+                eventOffset = syn3.getEventOffset();
+                HashMap<DBNodeIdent, DBNode> DBGroupMemberTable = syn3.getDBMemberTable();
+                hpg.setDBGroupMember(DBGroupMemberTable);
+            // System.out.println("�������ݿ�ڵ�� ");
+            } else if (sType == peer.tools.MessageType.sType_DBSynMessage4) {
+                if (hpg.dbNodeTable.size() != 0) {
+                    hpg.dbNodeTable = new HashMap<DBNodeIdent, DBNode>();
+                }
+            }
+        }
+        try {
+            Thread.sleep(peer.Config.synInterval);
+        } catch (InterruptedException e) {
+        // e.printStackTrace();
+        }
+    }
+    ds.close();
+    System.out.println("��ֹDBNodeListSynThread");
+    tc.conut--;
+}

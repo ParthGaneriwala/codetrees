@@ -1,0 +1,117 @@
+public Result execute(Result cmd) {
+    try {
+        if (isClosed) {
+            Trace.check(false, Trace.ACCESS_IS_DENIED, Trace.getMessage(Trace.Session_execute));
+        }
+    } catch (Throwable t) {
+        return new Result(t, null);
+    }
+    synchronized (database) {
+        int type = cmd.mode;
+        if (sessionMaxRows == 0) {
+            currentMaxRows = cmd.updateCount;
+        }
+        // we simply get the next system change number - no matter what type of query
+        actionTimestamp = database.txManager.nextActionTimestamp();
+        JavaSystem.gc();
+        switch(type) {
+            case ResultConstants.SQLEXECUTE:
+                {
+                    Result resultout = sqlExecute(cmd);
+                    resultout = performPostExecute(resultout);
+                    return resultout;
+                }
+            case ResultConstants.BATCHEXECUTE:
+                {
+                    Result resultout = sqlExecuteBatch(cmd);
+                    resultout = performPostExecute(resultout);
+                    return resultout;
+                }
+            case ResultConstants.SQLEXECDIRECT:
+                {
+                    Result resultout = sqlExecuteDirectNoPreChecks(cmd.getMainString());
+                    resultout = performPostExecute(resultout);
+                    return resultout;
+                }
+            case ResultConstants.BATCHEXECDIRECT:
+                {
+                    Result resultout = sqlExecuteBatchDirect(cmd);
+                    resultout = performPostExecute(resultout);
+                    return resultout;
+                }
+            case ResultConstants.SQLPREPARE:
+                {
+                    CompiledStatement cs;
+                    try {
+                        cs = compiledStatementManager.compile(this, cmd.getMainString());
+                    } catch (Throwable t) {
+                        return new Result(t, cmd.getMainString());
+                    }
+                    Result rmd = cs.describeResult();
+                    Result pmd = cs.describeParameters();
+                    return Result.newPrepareResponse(cs.id, rmd, pmd);
+                }
+            case ResultConstants.SQLFREESTMT:
+                {
+                    compiledStatementManager.freeStatement(cmd.getStatementID(), sessionId, false);
+                    return emptyUpdateCount;
+                }
+            case ResultConstants.GETSESSIONATTR:
+                {
+                    return getAttributes();
+                }
+            case ResultConstants.SETSESSIONATTR:
+                {
+                    return setAttributes(cmd);
+                }
+            case ResultConstants.SQLENDTRAN:
+                {
+                    switch(cmd.getEndTranType()) {
+                        case ResultConstants.COMMIT:
+                            commit();
+                            break;
+                        case ResultConstants.ROLLBACK:
+                            rollback();
+                            break;
+                        case ResultConstants.SAVEPOINT_NAME_RELEASE:
+                            try {
+                                String name = cmd.getMainString();
+                                releaseSavepoint(name);
+                            } catch (Throwable t) {
+                                return new Result(t, null);
+                            }
+                            break;
+                        case ResultConstants.SAVEPOINT_NAME_ROLLBACK:
+                            try {
+                                rollbackToSavepoint(cmd.getMainString());
+                            } catch (Throwable t) {
+                                return new Result(t, null);
+                            }
+                            break;
+                    }
+                    return emptyUpdateCount;
+                }
+            case ResultConstants.SQLSETCONNECTATTR:
+                {
+                    switch(cmd.getConnectionAttrType()) {
+                        case ResultConstants.SQL_ATTR_SAVEPOINT_NAME:
+                            try {
+                                savepoint(cmd.getMainString());
+                            } catch (Throwable t) {
+                                return new Result(t, null);
+                            }
+                    }
+                    return emptyUpdateCount;
+                }
+            case ResultConstants.SQLDISCONNECT:
+                {
+                    close();
+                    return emptyUpdateCount;
+                }
+            default:
+                {
+                    return new Result(Trace.runtimeError(Trace.UNSUPPORTED_INTERNAL_OPERATION, "Session.execute()"), null);
+                }
+        }
+    }
+}

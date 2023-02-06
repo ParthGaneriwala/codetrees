@@ -1,0 +1,64 @@
+void secureAuth411(Buffer packet, int packLength, String user, String password, String database, boolean writeClientParams) throws SQLException {
+    // Passwords can be 16 chars long
+    if (packet == null) {
+        packet = new Buffer(packLength);
+    }
+    if (writeClientParams) {
+        if (this.use41Extensions) {
+            if (versionMeetsMinimum(4, 1, 1)) {
+                packet.writeLong(this.clientParam);
+                packet.writeLong(this.maxThreeBytes);
+                // charset, JDBC will connect as 'utf8',
+                // and use 'SET NAMES' to change to the desired
+                // charset after the connection is established.
+                packet.writeByte((byte) UTF8_CHARSET_INDEX);
+                // Set of bytes reserved for future use.
+                packet.writeBytesNoNull(new byte[23]);
+            } else {
+                packet.writeLong(this.clientParam);
+                packet.writeLong(this.maxThreeBytes);
+            }
+        } else {
+            packet.writeInt((int) this.clientParam);
+            packet.writeLongInt(this.maxThreeBytes);
+        }
+    }
+    // User/Password data
+    packet.writeString(user, "utf-8", this.connection);
+    if (password.length() != 0) {
+        packet.writeByte((byte) 0x14);
+        try {
+            packet.writeBytesNoNull(Security.scramble411(password, this.seed, this.connection));
+        } catch (NoSuchAlgorithmException nse) {
+            throw SQLError.createSQLException(// $NON-NLS-1$
+            Messages.getString("MysqlIO.95") + // $NON-NLS-1$
+            Messages.getString("MysqlIO.96"), SQLError.SQL_STATE_GENERAL_ERROR, getExceptionInterceptor());
+        } catch (UnsupportedEncodingException e) {
+            throw SQLError.createSQLException(// $NON-NLS-1$
+            Messages.getString("MysqlIO.95") + // $NON-NLS-1$
+            Messages.getString("MysqlIO.96"), SQLError.SQL_STATE_GENERAL_ERROR, getExceptionInterceptor());
+        }
+    } else {
+        /* For empty password*/
+        packet.writeByte((byte) 0);
+    }
+    if (this.useConnectWithDb) {
+        packet.writeString(database, "utf-8", this.connection);
+    }
+    send(packet, packet.getPosition());
+    byte savePacketSequence = this.packetSequence++;
+    Buffer reply = checkErrorPacket();
+    if (reply.isLastDataPacket()) {
+        /*
+                  By sending this very specific reply server asks us to send scrambled
+                  password in old format. The reply contains scramble_323.
+            */
+        this.packetSequence = ++savePacketSequence;
+        packet.clear();
+        String seed323 = this.seed.substring(0, 8);
+        packet.writeString(Util.newCrypt(password, seed323));
+        send(packet, packet.getPosition());
+        /* Read what server thinks about out new auth message report */
+        checkErrorPacket();
+    }
+}

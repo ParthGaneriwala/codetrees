@@ -1,0 +1,46 @@
+private static Entropies computeConditionalEntropy(ReadableTrainingData trainData, long totalTrainCount, Map<Context, TupleCountPair[]> devCounts, Long2DoubleMap unigramDist) throws IOException {
+    double conditionalEntropy = 0;
+    // double jointEntropy = 0;
+    double contextEntropy = 0;
+    final double revTotalCount = 1.0 / totalTrainCount;
+    long devTotalCount = 0;
+    while (trainData.hasNext()) {
+        TrainingDataBlock block = trainData.next();
+        for (ContextFuturesPair pair : block) {
+            // final double revCtxTotalCount = 1.0 / pair.getTotalCount();
+            contextEntropy -= pair.getTotalCount() * revTotalCount * ProbMath.log2(pair.getTotalCount() * revTotalCount);
+            TupleCountPair[] devFutures = devCounts.get(pair.getContext());
+            if (devFutures == null)
+                continue;
+            // compute smoothed distribution on the train data
+            SmootherProducer producer = new SmootherProducer();
+            Long2IntMap trainCounts = new Long2IntMap(pair.getFutures().length);
+            for (TupleCountPair tc : pair.getFutures()) {
+                producer.addCount(tc.count);
+                trainCounts.addAndGet(tc.tuple, tc.count);
+            // final double totalProb = tc.count * revTotalCount;
+            // conditionalEntropy -= totalProb * ProbMath.log2(tc.count * revCtxTotalCount);
+            // jointEntropy -= totalProb * ProbMath.log2(totalProb);
+            }
+            Smoother smoother = new OneCountSmoother(producer, ONE_COUNT_BETA, ONE_COUNT_GAMMA);
+            double likelihood = 0;
+            for (TupleCountPair tc : devFutures) {
+                int trainCount = trainCounts.get(tc.tuple);
+                double prob = smoother.getProb(trainCount);
+                double backoffProb = smoother.getBackoffProb() * unigramDist.get(tc.tuple);
+                double totalTrainProb = prob + backoffProb;
+                if (totalTrainProb <= 0)
+                    continue;
+                likelihood -= tc.count * ProbMath.log2(totalTrainProb);
+                devTotalCount += tc.count;
+            }
+            conditionalEntropy += likelihood;
+        }
+    }
+    conditionalEntropy /= devTotalCount;
+    Entropies result = new Entropies();
+    result.conditionalEntropy = conditionalEntropy;
+    // result.jointEntropy = jointEntropy;
+    result.contextEntropy = contextEntropy;
+    return result;
+}

@@ -1,0 +1,44 @@
+// ArrayList::toArray doesn't preserve type
+@SuppressWarnings("unchecked")
+public K[] getSample(InputFormat<K, V> inf, JobConf job) throws IOException {
+    InputSplit[] splits = inf.getSplits(job, job.getNumMapTasks());
+    ArrayList<K> samples = new ArrayList<K>(numSamples);
+    int splitsToSample = Math.min(maxSplitsSampled, splits.length);
+    Random r = new Random();
+    long seed = r.nextLong();
+    r.setSeed(seed);
+    LOG.debug("seed: " + seed);
+    // shuffle splits
+    for (int i = 0; i < splits.length; ++i) {
+        InputSplit tmp = splits[i];
+        int j = r.nextInt(splits.length);
+        splits[i] = splits[j];
+        splits[j] = tmp;
+    }
+    // the target sample keyset
+    for (int i = 0; i < splitsToSample || (i < splits.length && samples.size() < numSamples); ++i) {
+        RecordReader<K, V> reader = inf.getRecordReader(splits[i], job, Reporter.NULL);
+        K key = reader.createKey();
+        V value = reader.createValue();
+        while (reader.next(key, value)) {
+            if (r.nextDouble() <= freq) {
+                if (samples.size() < numSamples) {
+                    samples.add(key);
+                } else {
+                    // When exceeding the maximum number of samples, replace a
+                    // random element with this one, then adjust the frequency
+                    // to reflect the possibility of existing elements being
+                    // pushed out
+                    int ind = r.nextInt(numSamples);
+                    if (ind != numSamples) {
+                        samples.set(ind, key);
+                    }
+                    freq *= (numSamples - 1) / (double) numSamples;
+                }
+                key = reader.createKey();
+            }
+        }
+        reader.close();
+    }
+    return (K[]) samples.toArray();
+}

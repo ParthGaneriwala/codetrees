@@ -1,0 +1,88 @@
+@Override
+protected void service(HttpServletRequest req, final HttpServletResponse resp) throws ServletException, IOException {
+    String host = req.getHeader("host");
+    Integer match = ClaymusMain.matches.get(host);
+    if (match == null) {
+        match = -1;
+        outer: for (int i = 0; i < ClaymusMain.homes.length; i++) {
+            String[] hostTokens = host.split("[.]");
+            String[] patternTokens = ((String) ClaymusMain.homes[i][0]).split("[.]");
+            if (hostTokens.length < patternTokens.length)
+                continue;
+            for (int j = patternTokens.length - 1; j > 0; j--) {
+                if (patternTokens[j].equals("*")) {
+                    if (hostTokens[j].length() == 0)
+                        continue outer;
+                } else {
+                    if (!hostTokens[j].matches(patternTokens[j]))
+                        continue outer;
+                }
+            }
+            String hostToken = "";
+            for (int j = 0; j <= (hostTokens.length - patternTokens.length); j++) hostToken += hostTokens[j];
+            if (patternTokens[0].equals("*")) {
+                if (hostToken.length() == 0)
+                    continue;
+            } else {
+                if (!hostToken.matches(patternTokens[0]))
+                    continue;
+            }
+            match = i;
+            break;
+        }
+        ClaymusMain.matches.put(host, match);
+    }
+    if (match == -1) {
+        resp.sendError(404);
+        return;
+    }
+    if (ClaymusMain.homes[match][1] == null) {
+        resp.sendRedirect("http://" + ClaymusMain.homes[match][2]);
+        return;
+    }
+    String namespace = (String) ClaymusMain.homes[match][2];
+    if (namespace != null)
+        NamespaceManager.set(namespace);
+    if (ClaymusMain.homes[match][1] instanceof Class<?>) {
+        try {
+            ClaymusMain.homes[match][1] = ((Class<?>) ClaymusMain.homes[match][1]).newInstance();
+        } catch (Exception ex) {
+            ClaymusMain.logger.log(Level.SEVERE, null, ex);
+            resp.sendError(500);
+            return;
+        }
+    }
+    HttpServlet servlet = (HttpServlet) ClaymusMain.homes[match][1];
+    HttpServletRequest request = new HttpServletRequestWrapper(req) {
+
+        @Override
+        public String getRequestURI() {
+            String uri = super.getRequestURI();
+            if (uri.length() != 1 && uri.charAt(uri.length() - 1) == '/')
+                // Removing trailing "/".
+                uri = uri.substring(0, uri.length() - 1);
+            return uri;
+        }
+    };
+    HttpServletResponse response = new HttpServletResponseWrapper(resp) {
+
+        @Override
+        public PrintWriter getWriter() throws IOException {
+            return new PrintWriter(resp.getWriter()) {
+
+                @Override
+                public void close() {
+                // DO NOTHING
+                }
+            };
+        }
+    };
+    ClaymusMain.setRequest(request);
+    ClaymusMain.setResponse(response);
+    servlet.init(this.getServletConfig());
+    servlet.service(request, response);
+    try {
+        resp.getWriter().close();
+    } catch (IllegalStateException ex) {
+    }
+}

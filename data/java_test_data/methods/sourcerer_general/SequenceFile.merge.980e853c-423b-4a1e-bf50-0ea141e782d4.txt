@@ -1,0 +1,84 @@
+public RawKeyValueIterator merge() throws IOException {
+    // create the MergeStreams from the sorted map created in the constructor
+    // and dump the final output to a file
+    int numSegments = sortedSegmentSizes.size();
+    int origFactor = factor;
+    int passNo = 1;
+    LocalDirAllocator lDirAlloc = new LocalDirAllocator("mapred.local.dir");
+    do {
+        // get the factor for this pass of merge
+        factor = getPassFactor(passNo, numSegments);
+        List<SegmentDescriptor> segmentsToMerge = new ArrayList<SegmentDescriptor>();
+        int segmentsConsidered = 0;
+        int numSegmentsToConsider = factor;
+        while (true) {
+            // extract the smallest 'factor' number of segment pointers from the
+            // TreeMap. Call cleanup on the empty segments (no key/value data)
+            SegmentDescriptor[] mStream = getSegmentDescriptors(numSegmentsToConsider);
+            for (int i = 0; i < mStream.length; i++) {
+                if (mStream[i].nextRawKey()) {
+                    segmentsToMerge.add(mStream[i]);
+                    segmentsConsidered++;
+                    // Count the fact that we read some bytes in calling nextRawKey()
+                    updateProgress(mStream[i].in.getPosition());
+                } else {
+                    mStream[i].cleanup();
+                    // we ignore this segment for the merge
+                    numSegments--;
+                }
+            }
+            // or looked at all available segments, we break
+            if (segmentsConsidered == factor || sortedSegmentSizes.size() == 0) {
+                break;
+            }
+            numSegmentsToConsider = factor - segmentsConsidered;
+        }
+        // feed the streams to the priority queue
+        initialize(segmentsToMerge.size());
+        clear();
+        for (int i = 0; i < segmentsToMerge.size(); i++) {
+            put(segmentsToMerge.get(i));
+        }
+        // iterator, else do another single level merge
+        if (numSegments <= factor) {
+            // calculate the length of the remaining segments. Required for
+            // calculating the merge progress
+            long totalBytes = 0;
+            for (int i = 0; i < segmentsToMerge.size(); i++) {
+                totalBytes += segmentsToMerge.get(i).segmentLength;
+            }
+            if (// being paranoid
+            totalBytes != 0)
+                progPerByte = 1.0f / (float) totalBytes;
+            // reset factor to what it originally was
+            factor = origFactor;
+            return this;
+        } else {
+            // we want to spread the creation of temp files on multiple disks if
+            // available under the space constraints
+            long approxOutputSize = 0;
+            for (SegmentDescriptor s : segmentsToMerge) {
+                approxOutputSize += s.segmentLength + ChecksumFileSystem.getApproxChkSumLength(s.segmentLength);
+            }
+            Path tmpFilename = new Path(tmpDir, "intermediate").suffix("." + passNo);
+            Path outputFile = lDirAlloc.getLocalPathForWrite(tmpFilename.toString(), approxOutputSize, conf);
+            LOG.debug("writing intermediate results to " + outputFile);
+            Writer writer = cloneFileAttributes(fs.makeQualified(segmentsToMerge.get(0).segmentPathName), fs.makeQualified(outputFile), null);
+            // disable sync for temp files
+            writer.sync = null;
+            writeFile(this, writer);
+            writer.close();
+            // we finished one single level merge; now clean up the priority
+            // queue
+            this.close();
+            SegmentDescriptor tempSegment = new SegmentDescriptor(0, fs.getLength(outputFile), outputFile);
+            // put the segment back in the TreeMap
+            sortedSegmentSizes.put(tempSegment, null);
+            numSegments = sortedSegmentSizes.size();
+            passNo++;
+        }
+        // we are worried about only the first pass merge factor. So reset the
+        // factor to what it originally was
+        factor = origFactor;
+    } while (true);
+}

@@ -1,0 +1,47 @@
+@Override
+public void process(Node externs, Node root) {
+    assignmentLog = new StringBuilder();
+    // Do variable reference counting.
+    NodeTraversal.traverse(compiler, externs, new ProcessVars(true));
+    NodeTraversal.traverse(compiler, root, new ProcessVars(false));
+    // Make sure that new names don't overlap with extern names.
+    reservedNames.addAll(externNames);
+    // Rename vars, sorted by frequency of occurrence to minimize code size.
+    SortedSet<Assignment> varsByFrequency = new TreeSet<Assignment>(FREQUENCY_COMPARATOR);
+    varsByFrequency.addAll(assignments.values());
+    if (shouldShadow) {
+        new ShadowVariables(compiler, assignments, varsByFrequency, pseudoNameMap).process(externs, root);
+    }
+    // First try to reuse names from an earlier compilation.
+    if (prevUsedRenameMap != null) {
+        reusePreviouslyUsedVariableMap();
+    }
+    // Assign names, sorted by descending frequency to minimize code size.
+    assignNames(varsByFrequency);
+    boolean changed = false;
+    // Rename the globals!
+    for (Node n : globalNameNodes) {
+        String newName = getNewGlobalName(n);
+        // Note: if newName is null, then oldName is an extern.
+        if (newName != null) {
+            n.setString(newName);
+            changed = true;
+        }
+    }
+    // Rename the locals!
+    int count = 0;
+    for (Node n : localNameNodes) {
+        String newName = getNewLocalName(n);
+        if (newName != null) {
+            n.setString(newName);
+            changed = true;
+        }
+        count++;
+    }
+    if (changed) {
+        compiler.reportCodeChange();
+    }
+    // Lastly, write the name assignments to the debug log.
+    compiler.addToDebugLog("JS var assignments:\n" + assignmentLog);
+    assignmentLog = null;
+}

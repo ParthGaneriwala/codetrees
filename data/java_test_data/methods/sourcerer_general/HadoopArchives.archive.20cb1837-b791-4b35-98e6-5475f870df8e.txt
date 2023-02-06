@@ -1,0 +1,82 @@
+public void archive(List<Path> srcPaths, String archiveName, Path dest) throws IOException {
+    checkPaths(conf, srcPaths);
+    int numFiles = 0;
+    long totalSize = 0;
+    conf.set(DST_HAR_LABEL, archiveName);
+    Path outputPath = new Path(dest, archiveName);
+    FileOutputFormat.setOutputPath(conf, outputPath);
+    FileSystem outFs = outputPath.getFileSystem(conf);
+    if (outFs.exists(outputPath) || outFs.isFile(dest)) {
+        throw new IOException("Invalid Output.");
+    }
+    conf.set(DST_DIR_LABEL, outputPath.toString());
+    final String randomId = DistCp.getRandomId();
+    Path jobDirectory = new Path(new JobClient(conf).getSystemDir(), NAME + "_" + randomId);
+    conf.set(JOB_DIR_LABEL, jobDirectory.toString());
+    // get a tmp directory for input splits
+    FileSystem jobfs = jobDirectory.getFileSystem(conf);
+    jobfs.mkdirs(jobDirectory);
+    Path srcFiles = new Path(jobDirectory, "_har_src_files");
+    conf.set(SRC_LIST_LABEL, srcFiles.toString());
+    SequenceFile.Writer srcWriter = SequenceFile.createWriter(jobfs, conf, srcFiles, LongWritable.class, Text.class, SequenceFile.CompressionType.NONE);
+    // create single list of files and dirs
+    try {
+        // write the top level dirs in first
+        writeTopLevelDirs(srcWriter, srcPaths);
+        srcWriter.sync();
+        // one at a time
+        for (Path src : srcPaths) {
+            FileSystem fs = src.getFileSystem(conf);
+            ArrayList<FileStatus> allFiles = new ArrayList<FileStatus>();
+            recursivels(fs, src, allFiles);
+            for (FileStatus stat : allFiles) {
+                String toWrite = "";
+                long len = stat.isDir() ? 0 : stat.getLen();
+                if (stat.isDir()) {
+                    toWrite = "" + fs.makeQualified(stat.getPath()) + " dir ";
+                    // get the children
+                    FileStatus[] list = fs.listStatus(stat.getPath());
+                    StringBuffer sbuff = new StringBuffer();
+                    sbuff.append(toWrite);
+                    for (FileStatus stats : list) {
+                        sbuff.append(stats.getPath().getName() + " ");
+                    }
+                    toWrite = sbuff.toString();
+                } else {
+                    toWrite += fs.makeQualified(stat.getPath()) + " file ";
+                }
+                srcWriter.append(new LongWritable(len), new Text(toWrite));
+                srcWriter.sync();
+                numFiles++;
+                totalSize += len;
+            }
+        }
+    } finally {
+        srcWriter.close();
+    }
+    // increase the replication of src files
+    jobfs.setReplication(srcFiles, (short) 10);
+    conf.setInt(SRC_COUNT_LABEL, numFiles);
+    conf.setLong(TOTAL_SIZE_LABEL, totalSize);
+    int numMaps = (int) (totalSize / partSize);
+    // run atleast one map.
+    conf.setNumMapTasks(numMaps == 0 ? 1 : numMaps);
+    conf.setNumReduceTasks(1);
+    conf.setInputFormat(HArchiveInputFormat.class);
+    conf.setOutputFormat(NullOutputFormat.class);
+    conf.setMapperClass(HArchivesMapper.class);
+    conf.setReducerClass(HArchivesReducer.class);
+    conf.setMapOutputKeyClass(IntWritable.class);
+    conf.setMapOutputValueClass(Text.class);
+    conf.set("org.fit.hiai.hadoop.job.history.user.location", "none");
+    FileInputFormat.addInputPath(conf, jobDirectory);
+    // make sure no speculative execution is done
+    conf.setSpeculativeExecution(false);
+    JobClient.runJob(conf);
+    // delete the tmp job directory
+    try {
+        jobfs.delete(jobDirectory, true);
+    } catch (IOException ie) {
+        LOG.info("Unable to clean tmp directory " + jobDirectory);
+    }
+}

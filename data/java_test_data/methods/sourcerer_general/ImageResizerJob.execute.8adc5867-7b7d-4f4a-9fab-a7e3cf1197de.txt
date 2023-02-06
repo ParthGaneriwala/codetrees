@@ -1,0 +1,82 @@
+public void execute(JobExecutionContext context) throws JobExecutionException {
+    LOG.debug("Starting...");
+    SchedulerContext schedulerContext = null;
+    Connection db = null;
+    // Initial setup
+    try {
+        schedulerContext = context.getScheduler().getContext();
+    } catch (Exception e) {
+        LOG.error("ImageResizerJob Exception due to scheduler", e);
+        throw new JobExecutionException(e);
+    }
+    // Process the arrays
+    Vector exportList = (Vector) schedulerContext.get(IMAGE_RESIZER_ARRAY);
+    while (exportList.size() > 0) {
+        // Holds the transactions to be threaded
+        List<TransactionTask> renderTasks = new ArrayList<TransactionTask>();
+        // Pre-process the files using a database connection
+        try {
+            db = SchedulerUtils.getConnection(schedulerContext);
+            // The imageResizerBean contains the image handle to be processed
+            ImageResizerBean bean = (ImageResizerBean) exportList.remove(0);
+            LOG.debug("Preparing thumbnails for FileItem (" + bean.getFileItemId() + ")... " + bean.getWidth() + "x" + bean.getHeight());
+            // Load the fileItem
+            FileItem fileItem = new FileItem(db, bean.getFileItemId());
+            if (bean.getWidth() > 0 || bean.getHeight() > 0) {
+                // A specific size needs to be rendered
+                renderTasks.add(new TransactionTask(bean, fileItem, bean.getWidth(), bean.getHeight(), false));
+            } else {
+                // No specific size so for each fileItem, generate several sizes of the image
+                renderTasks.add(new TransactionTask(bean, fileItem, 640, 480, false));
+                renderTasks.add(new TransactionTask(bean, fileItem, 210, 150, false));
+                renderTasks.add(new TransactionTask(bean, fileItem, 200, 200, false));
+                renderTasks.add(new TransactionTask(bean, fileItem, 133, 133, true));
+                renderTasks.add(new TransactionTask(bean, fileItem, 100, 100, false));
+                renderTasks.add(new TransactionTask(bean, fileItem, 75, 75, false));
+                renderTasks.add(new TransactionTask(bean, fileItem, 50, 50, false));
+                renderTasks.add(new TransactionTask(bean, fileItem, 45, 45, false));
+                renderTasks.add(new TransactionTask(bean, fileItem, 30, 30, false));
+            }
+        } catch (Exception e) {
+            LOG.error("ImageResizerJob Exception", e);
+            continue;
+        } finally {
+            SchedulerUtils.freeConnection(schedulerContext, db);
+        }
+        int threads = 2;
+        // Process the files
+        ExecutorService executor = null;
+        List<Future<Thumbnail>> futures = null;
+        try {
+            executor = Executors.newFixedThreadPool(threads);
+            // NOTE: this wrapper fix is for Java 1.5
+            final Collection<Callable<Thumbnail>> wrapper = Collections.<Callable<Thumbnail>>unmodifiableCollection(renderTasks);
+            LOG.debug("Generating thumbnails... " + renderTasks.size());
+            futures = executor.invokeAll(wrapper);
+        } catch (InterruptedException e) {
+            LOG.error("ImageResizerJob executor exception", e);
+            if (executor != null) {
+                executor.shutdown();
+            }
+            throw new JobExecutionException(e);
+        }
+        // Insert the thumbnails using the database connection
+        try {
+            db = SchedulerUtils.getConnection(schedulerContext);
+            LOG.debug("Inserting thumbnails into database... " + futures.size());
+            // Process the executor results
+            for (Future<Thumbnail> f : futures) {
+                Thumbnail thumbnail = f.get();
+                thumbnail.insert(db);
+            }
+        } catch (Exception e) {
+            LOG.error("ImageResizerJob insert thumbnails into database exception", e);
+            throw new JobExecutionException(e);
+        } finally {
+            SchedulerUtils.freeConnection(schedulerContext, db);
+            if (executor != null) {
+                executor.shutdown();
+            }
+        }
+    }
+}

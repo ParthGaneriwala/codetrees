@@ -1,0 +1,88 @@
+private Result buildResult(Session session, int limitcount) throws HsqlException {
+    GroupedResult gResult = new GroupedResult(this, resultMetaData);
+    final int len = exprColumns.length;
+    final int filter = tFilter.length;
+    boolean[] first = new boolean[filter];
+    boolean[] outerused = new boolean[filter];
+    int level = 0;
+    // fredt - shortcut needed by OpenOffice to speed up empty query processing for metadata
+    boolean notempty = !(queryCondition != null && queryCondition.isFixedConditional() && !queryCondition.testCondition(session));
+    while (notempty && level >= 0) {
+        // perform a join
+        TableFilter t = tFilter[level];
+        boolean found;
+        boolean outerfound;
+        if (!first[level]) {
+            found = t.findFirst(session);
+            // if outer join, and no inner result, get next outer row
+            // nonJoinIsNull disallows getting the next outer row in some circumstances
+            outerused[level] = outerfound = t.isOuterJoin && !found && !outerused[level] && !t.nonJoinIsNull && t.nextOuter(session);
+            first[level] = found;
+        } else {
+            found = t.next(session);
+            outerused[level] = outerfound = t.isOuterJoin && !found && !first[level] && !outerused[level] && !t.nonJoinIsNull && t.nextOuter(session);
+            first[level] = found;
+        }
+        if (!found && !outerfound) {
+            level--;
+            continue;
+        }
+        if (level < filter - 1) {
+            level++;
+            continue;
+        } else {
+            while (outerused[level]) {
+                outerused[level--] = false;
+            }
+        }
+        // apply condition
+        if (queryCondition == null || queryCondition.testCondition(session)) {
+            try {
+                Object[] row = new Object[len];
+                // gets the group by column values first.
+                for (int i = gResult.groupBegin; i < gResult.groupEnd; i++) {
+                    row[i] = exprColumns[i].getValue(session);
+                }
+                row = gResult.getRow(row);
+                // Get all other values
+                for (int i = 0; i < gResult.groupBegin; i++) {
+                    row[i] = isAggregated && exprColumns[i].isAggregate() ? exprColumns[i].updateAggregatingValue(session, row[i]) : exprColumns[i].getValue(session);
+                }
+                for (int i = gResult.groupEnd; i < len; i++) {
+                    row[i] = isAggregated && exprColumns[i].isAggregate() ? exprColumns[i].updateAggregatingValue(session, row[i]) : exprColumns[i].getValue(session);
+                }
+                gResult.addRow(row);
+                if (gResult.size() >= limitcount) {
+                    break;
+                }
+            } catch (HsqlInternalException e) {
+                continue;
+            }
+        }
+    }
+    if (isAggregated && !isGrouped && gResult.size() == 0) {
+        Object[] row = new Object[len];
+        for (int i = 0; i < len; i++) {
+            row[i] = exprColumns[i].isAggregate() ? null : exprColumns[i].getValue(session);
+        }
+        gResult.addRow(row);
+    }
+    Iterator it = gResult.iterator();
+    while (it.hasNext()) {
+        Object[] row = (Object[]) it.next();
+        if (isAggregated) {
+            for (int i = 0; i < len; i++) {
+                if (exprColumns[i].isAggregate()) {
+                    row[i] = exprColumns[i].getAggregatedValue(session, row[i]);
+                }
+            }
+        }
+        if (iHavingLen > 0) {
+            // condition.
+            if (!Boolean.TRUE.equals(row[iResultLen + iGroupLen])) {
+                it.remove();
+            }
+        }
+    }
+    return gResult.getResult();
+}

@@ -1,0 +1,96 @@
+private void performIteration(double[][] trainYs, double[][] trainFs, double[][] probs, Instances data, double origSumOfWeights) throws Exception {
+    if (m_Debug) {
+        System.err.println("Training classifier " + (m_NumGenerated + 1));
+    }
+    // Make space for classifiers
+    Classifier[] classifiers = new Classifier[m_NumClasses];
+    // Build the new models
+    for (int j = 0; j < m_NumClasses; j++) {
+        if (m_Debug) {
+            System.err.println("\t...for class " + (j + 1) + " (" + m_ClassAttribute.name() + "=" + m_ClassAttribute.value(j) + ")");
+        }
+        // Make copy because we want to save the weights
+        Instances boostData = new Instances(data);
+        // Set instance pseudoclass and weights
+        for (int i = 0; i < probs.length; i++) {
+            // Compute response and weight
+            double p = probs[i][j];
+            double z, actual = trainYs[i][j];
+            if (actual == 1 - m_Offset) {
+                z = 1.0 / p;
+                if (z > m_zMax) {
+                    // threshold
+                    z = m_zMax;
+                }
+            } else {
+                z = -1.0 / (1.0 - p);
+                if (z < -m_zMax) {
+                    // threshold
+                    z = -m_zMax;
+                }
+            }
+            double w = (actual - p) / z;
+            // Set values for instance
+            Instance current = boostData.instance(i);
+            current.setValue(boostData.classIndex(), z);
+            current.setWeight(current.weight() * w);
+        }
+        // Scale the weights (helps with some base learners)
+        double sumOfWeights = boostData.sumOfWeights();
+        double scalingFactor = (double) origSumOfWeights / sumOfWeights;
+        for (int i = 0; i < probs.length; i++) {
+            Instance current = boostData.instance(i);
+            current.setWeight(current.weight() * scalingFactor);
+        }
+        // Select instances to train the classifier on
+        Instances trainData = boostData;
+        if (m_WeightThreshold < 100) {
+            trainData = selectWeightQuantile(boostData, (double) m_WeightThreshold / 100);
+        } else {
+            if (m_UseResampling) {
+                double[] weights = new double[boostData.numInstances()];
+                for (int kk = 0; kk < weights.length; kk++) {
+                    weights[kk] = boostData.instance(kk).weight();
+                }
+                trainData = boostData.resampleWithWeights(m_RandomInstance, weights);
+            }
+        }
+        // Build the classifier
+        classifiers[j] = AbstractClassifier.makeCopy(m_Classifier);
+        classifiers[j].buildClassifier(trainData);
+        if (m_NumClasses == 2) {
+            // Don't actually need to build the other model in the two-class
+            break;
+        // case
+        }
+    }
+    m_Classifiers.add(classifiers);
+    m_NumItsPerformed++;
+    // Evaluate / increment trainFs from the classifier
+    for (int i = 0; i < trainFs.length; i++) {
+        double[] pred = new double[m_NumClasses];
+        double predSum = 0;
+        for (int j = 0; j < m_NumClasses; j++) {
+            double tempPred = m_Shrinkage * classifiers[j].classifyInstance(data.instance(i));
+            if (Utils.isMissingValue(tempPred)) {
+                throw new UnassignedClassException("LogitBoost: base learner predicted missing value.");
+            }
+            pred[j] = tempPred;
+            if (m_NumClasses == 2) {
+                // Can treat 2 classes as special case
+                pred[1] = -tempPred;
+                break;
+            }
+            predSum += pred[j];
+        }
+        predSum /= m_NumClasses;
+        for (int j = 0; j < m_NumClasses; j++) {
+            trainFs[i][j] += (pred[j] - predSum) * (m_NumClasses - 1) / m_NumClasses;
+        }
+    }
+    m_NumGenerated = m_Classifiers.size();
+    // Compute the current probability estimates
+    for (int i = 0; i < trainYs.length; i++) {
+        probs[i] = probs(trainFs[i]);
+    }
+}

@@ -1,0 +1,60 @@
+public void run() {
+    System.out.println("Workload " + id + " starting... ");
+    for (int i = 0; i < numAppendsPerThread; i++) {
+        // pick a file at random and remove it from pool
+        Path testfile = null;
+        synchronized (testFiles) {
+            if (testFiles.size() == 0) {
+                System.out.println("Completed write to almost all files.");
+                return;
+            }
+            int index = AppendTestUtil.nextInt(testFiles.size());
+            testfile = testFiles.remove(index);
+        }
+        long len = 0;
+        int sizeToAppend = 0;
+        try {
+            FileSystem fs = cluster.getFileSystem();
+            // add a random number of bytes to file
+            len = fs.getFileStatus(testfile).getLen();
+            // if file is already full, then pick another file
+            if (len >= fileSize) {
+                System.out.println("File " + testfile + " is full.");
+                continue;
+            }
+            // do small size appends so that we can trigger multiple
+            // appends to the same file.
+            // 
+            int left = (int) (fileSize - len) / 3;
+            if (left <= 0) {
+                left = 1;
+            }
+            sizeToAppend = AppendTestUtil.nextInt(left);
+            System.out.println("Workload thread " + id + " appending " + sizeToAppend + " bytes " + " to file " + testfile + " of size " + len);
+            FSDataOutputStream stm = fs.append(testfile);
+            stm.write(fileContents, (int) len, sizeToAppend);
+            stm.close();
+            // wait for the file size to be reflected in the namenode metadata
+            while (fs.getFileStatus(testfile).getLen() != (len + sizeToAppend)) {
+                try {
+                    System.out.println("Workload thread " + id + " file " + testfile + " size " + fs.getFileStatus(testfile).getLen() + " expected size " + (len + sizeToAppend) + " waiting for namenode metadata update.");
+                    Thread.sleep(5000);
+                } catch (InterruptedException e) {
+                }
+            }
+            assertTrue("File " + testfile + " size is " + fs.getFileStatus(testfile).getLen() + " but expected " + (len + sizeToAppend), fs.getFileStatus(testfile).getLen() == (len + sizeToAppend));
+            checkFile(fs, testfile, (int) (len + sizeToAppend));
+        } catch (Throwable e) {
+            globalStatus = false;
+            if (e != null && e.toString() != null) {
+                System.out.println("Workload exception " + id + " testfile " + testfile + " " + e);
+                e.printStackTrace();
+            }
+            assertTrue("Workload exception " + id + " testfile " + testfile + " expected size " + (len + sizeToAppend), false);
+        }
+        // Add testfile back to the pool of files.
+        synchronized (testFiles) {
+            testFiles.add(testfile);
+        }
+    }
+}

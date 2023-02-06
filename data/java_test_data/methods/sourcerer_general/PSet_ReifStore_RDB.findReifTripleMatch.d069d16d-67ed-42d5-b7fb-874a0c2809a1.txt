@@ -1,0 +1,94 @@
+public ResultSetReifIterator findReifTripleMatch(TripleMatch t, IDBID graphID) {
+    String astName = getTblName();
+    String gid = graphID.getID().toString();
+    ResultSetReifIterator result = new ResultSetReifIterator(this, true, graphID);
+    PreparedStatement ps = null;
+    String stmtStr = "*findReif ";
+    boolean gotStmt = false;
+    boolean gotPred = false;
+    boolean gotObj = false;
+    boolean objIsStmt = false;
+    char reifProp = ' ';
+    String objNode = null;
+    boolean done = false;
+    int argc = 1;
+    Node stmtURI = t.getMatchSubject();
+    Node obj = t.getMatchObject();
+    Node pred = t.getMatchPredicate();
+    if ((stmtURI != null) && !stmtURI.equals(Node.ANY)) {
+        gotStmt = true;
+        stmtStr += "N";
+    }
+    if ((pred != null) && !pred.equals(Node.ANY)) {
+        gotPred = true;
+        if (pred.equals(RDF.Nodes.subject))
+            reifProp = 'S';
+        else if (pred.equals(RDF.Nodes.predicate))
+            reifProp = 'P';
+        else if (pred.equals(RDF.Nodes.object))
+            reifProp = 'O';
+        else if (pred.equals(RDF.Nodes.type))
+            reifProp = 'T';
+        else
+            done = true;
+        stmtStr += ("P" + reifProp);
+    }
+    if ((obj != null) && !obj.equals(Node.ANY)) {
+        gotObj = true;
+        stmtStr += "O";
+        if (obj.equals(RDF.Nodes.Statement)) {
+            objIsStmt = true;
+            stmtStr += "C";
+        } else if (reifProp == 'T')
+            // reifier only stores patterns like (-, rdf:type, rdf:Statement)
+            done = true;
+    }
+    if (done == false)
+        try {
+            ps = m_sql.getPreparedSQLStatement(stmtStr, getTblName());
+            ps.setString(argc++, gid);
+            if (gotStmt) {
+                String stmtNode = m_driver.nodeToRDBString(stmtURI, false);
+                if (stmtNode == null)
+                    done = true;
+                else
+                    ps.setString(argc++, stmtNode);
+            }
+            if (gotObj) {
+                // no arguments in case match is <-,rdf:type,rdf:Statement>
+                if (!(gotPred && objIsStmt)) {
+                    objNode = m_driver.nodeToRDBString(obj, false);
+                    ps.setString(argc++, objNode);
+                    if (gotPred == false) {
+                        // if no predicate, object value could be in subj, pred or obj column
+                        ps.setString(argc++, objNode);
+                        ps.setString(argc++, objNode);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            done = true;
+            logger.warn("Getting prepared statement for " + stmtStr + " Caught exception ", e);
+            // Rethrow in case there is a recovery option
+            throw new JenaException("Exception during database access", e);
+        }
+    if (done) {
+        result.close();
+    } else {
+        if (gotPred) {
+            result.close();
+            result = new ResultSetReifIterator(this, reifProp, graphID);
+        } else if (gotObj) {
+            result.close();
+            result = new ResultSetReifIterator(this, obj, graphID);
+        }
+        try {
+            m_sql.executeSQL(ps, stmtStr, result);
+        } catch (Exception e) {
+            logger.debug("find encountered exception ", e);
+            // Rethrow in case there is a recovery option
+            throw new JenaException("Exception during database access", e);
+        }
+    }
+    return result;
+}

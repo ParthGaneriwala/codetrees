@@ -1,0 +1,54 @@
+public StreamRequestHandlerState handleRequest(DataInputStream inputStream, DataOutputStream outputStream) throws IOException {
+    if (request == null) {
+        int size = 0;
+        try {
+            size = inputStream.readInt();
+        } catch (EOFException e) {
+            if (logger.isTraceEnabled())
+                logger.trace("Incomplete read for message size");
+            return StreamRequestHandlerState.INCOMPLETE_READ;
+        }
+        if (size == -1) {
+            if (logger.isTraceEnabled())
+                logger.trace("Message size -1, completed partition update");
+            return StreamRequestHandlerState.COMPLETE;
+        }
+        if (logger.isTraceEnabled())
+            logger.trace("UpdatePartitionEntriesRequest message size: " + size);
+        byte[] input = new byte[size];
+        try {
+            ByteUtils.read(inputStream, input);
+        } catch (EOFException e) {
+            if (logger.isTraceEnabled())
+                logger.trace("Incomplete read for message");
+            return StreamRequestHandlerState.INCOMPLETE_READ;
+        }
+        VAdminProto.UpdatePartitionEntriesRequest.Builder builder = VAdminProto.UpdatePartitionEntriesRequest.newBuilder();
+        builder.mergeFrom(input);
+        request = builder.build();
+    }
+    VAdminProto.PartitionEntry partitionEntry = request.getPartitionEntry();
+    ByteArray key = ProtoUtils.decodeBytes(partitionEntry.getKey());
+    Versioned<byte[]> value = ProtoUtils.decodeVersioned(partitionEntry.getVersioned());
+    if (filter.accept(key, value)) {
+        try {
+            storageEngine.put(key, value);
+            if (logger.isTraceEnabled())
+                logger.trace("updateEntries (Streaming put) successful");
+        } catch (ObsoleteVersionException e) {
+            // log and ignore
+            if (logger.isDebugEnabled())
+                logger.debug("updateEntries (Streaming put) threw ObsoleteVersionException, Ignoring.");
+        }
+        throttler.maybeThrottle(key.length() + AdminServiceRequestHandler.valueSize(value));
+    }
+    // log progress
+    counter++;
+    if (0 == counter % 100000) {
+        long totalTime = (System.currentTimeMillis() - startTime) / 1000;
+        if (logger.isDebugEnabled())
+            logger.debug("updateEntries() updated " + counter + " entries for store:" + storageEngine.getName() + " in " + totalTime + " s");
+    }
+    request = null;
+    return StreamRequestHandlerState.READING;
+}

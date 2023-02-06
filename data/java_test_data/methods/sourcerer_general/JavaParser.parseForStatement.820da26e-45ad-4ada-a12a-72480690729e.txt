@@ -1,0 +1,115 @@
+public LocatableToken parseForStatement(LocatableToken forToken) {
+    // TODO: if we get an unexpected token in the part between '(' and ')' check
+    // if it is ')'. If so we might still expect a loop body to follow.
+    beginForLoop(forToken);
+    LocatableToken token = tokenStream.nextToken();
+    if (token.getType() != JavaTokenTypes.LPAREN) {
+        error("Expecting '(' after 'for'");
+        tokenStream.pushBack(token);
+        endForLoop(token, false);
+        return null;
+    }
+    if (tokenStream.LA(1).getType() != JavaTokenTypes.SEMI) {
+        // Could be an old or new style for-loop.
+        List<LocatableToken> tlist = new LinkedList<LocatableToken>();
+        LocatableToken first = tokenStream.LA(1);
+        boolean isTypeSpec = false;
+        if (isModifier(tokenStream.LA(1))) {
+            parseModifiers();
+            isTypeSpec = true;
+            parseTypeSpec(false, true, tlist);
+        } else {
+            isTypeSpec = parseTypeSpec(true, true, tlist);
+        }
+        if (isTypeSpec && tokenStream.LA(1).getType() == JavaTokenTypes.IDENT) {
+            // for (type var ...
+            beginForInitDecl(first);
+            gotTypeSpec(tlist);
+            // identifier
+            LocatableToken idToken = tokenStream.nextToken();
+            gotForInit(first, idToken);
+            token = tokenStream.nextToken();
+            if (token.getType() == JavaTokenTypes.COLON) {
+                // This is a "new" for loop (Java 5)
+                endForInit(idToken, true);
+                endForInitDecls(idToken, true);
+                parseExpression();
+                token = tokenStream.nextToken();
+                if (token.getType() != JavaTokenTypes.RPAREN) {
+                    error("Expecting ')' (in for statement)");
+                    tokenStream.pushBack(token);
+                    endForLoop(token, false);
+                    return null;
+                }
+                token = tokenStream.nextToken();
+                beginForLoopBody(token);
+                // loop body
+                token = parseStatement(token);
+                endForLoopBody(token);
+                endForLoop(token);
+                return token;
+            } else {
+                // Old style loop with initialiser
+                if (token.getType() == JavaTokenTypes.ASSIGN) {
+                    parseExpression();
+                } else {
+                    tokenStream.pushBack(token);
+                }
+                if (parseSubsequentDeclarations(DECL_TYPE_FORINIT) == null) {
+                    endForLoop(tokenStream.LA(1), false);
+                    modifiersConsumed();
+                    return null;
+                }
+                modifiersConsumed();
+            }
+        } else {
+            // Not a type spec, so, we might have a general statement
+            pushBackAll(tlist);
+            token = tokenStream.nextToken();
+            parseStatement(token);
+        }
+    } else {
+        // SEMI
+        token = tokenStream.nextToken();
+    }
+    // We're expecting a regular (old-style) statement at this point
+    if (tokenStream.LA(1).getType() != JavaTokenTypes.SEMI) {
+        // test expression
+        parseExpression();
+    }
+    token = tokenStream.nextToken();
+    if (token.getType() != JavaTokenTypes.SEMI) {
+        error("Expecting ';' after test expression (in for statement)");
+        tokenStream.pushBack(token);
+        endForLoop(token, false);
+        return null;
+    }
+    if (tokenStream.LA(1).getType() != JavaTokenTypes.RPAREN) {
+        // loop increment expression
+        parseExpression();
+        while (tokenStream.LA(1).getType() == JavaTokenTypes.COMMA) {
+            tokenStream.nextToken();
+            parseExpression();
+        }
+    }
+    // ')'?
+    token = tokenStream.nextToken();
+    if (token.getType() != JavaTokenTypes.RPAREN) {
+        error("Expecting ')' (or ',') after 'for(...'");
+        tokenStream.pushBack(token);
+        endForLoop(token, false);
+        return null;
+    }
+    token = tokenStream.nextToken();
+    if (token.getType() == JavaTokenTypes.RCURLY || token.getType() == JavaTokenTypes.EOF) {
+        error("Expecting statement after 'for(...)'");
+        tokenStream.pushBack(token);
+        endForLoop(token, false);
+        return null;
+    }
+    beginForLoopBody(token);
+    token = parseStatement(token);
+    endForLoopBody(token);
+    endForLoop(token);
+    return token;
+}

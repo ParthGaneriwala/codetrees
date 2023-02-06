@@ -1,0 +1,94 @@
+public void testInsertAndUpdateUser() throws Exception {
+    String username = "jsmith@concursive.com";
+    {
+        DataRecord record = new DataRecord();
+        record.setName("user");
+        record.setAction(DataRecord.INSERT);
+        record.setShareKey(true);
+        record.addField("firstName", "John");
+        record.addField("lastName", "Smith");
+        record.addField("username", username);
+        record.addField("password", PasswordHash.encrypt("password"));
+        record.addField("groupId", GROUP_ID);
+        record.addField("departmentId", "1");
+        record.addField("enabled", true);
+        api.save(record);
+    }
+    {
+        // build user list
+        ArrayList<String> meta = new ArrayList<String>();
+        meta.add("id");
+        meta.add("firstName");
+        meta.add("lastName");
+        meta.add("username");
+        api.setTransactionMeta(meta);
+        DataRecord record = new DataRecord();
+        record.setName("userList");
+        record.setAction(DataRecord.SELECT);
+        record.addField("userId", "$C{user.id}");
+        record.addField("username", username);
+        api.save(record);
+    }
+    // Process the complete transaction
+    processTheTransactions(api, packetContext);
+    assertFalse("API reported a transaction error: " + api.getLastResponse(), api.hasError());
+    assertTrue("Couldn't find inserted user", api.getRecordCount() == 1);
+    User user = null;
+    ArrayList<Object> userListObjects = api.getRecords("com.concursive.connect.web.modules.login.dao.User");
+    assertTrue(userListObjects.size() > 0);
+    int count = 0;
+    for (Object userObject : userListObjects) {
+        user = (User) userObject;
+        if (user.getUsername().equals(username)) {
+            {
+                DataRecord record = new DataRecord();
+                record.setName("user");
+                record.setAction(DataRecord.UPDATE);
+                record.addField("id", user.getId());
+                record.addField("firstName", "James");
+                // record.addField("lastName", "Smith");
+                record.addField("username", username);
+                record.addField("password", PasswordHash.encrypt("password2"));
+                // record.addField("groupId", GROUP_ID);
+                // record.addField("departmentId", "1");
+                api.save(record);
+                // Process the complete transaction
+                processTheTransactions(api, packetContext);
+                assertFalse("API reported a transaction error: " + api.getLastResponse(), api.hasError());
+            }
+            {
+                // Add Meta Info with fields required
+                ArrayList<String> meta = new ArrayList<String>();
+                meta.add("id");
+                meta.add("firstName");
+                meta.add("lastName");
+                meta.add("password");
+                api.setTransactionMeta(meta);
+                // Reload and verify the last name didn't get updated when saved
+                // just because it wasn't specified in the update
+                DataRecord record = new DataRecord();
+                record.setName("userList");
+                record.setAction(DataRecord.SELECT);
+                record.addField("userId", user.getId());
+                api.save(record);
+                // Process the complete transaction
+                processTheTransactions(api, packetContext);
+                assertFalse("API reported a transaction error: " + api.getLastResponse(), api.hasError());
+                User user2 = null;
+                ArrayList<Object> userListObjects2 = api.getRecords("com.concursive.connect.web.modules.login.dao.User");
+                assertTrue(userListObjects2.size() == 1);
+                for (Object userObject2 : userListObjects2) {
+                    user2 = (User) userObject2;
+                    assertTrue("James".equals(user2.getFirstName()));
+                    assertTrue("Smith".equals(user2.getLastName()));
+                    assertTrue("Password does not match", PasswordHash.encrypt("password2").equals(user2.getPassword()));
+                }
+            }
+            User thisUser = new User(db, user.getId());
+            thisUser.getProfileProject().delete(db, null);
+            assertTrue("Delete inserted user error", 1 == thisUser.delete(db));
+            count++;
+        }
+    }
+    assertTrue("Delete inserted user error", count >= 1);
+}

@@ -1,0 +1,60 @@
+public String executeCommandSave(ActionContext context) {
+    // Make sure activations are currently allowed
+    String demoAllowed = (String) context.getServletContext().getAttribute("demoAllowed");
+    if ("offline".equals(demoAllowed)) {
+        return "DemoOfflineOK";
+    }
+    // See if the form is valid
+    DemoBean bean = (DemoBean) context.getFormBean();
+    if (!bean.isValid(context.getSession())) {
+        processErrors(context, bean.getErrors());
+        return "DemoFormError";
+    }
+    // Record the referer
+    ClientType clientType = (ClientType) context.getSession().getAttribute("clientType");
+    bean.setIpAddress(context.getIpAddress());
+    bean.setUserBrowser(context.getBrowser());
+    if (clientType != null) {
+        bean.setReferer(clientType.getReferer());
+    }
+    // Process the account activation
+    Connection db = null;
+    try {
+        db = getConnection(context);
+        // Reserve the URL through the management console
+        try {
+            String externalValidation = StringUtils.loadText(context.getServletContext().getResourceAsStream("/WEB-INF/management_console_reservation.bsh"));
+            Interpreter script = new Interpreter();
+            script.set("db", db);
+            script.set("context", context);
+            script.set("bean", bean);
+            script.eval(externalValidation);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return "DemoSaveError";
+        }
+        // Save to local database
+        bean.insert(db);
+        // Reserve the URL through the management console
+        try {
+            String externalValidation = StringUtils.loadText(context.getServletContext().getResourceAsStream("/WEB-INF/management_console_activation.bsh"));
+            Interpreter script = new Interpreter();
+            script.set("db", db);
+            script.set("context", context);
+            script.set("bean", bean);
+            script.eval(externalValidation);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return "DemoSaveError";
+        }
+        // Update the local database as in-process
+        bean.markProcessed(db);
+        processInsertHook(context, bean);
+        return "DemoSaveOK";
+    } catch (Exception e) {
+        e.printStackTrace(System.out);
+    } finally {
+        freeConnection(context, db);
+    }
+    return "DemoSaveError";
+}

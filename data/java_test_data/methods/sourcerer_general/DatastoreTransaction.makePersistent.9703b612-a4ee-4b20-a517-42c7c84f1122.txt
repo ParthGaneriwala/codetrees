@@ -1,0 +1,51 @@
+public T makePersistent(Class<T> klass, Key key, Object... argvs) {
+    PersistenceManager pm = ClaymusMain.getPersistenceManager();
+    Transaction tx = pm.currentTransaction();
+    T entity = null;
+    T datastoreEntity = null;
+    try {
+        for (int i = 0; i < this.retryCount; i++) {
+            if (i != 0)
+                Thread.sleep(this.retryInterval);
+            try {
+                tx.begin();
+                try {
+                    datastoreEntity = pm.getObjectById(klass, key);
+                    if (!updateEntity(datastoreEntity, argvs)) {
+                        // Nothing to update
+                        datastoreEntity.detachFields(pm);
+                        return pm.detachCopy(datastoreEntity);
+                    }
+                    pm.makePersistent(datastoreEntity);
+                } catch (JDOObjectNotFoundException ex) {
+                    ClaymusMain.logger.warning(ex.getMessage());
+                    return null;
+                }
+                tx.commit();
+                datastoreEntity.detachFields(pm);
+                entity = pm.detachCopy(datastoreEntity);
+                if (entity.cache())
+                    Memcache.put(entity.getKey(), entity);
+                if (entity.cacheLocally())
+                    Localcache.put(entity.getKey(), entity);
+                return entity;
+            // } catch(JDODataStoreException ex) {
+            } catch (JDOException ex) {
+                ClaymusMain.logger.warning(ex.getMessage());
+                if (tx.isActive()) {
+                    tx.rollback();
+                }
+            }
+        }
+    } catch (CapabilityDisabledException ex) {
+        ClaymusMain.logger.log(Level.SEVERE, null, ex);
+    } catch (InterruptedException ex) {
+        ClaymusMain.logger.log(Level.SEVERE, null, ex);
+    } finally {
+        if (tx.isActive()) {
+            tx.rollback();
+        }
+        pm.close();
+    }
+    return null;
+}

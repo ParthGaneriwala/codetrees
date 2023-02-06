@@ -1,0 +1,83 @@
+public void populateData(File dataDir, int dataid, int lmNum, Observer fileCache) throws IOException {
+    final LanguageModel lm = forest.getModels().get(lmNum);
+    final BinaryTree<HistoryTreePayload>[] nodes = lm.getNodes();
+    int level = 0;
+    while (true) {
+        File oldFile = new File(dataDir, makeDataFilename(level, dataid, lmNum));
+        File newFile = new File(dataDir, makeDataFilename(level + 1, dataid, lmNum));
+        FileChannel inputChannel = new FileInputStream(oldFile).getChannel();
+        TrainingDataNodeReader reader = new EagerTrainingDataNodeReader(new OnDiskTrainingDataNodeReader(inputChannel));
+        RandomAccessFile outFile = new RandomAccessFile(newFile, "rw");
+        outFile.getChannel().truncate(0);
+        TrainingDataNodeWriter writer = new OnDiskTrainingDataNodeWriter(outFile.getChannel());
+        writer = new BufferedTrainingDataNodeWriter(writer);
+        int nodeCount = 0;
+        while (true) {
+            ReadableTrainingDataNode dataNode = reader.getNext();
+            if (dataNode == null)
+                break;
+            int clusterid = dataNode.getNodeId();
+            BinaryTree<HistoryTreePayload> node = nodes[clusterid];
+            Long2IntMap counts = new Long2IntMap();
+            if (node.isLeaf()) {
+                ReadableTrainingData data = dataNode.getData(0);
+                while (data.hasNext()) {
+                    TrainingDataBlock block = data.next();
+                    block.addCounts(counts);
+                }
+            } else {
+                nodeCount += 2;
+                BinaryTree<HistoryTreePayload> left = node.getLeft();
+                BinaryTree<HistoryTreePayload> right = node.getRight();
+                int leftNodeId = left.getPayload().clusterid;
+                int rightNodeId = right.getPayload().clusterid;
+                WritableTrainingDataNode leftDataNode = writer.createNode(leftNodeId, 1);
+                WritableTrainingDataNode rightDataNode = writer.createNode(rightNodeId, 1);
+                writer.add(leftDataNode);
+                writer.add(rightDataNode);
+                TrainingDataUtil.splitData(dataNode.getData(0), node.getPayload().question, rightDataNode.getData(0), leftDataNode.getData(0), counts);
+            }
+            if (node.getParent() == null) {
+                // the unigram model
+                counts = adjustUnigramCounts(counts);
+                File theDir = new File(baseDir, wordCountsDirname);
+                for (Long2IntMap.Iterator it = counts.iterator(); it.hasNext(); ) {
+                    Long2IntMap.Entry e = it.next();
+                    long word = e.getKey();
+                    FactorTuple tuple = new FactorTuple(word);
+                    Word2ClustersCounts myWordCounts;
+                    lock.writeLock().lock();
+                    myWordCounts = wordCounts.get(tuple);
+                    if (myWordCounts == null) {
+                        myWordCounts = new Word2ClustersCounts(new File(theDir, Long.toString(word)));
+                        myWordCounts.openForWriting(fileCache);
+                        wordCounts.put(tuple, myWordCounts);
+                    }
+                    lock.writeLock().unlock();
+                }
+            }
+            long totalClusterCount = 0;
+            for (Long2IntMap.Iterator it = counts.iterator(); it.hasNext(); ) {
+                Long2IntMap.Entry e = it.next();
+                long word = e.getKey();
+                int count = e.getValue();
+                totalClusterCount += count;
+                lock.readLock().lock();
+                Word2ClustersCounts myWordCounts = wordCounts.get(new FactorTuple(word));
+                lock.readLock().unlock();
+                myWordCounts.addClusterCount(dataid, lmNum, clusterid, count);
+            }
+            clusterCounts[dataid][lmNum][clusterid] = totalClusterCount;
+        }
+        writer.close();
+        reader.close();
+        if (level > 0) {
+            oldFile.delete();
+        }
+        if (nodeCount == 0) {
+            newFile.delete();
+            break;
+        }
+        ++level;
+    }
+}

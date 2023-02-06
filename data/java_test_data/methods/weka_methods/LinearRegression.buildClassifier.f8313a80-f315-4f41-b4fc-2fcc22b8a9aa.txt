@@ -1,0 +1,96 @@
+@Override
+public void buildClassifier(Instances data) throws Exception {
+    m_ModelBuilt = false;
+    m_isZeroR = false;
+    if (data.numInstances() == 1) {
+        m_Coefficients = new double[1];
+        m_Coefficients[0] = data.instance(0).classValue();
+        m_SelectedAttributes = new boolean[data.numAttributes()];
+        m_isZeroR = true;
+        return;
+    }
+    if (!m_checksTurnedOff) {
+        // can classifier handle the data?
+        getCapabilities().testWithFail(data);
+        if (m_outputAdditionalStats) {
+            // check that the instances weights are all 1
+            // because the RegressionAnalysis class does
+            // not handle weights
+            boolean ok = true;
+            for (int i = 0; i < data.numInstances(); i++) {
+                if (data.instance(i).weight() != 1) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (!ok) {
+                throw new Exception("Can only compute additional statistics on unweighted data");
+            }
+        }
+        // remove instances with missing class
+        data = new Instances(data);
+        data.deleteWithMissingClass();
+        m_TransformFilter = new NominalToBinary();
+        m_TransformFilter.setInputFormat(data);
+        data = Filter.useFilter(data, m_TransformFilter);
+        m_MissingFilter = new ReplaceMissingValues();
+        m_MissingFilter.setInputFormat(data);
+        data = Filter.useFilter(data, m_MissingFilter);
+        data.deleteWithMissingClass();
+    } else {
+        m_TransformFilter = null;
+        m_MissingFilter = null;
+    }
+    m_ClassIndex = data.classIndex();
+    m_TransformedData = data;
+    // Turn all attributes on for a start
+    m_Coefficients = null;
+    // Compute means and standard deviations
+    m_SelectedAttributes = new boolean[data.numAttributes()];
+    m_Means = new double[data.numAttributes()];
+    m_StdDevs = new double[data.numAttributes()];
+    for (int j = 0; j < data.numAttributes(); j++) {
+        if (j != m_ClassIndex) {
+            // Turn attributes on for a start
+            m_SelectedAttributes[j] = true;
+            m_Means[j] = data.meanOrMode(j);
+            m_StdDevs[j] = Math.sqrt(data.variance(j));
+            if (m_StdDevs[j] == 0) {
+                m_SelectedAttributes[j] = false;
+            }
+        }
+    }
+    m_ClassStdDev = Math.sqrt(data.variance(m_TransformedData.classIndex()));
+    m_ClassMean = data.meanOrMode(m_TransformedData.classIndex());
+    // Perform the regression
+    findBestModel();
+    if (m_outputAdditionalStats) {
+        // find number of coefficients, degrees of freedom
+        int k = 1;
+        for (int i = 0; i < data.numAttributes(); i++) {
+            if (i != data.classIndex()) {
+                if (m_SelectedAttributes[i]) {
+                    k++;
+                }
+            }
+        }
+        m_df = m_TransformedData.numInstances() - k;
+        // calculate R^2 and F-stat
+        double se = calculateSE(m_SelectedAttributes, m_Coefficients);
+        m_RSquared = RegressionAnalysis.calculateRSquared(m_TransformedData, se);
+        m_RSquaredAdj = RegressionAnalysis.calculateAdjRSquared(m_RSquared, m_TransformedData.numInstances(), k);
+        m_FStat = RegressionAnalysis.calculateFStat(m_RSquared, m_TransformedData.numInstances(), k);
+        // calculate std error of coefficients and t-stats
+        m_StdErrorOfCoef = RegressionAnalysis.calculateStdErrorOfCoef(m_TransformedData, m_SelectedAttributes, se, m_TransformedData.numInstances(), k);
+        m_TStats = RegressionAnalysis.calculateTStats(m_Coefficients, m_StdErrorOfCoef, k);
+    }
+    // Save memory
+    if (m_Minimal) {
+        m_TransformedData = null;
+        m_Means = null;
+        m_StdDevs = null;
+    } else {
+        m_TransformedData = new Instances(data, 0);
+    }
+    m_ModelBuilt = true;
+}

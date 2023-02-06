@@ -1,0 +1,49 @@
+public void run() {
+    try {
+        while (true) {
+            lock.lock();
+            try {
+                while (currentTotalSize >= maxTotalSize || waitingForNode != null) {
+                    try {
+                        canGetSome.await();
+                    } catch (InterruptedException e) {
+                        finished = true;
+                        gotSome.signal();
+                        return;
+                    }
+                }
+            } finally {
+                lock.unlock();
+            }
+            ReadableTrainingDataNode node = backend.getNext();
+            if (node == null) {
+                lock.lock();
+                finished = true;
+                gotSome.signal();
+                lock.unlock();
+                return;
+            }
+            long nodeSize = 0;
+            for (ReadableTrainingData data : node.getData()) {
+                data.hasNext();
+                data.parseBuffer();
+                if (!data.isFinished()) {
+                    // if the data does not fit into buffer, give up reading ahead
+                    nodeSize = maxTotalSize;
+                    waitingForNode = node;
+                    // System.err.printf("Waiting for node %d\n", node.getNodeId());
+                    break;
+                }
+                nodeSize += data.getBufferSize();
+            }
+            lock.lock();
+            nodes.add(node);
+            nodeSizes.add(nodeSize);
+            currentTotalSize += nodeSize;
+            gotSome.signal();
+            lock.unlock();
+        }
+    } finally {
+        backend.deleteFinishedReadingNodeObserver(this);
+    }
+}

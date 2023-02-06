@@ -1,0 +1,55 @@
+public void close(boolean write) {
+    writeLock.lock();
+    try {
+        if (cacheReadonly) {
+            if (dataFile != null) {
+                dataFile.close();
+                dataFile = null;
+            }
+            return;
+        }
+        database.logger.logInfoEvent("DataFileCache.close(" + write + ") : start");
+        if (write) {
+            cache.saveAll();
+            database.logger.logInfoEvent("DataFileCache.close() : save data");
+            if (fileModified || freeBlocks.isModified()) {
+                // set empty
+                dataFile.seek(LONG_EMPTY_SIZE);
+                dataFile.writeLong(freeBlocks.getLostBlocksSize());
+                // set end
+                dataFile.seek(LONG_FREE_POS_POS);
+                dataFile.writeLong(fileFreePosition);
+                // set saved flag;
+                dataFile.seek(FLAGS_POS);
+                int flags = dataFile.readInt();
+                flags = BitMap.set(flags, FLAG_ISSAVED);
+                dataFile.seek(FLAGS_POS);
+                dataFile.writeInt(flags);
+                database.logger.logInfoEvent("DataFileCache.close() : flags");
+                // 
+                dataFile.seek(fileFreePosition);
+                database.logger.logInfoEvent("DataFileCache.close() : seek end");
+            }
+        }
+        if (dataFile != null) {
+            dataFile.synch();
+            dataFile.close();
+            database.logger.logInfoEvent("DataFileCache.close() : close");
+            dataFile = null;
+        }
+        if (shadowFile != null) {
+            shadowFile.close();
+            shadowFile = null;
+        }
+        boolean empty = fileFreePosition == initialFreePos;
+        if (empty) {
+            deleteFile();
+            deleteBackup();
+        }
+    } catch (Throwable t) {
+        database.logger.logSevereEvent("Close failed", t);
+        throw Error.error(t, ErrorCode.FILE_IO_ERROR, ErrorCode.M_DataFileCache_close, new Object[] { t.getMessage(), dataFileName });
+    } finally {
+        writeLock.unlock();
+    }
+}

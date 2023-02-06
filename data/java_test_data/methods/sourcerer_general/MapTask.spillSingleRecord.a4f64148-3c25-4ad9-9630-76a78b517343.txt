@@ -1,0 +1,58 @@
+private void spillSingleRecord(final K key, final V value) throws IOException {
+    long size = kvbuffer.length + partitions * APPROX_HEADER_LENGTH;
+    FSDataOutputStream out = null;
+    FSDataOutputStream indexOut = null;
+    IFileOutputStream indexChecksumOut = null;
+    IndexRecord[] irArray = null;
+    final int partition = partitioner.getPartition(key, value, partitions);
+    try {
+        // create spill file
+        Path filename = mapOutputFile.getSpillFileForWrite(getTaskID(), numSpills, size);
+        out = rfs.create(filename);
+        if (totalIndexCacheMemory >= INDEX_CACHE_MEMORY_LIMIT) {
+            // create spill index
+            Path indexFilename = mapOutputFile.getSpillIndexFileForWrite(getTaskID(), numSpills, partitions * MAP_OUTPUT_INDEX_RECORD_LENGTH);
+            indexOut = rfs.create(indexFilename);
+            indexChecksumOut = new IFileOutputStream(indexOut);
+        } else {
+            irArray = new IndexRecord[partitions];
+            indexCacheList.add(numSpills, irArray);
+            totalIndexCacheMemory += partitions * MAP_OUTPUT_INDEX_RECORD_LENGTH;
+        }
+        // we don't run the combiner for a single record
+        for (int i = 0; i < partitions; ++i) {
+            IFile.Writer<K, V> writer = null;
+            try {
+                long segmentStart = out.getPos();
+                // Create a new codec, don't care!
+                writer = new IFile.Writer<K, V>(job, out, keyClass, valClass, codec);
+                if (i == partition) {
+                    final long recordStart = out.getPos();
+                    writer.append(key, value);
+                    // Note that our map byte count will not be accurate with
+                    // compression
+                    mapOutputByteCounter.increment(out.getPos() - recordStart);
+                }
+                writer.close();
+                if (indexChecksumOut != null) {
+                    writeIndexRecord(indexChecksumOut, segmentStart, writer);
+                } else {
+                    irArray[i] = new IndexRecord(segmentStart, writer.getRawLength(), writer.getCompressedLength());
+                }
+                writer = null;
+            } catch (IOException e) {
+                if (null != writer)
+                    writer.close();
+                throw e;
+            }
+        }
+        ++numSpills;
+    } finally {
+        if (out != null)
+            out.close();
+        if (indexChecksumOut != null)
+            indexChecksumOut.close();
+        if (indexOut != null)
+            indexOut.close();
+    }
+}

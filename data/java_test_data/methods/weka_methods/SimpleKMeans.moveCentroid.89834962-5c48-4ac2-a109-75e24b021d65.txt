@@ -1,0 +1,84 @@
+protected double[] moveCentroid(int centroidIndex, Instances members, boolean updateClusterInfo, boolean addToCentroidInstances) {
+    double[] vals = new double[members.numAttributes()];
+    double[][] nominalDists = new double[members.numAttributes()][];
+    double[] weightMissing = new double[members.numAttributes()];
+    double[] weightNonMissing = new double[members.numAttributes()];
+    // Quickly calculate some relevant statistics
+    for (int j = 0; j < members.numAttributes(); j++) {
+        if (members.attribute(j).isNominal()) {
+            nominalDists[j] = new double[members.attribute(j).numValues()];
+        }
+    }
+    for (Instance inst : members) {
+        for (int j = 0; j < members.numAttributes(); j++) {
+            if (inst.isMissing(j)) {
+                weightMissing[j] += inst.weight();
+            } else {
+                weightNonMissing[j] += inst.weight();
+                if (members.attribute(j).isNumeric()) {
+                    // Will be overwritten in Manhattan case
+                    vals[j] += inst.weight() * inst.value(j);
+                } else {
+                    nominalDists[j][(int) inst.value(j)] += inst.weight();
+                }
+            }
+        }
+    }
+    for (int j = 0; j < members.numAttributes(); j++) {
+        if (members.attribute(j).isNumeric()) {
+            if (weightNonMissing[j] > 0) {
+                vals[j] /= weightNonMissing[j];
+            } else {
+                vals[j] = Utils.missingValue();
+            }
+        } else {
+            double max = -Double.MAX_VALUE;
+            double maxIndex = -1;
+            for (int i = 0; i < nominalDists[j].length; i++) {
+                if (nominalDists[j][i] > max) {
+                    max = nominalDists[j][i];
+                    maxIndex = i;
+                }
+                if (max < weightMissing[j]) {
+                    vals[j] = Utils.missingValue();
+                } else {
+                    vals[j] = maxIndex;
+                }
+            }
+        }
+    }
+    if (m_DistanceFunction instanceof ManhattanDistance) {
+        // Need to replace means by medians
+        Instances sortedMembers = null;
+        int middle = (members.numInstances() - 1) / 2;
+        boolean dataIsEven = ((members.numInstances() % 2) == 0);
+        if (m_PreserveOrder) {
+            sortedMembers = members;
+        } else {
+            sortedMembers = new Instances(members);
+        }
+        for (int j = 0; j < members.numAttributes(); j++) {
+            if ((weightNonMissing[j] > 0) && members.attribute(j).isNumeric()) {
+                // singleton special case
+                if (members.numInstances() == 1) {
+                    vals[j] = members.instance(0).value(j);
+                } else {
+                    vals[j] = sortedMembers.kthSmallestValue(j, middle + 1);
+                    if (dataIsEven) {
+                        vals[j] = (vals[j] + sortedMembers.kthSmallestValue(j, middle + 2)) / 2;
+                    }
+                }
+            }
+        }
+    }
+    if (updateClusterInfo) {
+        for (int j = 0; j < members.numAttributes(); j++) {
+            m_ClusterMissingCounts[centroidIndex][j] = weightMissing[j];
+            m_ClusterNominalCounts[centroidIndex][j] = nominalDists[j];
+        }
+    }
+    if (addToCentroidInstances) {
+        m_ClusterCentroids.add(new DenseInstance(1.0, vals));
+    }
+    return vals;
+}

@@ -1,0 +1,51 @@
+public String launchFailMapAndDebug(JobConf conf, Path inDir, Path outDir, Path debugDir, String debugScript, String input) throws IOException {
+    // set up the input file system and write input text.
+    FileSystem inFs = inDir.getFileSystem(conf);
+    FileSystem outFs = outDir.getFileSystem(conf);
+    outFs.delete(outDir, true);
+    if (!inFs.mkdirs(inDir)) {
+        throw new IOException("Mkdirs failed to create " + inDir.toString());
+    }
+    {
+        // write input into input file
+        DataOutputStream file = inFs.create(new Path(inDir, "part-0"));
+        file.writeBytes(input);
+        file.close();
+    }
+    // configure the mapred Job for failing map task.
+    conf.setJobName("failmap");
+    conf.setMapperClass(MapClass.class);
+    conf.setReducerClass(IdentityReducer.class);
+    conf.setNumMapTasks(1);
+    conf.setNumReduceTasks(0);
+    conf.setMapDebugScript(debugScript);
+    FileInputFormat.setInputPaths(conf, inDir);
+    FileOutputFormat.setOutputPath(conf, outDir);
+    String TEST_ROOT_DIR = new Path(System.getProperty("test.build.data", "/tmp")).toString().replace(' ', '+');
+    conf.set("test.build.data", TEST_ROOT_DIR);
+    // copy debug script to cache from local file system.
+    FileSystem debugFs = debugDir.getFileSystem(conf);
+    Path scriptPath = new Path(debugDir, "testscript.txt");
+    Path cachePath = new Path("/cacheDir");
+    if (!debugFs.mkdirs(cachePath)) {
+        throw new IOException("Mkdirs failed to create " + cachePath.toString());
+    }
+    debugFs.copyFromLocalFile(scriptPath, cachePath);
+    URI uri = debugFs.getUri().resolve(cachePath + "/testscript.txt#testscript");
+    DistributedCache.createSymlink(conf);
+    DistributedCache.addCacheFile(uri, conf);
+    RunningJob job = null;
+    // run the job. It will fail with IOException.
+    try {
+        job = new JobClient(conf).submitJob(conf);
+    } catch (IOException e) {
+        LOG.info("Running Job failed", e);
+    }
+    JobID jobId = job.getID();
+    // construct the task id of first map task of failmap
+    TaskAttemptID taskId = new TaskAttemptID(new TaskID(jobId, true, 0), 0);
+    // wait for the job to finish.
+    while (!job.isComplete()) ;
+    // return the output of debugout log.
+    return readTaskLog(TaskLog.LogName.DEBUGOUT, taskId);
+}

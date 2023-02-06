@@ -1,0 +1,58 @@
+private void updateFairShares() {
+    // Clear old fairShares
+    for (JobInfo info : infos.values()) {
+        info.mapFairShare = 0;
+        info.reduceFairShare = 0;
+    }
+    // guarantee and we've split the excess capacity fairly among jobs left.
+    for (TaskType type : TaskType.values()) {
+        // Select only jobs that still need this type of task
+        HashSet<JobInfo> jobsLeft = new HashSet<JobInfo>();
+        for (Entry<JobInProgress, JobInfo> entry : infos.entrySet()) {
+            JobInProgress job = entry.getKey();
+            JobInfo info = entry.getValue();
+            if (isRunnable(job) && runnableTasks(job, type) > 0) {
+                jobsLeft.add(info);
+            }
+        }
+        double slotsLeft = getTotalSlots(type);
+        while (!jobsLeft.isEmpty()) {
+            double totalWeight = 0;
+            for (JobInfo info : jobsLeft) {
+                double weight = (type == TaskType.MAP ? info.mapWeight : info.reduceWeight);
+                totalWeight += weight;
+            }
+            boolean recomputeSlots = false;
+            // Copy slotsLeft so we can modify it
+            double oldSlots = slotsLeft;
+            for (Iterator<JobInfo> iter = jobsLeft.iterator(); iter.hasNext(); ) {
+                JobInfo info = iter.next();
+                double minSlots = (type == TaskType.MAP ? info.minMaps : info.minReduces);
+                double weight = (type == TaskType.MAP ? info.mapWeight : info.reduceWeight);
+                double fairShare = weight / totalWeight * oldSlots;
+                if (minSlots > fairShare) {
+                    // remember that we must loop again to redistribute unassigned slots
+                    if (type == TaskType.MAP)
+                        info.mapFairShare = minSlots;
+                    else
+                        info.reduceFairShare = minSlots;
+                    slotsLeft -= minSlots;
+                    iter.remove();
+                    recomputeSlots = true;
+                }
+            }
+            if (!recomputeSlots) {
+                // All minimums are met. Give each job its fair share of excess slots.
+                for (JobInfo info : jobsLeft) {
+                    double weight = (type == TaskType.MAP ? info.mapWeight : info.reduceWeight);
+                    double fairShare = weight / totalWeight * oldSlots;
+                    if (type == TaskType.MAP)
+                        info.mapFairShare = fairShare;
+                    else
+                        info.reduceFairShare = fairShare;
+                }
+                break;
+            }
+        }
+    }
+}

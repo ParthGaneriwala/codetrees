@@ -1,0 +1,185 @@
+public void actualizarLiberado() {
+    try {
+        Empresa empresa = this.obtenerConfiguracionEmpresa(codEmpresa);
+        if (empresa != null) {
+            List<LiberacionXDia> liberacionesDia = new ArrayList<LiberacionXDia>();
+            logger.info("Obteniendo los cobros");
+            String periodoCompleto = this.obtenerCicloActivo(empresa.getId());
+            String periodo = Util.obtenerMesAnoCobro(periodoCompleto);
+            List<Cobro__c> cobros = obtenerCobrosLiberados(empresa.getId(), periodo);
+            logger.info("Total de cobros: " + cobros.size());
+            if (cobros.size() > 0) {
+                Map<Integer, Map<Integer, List<Liberado__c>>> liberados = this.obtenerTablaLiberado(liberacionesDia);
+                int index = 1;
+                Map<String, Integer> mapaNumPrestamos = new HashMap<String, Integer>();
+                // Crea un mapa con los numeros de prestamos de los cobros para buscar las cuotas correspondientes
+                for (Cobro__c cobro : cobros) {
+                    if (!Double.isNaN(cobro.getN_mero_del_pr_stamo__c())) {
+                        String numeroPrestamoStr = String.valueOf((new Double(cobro.getN_mero_del_pr_stamo__c())).longValue()) + ".0";
+                        mapaNumPrestamos.put(numeroPrestamoStr, 0);
+                    }
+                }
+                // Trae las coutas de los cobros
+                List<CuotasPR__c> cuotas = this.obtenerCuotasXNumPrestamo(mapaNumPrestamos);
+                // Calcula los montos para contenci�n y liberaci�n
+                for (Iterator<Cobro__c> iterCobro = cobros.iterator(); iterCobro.hasNext(); ) {
+                    Cobro__c cobro = iterCobro.next();
+                    boolean esPrestamoVencido = cobro.getFecha_Vencimiento_Cuota_Inicio_Mes__c() == null ? true : false;
+                    if (!Double.isNaN(cobro.getN_mero_del_pr_stamo__c())) {
+                        List<CuotasPR__c> cuotasCobro = new ArrayList<CuotasPR__c>();
+                        for (Iterator<CuotasPR__c> iterCuotas = cuotas.iterator(); iterCuotas.hasNext(); ) {
+                            CuotasPR__c cuota = iterCuotas.next();
+                            if (cuota.getNumero_de_Prestamo__c() == cobro.getN_mero_del_pr_stamo__c()) {
+                                cuotasCobro.add(cuota);
+                                iterCuotas.remove();
+                            }
+                        }
+                        // El numero de cuotas se determina con la cantidad de cuotas creadas - pagadas del mes cuando se hace
+                        // el insert de cobro. De acuerdo a este valor se debe buscar la tabla de liberado.
+                        int numCuotasVencidas = 0;
+                        int numCuotasALaFecha = 0;
+                        if (!Double.isNaN(cobro.getNum_cuotas_mes__c())) {
+                            numCuotasVencidas = (int) cobro.getNum_cuotas_mes__c();
+                        }
+                        // Numero de cuotas pendientes del prestamo
+                        if (numCuotasVencidas > NUM_CUOTA_MAXIMA)
+                            numCuotasVencidas = NUM_CUOTA_MAXIMA;
+                        numCuotasALaFecha = numCuotasVencidas;
+                        double mPerdido = 0.0;
+                        double mRehabilitado = 0.0;
+                        double mContenido = 0.0;
+                        double mLiberado1 = 0.0;
+                        double mLiberado2 = 0.0;
+                        double mLiberado3 = 0.0;
+                        double mLiberado4 = 0.0;
+                        double mContenidoPrimeraCuota = 0.0;
+                        // Elimina una cuota cuando no es un prestamo vencido
+                        if (!esPrestamoVencido) {
+                            numCuotasVencidas--;
+                        } else {
+                            numCuotasVencidas = 0;
+                            if (cuotasCobro.size() > 0) {
+                                // Busca en la configuracion por dias de mora
+                                for (LiberacionXDia liberacionXDia : liberacionesDia) {
+                                    if (liberacionXDia.perteneceNivel((int) cuotasCobro.get(0).getPeriodicidad__c(), (int) cobro.getTC_Nivel_Mora_Consolidado__c())) {
+                                        // IDENTIDICA SI ES VENCIDO
+                                        // SI ES VENCIDO DEBE DEBE OBTENER EL CAMPO STATUS POR EL NUMERO DE DIAS
+                                        numCuotasVencidas = liberacionXDia.getNumCuotas();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (cuotasCobro.size() > 0) {
+                            // Ordenar las cuotas
+                            Collections.sort(cuotasCobro, new DiasMora());
+                            int numeroCuotaActual = 0;
+                            // Lo inicializa en otra numero de cuota para que marque los valores
+                            if (!esPrestamoVencido && numCuotasALaFecha > cuotasCobro.size()) {
+                                numeroCuotaActual = numCuotasALaFecha - cuotasCobro.size();
+                            }
+                            for (CuotasPR__c cuota : cuotasCobro) {
+                                int periodicidad = (int) cuota.getPeriodicidad__c();
+                                double montoCuota = cuota.getMonto_de_la_Couta__c();
+                                numeroCuotaActual++;
+                                if (numeroCuotaActual > NUM_CUOTA_MAXIMA) {
+                                    numeroCuotaActual = NUM_CUOTA_MAXIMA;
+                                }
+                                Liberado__c liberado = null;
+                                if (liberados.containsKey(periodicidad)) {
+                                    if (liberados.get(periodicidad).containsKey(numCuotasVencidas)) {
+                                        List<Liberado__c> liberadosTemp = liberados.get(periodicidad).get(numCuotasVencidas);
+                                        for (Liberado__c liberadoTemp : liberadosTemp) {
+                                            if (liberadoTemp.getNumero_de_Couta__c() == numeroCuotaActual) {
+                                                liberado = liberadoTemp;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                if (liberado != null) {
+                                    switch((int) liberado.getLiberacion__c()) {
+                                        case // Acumular Montos Categoria Perdido
+                                        PERDIDO:
+                                            mPerdido = mPerdido + montoCuota;
+                                            break;
+                                        case // Acumular Montos Categoria Contenido
+                                        CONTENIDO:
+                                            mContenido = mContenido + montoCuota;
+                                            if (mContenidoPrimeraCuota == 0) {
+                                                mContenidoPrimeraCuota = montoCuota;
+                                            }
+                                            break;
+                                        case // Acumular Montos Categoria Liberado a la 1
+                                        LIBERADO1:
+                                            mLiberado1 = mLiberado1 + montoCuota;
+                                            break;
+                                        case // Acumular Montos Categoria Liberado a la 2
+                                        LIBERADO2:
+                                            mLiberado2 = mLiberado2 + montoCuota;
+                                            break;
+                                        case // Acumular Montos Categoria Liberado a la 3
+                                        LIBERADO3:
+                                            mLiberado3 = mLiberado3 + montoCuota;
+                                            break;
+                                        case // Acumular Montos Categoria Liberado a la 4
+                                        LIBERADO4:
+                                            mLiberado4 = mLiberado4 + montoCuota;
+                                            break;
+                                        case // Acumular Montos Categoria Rehabilitado
+                                        REHABILITADO:
+                                            mRehabilitado = mRehabilitado + montoCuota;
+                                            break;
+                                        default:
+                                            break;
+                                    }
+                                } else {
+                                    // No liberado, suma todo y lo pone en rehabilitado
+                                    mRehabilitado = mRehabilitado + montoCuota;
+                                }
+                            }
+                            // Coloca los valores a los cobros de contenido y liberado
+                            cobro.setPara_Contenci_n__c(mContenidoPrimeraCuota);
+                            if (mLiberado1 > 0) {
+                                cobro.setPara_Liberaci_n_1__c(mLiberado1 + mLiberado2 + mLiberado3 + mLiberado4 + mContenido);
+                            } else {
+                                cobro.setPara_Liberaci_n_1__c(mLiberado1);
+                            }
+                            if (mLiberado2 > 0) {
+                                cobro.setPara_Liberaci_n_2__c(mLiberado2 + mLiberado3 + mLiberado4 + mContenido);
+                            } else {
+                                cobro.setPara_Liberaci_n_2__c(mLiberado2);
+                            }
+                            if (mLiberado3 > 0) {
+                                cobro.setPara_Liberaci_n_3__c(mLiberado3 + mLiberado4 + mContenido);
+                            } else {
+                                cobro.setPara_Liberaci_n_3__c(mLiberado3);
+                            }
+                            if (mLiberado4 > 0) {
+                                cobro.setPara_Liberaci_n_4__c(mLiberado4 + mContenido);
+                            } else {
+                                cobro.setPara_Liberaci_n_4__c(mLiberado4);
+                            }
+                            cobro.setPara_rehabilitaci_n__c(mRehabilitado + mLiberado4 + mLiberado3 + mLiberado2 + mLiberado1 + mContenido);
+                        } else {
+                            // Sin cuotas
+                            cobro.setPara_Contenci_n__c(0);
+                            cobro.setPara_Liberaci_n_1__c(0);
+                            cobro.setPara_Liberaci_n_2__c(0);
+                            cobro.setPara_Liberaci_n_3__c(0);
+                            cobro.setPara_Liberaci_n_4__c(0);
+                            cobro.setPara_rehabilitaci_n__c(0);
+                        }
+                    } else {
+                        // Sin numero de prestamo
+                        iterCobro.remove();
+                    }
+                }
+                actualizarCobrosLiberado(cobros);
+            }
+        // if (cobros.size()>0)
+        }
+    } catch (Exception e) {
+        logger.error(e);
+    }
+}

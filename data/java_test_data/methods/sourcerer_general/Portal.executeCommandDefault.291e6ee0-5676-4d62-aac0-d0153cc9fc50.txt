@@ -1,0 +1,74 @@
+public String executeCommandDefault(ActionContext context) {
+    setMaximized(context);
+    ApplicationPrefs prefs = getApplicationPrefs(context);
+    Connection db = null;
+    try {
+        db = getConnection(context);
+        // Make sure the requested URL is up-to-date
+        PortalBean bean = new PortalBean(context.getRequest());
+        if (WebPortalUtils.isVersion1Url(bean, context, db)) {
+            return "Redirect301";
+        }
+        if (WebPortalUtils.isUnexpectedHost(bean, context, prefs)) {
+            return "Redirect301";
+        }
+        if (WebPortalUtils.isChangingLanguage(context, prefs, bean)) {
+            return "Redirect301";
+        }
+        // Lookup the content from the dashboards file first...
+        if (bean.getPortalPath() != null) {
+            DashboardPage page = DashboardUtils.loadDashboardPage(DashboardTemplateList.TYPE_PORTAL, bean.getPortalPath() + "." + bean.getPortalExtension());
+            if (page != null) {
+                LOG.debug("Found portal template for rendering: " + page.getName());
+                // A dashboard has a page
+                context.getRequest().setAttribute("dashboardPage", page);
+                // Set shared objects
+                context.getRequest().setAttribute("portletView", context.getRequest().getParameter("view"));
+                context.getRequest().setAttribute("portletParams", context.getRequest().getParameter("params"));
+                context.getRequest().setAttribute("TEAM.KEY", context.getServletContext().getAttribute("TEAM.KEY"));
+                // Set shared project searcher
+                IIndexerSearch projectSearcher = null;
+                if ("true".equals(context.getServletContext().getAttribute(Constants.DIRECTORY_INDEX_INITIALIZED))) {
+                    // Search public projects only
+                    LOG.debug("Using directory index...");
+                    projectSearcher = SearchUtils.retrieveSearcher(Constants.INDEXER_DIRECTORY);
+                } else {
+                    // Use the full index because the directory hasn't loaded
+                    LOG.debug("Using full index...");
+                    projectSearcher = SearchUtils.retrieveSearcher(Constants.INDEXER_FULL);
+                }
+                String queryString = "(approved:1) " + "AND (closed:0) " + "AND (website:0) ";
+                context.getRequest().setAttribute("projectSearcher", projectSearcher);
+                context.getRequest().setAttribute("baseQueryString", queryString);
+                // Render the pages
+                boolean isAction = PortletManager.processPage(context, db, page);
+                if (isAction) {
+                    return ("-none-");
+                }
+                if ("text".equals(context.getRequest().getParameter("out"))) {
+                    context.getRequest().removeAttribute("PageLayout");
+                }
+                return "ShowPortalPageOK";
+            }
+        }
+        // Use case: a new style url is referenced (something.shtml)
+        if (bean.getPortalPath() != null) {
+            // Set the newsId and projectId (if it has one)
+            BlogPostList.configureIdsByPortalPath(db, bean);
+        }
+        if (WebPortalUtils.hasRedirect(context, bean)) {
+            return "Redirect301";
+        }
+        if (LOG.isDebugEnabled()) {
+            ClientType clientType = (ClientType) context.getSession().getAttribute("clientType");
+            LOG.debug("Client language: " + clientType.getLanguage());
+            LOG.trace(bean.toString());
+        }
+        return null;
+    } catch (Exception errorMessage) {
+        context.getRequest().setAttribute("Error", errorMessage);
+        return ("SystemError");
+    } finally {
+        this.freeConnection(context, db);
+    }
+}

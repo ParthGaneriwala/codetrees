@@ -1,0 +1,73 @@
+public boolean process(Request req, ResponseGroup rg) throws ItemPersistenceException, StaleDataException, InvalidOperationException {
+    if (!checkRequest(req)) {
+        throw new InvalidOperationException("Invalid vote_or_add_bin_relation operation.");
+    }
+    VoteAddBinRelationRequest r = (VoteAddBinRelationRequest) req;
+    Model m = DaoUtil.getModelDao().getById(r.getModelId(), false);
+    if (m == null) {
+        throw new InvalidOperationException("Invalid model ID: " + r.getModelId());
+    }
+    DefaultResponse rsp = new DefaultResponse(r);
+    BinRelation br = null;
+    if (r.getRelationId() != null && (br = (BinRelation) DaoUtil.getRelationDao().getById(r.getRelationId(), false)) != null) {
+        // voting
+        rsp.setExist(true);
+        br.setLastModifier(r.getRequesterId());
+        // Set the inferred votes
+        if (r.getYes().booleanValue() == true) {
+            rsp.setInferVotes(computeInferVotes(br));
+        }
+        // Handle the vote and possible removals.
+        if (br.vote(r.getYes(), r.getRequesterId()) == DataItem.REMOVAL_EXECUTED) {
+            DaoUtil.getRelationDao().delete(br);
+        } else {
+            br = (BinRelation) DaoUtil.getRelationDao().save(br);
+            rsp.setExecTime(DataItemUtil.formatDate(br.getLastModifyTime()));
+        }
+    } else {
+        // creating
+        BinRelationType myType = (BinRelationType) DaoUtil.getRelationTypeDao().getById(r.getTypeId(), false);
+        if (myType == null) {
+            throw new InvalidOperationException("Invalid relation type.");
+        }
+        rsp.setExist(false);
+        br = new BinRelation();
+        DataItemUtil.setNewDataItemByUserId(br, r.getRequesterId());
+        br.setType(myType);
+        br.setSourceId(r.getSourceId());
+        br.setTargetId(r.getTargetId());
+        // See if the same relation has already existed.
+        List sameRelations = DaoUtil.getRelationDao().getByExample(r.getModelId(), br);
+        if (sameRelations != null) {
+            br = (BinRelation) sameRelations.get(0);
+            rsp.setExist(true);
+        } else {
+            Element src = DaoUtil.getElementDao().getById(r.getSourceId(), false);
+            if (src == null) {
+                throw new InvalidOperationException("Invalid source ID: " + r.getSourceId());
+            }
+            Element target = DaoUtil.getElementDao().getById(r.getTargetId(), false);
+            if (target == null) {
+                throw new InvalidOperationException("Invalid target ID: " + r.getTargetId());
+            }
+            br.resetElements(src, target);
+            m.addRelation(br);
+            DaoUtil.getModelDao().save(m);
+        }
+        // Creation always leads to a YES vote.
+        br.vote(true, r.getRequesterId());
+        br.setLastModifier(r.getRequesterId());
+        br = (BinRelation) DaoUtil.getRelationDao().save(br);
+        rsp.setRelationId(br.getId());
+        // Set the inferred votes (because the "vote" always is "YES" here.)
+        rsp.setInferVotes(computeInferVotes(br));
+        rsp.setExecTime(DataItemUtil.formatDate(br.getLastModifyTime()));
+    }
+    // Add "back" and "broadcast" responses to the response group
+    rsp.setName(Resources.RSP_SUCCESS);
+    rg.setBack(rsp);
+    DefaultResponse rsp2 = (DefaultResponse) rsp.clone();
+    rsp2.setName(Resources.RSP_FORWARD);
+    rg.setBroadcast(rsp2);
+    return true;
+}

@@ -1,0 +1,75 @@
+public static void main(String[] args) throws DatabaseException, IOException, ClassNotFoundException {
+    // TODO Auto-generated method stub
+    OptionParser optParser = new OptionParser(Options.class);
+    final Options opts = (Options) optParser.parse(args, true);
+    LMDecodingOptions lmOpts = new LMDecodingOptions();
+    lmOpts.config = opts.config;
+    lmOpts.debug = opts.debug;
+    if (opts.jobs > 0)
+        lmOpts.jobs = opts.jobs;
+    if (opts.host != null)
+        lmOpts.host = opts.host;
+    if (opts.port > 0)
+        lmOpts.port = opts.port;
+    if (opts.forest != null)
+        lmOpts.forest = opts.forest;
+    if (opts.host != null && opts.port > 0)
+        lmOpts.storage = LMDecodingOptions.Storage.REMOTE;
+    if (opts.useJerboa)
+        lmOpts.storage = LMDecodingOptions.Storage.JERBOA;
+    if (opts.useBDB)
+        lmOpts.storage = LMDecodingOptions.Storage.BDB;
+    if (opts.useCompact)
+        lmOpts.storage = LMDecodingOptions.Storage.COMPACT;
+    LanguageModel.initDecoding(lmOpts);
+    Experiment experiment = Experiment.getInstance();
+    {
+        Map<FactorTuple, FactorTuple> factors = experiment.getTupleDescription().getAllOvertFactors();
+        allOvertFactors = new long[factors.size()];
+        byte mainFactorIdx = experiment.getTupleDescription().getMainFactorIndex();
+        int i = 0;
+        for (FactorTuple word : factors.keySet()) {
+            int value = word.getValue(mainFactorIdx);
+            if (Dictionary.isNull(value) || Dictionary.isStart(value))
+                continue;
+            allOvertFactors[i++] = word.getBits();
+        }
+        if (i < allOvertFactors.length) {
+            allOvertFactors = Arrays.copyOf(allOvertFactors, i);
+        }
+    }
+    forest = experiment.getForest(opts.forest);
+    ForestModel[] forests = experiment.getForestSequence(forest);
+    // require at least a bigram model
+    assert (forests.length > 1);
+    bigramForest = forests[Math.min(1, forests.length - 1)];
+    boContextMap = new WordListCache(2000, 5000);
+    /*
+		InputParser parser = new PlainInputParser(experiment.getTupleDescription());
+		long[] sentence = parser.parseSentence("no it was n't black friday");
+		forest.getDecoder().evaluateSentence(sentence);
+		*/
+    Runnable run = new Runnable() {
+
+        @Override
+        public void run() {
+            while (wordCount.intValue() < opts.words) {
+                ArrayList<FactorTuple> sentence = generateSentence(forest);
+                StringBuilder sb = new StringBuilder();
+                sb.append(sentence.get(0).toStringNoNull());
+                for (int i = 1; i < sentence.size(); ++i) {
+                    sb.append(' ');
+                    sb.append(sentence.get(i).toStringNoNull());
+                }
+                sb.append("\n");
+                System.out.print(sb.toString());
+                long tries = nrWordsTried.longValue();
+                long words = nrWords.longValue();
+                System.err.printf("%d words generated, %d tries per word\n", words, tries / words);
+            }
+        }
+    };
+    for (int i = 0; i < opts.jobs; ++i) {
+        new Thread(run).start();
+    }
+}

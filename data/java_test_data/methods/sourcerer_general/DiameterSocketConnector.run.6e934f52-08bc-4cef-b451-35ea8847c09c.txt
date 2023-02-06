@@ -1,0 +1,71 @@
+public void run() {
+    try {
+        Buffer fb = new ByteArrayBuffer(4);
+        while (isStarted() && !isClosed()) {
+            fb.clear();
+            int read = fill(fb);
+            if (read == -1)
+                throw new EofException();
+            int length = (fb.peek(1) & 0xff) << 16 | (fb.peek(2) & 0xff) << 8 | (fb.peek(3) & 0xff);
+            Buffer b = new ByteArrayBuffer(length);
+            int totalRead = 4;
+            b.put(fb);
+            while (totalRead < length) {
+                read = fill(b);
+                if (read == -1)
+                    throw new EofException();
+                totalRead += read;
+            }
+            DiameterMessage message = Codecs.__message.decode(b);
+            message.setConnection(this);
+            message.setNode(getNode());
+            if (getNode().isStatsOn())
+                _messagesReceived.incrementAndGet();
+            // TODO move the following code at a better place. Need to be done before _listener.messageReceived(message, this);
+            if (!message.isRequest()) {
+                int code;
+                int vendorId = Common.IETF_VENDOR_ID;
+                AVP<Integer> avp = message.getAVPs().get(Common.RESULT_CODE);
+                if (avp != null) {
+                    code = avp.getValue();
+                } else {
+                    AVPList expRc = message.get(Common.EXPERIMENTAL_RESULT);
+                    code = expRc.getValue(Common.EXPERIMENTAL_RESULT_CODE);
+                    vendorId = expRc.getValue(Common.VENDOR_ID);
+                }
+                ResultCode rc = Dictionary.getInstance().getResultCode(vendorId, code);
+                if (rc == null)
+                    rc = Factory.newResultCode(vendorId, code, "Unknown");
+                ((DiameterAnswer) message).setResultCode(rc);
+            }
+            if (_listener != null)
+                _listener.messageReceived(message, this);
+            getNode().receive(message);
+        }
+    } catch (EofException e) {
+        Log.debug(e);
+        try {
+            close();
+        } catch (IOException e2) {
+            Log.ignore(e2);
+        }
+    } catch (IOException e) {
+        // TODO
+        Log.debug(e);
+        try {
+            close();
+        } catch (IOException e2) {
+            Log.ignore(e2);
+        }
+    } catch (Throwable t) {
+        Log.warn("handle failed", t);
+        try {
+            close();
+        } catch (IOException e2) {
+            Log.ignore(e2);
+        }
+    } finally {
+        if (_peer != null)
+            _peer.peerDisc(this);
+    }
+}

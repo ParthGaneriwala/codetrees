@@ -1,0 +1,130 @@
+void XreadTableReference(QuerySpecification select) {
+    boolean natural = false;
+    RangeVariable range = readTableOrSubquery();
+    select.addRangeVariable(range);
+    while (true) {
+        int type = token.tokenType;
+        boolean left = false;
+        boolean right = false;
+        boolean end = false;
+        type = token.tokenType;
+        switch(token.tokenType) {
+            case Tokens.INNER:
+                read();
+                readThis(Tokens.JOIN);
+                break;
+            case Tokens.CROSS:
+                if (natural) {
+                    throw unexpectedToken();
+                }
+                read();
+                readThis(Tokens.JOIN);
+                break;
+            case Tokens.UNION:
+                if (natural) {
+                    throw unexpectedToken();
+                }
+                int position = getPosition();
+                read();
+                if (token.tokenType == Tokens.JOIN) {
+                    read();
+                    break;
+                } else {
+                    rewind(position);
+                    end = true;
+                    break;
+                }
+            case Tokens.NATURAL:
+                if (natural) {
+                    throw unexpectedToken();
+                }
+                read();
+                natural = true;
+                continue;
+            case Tokens.LEFT:
+                read();
+                readIfThis(Tokens.OUTER);
+                readThis(Tokens.JOIN);
+                left = true;
+                break;
+            case Tokens.RIGHT:
+                read();
+                readIfThis(Tokens.OUTER);
+                readThis(Tokens.JOIN);
+                right = true;
+                break;
+            case Tokens.FULL:
+                read();
+                readIfThis(Tokens.OUTER);
+                readThis(Tokens.JOIN);
+                left = true;
+                right = true;
+                break;
+            case Tokens.JOIN:
+                read();
+                type = Tokens.INNER;
+                break;
+            case Tokens.COMMA:
+                if (natural) {
+                    throw unexpectedToken();
+                }
+                read();
+                type = Tokens.COMMA;
+                break;
+            default:
+                if (natural) {
+                    throw unexpectedToken();
+                }
+                end = true;
+                break;
+        }
+        if (end) {
+            break;
+        }
+        range = readTableOrSubquery();
+        Expression condition = null;
+        switch(type) {
+            case Tokens.COMMA:
+                range.isBoundary = true;
+                select.addRangeVariable(range);
+                break;
+            case Tokens.CROSS:
+                select.addRangeVariable(range);
+                break;
+            case Tokens.UNION:
+                select.addRangeVariable(range);
+                condition = Expression.EXPR_FALSE;
+                range.setJoinType(true, true);
+                break;
+            case Tokens.LEFT:
+            case Tokens.RIGHT:
+            case Tokens.INNER:
+            case Tokens.FULL:
+                {
+                    if (natural) {
+                        OrderedHashSet columns = range.getUniqueColumnNameSet();
+                        condition = select.getEquiJoinExpressions(columns, range, false);
+                        select.addRangeVariable(range);
+                    } else if (token.tokenType == Tokens.USING) {
+                        read();
+                        OrderedHashSet columns = new OrderedHashSet();
+                        readThis(Tokens.OPENBRACKET);
+                        readSimpleColumnNames(columns, range);
+                        readThis(Tokens.CLOSEBRACKET);
+                        condition = select.getEquiJoinExpressions(columns, range, true);
+                        select.addRangeVariable(range);
+                    } else if (token.tokenType == Tokens.ON) {
+                        read();
+                        condition = XreadBooleanValueExpression();
+                        select.addRangeVariable(range);
+                    } else {
+                        throw unexpectedToken();
+                    }
+                    range.setJoinType(left, right);
+                    break;
+                }
+        }
+        range.addJoinCondition(condition);
+        natural = false;
+    }
+}

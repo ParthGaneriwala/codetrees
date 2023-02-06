@@ -1,0 +1,138 @@
+public void doFilter(ServletRequest servletRequest, ServletResponse servletResponse, FilterChain filterChain) throws IOException, ServletException {
+    HttpServletRequest request = (HttpServletRequest) servletRequest;
+    HttpServletResponse response = (HttpServletResponse) servletResponse;
+    boolean forward = true;
+    boolean handled = true;
+    String command = getCommand(request);
+    if (!isJmxEnabled()) {
+        response.sendError(503, "JMX is not enabled, unable to use cipango console. Please start Cipango with:\n" + "\tjava -jar start.jar --ini=start-cipango.ini --pre=etc/cipango-jmx.xml");
+        return;
+    }
+    Principal principal = request.getUserPrincipal();
+    if (principal != null && !principal.equals(request.getSession().getAttribute(Principal.class.getName()))) {
+        _logger.info("User " + principal.getName() + " has logged in console");
+        request.getSession().setAttribute(Principal.class.getName(), principal);
+    }
+    String path = ("".equals(request.getContextPath()) ? "/" : request.getContextPath()) + getFilterPath();
+    if (path.endsWith("/"))
+        path = path.substring(0, path.length() - 1);
+    Menu menuPrinter = getMenuFactory().getMenu(command, path);
+    try {
+        if (command == null || command.equals("")) {
+            forward = false;
+            response.sendRedirect(MenuPrinter.ABOUT.getName());
+            return;
+        }
+        Page currentPage = menuPrinter.getCurrentPage();
+        if (currentPage != null && !currentPage.isEnabled(_mbsc)) {
+            forward = false;
+            request.getSession().setAttribute(Attributes.WARN, "The page " + command + " is not available");
+            response.sendRedirect(MenuPrinter.ABOUT.getName());
+            return;
+        }
+        if (currentPage != null) {
+            registerActions();
+            Action action = getAction(currentPage, request);
+            if (action != null) {
+                action.process(request);
+                forward = false;
+                if (action.isAjax(request)) {
+                    action.setAjaxContent(request, response);
+                    return;
+                } else
+                    response.sendRedirect(command);
+            }
+        }
+        if (request.getAttribute(Attributes.CONTENT) != null)
+            // Content already generated, just need to forward the request
+            return;
+        else if (command.equals(MenuPrinter.CONFIG_SIP.getName()))
+            doSipConfig(request);
+        else if (command.equals(MenuPrinter.MAPPINGS.getName())) {
+            request.setAttribute(Attributes.JAVASCRIPT_SRC, "javascript/upload.js");
+            request.setAttribute(Attributes.CONTENT, new ApplicationPrinter(_mbsc));
+        } else if (command.equals(MenuPrinter.STATISTICS_SIP.getName()))
+            request.setAttribute(Attributes.CONTENT, new SipStatisticPrinter(_mbsc, _statisticGraph, (Integer) request.getSession().getAttribute(Parameters.TIME)));
+        else if (command.equals(MenuPrinter.ABOUT.getName()))
+            doAbout(request);
+        else if (command.equals(MenuPrinter.SYSTEM_PROPERTIES.getName()))
+            request.setAttribute(Attributes.CONTENT, new SystemPropertiesPrinter());
+        else if (command.equals(MenuPrinter.CONFIG_DIAMETER.getName()))
+            doDiameterConfig(request);
+        else if (command.equals(MenuPrinter.STATISTICS_DIAMETER.getName()))
+            request.setAttribute(Attributes.CONTENT, new DiameterStatisticsPrinter(_mbsc));
+        else if (command.equals(MenuPrinter.CONFIG_HTTP.getName()))
+            doHttpConfig(request);
+        else if (command.equals(MenuPrinter.STATISTICS_HTTP.getName()))
+            request.setAttribute(Attributes.CONTENT, new HttpStatisticsPrinter(_mbsc));
+        else if (command.equals(MenuPrinter.HTTP_LOGS.getName()))
+            request.setAttribute(Attributes.CONTENT, new FileLogPrinter(_mbsc, MenuPrinter.HTTP_LOGS, HTTP_LOG, false));
+        else if (command.equals(MenuPrinter.DAR.getName()))
+            request.setAttribute(Attributes.CONTENT, new DarPrinter(_mbsc));
+        else if (command.equals("statisticGraph.png")) {
+            forward = false;
+            doGraph(request, response);
+        } else if (command.equals(MenuPrinter.SIP_LOGS.getName())) {
+            request.setAttribute(Attributes.JAVASCRIPT_SRC, "javascript/jquery-1.6.1.js,javascript/webSocket.js");
+            request.setAttribute(Attributes.CONTENT, new SipLogPrinter(_mbsc, request, Output.HTML));
+        } else if (command.equals(MenuPrinter.DIAMETER_LOGS.getName()))
+            request.setAttribute(Attributes.CONTENT, new DiameterLogPrinter(_mbsc, request, Output.HTML));
+        else if (command.equals(MenuPrinter.CONFIG_SNMP.getName())) {
+            MultiplePrinter printer = new MultiplePrinter();
+            ObjectName[] connectors = (ObjectName[]) _mbsc.getAttribute(SNMP_AGENT, "connectors");
+            printer.add(new SetPrinter(connectors, "snmp.connectors", _mbsc));
+            ObjectName[] traps = (ObjectName[]) _mbsc.getAttribute(SNMP_AGENT, "trapReceivers");
+            printer.add(new SetPrinter(traps, "snmp.trap", _mbsc));
+            request.setAttribute(Attributes.CONTENT, printer);
+        } else if (command.equals(MenuPrinter.CALLS.getName()))
+            request.setAttribute(Attributes.CONTENT, new CallsPrinter(_mbsc, request.getParameter("callID")));
+        else if (command.equals("message.log")) {
+            forward = false;
+            response.setContentType("text/plain");
+            PrintWriter out = response.getWriter();
+            new SipLogPrinter(_mbsc, request, Output.TEXT).print(out);
+        } else if (command.equals("diameter.log")) {
+            forward = false;
+            response.setContentType("text/plain");
+            PrintWriter out = response.getWriter();
+            new DiameterLogPrinter(_mbsc, request, Output.TEXT).print(out);
+        } else if (command.equals("message.svg")) {
+            forward = false;
+            doMessageSvg(request, response);
+        } else if (command.equals("dump.txt")) {
+            forward = false;
+            response.setContentType("text/plain");
+            response.setBufferSize(65536);
+            new DumpPrinter(getMbsc(), this).print(response.getWriter());
+        } else if (doResource(command, response)) {
+            forward = false;
+        } else if (currentPage != null && currentPage.isDynamic()) {
+            request.setAttribute(Attributes.CONTENT, new OamPrinter(_mbsc, request, currentPage.getObjectName()));
+        } else {
+            ObjectName objectName = new ObjectName("org.cipango.console", "page", command);
+            if (_mbsc.isRegistered(objectName))
+                request.setAttribute(Attributes.CONTENT, new OamPrinter(_mbsc, request, objectName));
+            else {
+                handled = false;
+                forward = false;
+            }
+        }
+    } catch (Throwable e) {
+        _logger.warn("Unable to process request: {}", request.getRequestURL().toString(), e);
+        _logger.debug("Unable to process request: " + request.getRequestURL().toString(), e);
+        HtmlPrinter printer = new ErrorPrinter(e.toString());
+        response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+        request.setAttribute(Attributes.CONTENT, printer);
+    } finally {
+        if (!handled)
+            filterChain.doFilter(request, response);
+        else if (forward) {
+            request.setAttribute(Attributes.MENU, menuPrinter);
+            response.setContentType("text/html");
+            response.setHeader("Cache-Control", "no-cache");
+            response.setHeader("Pragma", "no-cache");
+            response.setDateHeader("Expires", 0);
+            request.getRequestDispatcher("/WEB-INF/template.jsp").forward(request, response);
+        }
+    }
+}

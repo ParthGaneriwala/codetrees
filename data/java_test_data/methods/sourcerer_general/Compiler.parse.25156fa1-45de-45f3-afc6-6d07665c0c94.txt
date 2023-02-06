@@ -1,0 +1,64 @@
+static Expr parse(C context, ISeq form, String name) throws Exception {
+    FnExpr fn = new FnExpr(tagOf(form));
+    FnMethod enclosingMethod = (FnMethod) METHOD.deref();
+    if (((IMeta) form.first()).meta() != null) {
+        fn.onceOnly = RT.booleanCast(RT.get(RT.meta(form.first()), Keyword.intern(null, "once")));
+        fn.superName = (String) RT.get(RT.meta(form.first()), Keyword.intern(null, "super-name"));
+    }
+    // fn.thisName = name;
+    String basename = enclosingMethod != null ? (enclosingMethod.fn.name + "$") : // "clojure.fns." +
+    (munge(currentNS().name.name) + "$");
+    if (RT.second(form) instanceof Symbol)
+        name = ((Symbol) RT.second(form)).name;
+    fn.simpleName = ((name != null ? munge(name).replace(".", "_DOT_") : "fn") + "__" + RT.nextID());
+    fn.name = basename + fn.simpleName;
+    fn.internalName = fn.name.replace('.', '/');
+    fn.fntype = Type.getObjectType(fn.internalName);
+    try {
+        Var.pushThreadBindings(RT.map(CONSTANTS, PersistentVector.EMPTY, KEYWORDS, PersistentHashMap.EMPTY, VARS, PersistentHashMap.EMPTY));
+        // arglist might be preceded by symbol naming this fn
+        if (RT.second(form) instanceof Symbol) {
+            fn.thisName = ((Symbol) RT.second(form)).name;
+            form = RT.cons(FN, RT.next(RT.next(form)));
+        }
+        // turn former into latter
+        if (RT.second(form) instanceof IPersistentVector)
+            form = RT.list(FN, RT.next(form));
+        fn.line = (Integer) LINE.deref();
+        FnMethod[] methodArray = new FnMethod[MAX_POSITIONAL_ARITY + 1];
+        FnMethod variadicMethod = null;
+        for (ISeq s = RT.next(form); s != null; s = RT.next(s)) {
+            FnMethod f = FnMethod.parse(fn, (ISeq) RT.first(s));
+            if (f.isVariadic()) {
+                if (variadicMethod == null)
+                    variadicMethod = f;
+                else
+                    throw new Exception("Can't have more than 1 variadic overload");
+            } else if (methodArray[f.reqParms.count()] == null)
+                methodArray[f.reqParms.count()] = f;
+            else
+                throw new Exception("Can't have 2 overloads with same arity");
+        }
+        if (variadicMethod != null) {
+            for (int i = variadicMethod.reqParms.count() + 1; i <= MAX_POSITIONAL_ARITY; i++) if (methodArray[i] != null)
+                throw new Exception("Can't have fixed arity function with more params than variadic function");
+        }
+        IPersistentCollection methods = null;
+        for (int i = 0; i < methodArray.length; i++) if (methodArray[i] != null)
+            methods = RT.conj(methods, methodArray[i]);
+        if (variadicMethod != null)
+            methods = RT.conj(methods, variadicMethod);
+        fn.methods = methods;
+        fn.variadicMethod = variadicMethod;
+        fn.keywords = (IPersistentMap) KEYWORDS.deref();
+        fn.vars = (IPersistentMap) VARS.deref();
+        fn.constants = (PersistentVector) CONSTANTS.deref();
+        fn.constantsID = RT.nextID();
+    // DynamicClassLoader loader = (DynamicClassLoader) LOADER.get();
+    // loader.registerConstants(fn.constantsID, fn.constants.toArray());
+    } finally {
+        Var.popThreadBindings();
+    }
+    fn.compile();
+    return fn;
+}

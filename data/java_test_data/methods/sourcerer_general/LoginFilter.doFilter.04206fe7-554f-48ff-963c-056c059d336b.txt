@@ -1,0 +1,93 @@
+@Override
+public void doFilter(ServletRequest servletRequest, ServletResponse servletResponse, FilterChain chain) throws IOException, ServletException {
+    if (constantUtils == null) {
+        constantUtils = (ConstantUtils) SpringUtil.getBean("constantUtils");
+    }
+    if (md5PasswordEncoder == null) {
+        md5PasswordEncoder = (Md5PasswordEncoder) SpringUtil.getBean("md5PasswordEncoder");
+    }
+    if (userService == null) {
+        userService = (UserService) SpringUtil.getBean("userService");
+    }
+    HttpServletRequest request = (HttpServletRequest) servletRequest;
+    HttpServletResponse response = (HttpServletResponse) servletResponse;
+    String authcode = request.getParameter("authcode");
+    String sessionKey = request.getParameter("top_session");
+    String top_parameters = request.getParameter("top_parameters");
+    String nick = null;
+    try {
+        if (top_parameters != null) {
+            nick = Util.GetNick(top_parameters);
+            WebUtils.cacheWebData(request, response, WebUtils.NICK, nick);
+        }
+    } catch (Exception ex) {
+    }
+    /**
+     * 如果传过来的参数有授权码，则用授权码去换取sessionKey
+     */
+    if (authcode != null) {
+        String url = ConstantUtils.CONTAINER_URL + "?authcode=" + authcode;
+        response.sendRedirect(url);
+        return;
+    }
+    boolean loginPage = false;
+    if (sessionKey != null && nick != null) {
+        loginPage = true;
+    }
+    try {
+        sessionKey = WebUtils.cacheWebData(request, response, WebUtils.SESSION_KEY, sessionKey);
+    } catch (Exception ex) {
+    }
+    if (loginPage) {
+        try {
+            UserHistory uh = WebUtils.getUserHistory(request);
+            uh.setUsername(nick);
+            uh.setAction("Login");
+            userService.addUserHistory(uh);
+            User user = userService.getUserByName(nick);
+            if (user == null) {
+                user = new User();
+                user.setUsername(nick);
+                user.setEnabled(true);
+                user.setPassword(md5PasswordEncoder.encodePassword(nick + "_" + ConstantUtils.TAOBAO_PWD, null));
+                user.setSyspwd(nick + "_" + ConstantUtils.TAOBAO_PWD);
+                user.setAccountType("TAOBAO");
+                user.setNonLocked(true);
+                user.setNick(nick);
+                userService.create(user);
+                userService.addTaobaoRole(nick);
+            }
+            // RequestDispatcher dispatcher = request.getRequestDispatcher("/j_spring_security_check");
+            // request.setAttribute("j_username", user.getUsername());
+            // request.setAttribute("j_password", user.getSyspwd());
+            // dispatcher.forward(request, response);
+            response.sendRedirect("/auto-login.jsp?j_username=" + user.getUsername() + "&j_password=" + user.getSyspwd());
+        } catch (Exception e) {
+            log.warning("Auto Login Error: " + e.getMessage());
+        }
+        // response.sendRedirect("/");
+        return;
+    }
+    /**
+     * if (sessionKey == null) {
+     * request.setAttribute("appKey", ConstantUtils.SIP_APPKEY);
+     * RequestDispatcher rd = request.getRequestDispatcher("login.jsp");
+     * rd.forward(request, response);
+     * return;
+     * }
+     */
+    try {
+        userService.addUserHistory(WebUtils.getUserHistory(request));
+    } catch (Exception e) {
+        log.warning("Add user history Error: " + e.getMessage());
+    }
+    try {
+        chain.doFilter(request, response);
+    } catch (Exception e) {
+        /**
+         * 你的错误处理，这边只是打印出来
+         */
+        log.warning("Do filter error : " + e.getMessage());
+        response.sendRedirect("/error");
+    }
+}

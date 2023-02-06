@@ -1,0 +1,195 @@
+public static void main(String[] args) {
+    Sorter sorter = new Sorter();
+    // build stop word hash map
+    BufferedReader reader = null;
+    BufferedWriter writer = null;
+    String stoplistFile = "D:\\temp\\stopwords.txt";
+    String topJFileOutput = "D:\\temp\\topjterms.txt";
+    HashMap<String, Integer> stopwordMap = new HashMap<String, Integer>();
+    int swcount = 0;
+    try {
+        reader = new BufferedReader(new InputStreamReader(new FileInputStream(stoplistFile)));
+        String line = new String();
+        while ((line = reader.readLine()) != null) {
+            line.trim();
+            if (line.length() < 1)
+                continue;
+            else {
+                if (stopwordMap.get(line) == null)
+                    stopwordMap.put(line, 1);
+                else {
+                    Integer tempInt = stopwordMap.get(line);
+                    stopwordMap.put(line, tempInt + 1);
+                }
+                swcount++;
+                System.out.println("No. " + swcount + ": " + line);
+            }
+        }
+        reader.close();
+    } catch (FileNotFoundException e1) {
+        e1.printStackTrace();
+    } catch (IOException e) {
+        e.printStackTrace();
+    }
+    // lucene parameter
+    String INDEX_DIR = "D:\\testluceneIndex";
+    Analyzer analyzer = new StandardAnalyzer();
+    URL fileurl = null;
+    // }
+    try {
+        File indexDir = new File(INDEX_DIR);
+        IndexWriter indexWriter = new IndexWriter(INDEX_DIR, analyzer, true);
+        File fileDir = new File("D:\\reviewFiles");
+        File[] files = fileDir.listFiles();
+        long startTime = new Date().getTime();
+        writer = new BufferedWriter(new FileWriter(topJFileOutput));
+        // For each document (each restaurant ID)
+        for (int n = 0; n < files.length; n++) {
+            fileurl = new URL("file:///" + files[n].getAbsolutePath());
+            Test test = new Test(fileurl);
+            test.doc.accept(test);
+            List<Map<String, String>> list = test.mylist;
+            System.out.println("*******" + list.size());
+            for (Map<String, String> map : list) {
+                for (Map.Entry<String, String> m : map.entrySet()) {
+                    System.out.println(m.getKey() + " -- " + m.getValue());
+                }
+            }
+            String restaurantID = new String();
+            // Pre-compute and store top-j high frequency terms
+            HashMap<String, Integer> termFreqMap = new HashMap<String, Integer>();
+            for (Map<String, String> map : list) {
+                for (Map.Entry<String, String> m : map.entrySet()) {
+                    org.apache.lucene.document.Document doc = new org.apache.lucene.document.Document();
+                    // System.out.println("key: "+m.getKey());
+                    // split to get rest_id, review_id, review type and review contents
+                    String[] temp = m.getKey().split("--");
+                    // split to get each term in review contents
+                    String[] reviewWords = m.getValue().split(" ");
+                    restaurantID = temp[0];
+                    for (int i = 0; i < reviewWords.length; i++) {
+                        // if this term contains symbols other than English letters, discard it.
+                        boolean isAllLetter = true;
+                        char[] tempchars = reviewWords[i].toLowerCase().toCharArray();
+                        for (int ii = 0; ii < tempchars.length; ii++) {
+                            if (tempchars[ii] < 'a' || tempchars[ii] > 'z') {
+                                isAllLetter = false;
+                                break;
+                            }
+                        }
+                        if (isAllLetter == false)
+                            continue;
+                        if (stopwordMap.get(reviewWords[i].toLowerCase()) != null)
+                            // stop word, skip it!
+                            continue;
+                        else {
+                            // non-stop word, count it!
+                            for (int ii = 0; ii < tempchars.length; ii++) {
+                                if (tempchars[ii] < 'a' || tempchars[ii] > 'z')
+                                    continue;
+                            }
+                            if (termFreqMap.get(reviewWords[i]) == null) {
+                                termFreqMap.put(reviewWords[i], 1);
+                            } else {
+                                int tempCount = termFreqMap.get(reviewWords[i]);
+                                termFreqMap.put(reviewWords[i], tempCount + 1);
+                            }
+                        }
+                        doc.add(new Field("reviewContent", reviewWords[i], Field.Store.YES, Field.Index.TOKENIZED, Field.TermVector.WITH_POSITIONS_OFFSETS));
+                        doc.add(new Field("reviewType", temp[2], Field.Store.YES, Field.Index.TOKENIZED, Field.TermVector.WITH_POSITIONS_OFFSETS));
+                        doc.add(new Field("restId", temp[0], Field.Store.YES, Field.Index.TOKENIZED, Field.TermVector.WITH_POSITIONS_OFFSETS));
+                        doc.add(new Field("reviewId", temp[1], Field.Store.YES, Field.Index.TOKENIZED, Field.TermVector.WITH_POSITIONS_OFFSETS));
+                    }
+                    indexWriter.addDocument(doc);
+                }
+            }
+            Iterator iter = termFreqMap.keySet().iterator();
+            int[] termFreqCounts = new int[termFreqMap.size() + 1];
+            int i = 0;
+            Object key = null;
+            while (iter.hasNext()) {
+                key = (String) iter.next();
+                termFreqCounts[i] = (Integer) termFreqMap.get(key);
+                i++;
+            }
+            // sort term frequencies
+            sorter.quickSort(termFreqCounts, 0, termFreqMap.size());
+            ArrayList<Integer> topFreqList = new ArrayList<Integer>();
+            topFreqList.clear();
+            ArrayList<String> topTermList = new ArrayList<String>();
+            topTermList.clear();
+            HashMap<Integer, ArrayList<String>> topJMap = new HashMap<Integer, ArrayList<String>>();
+            topJMap.clear();
+            // extract and record top-j terms for each document
+            int startingIndex = termFreqCounts.length - 1;
+            int endingIndex;
+            if (// extract top-20 terms for now
+            termFreqCounts.length >= 20)
+                endingIndex = startingIndex - 19;
+            else
+                endingIndex = 0;
+            int mycounter = 0;
+            for (int j = startingIndex; j >= endingIndex; j--) {
+                if (mycounter >= 20)
+                    break;
+                if (termFreqCounts[j] > 1) {
+                    System.out.println("TF No. " + j + ": " + termFreqCounts[j]);
+                    ArrayList<String> jTermList = new ArrayList<String>();
+                    jTermList.clear();
+                    // topFreqList.add(termFreqCounts[j]); // add to TF list, await for output to file
+                    Iterator tempIter = termFreqMap.keySet().iterator();
+                    Object tempKey = null;
+                    while (tempIter.hasNext()) {
+                        tempKey = tempIter.next();
+                        if (termFreqCounts[j] == (Integer) termFreqMap.get(tempKey)) {
+                            System.out.println("Term No. " + j + ": " + (String) tempKey);
+                            // add to term list, await for output to file
+                            jTermList.add((String) tempKey);
+                        }
+                    }
+                    mycounter = mycounter + jTermList.size();
+                    topJMap.put(termFreqCounts[j], jTermList);
+                }
+            }
+            StringBuffer sb = new StringBuffer();
+            sb.append(restaurantID + "--");
+            Iterator tempIter2 = topJMap.keySet().iterator();
+            Object tempKey2 = null;
+            while (tempIter2.hasNext()) {
+                tempKey2 = tempIter2.next();
+                Integer tempTF = (Integer) tempKey2;
+                ArrayList<String> tempList = topJMap.get(tempKey2);
+                for (int k = 0; k < tempList.size(); k++) {
+                    sb.append(tempList.get(k) + ":" + tempTF + ",");
+                }
+            }
+            // sb.append('\n');
+            writer.write(sb.toString() + '\n');
+            writer.flush();
+        /*
+				if (topFreqList.size() == topTermList.size()){
+					// write to file
+					StringBuffer sb = new StringBuffer();
+					sb.append(restaurantID+"--");
+					for (int index = 0; index < topFreqList.size(); index++){
+						sb.append(topTermList.get(index)+":"+topFreqList.get(index)+",");
+						writer.write(sb.toString());
+					}
+					sb.append('\n');
+				}
+				else{
+					System.out.println("Error: pairs do not match");
+				}*/
+        }
+        indexWriter.optimize();
+        indexWriter.close();
+        writer.flush();
+        writer.close();
+        long endTime = new Date().getTime();
+        System.out.println("Runtime is: " + (endTime - startTime));
+    } catch (DocumentException e) {
+        e.printStackTrace();
+    } catch (IOException e) {
+        e.printStackTrace();
+    }
+}

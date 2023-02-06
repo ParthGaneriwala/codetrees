@@ -1,0 +1,53 @@
+public void handleResponse(SipResponse response) {
+    if (response.getStatus() == 100)
+        return;
+    if (!isSameDialog(response)) {
+        Session derived = _appSession.getSession(response);
+        if (derived == null) {
+            derived = _appSession.createDerivedSession(Session.this);
+            if (_linkedSessionId != null) {
+                Session linkDerived = _appSession.createDerivedSession(getLinkedSession());
+                linkDerived.setLinkedSession(derived);
+                derived.setLinkedSession(linkDerived);
+            }
+        }
+        derived._ua.handleResponse(response);
+        return;
+    }
+    response.setSession(Session.this);
+    accessed();
+    if (response.isInvite() && response.is2xx()) {
+        long cseq = response.getCSeq().getNumber();
+        ClientInvite invite = getClientInvite(cseq, true);
+        if (invite._2xx != null || invite._ack != null) {
+            if (invite._ack != null) {
+                try {
+                    ClientTransaction tx = (ClientTransaction) invite._ack.getTransaction();
+                    getServer().getConnectorManager().send(invite._ack, tx.getConnection());
+                } catch (Exception e) {
+                    Log.ignore(e);
+                }
+            }
+            return;
+        } else {
+            invite._2xx = response;
+        }
+    } else if (response.isReliable1xx()) {
+        long rseq = response.getRSeq();
+        if (_remoteRSeq != -1 && (_remoteRSeq + 1 != rseq)) {
+            if (Log.isDebugEnabled())
+                Log.debug("Dropping 100rel with rseq {} since expecting {}", rseq, _remoteRSeq + 1);
+            return;
+        }
+        _remoteRSeq = rseq;
+        long cseq = response.getCSeq().getNumber();
+        ClientInvite invite = getClientInvite(cseq, true);
+        invite.addReliable1xx(response);
+    } else
+        response.setCommitted(true);
+    updateState(response, true);
+    if (response.getStatus() < 300 && (response.isInvite() || response.isSubscribe()))
+        setRemoteTarget(response);
+    if (isValid())
+        invokeServlet(response);
+}

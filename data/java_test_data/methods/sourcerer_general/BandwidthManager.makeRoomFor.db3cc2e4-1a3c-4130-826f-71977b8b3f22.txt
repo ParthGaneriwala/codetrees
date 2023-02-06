@@ -1,0 +1,80 @@
+private void makeRoomFor(final double bps) throws Exception {
+    double fairShare = totalBandwidthInBPS / (double) (transfers.size() + 1);
+    // assert less than fair  share
+    // A.ssert(bps <=  getNextTransferBandwidth());
+    ArrayList<Transfer> trespassingTransfers = new ArrayList<Transfer>();
+    sanityCheck();
+    // this will only be true if the fair share is larger than the available bandwidth
+    if (// if this is true, then there is trespassing transfers
+    bps > availableInBPS) {
+        final double amountToReclaim = bps - availableInBPS;
+        double actualReclaimed = 0;
+        double total = 0;
+        for (Transfer t : transfers) {
+            if (t.bandwidthInBPS > fairShare) {
+                trespassingTransfers.add(t);
+                total += t.bandwidthInBPS;
+            }
+        }
+        // sort them ascending by bandwidth
+        Collections.sort(trespassingTransfers, new Comparator<Transfer>() {
+
+            public int compare(Transfer o1, Transfer o2) {
+                return (int) (o1.bandwidthInBPS - o2.bandwidthInBPS);
+            }
+        });
+        double extra = 0;
+        for (Transfer t : trespassingTransfers) {
+            double deduction = amountToReclaim * t.bandwidthInBPS / total;
+            // to prevent future rounding errors, avoid fractions
+            deduction = Math.ceil(deduction);
+            if (t.bandwidthInBPS - deduction < fairShare) {
+                double oldDeduction = deduction;
+                deduction = t.bandwidthInBPS - fairShare;
+                extra += oldDeduction - deduction;
+            } else if (t.bandwidthInBPS - deduction > fairShare && extra > 0) {
+                // take from extra
+                double oldDeduction = deduction;
+                double newBW = t.bandwidthInBPS - deduction;
+                double diffFromFairShare = newBW - fairShare;
+                if (diffFromFairShare > extra) {
+                    double takeFromExtra = extra;
+                    deduction += takeFromExtra;
+                } else // diff <= extra
+                {
+                    double takeFromExtra = diffFromFairShare;
+                    deduction += takeFromExtra;
+                }
+                extra -= oldDeduction - deduction;
+            }
+            deduction = Math.ceil(deduction);
+            actualReclaimed += deduction;
+            BandwidthManager remoteBwm = t.getOtherBandwidthManagerThan(this);
+            A.ssert(remoteBwm != this);
+            if (deduction < BANDWIDTH_TOL)
+                continue;
+            double newBw = t.bandwidthInBPS - deduction;
+            t.setNextEpochBW(newBw);
+        }
+        HashSet<BandwidthManager> candidates = new HashSet<BandwidthManager>();
+        for (Transfer t : trespassingTransfers) {
+            if (t.getNextEpochBW() < 0)
+                continue;
+            double deducted = t.bandwidthInBPS - t.getNextEpochBW();
+            t.applyNextEpochBW();
+            BandwidthManager remoteBWM = t.getOtherBandwidthManagerThan(this);
+            remoteBWM.availableInBPS += deducted;
+            candidates.add(remoteBWM);
+        }
+        availableInBPS += actualReclaimed;
+        A.ssert(availableInBPS > bps || Math.abs(availableInBPS - bps) < BANDWIDTH_TOL);
+        // we are going to lie about our available bandwidth cuz we are reserving bps of them.
+        // availableInBPS -= bps;
+        double oldVal = availableInBPS;
+        availableInBPS = 0;
+        for (BandwidthManager bwm : candidates) bwm.boostLocalTransfers();
+        // availableInBPS += bps;
+        availableInBPS = oldVal;
+    }
+    A.ssert(availableInBPS > bps || Math.abs(availableInBPS - bps) < BANDWIDTH_TOL);
+}

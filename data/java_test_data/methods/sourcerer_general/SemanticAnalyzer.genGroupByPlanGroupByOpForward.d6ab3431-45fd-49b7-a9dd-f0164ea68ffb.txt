@@ -1,0 +1,52 @@
+@SuppressWarnings("nls")
+private OperatorInfo genGroupByPlanGroupByOpForward(QBParseInfo parseInfo, String dest, OperatorInfo forwardOpInfo, groupByDesc.Mode mode) throws SemanticException {
+    RowResolver inputRS = forwardOpInfo.getRowResolver();
+    RowResolver outputRS = new RowResolver();
+    outputRS.setIsExprResolver(true);
+    ArrayList<exprNodeDesc> groupByKeys = new ArrayList<exprNodeDesc>();
+    ArrayList<aggregationDesc> aggregations = new ArrayList<aggregationDesc>();
+    List<CommonTree> grpByExprs = getGroupByForClause(parseInfo, dest);
+    for (int i = 0; i < grpByExprs.size(); i++) {
+        CommonTree grpbyExpr = grpByExprs.get(i);
+        String text = grpbyExpr.toStringTree();
+        ColumnInfo exprInfo = inputRS.get("", text);
+        if (exprInfo == null) {
+            throw new SemanticException(ErrorMsg.INVALID_COLUMN.getMsg(grpbyExpr));
+        }
+        groupByKeys.add(new exprNodeColumnDesc(exprInfo.getType(), exprInfo.getInternalName()));
+        String field = (Integer.valueOf(i)).toString();
+        outputRS.put("", text, new ColumnInfo(field, exprInfo.getType(), exprInfo.getIsVirtual()));
+    }
+    // For each aggregation
+    HashMap<String, CommonTree> aggregationTrees = parseInfo.getAggregationExprsForClause(dest);
+    assert (aggregationTrees != null);
+    for (Map.Entry<String, CommonTree> entry : aggregationTrees.entrySet()) {
+        CommonTree value = entry.getValue();
+        String aggName = value.getChild(0).getText();
+        Class<? extends UDAF> aggClass = FunctionRegistry.getUDAF(aggName);
+        assert (aggClass != null);
+        ArrayList<exprNodeDesc> aggParameters = new ArrayList<exprNodeDesc>();
+        ArrayList<Class<?>> aggClasses = new ArrayList<Class<?>>();
+        // 0 is the function name
+        for (int i = 1; i < value.getChildCount(); i++) {
+            String text = value.getChild(i).toStringTree();
+            CommonTree paraExpr = (CommonTree) value.getChild(i);
+            ColumnInfo paraExprInfo = inputRS.get("", text);
+            if (paraExprInfo == null) {
+                throw new SemanticException(ErrorMsg.INVALID_COLUMN.getMsg(paraExpr));
+            }
+            String paraExpression = paraExprInfo.getInternalName();
+            assert (paraExpression != null);
+            aggParameters.add(new exprNodeColumnDesc(paraExprInfo.getType(), paraExprInfo.getInternalName()));
+            aggClasses.add(paraExprInfo.getType().getPrimitiveClass());
+        }
+        if (null == FunctionRegistry.getUDAFMethod(aggName, aggClasses)) {
+            String reason = "Looking for UDAF \"" + aggName + "\" with parameters " + aggClasses;
+            throw new SemanticException(ErrorMsg.INVALID_FUNCTION_SIGNATURE.getMsg((CommonTree) value.getChild(0), reason));
+        }
+        aggregations.add(new aggregationDesc(aggClass, aggParameters, value.getToken().getType() == HiveParser.TOK_FUNCTIONDI));
+        outputRS.put("", value.toStringTree(), new ColumnInfo(Integer.valueOf(groupByKeys.size() + aggregations.size() - 1).toString(), String.class, // Everything is a string right now
+        false));
+    }
+    return new OperatorInfo(OperatorFactory.getAndMakeChild(new groupByDesc(mode, groupByKeys, aggregations), new RowSchema(outputRS.getColumnInfos()), forwardOpInfo.getOp()), outputRS);
+}

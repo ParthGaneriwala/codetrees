@@ -1,0 +1,76 @@
+private static String toStringHelper(Context cx, Scriptable scope, Scriptable thisObj, boolean toSource, boolean toLocale) {
+    /* It's probably redundant to handle long lengths in this
+         * function; StringBuilders are limited to 2^31 in java.
+         */
+    long length = getLengthProperty(cx, thisObj);
+    StringBuilder result = new StringBuilder(256);
+    // whether to return '4,unquoted,5' or '[4, "quoted", 5]'
+    String separator;
+    if (toSource) {
+        result.append('[');
+        separator = ", ";
+    } else {
+        separator = ",";
+    }
+    boolean haslast = false;
+    long i = 0;
+    boolean toplevel, iterating;
+    if (cx.iterating == null) {
+        toplevel = true;
+        iterating = false;
+        cx.iterating = new ObjToIntMap(31);
+    } else {
+        toplevel = false;
+        iterating = cx.iterating.has(thisObj);
+    }
+    // so we don't leak memory
+    try {
+        if (!iterating) {
+            // stop recursion.
+            cx.iterating.put(thisObj, 0);
+            for (i = 0; i < length; i++) {
+                if (i > 0)
+                    result.append(separator);
+                Object elem = getElem(cx, thisObj, i);
+                if (elem == null || elem == Undefined.instance) {
+                    haslast = false;
+                    continue;
+                }
+                haslast = true;
+                if (toSource) {
+                    result.append(ScriptRuntime.uneval(cx, scope, elem));
+                } else if (elem instanceof String) {
+                    String s = (String) elem;
+                    if (toSource) {
+                        result.append('\"');
+                        result.append(ScriptRuntime.escapeString(s));
+                        result.append('\"');
+                    } else {
+                        result.append(s);
+                    }
+                } else {
+                    if (toLocale) {
+                        Callable fun;
+                        Scriptable funThis;
+                        fun = ScriptRuntime.getPropFunctionAndThis(elem, "toLocaleString", cx);
+                        funThis = ScriptRuntime.lastStoredScriptable(cx);
+                        elem = fun.call(cx, scope, funThis, ScriptRuntime.emptyArgs);
+                    }
+                    result.append(ScriptRuntime.toString(elem));
+                }
+            }
+        }
+    } finally {
+        if (toplevel) {
+            cx.iterating = null;
+        }
+    }
+    if (toSource) {
+        // for [,,].length behavior; we want toString to be symmetric.
+        if (!haslast && i > 0)
+            result.append(", ]");
+        else
+            result.append(']');
+    }
+    return result.toString();
+}

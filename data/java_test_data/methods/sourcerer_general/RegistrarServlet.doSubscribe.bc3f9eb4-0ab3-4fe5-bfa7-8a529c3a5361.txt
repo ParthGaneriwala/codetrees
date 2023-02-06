@@ -1,0 +1,78 @@
+@Override
+protected void doSubscribe(SipServletRequest subscribe) throws ServletException, IOException {
+    String event = subscribe.getHeader(Constants.EVENT);
+    if (event == null || !(event.equals(_regEventPackage.getName()))) {
+        SipServletResponse response = subscribe.createResponse(SipServletResponse.SC_BAD_EVENT);
+        response.addHeader(Constants.ALLOW_EVENTS, _regEventPackage.getName());
+        response.send();
+        response.getApplicationSession().invalidate();
+        return;
+    }
+    if (!checkAcceptHeader(subscribe))
+        return;
+    int expires = subscribe.getExpires();
+    if (expires != -1) {
+        if (expires != 0) {
+            if (expires < _regEventPackage.getMinExpires()) {
+                SipServletResponse response = subscribe.createResponse(SipServletResponse.SC_INTERVAL_TOO_BRIEF);
+                response.addHeader(Constants.MIN_EXPIRES, Integer.toString(_regEventPackage.getMinExpires()));
+                response.send();
+                response.getApplicationSession().invalidate();
+                return;
+            } else if (expires > _regEventPackage.getMaxExpires()) {
+                expires = _regEventPackage.getMaxExpires();
+            }
+        }
+    } else {
+        expires = _regEventPackage.getDefaultExpires();
+    }
+    SipSession session = subscribe.getSession();
+    String uri = null;
+    if (subscribe.isInitial()) {
+        uri = URIUtil.toCanonical(subscribe.getRequestURI());
+    } else {
+        uri = (String) session.getAttribute(Constants.SUBSCRIPTION_ATTRIBUTE);
+        if (uri == null) {
+            subscribe.createResponse(SipServletResponse.SC_CALL_LEG_DONE).send();
+            subscribe.getApplicationSession().invalidate();
+            return;
+        }
+    }
+    RegResource regResource = _regEventPackage.get(uri);
+    try {
+        Subscription subscription = null;
+        if (expires == 0) {
+            subscription = regResource.removeSubscription(session.getId());
+            if (subscription == null) {
+                subscription = new Subscription(regResource, session, -1);
+            } else {
+                subscription.setExpirationTime(System.currentTimeMillis());
+                if (_log.isDebugEnabled())
+                    _log.debug("removed reg subscription {} to registration resource {}", subscription.getSession().getId(), regResource.getUri());
+            }
+            subscription.setState(Subscription.State.TERMINATED, Reason.TIMEOUT);
+        } else {
+            long now = System.currentTimeMillis();
+            subscription = regResource.getSubscription(session.getId());
+            if (subscription == null) {
+                subscription = new Subscription(regResource, session, now + expires * 1000);
+                subscription.setState(State.ACTIVE, Reason.SUBSCRIBE);
+                regResource.addSubscription(subscription);
+                session.setAttribute(Constants.SUBSCRIPTION_ATTRIBUTE, uri);
+                if (_log.isDebugEnabled())
+                    _log.debug("added reg subscription {} to registration resource {}", subscription.getSession().getId(), regResource.getUri());
+            } else {
+                subscription.setExpirationTime(now + expires * 1000);
+                if (_log.isDebugEnabled())
+                    _log.debug("refreshed reg subscription {} to registration resource {}", subscription.getSession().getId(), regResource.getUri());
+            }
+        }
+        int code = (subscription.getState() != Subscription.State.PENDING) ? SipServletResponse.SC_OK : SipServletResponse.SC_ACCEPTED;
+        SipServletResponse response = subscribe.createResponse(code);
+        response.setExpires(expires);
+        response.send();
+        _regEventPackage.notify(subscription);
+    } finally {
+        _regEventPackage.put(regResource);
+    }
+}

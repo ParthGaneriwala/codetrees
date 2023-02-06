@@ -1,0 +1,56 @@
+public static Result getScript(Database database, boolean indexRoots) {
+    Iterator it;
+    Result r = Result.newSingleColumnResult("COMMAND", Types.VARCHAR);
+    r.metaData.tableNames[0] = "SYSTEM_SCRIPT";
+    // collation for database
+    if (database.collation.name != null) {
+        String name = StringConverter.toQuotedString(database.collation.name, '"', true);
+        addRow(r, "SET DATABASE COLLATION " + name);
+    }
+    // Role definitions
+    it = database.getGranteeManager().getRoleNames().iterator();
+    String role;
+    while (it.hasNext()) {
+        role = (String) it.next();
+        // ADMIN_ROLE_NAME is not persisted
+        if (!GranteeManager.DBA_ADMIN_ROLE_NAME.equals(role)) {
+            addRow(r, "CREATE ROLE " + role);
+        }
+    }
+    // aliases
+    HashMap h = database.getAliasMap();
+    HashMap builtin = Library.getAliasMap();
+    it = h.keySet().iterator();
+    while (it.hasNext()) {
+        String alias = (String) it.next();
+        String java = (String) h.get(alias);
+        String biJava = (String) builtin.get(alias);
+        if (biJava != null && biJava.equals(java)) {
+            continue;
+        }
+        StringBuffer buffer = new StringBuffer(64);
+        buffer.append(Token.T_CREATE).append(' ').append(Token.T_ALIAS).append(' ');
+        buffer.append(alias);
+        buffer.append(" FOR \"");
+        buffer.append(java);
+        buffer.append('"');
+        addRow(r, buffer.toString());
+    }
+    addSchemaStatements(database, r, indexRoots);
+    // rights for classes, tables and views
+    addRightsStatements(database, r);
+    if (database.logger.hasLog()) {
+        int delay = database.logger.getWriteDelay();
+        boolean millis = delay < 1000;
+        if (millis) {
+            if (delay != 0 && delay < 20) {
+                delay = 20;
+            }
+        } else {
+            delay /= 1000;
+        }
+        String statement = "SET WRITE_DELAY " + delay + (millis ? " MILLIS" : "");
+        addRow(r, statement);
+    }
+    return r;
+}

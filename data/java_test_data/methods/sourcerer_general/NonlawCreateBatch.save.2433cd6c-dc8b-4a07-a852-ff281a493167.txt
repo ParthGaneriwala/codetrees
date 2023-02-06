@@ -1,0 +1,130 @@
+public static List<TnlwNonlaw> save(File excel, String consigndate, long bankid, org.hibernate.Session session, List existCustomerList) throws IOException {
+    List<TnlwNonlaw> nonlawList = parseXls(excel);
+    List<TnlwNonlaw> reNonlaw = new ArrayList<TnlwNonlaw>();
+    HashMap<String, TnlwNonlaw> nonlawMap = NonlawUtil.nonlawMap();
+    NewCustomerUtil customerutil = new NewCustomerUtil();
+    TsysUser sysUser = (TsysUser) ActionContext.getContext().getSession().get("curuser");
+    for (TnlwNonlaw nonlaw : nonlawList) {
+        // nonlaw.setConsigndate(consigndate);
+        nonlaw.setBankid(bankid);
+        nonlaw.setCreatetime(new java.util.Date());
+        // 总还0
+        nonlaw.setRefee("0");
+        // 当月已还0
+        nonlaw.setRemonthfee("0");
+        // 部分还款
+        nonlaw.setRepaystatus(1);
+        // 未转诉讼
+        nonlaw.setLawflag(0);
+        // 当前逾期本金及利息等
+        nonlaw.setCuraccrualfee(nonlaw.getAccrualfee());
+        nonlaw.setCurbalancefee(nonlaw.getBalancefee());
+        nonlaw.setCuroverfee(nonlaw.getOverfee());
+        try {
+            nonlaw.setCuroverstat(Float.parseFloat(nonlaw.getOverstat()));
+        } catch (Exception e) {
+            nonlaw.setCuroverstat(0f);
+        }
+        nonlaw.setState(0);
+        // 退单标记
+        nonlaw.setTdflag(0);
+        if (nonlawMap.containsKey(nonlaw.getIdcard())) {
+            // 账户重复，覆盖操作。
+            System.out.println("nonlaw.getIdcard()" + nonlaw.getIdcard());
+            nonlaw.setUpdatetime(new java.util.Date());
+            nonlaw.setNonlawid(nonlawMap.get(nonlaw.getIdcard()).getNonlawid());
+            reNonlaw.add(nonlaw);
+        } else {
+            // 新增操作
+            session.save(nonlaw);
+            int nonlawid = (int) nonlaw.getNonlawid();
+            TusrCustomerNew customer = NewCustomerUtil.getCustomer(session, nonlaw.getUsername(), nonlaw.getIdcard());
+            int customerid = 0;
+            if (customer != null) {
+                customerid = customer.getCustomerid();
+                existCustomerList.add(customer);
+            } else {
+                // 新增一个用户,同时将这个要加到那个service里面去
+                customer = new TusrCustomerNew();
+                // insert into tusr_customer_new(customerid,
+                // username,idcard,homeaddr,homephone,mobile1,company,compaddr,compphone,mobile2,createsrc,createsrcid,createtime) select tusrcustomerid.nextval,
+                // username,idcard,HOMEADDR,HOMEPHONEOLD,MOBILEOLD,company,COMPANYADDR,COMPANYPHONE,ALTERPHONE,2 as createsrc,nonlawid,createtime from tnlw_nonlaw;
+                customer.setUsername(nonlaw.getUsername());
+                customer.setIdcard(nonlaw.getIdcard());
+                customer.setMobile1(nonlaw.getMobileold());
+                customer.setHomeaddr(nonlaw.getHomeaddr());
+                customer.setHomephone(nonlaw.getHomephoneold());
+                customer.setCompphone(nonlaw.getCompanyphone());
+                customer.setCompany(nonlaw.getCompany());
+                customer.setCompaddr(nonlaw.getCompanyaddr());
+                customer.setMobile2(nonlaw.getAlterphone());
+                customer.setCreatesrc(2);
+                customer.setCreatesrcid(nonlawid);
+                customer.setCreatetime(new java.sql.Timestamp(System.currentTimeMillis()));
+                customer.setCreateuser((int) sysUser.getUserid());
+                // 1:VIP 2:一般
+                customer.setCustomerflag(2);
+                // 1:机构客户 2:个人客户 3当事人客户
+                customer.setCustomertype(3);
+                session.save(customer);
+                customerid = customer.getCustomerid();
+            }
+            TusrCustomerService service = new TusrCustomerService();
+            service.setCreatetime(new java.sql.Timestamp(System.currentTimeMillis()));
+            service.setCreateuser(sysUser.getUsername());
+            service.setCreateuserid((int) sysUser.getUserid());
+            service.setServiceid((int) nonlawid);
+            service.setServicetype(2);
+            service.setTusrCustomerNew(customer);
+            service.setRemarks("");
+            session.save(service);
+            // 保存住宅电话
+            if (nonlaw.getHomephoneold() != null && !"".equals(nonlaw.getHomephoneold().trim())) {
+                TusrAddress p = new TusrAddress();
+                p.setUsername(nonlaw.getUsername());
+                p.setHomeaddr(nonlaw.getHomeaddr());
+                p.setCompany(nonlaw.getCompany());
+                p.setOprid(nonlaw.getNonlawid());
+                // 非诉业务
+                p.setOprflag(2);
+                p.setComments("住宅电话");
+                p.setPhone(phone(nonlaw.getHomephoneold()));
+                p.setCreatetime(new java.util.Date());
+                p.setCustomerid(customerid);
+                session.save(p);
+            }
+            // 保存手机
+            if (nonlaw.getMobileold() != null && !"".equals(nonlaw.getMobileold().trim())) {
+                TusrAddress p = new TusrAddress();
+                p.setUsername(nonlaw.getUsername());
+                p.setHomeaddr(nonlaw.getHomeaddr());
+                p.setCompany(nonlaw.getCompany());
+                p.setOprid(nonlaw.getNonlawid());
+                // 非诉业务
+                p.setOprflag(2);
+                p.setComments("手机");
+                p.setPhone(phone(nonlaw.getMobileold()));
+                p.setCreatetime(new java.util.Date());
+                p.setCustomerid(customerid);
+                session.save(p);
+            }
+            // 保存单位电话
+            if (nonlaw.getCompanyphone() != null && !"".equals(nonlaw.getCompanyphone().trim())) {
+                TusrAddress p = new TusrAddress();
+                p.setUsername(nonlaw.getUsername());
+                p.setHomeaddr(nonlaw.getHomeaddr());
+                p.setCompany(nonlaw.getCompany());
+                p.setOprid(nonlaw.getNonlawid());
+                // 非诉业务
+                p.setOprflag(2);
+                p.setComments("单位电话");
+                p.setPhone(phone(nonlaw.getCompanyphone()));
+                p.setCreatetime(new java.util.Date());
+                p.setCustomerid(customerid);
+                session.save(p);
+            }
+        }
+    }
+    session.flush();
+    return reNonlaw;
+}

@@ -1,0 +1,83 @@
+public void buildList(Connection db) throws SQLException {
+    PreparedStatement pst = null;
+    ResultSet rs = null;
+    int items = -1;
+    StringBuffer sqlSelect = new StringBuffer();
+    StringBuffer sqlCount = new StringBuffer();
+    StringBuffer sqlFilter = new StringBuffer();
+    StringBuffer sqlOrder = new StringBuffer();
+    // Need to build a base SQL statement for counting records
+    sqlCount.append("SELECT COUNT(*) AS recordcount " + "FROM ticket t " + "WHERE t.ticketid > 0 ");
+    createFilter(sqlFilter, db);
+    if (pagedListInfo != null) {
+        // Get the total number of records matching filter
+        pst = db.prepareStatement(sqlCount.toString() + sqlFilter.toString());
+        items = prepareFilter(pst);
+        rs = pst.executeQuery();
+        if (rs.next()) {
+            int maxRecords = rs.getInt("recordcount");
+            pagedListInfo.setMaxRecords(maxRecords);
+        }
+        rs.close();
+        pst.close();
+        // Declare default sort, if unset
+        pagedListInfo.setDefaultSort("t.entered", null);
+        // Determine the offset, based on the filter, for the first record to show
+        if (pagedListInfo.getMode() == PagedListInfo.DETAILS_VIEW && id > 0) {
+            String direction = null;
+            if ("desc".equalsIgnoreCase(pagedListInfo.getSortOrder())) {
+                direction = ">";
+            } else {
+                direction = "<";
+            }
+            String sqlSubCount = "AND " + pagedListInfo.getColumnToSortBy() + " " + direction + " (SELECT " + pagedListInfo.getColumnToSortBy() + " FROM ticket t WHERE ticketid = ?) ";
+            pst = db.prepareStatement(sqlCount.toString() + sqlFilter.toString() + sqlSubCount);
+            items = prepareFilter(pst);
+            pst.setInt(++items, id);
+            rs = pst.executeQuery();
+            if (rs.next()) {
+                int offsetCount = rs.getInt("recordcount");
+                pagedListInfo.setCurrentOffset(offsetCount);
+            }
+            rs.close();
+            pst.close();
+        }
+        // Determine the offset
+        pagedListInfo.appendSqlTail(db, sqlOrder);
+    } else {
+        sqlOrder.append("ORDER BY t.entered ");
+    }
+    // Need to build a base SQL statement for returning records
+    if (pagedListInfo != null) {
+        pagedListInfo.appendSqlSelectHead(db, sqlSelect);
+    } else {
+        sqlSelect.append("SELECT ");
+    }
+    sqlSelect.append("t.*, " + "tp.description AS ticpri, " + "ts.description AS ticsev, " + "tc.description AS catname, " + "tc1.description AS subcatname1, " + "tc2.description AS subcatname2, " + "tc3.description AS subcatname3, " + "lu_ts.description AS sourcename, " + "tlp.project_id " + "FROM ticket t " + "LEFT JOIN ticket_priority tp ON (t.pri_code = tp.code) " + "LEFT JOIN ticket_severity ts ON (t.scode = ts.code) " + "LEFT JOIN ticket_category tc ON (t.cat_code = tc.id) " + "LEFT JOIN ticket_category tc1 ON (t.subcat_code1 = tc1.id) " + "LEFT JOIN ticket_category tc2 ON (t.subcat_code2 = tc2.id) " + "LEFT JOIN ticket_category tc3 ON (t.subcat_code3 = tc3.id) " + "LEFT JOIN lookup_ticketsource lu_ts ON (t.source_code = lu_ts.code) " + "LEFT JOIN ticketlink_project tlp ON (t.ticketid = tlp.ticket_id) " + "WHERE t.ticketid > 0 ");
+    pst = db.prepareStatement(sqlSelect.toString() + sqlFilter.toString() + sqlOrder.toString());
+    items = prepareFilter(pst);
+    rs = pst.executeQuery();
+    if (pagedListInfo != null) {
+        pagedListInfo.doManualOffset(db, rs);
+    }
+    int count = 0;
+    while (rs.next()) {
+        if (pagedListInfo != null && pagedListInfo.getItemsPerPage() > 0 && DatabaseUtils.getType(db) == DatabaseUtils.MSSQL && count >= pagedListInfo.getItemsPerPage()) {
+            break;
+        }
+        ++count;
+        Ticket thisTicket = new Ticket(rs);
+        this.add(thisTicket);
+    }
+    rs.close();
+    pst.close();
+    // Build resources
+    Iterator i = this.iterator();
+    while (i.hasNext()) {
+        Ticket thisTicket = (Ticket) i.next();
+        thisTicket.buildFiles(db);
+        if (thisTicket.getAssignedTo() > -1) {
+            thisTicket.checkEnabledOwnerAccount(db);
+        }
+    }
+}

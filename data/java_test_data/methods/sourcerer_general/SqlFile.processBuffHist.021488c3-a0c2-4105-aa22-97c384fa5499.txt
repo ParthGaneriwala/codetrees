@@ -1,0 +1,178 @@
+private void processBuffHist(String inString) throws BadSpecial, SQLException, SqlToolError {
+    if (inString.length() < 1) {
+        throw new BadSpecial(rb.getString(SqltoolRB.BUFHIST_UNSPECIFIED));
+    }
+    // First handle the simple cases where user may not specify a
+    // command number.
+    char commandChar = inString.charAt(0);
+    String other = inString.substring(1);
+    if (other.trim().length() == 0) {
+        other = null;
+    }
+    switch(commandChar) {
+        case 'l':
+        case 'b':
+            enforce1charBH(other, 'l');
+            if (buffer == null) {
+                stdprintln(nobufferYetString);
+            } else {
+                stdprintln(rb.getString(SqltoolRB.EDITBUFFER_CONTENTS, buffer));
+            }
+            return;
+        case 'h':
+            enforce1charBH(other, 'h');
+            showHistory();
+            return;
+        case '?':
+            stdprintln(rb.getString(SqltoolRB.BUFFER_HELP));
+            return;
+    }
+    Integer histNum = null;
+    Matcher hm = slashHistoryPattern.matcher(inString);
+    if (hm.matches()) {
+        histNum = historySearch(hm.group(1));
+        if (histNum == null) {
+            stdprintln(rb.getString(SqltoolRB.SUBSTITUTION_NOMATCH));
+            return;
+        }
+    } else {
+        hm = historyPattern.matcher(inString);
+        if (!hm.matches()) {
+            throw new BadSpecial(rb.getString(SqltoolRB.EDIT_MALFORMAT));
+        // Empirically, I find that his pattern always captures two
+        // groups.  Unfortunately, there's no way to guarantee that :( .
+        }
+        histNum = ((hm.group(1) == null || hm.group(1).length() < 1) ? null : new Integer(hm.group(1)));
+    }
+    if (hm.groupCount() != 2) {
+        throw new BadSpecial(rb.getString(SqltoolRB.EDIT_MALFORMAT));
+    // Empirically, I find that his pattern always captures two
+    // groups.  Unfortunately, there's no way to guarantee that :( .
+    }
+    commandChar = ((hm.group(2) == null || hm.group(2).length() < 1) ? '\0' : hm.group(2).charAt(0));
+    other = ((commandChar == '\0') ? null : hm.group(2).substring(1));
+    if (other != null && other.length() < 1)
+        other = null;
+    String targetCommand = ((histNum == null) ? null : commandFromHistory(histNum.intValue()));
+    switch(commandChar) {
+        case // Special token set above.  Just history recall.
+        '\0':
+            setBuf(targetCommand);
+            stdprintln(rb.getString(SqltoolRB.BUFFER_RESTORED, buffer));
+            return;
+        case ';':
+            enforce1charBH(other, ';');
+            if (targetCommand != null)
+                setBuf(targetCommand);
+            if (buffer == null)
+                throw new BadSpecial(rb.getString(SqltoolRB.NOBUFFER_YET));
+            stdprintln(rb.getString(SqltoolRB.BUFFER_EXECUTING, buffer));
+            processFromBuffer();
+            return;
+        case 'a':
+            if (targetCommand == null)
+                targetCommand = buffer;
+            if (targetCommand == null)
+                throw new BadSpecial(rb.getString(SqltoolRB.NOBUFFER_YET));
+            immCmdSB.append(targetCommand);
+            if (other != null) {
+                String deTerminated = SqlFile.deTerminated(other);
+                if (!other.equals(";")) {
+                    immCmdSB.append(((deTerminated == null) ? other : deTerminated));
+                }
+                if (deTerminated != null) {
+                    // If we reach here, then immCmdSB contains a
+                    // complete command.
+                    setBuf(immCmdSB.toString());
+                    immCmdSB.setLength(0);
+                    stdprintln(rb.getString(SqltoolRB.BUFFER_EXECUTING, buffer));
+                    processFromBuffer();
+                    return;
+                }
+            }
+            magicPrefix = immCmdSB.toString();
+            immCmdSB.setLength(0);
+            if (interactive)
+                stdprint(magicPrefix);
+            return;
+        case 'w':
+            if (targetCommand == null)
+                targetCommand = buffer;
+            if (targetCommand == null)
+                throw new BadSpecial(rb.getString(SqltoolRB.NOBUFFER_YET));
+            if (other == null) {
+                throw new BadSpecial(rb.getString(SqltoolRB.DESTFILE_DEMAND));
+            }
+            String targetFile = dereference(other.trim(), false);
+            // Dereference and trim the target file name
+            // This is the only case where we dereference a : command.
+            PrintWriter pw = null;
+            try {
+                pw = new PrintWriter((charset == null) ? (new OutputStreamWriter(new FileOutputStream(targetFile, true))) : (new OutputStreamWriter(new FileOutputStream(targetFile, true), charset)));
+                // Replace with just "(new FileOutputStream(file), charset)"
+                // once use defaultCharset from Java 1.5 in charset init.
+                // above.
+                pw.print(targetCommand);
+                if (!targetCommand.matches("\\s*[*:\\\\].*"))
+                    pw.print(';');
+                pw.println();
+                pw.flush();
+            } catch (Exception e) {
+                throw new BadSpecial(rb.getString(SqltoolRB.FILE_APPENDFAIL, targetFile), e);
+            } finally {
+                if (pw != null)
+                    pw.close();
+            }
+            return;
+        case 's':
+            boolean modeExecute = false;
+            boolean modeGlobal = false;
+            if (targetCommand == null)
+                targetCommand = buffer;
+            if (targetCommand == null)
+                throw new BadSpecial(rb.getString(SqltoolRB.NOBUFFER_YET));
+            try {
+                if (other == null || other.length() < 3) {
+                    throw new BadSubst(rb.getString(SqltoolRB.SUBSTITUTION_MALFORMAT));
+                }
+                Matcher m = substitutionPattern.matcher(other);
+                if (!m.matches()) {
+                    throw new BadSubst(rb.getString(SqltoolRB.SUBSTITUTION_MALFORMAT));
+                }
+                // Note that this pattern does not include the leading :.
+                if (m.groupCount() < 3 || m.groupCount() > 4) {
+                    // Assertion failed
+                    throw new RuntimeException("Matched substitution pattern, but " + "captured " + m.groupCount() + " groups");
+                }
+                String optionGroup = ((m.groupCount() > 3 && m.group(4) != null) ? (new String(m.group(4))) : null);
+                if (optionGroup != null) {
+                    if (optionGroup.indexOf(';') > -1) {
+                        modeExecute = true;
+                        optionGroup = optionGroup.replaceFirst(";", "");
+                    }
+                    if (optionGroup.indexOf('g') > -1) {
+                        modeGlobal = true;
+                        optionGroup = optionGroup.replaceFirst("g", "");
+                    }
+                }
+                Matcher bufferMatcher = Pattern.compile("(?s" + ((optionGroup == null) ? "" : optionGroup) + ')' + m.group(2)).matcher(targetCommand);
+                String newBuffer = (modeGlobal ? bufferMatcher.replaceAll(m.group(3)) : bufferMatcher.replaceFirst(m.group(3)));
+                if (newBuffer.equals(targetCommand)) {
+                    stdprintln(rb.getString(SqltoolRB.SUBSTITUTION_NOMATCH));
+                    return;
+                }
+                setBuf(newBuffer);
+                stdprintln(rb.getString((modeExecute ? SqltoolRB.BUFFER_EXECUTING : SqltoolRB.EDITBUFFER_CONTENTS), buffer));
+            } catch (PatternSyntaxException pse) {
+                throw new BadSpecial(rb.getString(SqltoolRB.SUBSTITUTION_SYNTAX), pse);
+            } catch (BadSubst badswitch) {
+                throw new BadSpecial(rb.getString(SqltoolRB.SUBSTITUTION_SYNTAX));
+            }
+            if (modeExecute) {
+                immCmdSB.setLength(0);
+                processFromBuffer();
+            }
+            return;
+    }
+    throw new BadSpecial(rb.getString(SqltoolRB.BUFFER_UNKNOWN, Character.toString(commandChar)));
+}

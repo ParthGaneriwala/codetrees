@@ -1,0 +1,177 @@
+public void executarAcao(Token pToken, int pAcao) throws Exception {
+    switch(pAcao) {
+        case Constantes.CD_INICIO:
+            this.aArquivoIL = new Arquivo(Compilador.getInstancia().getNmArquivoLUA() + ".il");
+            if (this.aArquivoIL.existe()) {
+                if (!this.aArquivoIL.apagar()) {
+                    throw new Exception("O Arquivo " + this.aArquivoIL.getNmCompletoArquivo() + " n�o pode ser apagado");
+                }
+            }
+            if (!this.aArquivoIL.criar()) {
+                throw new Exception("O Arquivo " + this.aArquivoIL.getNmCompletoArquivo() + " n�o pode ser criado");
+            }
+            this.aWriter = new DAO_TXT(this.aArquivoIL);
+            this.aWriter.incluirLinhaUsandoAppend(".assembly program {}\n");
+            this.aWriter.incluirLinhaUsandoAppend(".class program \n{");
+            this.aWriter.incluirLinhaUsandoAppend("\n  .method static public void main() il managed\n");
+            this.aWriter.incluirLinhaUsandoAppend("  {\n");
+            this.aWriter.incluirLinhaUsandoAppend("    .entrypoint \n");
+            break;
+        case Constantes.CD_INICIA_DECLARACAO_VARIAVEIS:
+            this.aWriter.incluirLinhaUsandoAppend("\n");
+            this.aWriter.incluirLinhaUsandoAppend("      .locals(\n");
+            break;
+        case Constantes.CD_DECLARACAO_VARIAVEIS:
+            this.aWriter.incluirLinhaUsandoAppend("        " + pToken.getTipo() + " " + pToken.getValor() + "\n");
+            this.aAlVariaveisDeclaradas.add(pToken.getValor());
+            break;
+        case Constantes.CD_FINALIZA_DECLARACAO_VARIAVEIS:
+            this.aWriter.incluirLinhaUsandoAppend("      )\n");
+            break;
+        case Constantes.CD_ASSIGN:
+            if (aAlVariaveisDeclaradas.contains(pToken.getValor())) {
+            } else {
+                this.executarAcao(null, Constantes.CD_INICIA_DECLARACAO_VARIAVEIS);
+                this.executarAcao(pToken, Constantes.CD_DECLARACAO_VARIAVEIS);
+                this.executarAcao(null, Constantes.CD_FINALIZA_DECLARACAO_VARIAVEIS);
+            }
+            break;
+        case Constantes.CD_LOAD_CONSTANT:
+            this.aWriter.incluirLinhaUsandoAppend("      ldc.i4 " + pToken.getValor());
+            this.aWriter.incluirLinhaUsandoAppend("\n");
+            break;
+        case Constantes.CD_LOAD_VARIAVEL:
+            this.aWriter.incluirLinhaUsandoAppend("      ldloc " + pToken.getValor());
+            this.aWriter.incluirLinhaUsandoAppend("\n");
+            break;
+        case Constantes.CD_REALIZA_OPERACAO:
+            Stack<String> vExpressao = pToken.getExpresao();
+            String vStrToken = null;
+            while (!vExpressao.isEmpty()) {
+                vStrToken = vExpressao.pop();
+                if (Funcoes.isOperacao(vStrToken)) {
+                    this.aWriter.incluirLinhaUsandoAppend("      " + Funcoes.getOperacaoIL(vStrToken.charAt(0)) + "\n");
+                } else if (Funcoes.isDigit(vStrToken)) {
+                    this.executarAcao(new Token(vStrToken), Constantes.CD_LOAD_CONSTANT);
+                } else if (this.aAlVariaveisDeclaradas.contains(vStrToken)) {
+                    this.executarAcao(new Token(vStrToken), Constantes.CD_LOAD_VARIAVEL);
+                } else if (vStrToken.equals("\"")) {
+                    return;
+                } else if (vStrToken.equals(Constantes.DS_STM_READ)) {
+                    this.executarAcao(pToken, Constantes.CD_STM_READ);
+                }
+            }
+            if (pToken.aIsAtribuicao) {
+                this.aWriter.incluirLinhaUsandoAppend("      stloc " + pToken.getValor());
+                this.aWriter.incluirLinhaUsandoAppend("\n");
+            }
+            break;
+        case Constantes.CD_STM_PRINT:
+            vStrToken = pToken.getValor();
+            boolean vIsString = false;
+            if (vStrToken.equals("\"")) {
+                Stack<String> vStackString = pToken.getExpresao();
+                String vString = vStrToken;
+                while (!vStackString.isEmpty()) {
+                    vString = vString + vStackString.pop() + " ";
+                }
+                vIsString = true;
+                this.aWriter.incluirLinhaUsandoAppend("      ldstr " + vString + "\n");
+                this.aWriter.incluirLinhaUsandoAppend("      call void [mscorlib]System.Console::WriteLine(string)\n");
+            } else if (!Funcoes.isDigit(vStrToken)) {
+            // this.executarAcao(new Token(vStrToken),
+            // Constantes.CD_LOAD_VARIAVEL);
+            } else if (this.aAlVariaveisDeclaradas.contains(vStrToken)) {
+                this.executarAcao(new Token(vStrToken), Constantes.CD_LOAD_CONSTANT);
+            }
+            if (!vIsString) {
+                this.aWriter.incluirLinhaUsandoAppend("      call void [mscorlib]System.Console::WriteLine(int32)\n");
+            }
+            break;
+        case Constantes.CD_REALIZA_EXPRESSAO_IF:
+            Stack<String> vStack = pToken.getIFStatment().aStackExpressao;
+            int vNuIF = 0;
+            vStrToken = null;
+            while (!vStack.isEmpty()) {
+                vStrToken = vStack.pop();
+                if (Funcoes.isExpressaoLogica(vStrToken)) {
+                    this.aWriter.incluirLinhaUsandoAppend("      " + Funcoes.getExpressaoIL(vStrToken) + "\n");
+                } else if (Funcoes.isDigit(vStrToken)) {
+                    this.executarAcao(new Token(vStrToken), Constantes.CD_LOAD_CONSTANT);
+                } else if (this.aAlVariaveisDeclaradas.contains(vStrToken)) {
+                    this.executarAcao(new Token(vStrToken), Constantes.CD_LOAD_VARIAVEL);
+                }
+            }
+            this.aWriter.incluirLinhaUsandoAppend("      brtrue entao" + this.aNumIF + "\n");
+            this.aWriter.incluirLinhaUsandoAppend("      br else" + this.aNumIF + "\n");
+            this.aWriter.incluirLinhaUsandoAppend("      br fimif" + this.aNumIF + "\n");
+            vNuIF = aNumIF;
+            this.aNumIF++;
+            // Construindo ent�o
+            this.aWriter.incluirLinhaUsandoAppend("      entao" + vNuIF + ": \n\n");
+            Compilador.getInstancia().compila(pToken.getIFStatment().aStackBlocoVerdadeiro, 0, this);
+            this.aWriter.incluirLinhaUsandoAppend("      br fimif" + vNuIF + "\n");
+            // Construindo else
+            this.aWriter.incluirLinhaUsandoAppend("      else" + vNuIF + ": \n\n");
+            Compilador.getInstancia().compila(pToken.getIFStatment().aStackBlocoFalso, 0, this);
+            this.aWriter.incluirLinhaUsandoAppend("      br fimif" + vNuIF + "\n");
+            // Construindo fimif
+            this.aWriter.incluirLinhaUsandoAppend("      fimif" + vNuIF + ": \n");
+            break;
+        case Constantes.CD_REALIZA_EXPRESSAO_WHILE:
+            vStack = pToken.getWHILEStatment().aStackExpressao;
+            Stack<String> vStackExpressaoWhile = new Stack<String>();
+            vStackExpressaoWhile.addAll(pToken.getWHILEStatment().aStackExpressao);
+            int vNuWHILE = 0;
+            vStrToken = null;
+            while (!vStack.isEmpty()) {
+                vStrToken = vStack.pop();
+                if (Funcoes.isExpressaoLogica(vStrToken)) {
+                    this.aWriter.incluirLinhaUsandoAppend("      " + Funcoes.getExpressaoIL(vStrToken) + "\n");
+                } else if (Funcoes.isDigit(vStrToken)) {
+                    this.executarAcao(new Token(vStrToken), Constantes.CD_LOAD_CONSTANT);
+                } else if (this.aAlVariaveisDeclaradas.contains(vStrToken)) {
+                    this.executarAcao(new Token(vStrToken), Constantes.CD_LOAD_VARIAVEL);
+                }
+            }
+            this.aWriter.incluirLinhaUsandoAppend("      brtrue while" + this.aNumWHILE + "\n");
+            this.aWriter.incluirLinhaUsandoAppend("      br fimwhile" + this.aNumWHILE + "\n");
+            vNuWHILE = this.aNumWHILE;
+            this.aNumWHILE++;
+            // Construindo bloco do while
+            this.aWriter.incluirLinhaUsandoAppend("      while" + vNuWHILE + ": \n\n");
+            Compilador.getInstancia().compila(pToken.getWHILEStatment().aStackBloco, 0, this);
+            vStack = vStackExpressaoWhile;
+            vStrToken = null;
+            while (!vStack.isEmpty()) {
+                vStrToken = vStack.pop();
+                if (Funcoes.isExpressaoLogica(vStrToken)) {
+                    this.aWriter.incluirLinhaUsandoAppend("      " + Funcoes.getExpressaoIL(vStrToken) + "\n");
+                } else if (Funcoes.isDigit(vStrToken)) {
+                    this.executarAcao(new Token(vStrToken), Constantes.CD_LOAD_CONSTANT);
+                } else if (this.aAlVariaveisDeclaradas.contains(vStrToken)) {
+                    this.executarAcao(new Token(vStrToken), Constantes.CD_LOAD_VARIAVEL);
+                }
+            }
+            this.aWriter.incluirLinhaUsandoAppend("      brtrue while" + vNuWHILE + "\n");
+            this.aWriter.incluirLinhaUsandoAppend("      br fimwhile" + vNuWHILE + "\n");
+            // Construindo fimif
+            this.aWriter.incluirLinhaUsandoAppend("      fimwhile" + vNuWHILE + ": \n\n");
+            break;
+        case Constantes.CD_STM_READ:
+            this.aWriter.incluirLinhaUsandoAppend("      call string [mscorlib]System.Console::ReadLine()" + "\n");
+            this.aWriter.incluirLinhaUsandoAppend("      call int32 [mscorlib]System.Int32::Parse(string)" + "\n");
+            // this.aWriter.writeln(" stloc "+pToken.getValor());
+            break;
+        case Constantes.CD_FIM:
+            this.aWriter.incluirLinhaUsandoAppend("    ret\n");
+            this.aWriter.incluirLinhaUsandoAppend("\n  }");
+            this.aWriter.incluirLinhaUsandoAppend("\n}");
+            this.aWriter.incluirLinhaUsandoAppend("\n");
+            this.aArquivoIL.fechar();
+            System.out.println("Arquivo " + this.aArquivoIL.getNmCompletoArquivo() + " gerado com sucesso!");
+            break;
+        default:
+            break;
+    }
+}

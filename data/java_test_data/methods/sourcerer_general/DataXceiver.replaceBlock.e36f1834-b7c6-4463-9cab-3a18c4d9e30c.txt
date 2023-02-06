@@ -1,0 +1,72 @@
+private void replaceBlock(DataInputStream in) throws IOException {
+    /* read header */
+    long blockId = in.readLong();
+    Block block = new Block(blockId, dataXceiverServer.estimateBlockSize, // block id & generation stamp
+    in.readLong());
+    // read del hint
+    String sourceID = Text.readString(in);
+    // read proxy source
+    DatanodeInfo proxySource = new DatanodeInfo();
+    proxySource.readFields(in);
+    if (!dataXceiverServer.balanceThrottler.acquire()) {
+        // not able to start
+        LOG.warn("Not able to receive block " + blockId + " from " + s.getRemoteSocketAddress() + " because threads quota is exceeded.");
+        sendResponse(s, (short) DataTransferProtocol.OP_STATUS_ERROR, datanode.socketWriteTimeout);
+        return;
+    }
+    Socket proxySock = null;
+    DataOutputStream proxyOut = null;
+    short opStatus = DataTransferProtocol.OP_STATUS_SUCCESS;
+    BlockReceiver blockReceiver = null;
+    DataInputStream proxyReply = null;
+    try {
+        // get the output stream to the proxy
+        InetSocketAddress proxyAddr = NetUtils.createSocketAddr(proxySource.getName());
+        proxySock = datanode.newSocket();
+        proxySock.connect(proxyAddr, datanode.socketTimeout);
+        proxySock.setSoTimeout(datanode.socketTimeout);
+        OutputStream baseStream = NetUtils.getOutputStream(proxySock, datanode.socketWriteTimeout);
+        proxyOut = new DataOutputStream(new BufferedOutputStream(baseStream, SMALL_BUFFER_SIZE));
+        /* send request to the proxy */
+        // transfer version
+        proxyOut.writeShort(DataTransferProtocol.DATA_TRANSFER_VERSION);
+        // op code
+        proxyOut.writeByte(DataTransferProtocol.OP_COPY_BLOCK);
+        // block id
+        proxyOut.writeLong(block.getBlockId());
+        // block id
+        proxyOut.writeLong(block.getGenerationStamp());
+        proxyOut.flush();
+        // receive the response from the proxy
+        proxyReply = new DataInputStream(new BufferedInputStream(NetUtils.getInputStream(proxySock), BUFFER_SIZE));
+        // open a block receiver and check if the block does not exist
+        blockReceiver = new BlockReceiver(block, proxyReply, proxySock.getRemoteSocketAddress().toString(), proxySock.getLocalSocketAddress().toString(), false, "", null, datanode);
+        // receive a block
+        blockReceiver.receiveBlock(null, null, null, null, dataXceiverServer.balanceThrottler, -1);
+        // notify name node
+        datanode.notifyNamenodeReceivedBlock(block, sourceID);
+        LOG.info("Moved block " + block + " from " + s.getRemoteSocketAddress());
+    } catch (IOException ioe) {
+        opStatus = DataTransferProtocol.OP_STATUS_ERROR;
+        throw ioe;
+    } finally {
+        // receive the last byte that indicates the proxy released its thread resource
+        if (opStatus == DataTransferProtocol.OP_STATUS_SUCCESS) {
+            try {
+                proxyReply.readChar();
+            } catch (IOException ignored) {
+            }
+        }
+        // now release the thread resource
+        dataXceiverServer.balanceThrottler.release();
+        // send response back
+        try {
+            sendResponse(s, opStatus, datanode.socketWriteTimeout);
+        } catch (IOException ioe) {
+            LOG.warn("Error writing reply back to " + s.getRemoteSocketAddress());
+        }
+        IOUtils.closeStream(proxyOut);
+        IOUtils.closeStream(blockReceiver);
+        IOUtils.closeStream(proxyReply);
+    }
+}

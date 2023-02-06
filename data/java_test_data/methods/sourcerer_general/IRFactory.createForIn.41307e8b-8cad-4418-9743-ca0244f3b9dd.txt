@@ -1,0 +1,62 @@
+private Node createForIn(int declType, Node loop, Node lhs, Node obj, Node body, boolean isForEach) {
+    int destructuring = -1;
+    int destructuringLen = 0;
+    Node lvalue;
+    int type = lhs.getType();
+    if (type == Token.VAR || type == Token.LET) {
+        Node kid = lhs.getLastChild();
+        int kidType = kid.getType();
+        if (kidType == Token.ARRAYLIT || kidType == Token.OBJECTLIT) {
+            type = destructuring = kidType;
+            lvalue = kid;
+            destructuringLen = 0;
+            if (kid instanceof ArrayLiteral)
+                destructuringLen = ((ArrayLiteral) kid).getDestructuringLength();
+        } else if (kidType == Token.NAME) {
+            lvalue = Node.newString(Token.NAME, kid.getString());
+        } else {
+            reportError("msg.bad.for.in.lhs");
+            return null;
+        }
+    } else if (type == Token.ARRAYLIT || type == Token.OBJECTLIT) {
+        destructuring = type;
+        lvalue = lhs;
+        destructuringLen = 0;
+        if (lhs instanceof ArrayLiteral)
+            destructuringLen = ((ArrayLiteral) lhs).getDestructuringLength();
+    } else {
+        lvalue = makeReference(lhs);
+        if (lvalue == null) {
+            reportError("msg.bad.for.in.lhs");
+            return null;
+        }
+    }
+    Node localBlock = new Node(Token.LOCAL_BLOCK);
+    int initType = isForEach ? Token.ENUM_INIT_VALUES : (destructuring != -1 ? Token.ENUM_INIT_ARRAY : Token.ENUM_INIT_KEYS);
+    Node init = new Node(initType, obj);
+    init.putProp(Node.LOCAL_BLOCK_PROP, localBlock);
+    Node cond = new Node(Token.ENUM_NEXT);
+    cond.putProp(Node.LOCAL_BLOCK_PROP, localBlock);
+    Node id = new Node(Token.ENUM_ID);
+    id.putProp(Node.LOCAL_BLOCK_PROP, localBlock);
+    Node newBody = new Node(Token.BLOCK);
+    Node assign;
+    if (destructuring != -1) {
+        assign = createDestructuringAssignment(declType, lvalue, id);
+        if (!isForEach && (destructuring == Token.OBJECTLIT || destructuringLen != 2)) {
+            // destructuring assignment is only allowed in for..each or
+            // with an array type of length 2 (to hold key and value)
+            reportError("msg.bad.for.in.destruct");
+        }
+    } else {
+        assign = simpleAssignment(lvalue, id);
+    }
+    newBody.addChildToBack(new Node(Token.EXPR_VOID, assign));
+    newBody.addChildToBack(body);
+    loop = createLoop((Jump) loop, LOOP_WHILE, newBody, cond, null, null);
+    loop.addChildToFront(init);
+    if (type == Token.VAR || type == Token.LET)
+        loop.addChildToFront(lhs);
+    localBlock.addChildToBack(loop);
+    return localBlock;
+}

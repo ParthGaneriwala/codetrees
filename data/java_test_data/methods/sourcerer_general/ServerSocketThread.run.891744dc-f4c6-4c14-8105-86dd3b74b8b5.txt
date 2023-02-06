@@ -1,0 +1,70 @@
+// ------------------------------------------------------------------------
+public void run() {
+    while (true) {
+        ClientSocket clientSocket = null;
+        DMTPClientSocket dmtpSocket = null;
+        /* wait for client session */
+        try {
+            if (this.serverSocket != null) {
+                clientSocket = new ClientSocket(this.serverSocket.accept());
+            } else {
+                Print.logStackTrace("ServerSocketThread has not been properly initialized");
+            }
+        } catch (SocketException se) {
+            // shutdown support
+            if (this.serverSocket != null) {
+                int port = this.serverSocket.getLocalPort();
+                if (port <= 0) {
+                    port = this.listenPort;
+                }
+                String portStr = (port <= 0) ? "?" : String.valueOf(port);
+                Print.logInfo("Shutdown TCP server on port " + portStr);
+            } else {
+                Print.logInfo("Shutdown must have been called");
+            }
+            break;
+        } catch (IOException ioe) {
+            Print.logError("Connection - " + ioe);
+            // go back and wait again
+            continue;
+        }
+        // connect to dmtp server
+        String dmtpHost = RTConfig.getString(Main.DMTP_HOST);
+        int dmtpPort = RTConfig.getInt(Main.DMTP_PORT);
+        try {
+            dmtpSocket = new DMTPClientSocket(InetAddress.getByName(dmtpHost), dmtpPort);
+        } catch (IOException e) {
+            // can't connect to DMTP server
+            Print.logError("Can't connect to DMTPServer on " + dmtpHost + ":" + dmtpPort);
+            try {
+                clientSocket.close();
+            } catch (IOException ee) {
+                Print.logError(ee.getMessage());
+            }
+            // continue listening ?
+            continue;
+        }
+        /* ip address */
+        String ipAddr;
+        try {
+            InetAddress inetAddr = clientSocket.getInetAddress();
+            ipAddr = (inetAddr != null) ? inetAddr.getHostAddress() : "?";
+        } catch (Throwable t) {
+            ipAddr = "?";
+        }
+        /* find an available client thread */
+        boolean foundThread = false;
+        for (Iterator i = this.clientThreadPool.iterator(); i.hasNext() && !foundThread; ) {
+            ServerSessionThread sst = (ServerSessionThread) i.next();
+            foundThread = sst.setClientIfAvailable(clientSocket, dmtpSocket);
+        }
+        if (!foundThread) {
+            // add new thread to pool
+            // Print.logInfo("New thread for ip ["+ipAddr+"] ...");
+            ServerSessionThread sst = new ServerSessionThread(clientSocket, dmtpSocket);
+            this.clientThreadPool.add(sst);
+        } else {
+            Print.logDebug("Reuse existing thread for ip [" + ipAddr + "] ...");
+        }
+    }
+}

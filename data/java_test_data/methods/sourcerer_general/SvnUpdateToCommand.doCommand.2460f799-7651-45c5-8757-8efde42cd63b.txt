@@ -1,0 +1,94 @@
+protected TeamworkCommandResult doCommand() {
+    SVNClientInterface client = getClient();
+    // The subversion client library gives us update notifications before
+    // the notifications have actually been performed. So, we save the
+    // list of updated files and notify the listener only once the update
+    // is complete.
+    final List<File> addedList = new ArrayList<File>();
+    final List<File> updatedList = new ArrayList<File>();
+    final List<File> removedList = new ArrayList<File>();
+    final List<File> removedDirs = new ArrayList<File>();
+    try {
+        String[] paths = new String[forceFiles.size() + files.size()];
+        int j = 0;
+        for (Iterator<File> i = forceFiles.iterator(); i.hasNext(); ) {
+            File file = i.next();
+            paths[j++] = file.getAbsolutePath();
+            // Delete the file, so the update cannot conflict
+            file.delete();
+        }
+        for (Iterator<File> i = files.iterator(); i.hasNext(); ) {
+            File file = i.next();
+            paths[j++] = file.getAbsolutePath();
+        }
+        client.notification2(new Notify2() {
+
+            public void onNotify(NotifyInformation ninfo) {
+                if (ninfo.getKind() == NodeKind.file || ninfo.getKind() == NodeKind.none) {
+                    int action = ninfo.getAction();
+                    if (ninfo.getPath() != null) {
+                        File file = new File(ninfo.getPath());
+                        if (action == NotifyAction.update_add) {
+                            addedList.add(file);
+                        } else if (action == NotifyAction.update_update) {
+                            updatedList.add(file);
+                            if (ninfo.getContentState() == NotifyStatus.conflicted) {
+                                conflicts.add(file);
+                            }
+                        } else if (action == NotifyAction.update_delete) {
+                            removedList.add(file);
+                        }
+                    }
+                } else if (ninfo.getKind() == NodeKind.dir) {
+                    int action = ninfo.getAction();
+                    if (action == NotifyAction.update_delete) {
+                        removedDirs.add(new File(ninfo.getPath()));
+                    }
+                }
+            }
+        });
+        client.update(paths, Revision.getInstance(version), true, false);
+    } catch (ClientException ce) {
+        if (!isCancelled()) {
+            return new TeamworkCommandError(ce.getMessage(), ce.getLocalizedMessage());
+        }
+    } finally {
+        client.notification2(null);
+        Iterator<File> i;
+        for (i = addedList.iterator(); i.hasNext(); ) {
+            listener.fileAdded(i.next());
+        }
+        for (i = updatedList.iterator(); i.hasNext(); ) {
+            listener.fileUpdated(i.next());
+        }
+        for (i = removedList.iterator(); i.hasNext(); ) {
+            listener.fileRemoved(i.next());
+        }
+        for (i = removedDirs.iterator(); i.hasNext(); ) {
+            listener.dirRemoved(i.next());
+        }
+        if (!conflicts.isEmpty()) {
+            for (i = conflicts.iterator(); i.hasNext(); ) {
+                File file = (File) i.next();
+                try {
+                    PropertyData pdata = client.propertyGet(file.getAbsolutePath(), "svn:mime-type", Revision.getInstance(version));
+                    if (pdata != null && "application/octet-stream".equals(pdata.getValue())) {
+                        // This is a binary file
+                        i.remove();
+                        binaryConflicts.add(file);
+                    } else {
+                        // remove all the extraneous files that subversion generates
+                        client.resolve(file.getAbsolutePath(), 0, ConflictResult.chooseBase);
+                    }
+                } catch (SubversionException se) {
+                    Debug.message("Subversion client exception when resolving conflicts: " + se.getLocalizedMessage());
+                    Debug.message("   (on file: " + file + ")");
+                }
+            }
+        }
+        if (!conflicts.isEmpty() || !binaryConflicts.isEmpty()) {
+            listener.handleConflicts(this);
+        }
+    }
+    return new TeamworkCommandAborted();
+}

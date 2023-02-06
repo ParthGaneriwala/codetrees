@@ -1,0 +1,142 @@
+public void resolveTypes(Session session, Expression parent) {
+    for (int i = 0; i < nodes.length; i++) {
+        if (nodes[i] != null) {
+            nodes[i].resolveTypes(session, this);
+        }
+    }
+    boolean isEscapeFixedConstant = true;
+    if (nodes[ESCAPE] != null) {
+        if (nodes[ESCAPE].isUnresolvedParam()) {
+            throw Error.error(ErrorCode.X_42567);
+        }
+        nodes[ESCAPE].resolveTypes(session, this);
+        isEscapeFixedConstant = nodes[ESCAPE].opType == OpTypes.VALUE;
+        if (isEscapeFixedConstant) {
+            nodes[ESCAPE].setAsConstantValue(session);
+            if (nodes[ESCAPE].dataType == null) {
+                throw Error.error(ErrorCode.X_42567);
+            }
+            if (nodes[ESCAPE].valueData != null) {
+                long length;
+                switch(nodes[ESCAPE].dataType.typeCode) {
+                    case Types.SQL_CHAR:
+                    case Types.SQL_VARCHAR:
+                        length = ((String) nodes[ESCAPE].valueData).length();
+                        break;
+                    case Types.SQL_BINARY:
+                    case Types.SQL_VARBINARY:
+                        length = ((BinaryData) nodes[ESCAPE].valueData).length(session);
+                        break;
+                    default:
+                        throw Error.error(ErrorCode.X_42563);
+                }
+                if (length != 1) {
+                    throw Error.error(ErrorCode.X_22019);
+                }
+            }
+        }
+    }
+    if (nodes[LEFT].dataType == null && nodes[RIGHT].dataType == null) {
+        throw Error.error(ErrorCode.X_42567);
+    }
+    if (nodes[LEFT].isUnresolvedParam()) {
+        nodes[LEFT].dataType = nodes[RIGHT].dataType.isBinaryType() ? (Type) Type.SQL_VARBINARY_DEFAULT : (Type) Type.SQL_VARCHAR_DEFAULT;
+    } else if (nodes[RIGHT].isUnresolvedParam()) {
+        nodes[RIGHT].dataType = nodes[LEFT].dataType.isBinaryType() ? (Type) Type.SQL_VARBINARY_DEFAULT : (Type) Type.SQL_VARCHAR_DEFAULT;
+    }
+    if (nodes[LEFT].dataType == null || nodes[RIGHT].dataType == null) {
+        throw Error.error(ErrorCode.X_42567);
+    }
+    if (nodes[LEFT].dataType.isCharacterType() && nodes[RIGHT].dataType.isCharacterType() && (nodes[ESCAPE] == null || nodes[ESCAPE].dataType.isCharacterType())) {
+        boolean ignoreCase = nodes[LEFT].dataType.typeCode == Types.VARCHAR_IGNORECASE || nodes[RIGHT].dataType.typeCode == Types.VARCHAR_IGNORECASE;
+        likeObject.setIgnoreCase(ignoreCase);
+    } else if (nodes[LEFT].dataType.isBinaryType() && nodes[RIGHT].dataType.isBinaryType() && (nodes[ESCAPE] == null || nodes[ESCAPE].dataType.isBinaryType())) {
+        likeObject.isBinary = true;
+    } else {
+        throw Error.error(ErrorCode.X_42563);
+    }
+    likeObject.dataType = nodes[LEFT].dataType;
+    boolean isRightArgFixedConstant = nodes[RIGHT].opType == OpTypes.VALUE;
+    if (isRightArgFixedConstant && isEscapeFixedConstant && nodes[LEFT].opType == OpTypes.VALUE) {
+        setAsConstantValue(session);
+        likeObject = null;
+        return;
+    }
+    if (isRightArgFixedConstant && isEscapeFixedConstant) {
+        likeObject.isVariable = false;
+    } else {
+        return;
+    }
+    Object pattern = isRightArgFixedConstant ? nodes[RIGHT].getValue(session) : null;
+    boolean constantEscape = isEscapeFixedConstant && nodes[ESCAPE] != null;
+    Object escape = constantEscape ? nodes[ESCAPE].getValue(session) : null;
+    likeObject.setPattern(session, pattern, escape, nodes[ESCAPE] != null);
+    if (noOptimisation) {
+        return;
+    }
+    if (likeObject.isEquivalentToUnknownPredicate()) {
+        this.setAsConstantValue(null);
+        likeObject = null;
+    } else if (likeObject.isEquivalentToEqualsPredicate()) {
+        opType = OpTypes.EQUAL;
+        nodes[RIGHT] = new ExpressionValue(likeObject.getRangeLow(), Type.SQL_VARCHAR);
+        likeObject = null;
+    } else if (likeObject.isEquivalentToNotNullPredicate()) {
+        Expression notNull = new ExpressionLogical(OpTypes.IS_NULL, nodes[LEFT]);
+        opType = OpTypes.NOT;
+        nodes = new Expression[UNARY];
+        nodes[LEFT] = notNull;
+        likeObject = null;
+    } else {
+        if (nodes[LEFT].opType != OpTypes.COLUMN) {
+            return;
+        }
+        if (!nodes[LEFT].dataType.isCharacterType()) {
+            return;
+        }
+        boolean between = false;
+        boolean like = false;
+        boolean larger = false;
+        if (likeObject.isEquivalentToBetweenPredicate()) {
+            // X LIKE 'abc%' <=> X >= 'abc' AND X <= 'abc' || max_collation_char
+            larger = likeObject.hasCollation;
+            between = !larger;
+            like = larger;
+        } else if (likeObject.isEquivalentToBetweenPredicateAugmentedWithLike()) {
+            // X LIKE 'abc%...' <=> X >= 'abc' AND X <= 'abc' || max_collation_char AND X LIKE 'abc%...'
+            larger = likeObject.hasCollation;
+            between = !larger;
+            like = true;
+        }
+        if (!between && !larger) {
+            return;
+        }
+        Expression leftBound = new ExpressionValue(likeObject.getRangeLow(), Type.SQL_VARCHAR);
+        Expression rightBound = new ExpressionValue(likeObject.getRangeHigh(session), Type.SQL_VARCHAR);
+        if (between && !like) {
+            Expression leftOld = nodes[LEFT];
+            nodes = new Expression[BINARY];
+            nodes[LEFT] = new ExpressionLogical(OpTypes.GREATER_EQUAL, leftOld, leftBound);
+            nodes[RIGHT] = new ExpressionLogical(OpTypes.SMALLER_EQUAL, leftOld, rightBound);
+            opType = OpTypes.AND;
+            likeObject = null;
+        } else if (between && like) {
+            Expression gte = new ExpressionLogical(OpTypes.GREATER_EQUAL, nodes[LEFT], leftBound);
+            Expression lte = new ExpressionLogical(OpTypes.SMALLER_EQUAL, nodes[LEFT], rightBound);
+            ExpressionLike newLike = new ExpressionLike(this);
+            nodes = new Expression[BINARY];
+            likeObject = null;
+            nodes[LEFT] = new ExpressionLogical(OpTypes.AND, gte, lte);
+            nodes[RIGHT] = newLike;
+            opType = OpTypes.AND;
+        } else if (larger) {
+            Expression gte = new ExpressionLogical(OpTypes.GREATER_EQUAL, nodes[LEFT], leftBound);
+            ExpressionLike newLike = new ExpressionLike(this);
+            nodes = new Expression[BINARY];
+            likeObject = null;
+            nodes[LEFT] = gte;
+            nodes[RIGHT] = newLike;
+            opType = OpTypes.AND;
+        }
+    }
+}

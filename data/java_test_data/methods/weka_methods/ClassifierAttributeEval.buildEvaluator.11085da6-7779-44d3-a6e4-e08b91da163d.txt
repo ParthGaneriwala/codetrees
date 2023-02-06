@@ -1,0 +1,52 @@
+@Override
+public void buildEvaluator(final Instances data) throws Exception {
+    // can evaluator handle data?
+    getCapabilities().testWithFail(data);
+    m_trainInstances = new Instances(data, 0);
+    double baseMerit = 0;
+    m_merit = new double[data.numAttributes()];
+    m_pool = Executors.newFixedThreadPool(m_executionSlots);
+    Set<Future<double[]>> results = new HashSet<Future<double[]>>();
+    for (int i = -1; i < data.numAttributes(); i++) {
+        if (i != data.classIndex()) {
+            final int attIndex = i;
+            Future<double[]> futureEval = m_pool.submit(new Callable<double[]>() {
+
+                @Override
+                public double[] call() throws Exception {
+                    double[] eval = new double[2];
+                    eval[0] = attIndex;
+                    WrapperSubsetEval evaluator = new WrapperSubsetEval();
+                    evaluator.setOptions(m_wrapperTemplate.getOptions());
+                    evaluator.buildEvaluator(data);
+                    if (m_wrapperSetup.length() == 0) {
+                        m_wrapperSetup = evaluator.toString();
+                    }
+                    BitSet b = new BitSet(data.numAttributes());
+                    if (m_leaveOneOut) {
+                        b.set(0, data.numAttributes());
+                        b.set(data.classIndex(), false);
+                    }
+                    if (attIndex >= 0) {
+                        b.set(attIndex, !m_leaveOneOut);
+                    }
+                    eval[1] = evaluator.evaluateSubset(b);
+                    return eval;
+                }
+            });
+            results.add(futureEval);
+        }
+    }
+    for (Future<double[]> f : results) {
+        if (f.get()[0] != -1) {
+            m_merit[(int) f.get()[0]] = f.get()[1];
+        } else {
+            baseMerit = f.get()[1];
+        }
+    }
+    for (int i = 0; i < data.numAttributes(); i++) {
+        m_merit[i] = m_leaveOneOut ? baseMerit - m_merit[i] : m_merit[i] - baseMerit;
+    }
+    m_pool.shutdown();
+    m_trainInstances = new Instances(m_trainInstances, 0);
+}

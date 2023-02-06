@@ -1,0 +1,92 @@
+public void actionPerformed(ActionEvent event) {
+    resultFound = false;
+    ParameterSet resultParaSet = null;
+    // get the network object, this contains the graph
+    final CyNetwork network = Cytoscape.getCurrentNetwork();
+    curParams.setNetworkID(network.getIdentifier());
+    if (network == null) {
+        System.err.println("Can't get a network.");
+        return;
+    }
+    if (network.getNodeCount() < 1) {
+        JOptionPane.showMessageDialog(Cytoscape.getDesktop(), "Network has not been loaded!", "Error", JOptionPane.WARNING_MESSAGE);
+        return;
+    }
+    Set selectedNodes = network.getSelectedNodes();
+    Integer[] selectedNodesRGI = new Integer[selectedNodes.size()];
+    int c = 0;
+    for (Iterator i = selectedNodes.iterator(); i.hasNext(); ) {
+        Node node = (Node) i.next();
+        selectedNodesRGI[c] = new Integer(node.getRootGraphIndex());
+        c++;
+    }
+    // notice, here we set the selected nodes
+    curParams.setSelectedNodes(selectedNodesRGI);
+    Algorithm alg;
+    boolean newNet = false;
+    String halfResultTitle = "Result ";
+    // if (!networkManager.containsKey(network.getIdentifier())){
+    newNet = true;
+    alg = curParams.getAlg();
+    // alg = new Algorithm(null);
+    networkManager.put(network.getIdentifier(), alg);
+    // }
+    // else alg = (Algorithm) networkManager.get(network.getIdentifier());
+    // check the validation the input parameters
+    analyze = checkParams(curParams, newNet);
+    if (analyze == INTERRUPTED || analyze == EXISTS)
+        JOptionPane.showMessageDialog(Cytoscape.getDesktop(), interruptedMessage, "Interrupted", JOptionPane.WARNING_MESSAGE);
+    else {
+        // update the parameter set with this result title
+        resultParaSet = ParameterSet.getInstance().setParams(curParams, halfResultTitle + (resultCounter + 1), network.getIdentifier());
+        AnalyzeTask task = new AnalyzeTask(network, analyze, halfResultTitle + (resultCounter + 1), alg, curParams.getAlgorithm(), curParams);
+        JTaskConfig config = new JTaskConfig();
+        config.displayCancelButton(true);
+        config.displayStatus(true);
+        // Execute Task via TaskManager
+        // This automatically pops-open a JTask Dialog Box
+        TaskManager.executeTask(task, config);
+        if (task.isCompletedSuccessfully()) {
+            if (task.getComplexes().length > 0) {
+                resultFound = true;
+                resultCounter++;
+                resultPanel = new ResultPanel(task.getComplexes(), task.getAlg(), network, task.getImageList(), halfResultTitle + resultCounter);
+                JOptionPane.showMessageDialog(Cytoscape.getDesktop(), "" + task.getComplexes().length + " complexes have been identified.", "Completed", JOptionPane.INFORMATION_MESSAGE);
+            } else {
+                resultFound = false;
+                JOptionPane.showMessageDialog(Cytoscape.getDesktop(), "No clusters were found.\n" + "You can try changing the parameters or\n" + "modifying your node selection if you are using\n" + "a selection-specific scope.", "No Results", JOptionPane.WARNING_MESSAGE);
+            }
+        }
+    }
+    // add ResultPanel to right cytopanel
+    CytoscapeDesktop desktop = Cytoscape.getDesktop();
+    CytoPanel cytoPanel = desktop.getCytoPanel(SwingConstants.EAST);
+    // load the new results panel
+    if (resultFound) {
+        String resultTitle = halfResultTitle + resultCounter;
+        resultPanel.setResultTitle(resultTitle);
+        URL iconURL = ClusterPlugin.class.getResource("resources/results.gif");
+        if (iconURL != null) {
+            Icon icon = new ImageIcon(iconURL);
+            String tip = "complexes identified";
+            cytoPanel.add(resultTitle, icon, resultPanel, tip);
+        } else {
+            cytoPanel.add(resultTitle, resultPanel);
+        }
+        resultParaSet.setResultTitle(resultTitle);
+    }
+    // Ensures that the east cytopanel is not loaded if there are no results in it
+    if (resultFound || analyze == EXISTS || (analyze == INTERRUPTED && cytoPanel.indexOfComponent(resultPanel) >= 0)) {
+        // focus the result panel
+        if (resultFound)
+            resultIndex = cytoPanel.indexOfComponent(resultPanel);
+        System.err.println("-----------ResultPanel:" + resultIndex);
+        cytoPanel.setSelectedIndex(resultIndex);
+        cytoPanel.setState(CytoPanelState.DOCK);
+        // make sure that the visual style is applied whenever new results are produced
+        VisualMappingManager vmm = Cytoscape.getVisualMappingManager();
+        vistyle.initCalculators();
+        vmm.setVisualStyle(vistyle);
+        vmm.applyAppearances();
+    }
+}

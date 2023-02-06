@@ -1,0 +1,253 @@
+private Statement compileSet() {
+    int position = super.getPosition();
+    session.setScripting(false);
+    read();
+    switch(token.tokenType) {
+        case Tokens.CATALOG:
+            {
+                read();
+                Expression e = XreadValueSpecificationOrNull();
+                if (e == null) {
+                    HsqlName name = readSchemaName();
+                    Object[] args = new Object[] { name };
+                    return new StatementSession(StatementTypes.SET_CATALOG, args);
+                }
+                if (!e.getDataType().isCharacterType()) {
+                    throw Error.error(ErrorCode.X_0P000);
+                }
+                if (e.getType() != OpTypes.VALUE && (e.getType() != OpTypes.SQL_FUNCTION || !((FunctionSQL) e).isValueFunction())) {
+                    throw Error.error(ErrorCode.X_0P000);
+                }
+                Expression[] args = new Expression[] { e };
+                return new StatementSession(StatementTypes.SET_CATALOG, args);
+            }
+        case Tokens.SCHEMA:
+            {
+                read();
+                Expression e = XreadValueSpecificationOrNull();
+                if (e == null) {
+                    HsqlName name = readSchemaName();
+                    Object[] args = new Object[] { name };
+                    return new StatementSession(StatementTypes.SET_SCHEMA, args);
+                }
+                if (!e.getDataType().isCharacterType()) {
+                    throw Error.error(ErrorCode.X_0P000);
+                }
+                if (e.getType() != OpTypes.VALUE && (e.getType() != OpTypes.SQL_FUNCTION || !((FunctionSQL) e).isValueFunction())) {
+                    throw Error.error(ErrorCode.X_0P000);
+                }
+                Expression[] args = new Expression[] { e };
+                return new StatementSession(StatementTypes.SET_SCHEMA, args);
+            }
+        case Tokens.TIME:
+            {
+                read();
+                return compileSetTimeZone();
+            }
+        case Tokens.ROLE:
+            {
+                read();
+                return compileSetRole();
+            }
+        case Tokens.SESSION:
+            {
+                read();
+                return compileSessionSettings();
+            }
+        case Tokens.TRANSACTION:
+            {
+                read();
+                Object[] args = processTransactionCharacteristics();
+                if (args[0] == null && args[1] == null) {
+                    throw unexpectedToken();
+                }
+                return new StatementSession(StatementTypes.SET_TRANSACTION, args);
+            }
+        case Tokens.AUTOCOMMIT:
+            {
+                read();
+                Boolean mode = processTrueOrFalseObject();
+                Object[] args = new Object[] { mode };
+                return new StatementSession(StatementTypes.SET_SESSION_AUTOCOMMIT, args);
+            }
+        // deprecated
+        case Tokens.READONLY:
+            {
+                read();
+                Boolean readonly = processTrueOrFalseObject();
+                Object[] args = new Object[] { readonly };
+                return new StatementSession(StatementTypes.SET_SESSION_CHARACTERISTICS, args);
+            }
+        case Tokens.IGNORECASE:
+            {
+                read();
+                Boolean mode = processTrueOrFalseObject();
+                Object[] args = new Object[] { mode };
+                return new StatementSession(StatementTypes.SET_SESSION_SQL_IGNORECASE, args);
+            }
+        case Tokens.MAXROWS:
+            {
+                read();
+                Integer size = readIntegerObject();
+                Object[] args = new Object[] { size };
+                return new StatementSession(StatementTypes.SET_SESSION_RESULT_MAX_ROWS, args);
+            }
+        // for backward compatibility
+        case Tokens.DEFAULT:
+            {
+                read();
+                readThis(Tokens.TABLE);
+                readThis(Tokens.TYPE);
+                int type = TableBase.MEMORY_TABLE;
+                switch(token.tokenType) {
+                    case Tokens.MEMORY:
+                        break;
+                    case Tokens.CACHED:
+                        type = TableBase.CACHED_TABLE;
+                        break;
+                    default:
+                        throw unexpectedToken();
+                }
+                read();
+                Object[] args = new Object[] { ValuePool.getInt(type) };
+                return new StatementCommand(StatementTypes.SET_DATABASE_DEFAULT_TABLE_TYPE, args);
+            }
+        case Tokens.TABLE:
+            {
+                read();
+                Table t = readTableName();
+                Object[] args = new Object[] { t.getName(), null };
+                switch(token.tokenType) {
+                    default:
+                        {
+                            throw unexpectedToken();
+                        }
+                    case Tokens.SOURCE:
+                        read();
+                        return compileTextTableSource(t);
+                    case Tokens.READ:
+                        {
+                            read();
+                            boolean readonly = false;
+                            if (token.tokenType == Tokens.WRITE) {
+                                read();
+                            } else {
+                                readThis(Tokens.ONLY);
+                                readonly = true;
+                            }
+                            args[1] = Boolean.valueOf(readonly);
+                            return new StatementCommand(StatementTypes.SET_TABLE_READONLY, args, null, t.getName());
+                        }
+                    // deprecated
+                    case Tokens.READONLY:
+                        {
+                            read();
+                            Boolean readonly = processTrueOrFalseObject();
+                            args[1] = readonly;
+                            return new StatementCommand(StatementTypes.SET_TABLE_READONLY, args, null, t.getName());
+                        }
+                    case Tokens.INDEX:
+                        {
+                            String value;
+                            read();
+                            checkIsValue();
+                            value = token.tokenString;
+                            read();
+                            args[1] = value;
+                            return new StatementCommand(StatementTypes.SET_TABLE_INDEX, args);
+                        }
+                    case Tokens.TYPE:
+                        {
+                            read();
+                            int newType;
+                            if (token.tokenType == Tokens.CACHED) {
+                                newType = TableBase.CACHED_TABLE;
+                            } else if (token.tokenType == Tokens.MEMORY) {
+                                newType = TableBase.MEMORY_TABLE;
+                            } else {
+                                throw super.unexpectedToken();
+                            }
+                            read();
+                            args[1] = new Integer(newType);
+                            return new StatementCommand(StatementTypes.SET_TABLE_TYPE, args, null, t.getName());
+                        }
+                }
+            }
+        /*
+            case Tokens.CHECKPOINT : {
+                read();
+                readThis(Tokens.DEFRAG);
+
+                int      size = readInteger();
+                Object[] args = new Object[]{ new Integer(size) };
+
+                return new StatementCommand(
+                    StatementTypes.SET_DATABASE_FILES_DEFRAG, args, null,
+                    null);
+            }
+*/
+        case Tokens.WRITE_DELAY:
+            {
+                read();
+                int delay = 0;
+                if (token.tokenType == Tokens.TRUE) {
+                    delay = database.getProperties().getDefaultWriteDelay();
+                    read();
+                } else if (token.tokenType == Tokens.FALSE) {
+                    delay = 0;
+                    read();
+                } else {
+                    delay = this.readInteger();
+                    if (delay < 0) {
+                        delay = 0;
+                    }
+                    if (token.tokenType == Tokens.MILLIS) {
+                        read();
+                    } else {
+                        delay *= 1000;
+                    }
+                }
+                Object[] args = new Object[] { new Integer(delay) };
+                return new StatementCommand(StatementTypes.SET_DATABASE_FILES_WRITE_DELAY, args, null, null);
+            }
+        case Tokens.PASSWORD:
+            {
+                String password;
+                read();
+                password = readPassword();
+                Object[] args = new Object[] { null, password };
+                return new StatementCommand(StatementTypes.SET_USER_PASSWORD, args);
+            }
+        case Tokens.INITIAL:
+            {
+                read();
+                readThis(Tokens.SCHEMA);
+                HsqlName schema;
+                if (token.tokenType == Tokens.DEFAULT) {
+                    schema = null;
+                } else {
+                    schema = database.schemaManager.getSchemaHsqlName(token.tokenString);
+                }
+                read();
+                Object[] args = new Object[] { null, schema };
+                return new StatementCommand(StatementTypes.SET_USER_INITIAL_SCHEMA, args);
+            }
+        case Tokens.FILES:
+            {
+                return compileSetFilesProperty();
+            }
+        case Tokens.DATABASE:
+            {
+                return compileSetDatabaseProperty();
+            }
+        case Tokens.PROPERTY:
+            {
+                return compileSetProperty();
+            }
+        default:
+            {
+                rewind(position);
+                return compileSetStatement(session.sessionContext.sessionVariablesRange);
+            }
+    }
+}

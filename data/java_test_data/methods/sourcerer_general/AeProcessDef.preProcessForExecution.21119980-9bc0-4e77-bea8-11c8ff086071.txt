@@ -1,0 +1,37 @@
+public void preProcessForExecution(IAeContextWSDLProvider aContextProvider, IAeExpressionLanguageFactory aExpressionLanguageFactory) throws AeBusinessProcessException {
+    runCommonVisitors(aContextProvider, aExpressionLanguageFactory, true);
+    // visitor will mark scopes that don't have any nested compensation handlers in order to avoid recording a snapshot when the scope completes
+    accept(new AeScopeSnapshotOptimizationVisitor());
+    // assign variable usages for definitions
+    IAeDefVisitor resourceLocker = AeDefVisitorFactory.getInstance(getNamespace()).createResourceLockingVisitor(aExpressionLanguageFactory);
+    resourceLocker.visit(this);
+    // NOTE: parent assignments must be run before this
+    // examine all receives and picks (for onMessages)
+    // whose createInstance property is set to true
+    // list contents: partnerLinkKey:operationName
+    AeDefEntryPointInitialVisitor entryPtVisitor = new AeDefEntryPointInitialVisitor();
+    entryPtVisitor.visit(this);
+    mCreateInstances = entryPtVisitor.getCreateInstanceCollection();
+    setMultiStart(entryPtVisitor.getCreateInstanceActivityCount() > 1);
+    AeDefOneWayVisitor oneWayReceiveVisitor = new AeDefOneWayVisitor(aContextProvider);
+    oneWayReceiveVisitor.visit(this);
+    AeDefCorrelatedReceiveVisitor duplicateReceiveVisitor = new AeDefCorrelatedReceiveVisitor();
+    duplicateReceiveVisitor.visit(this);
+    // AeDefCorrelatedReceiveVisitor having run.
+    if (!isMultiStart()) {
+        AeCreateInstanceOperationVisitor opVisitor = new AeCreateInstanceOperationVisitor();
+        opVisitor.visit(this);
+        setCreateInstanceOperationOnly(opVisitor.isCreateInstanceOnly());
+    }
+    // NOTE: parent assignments must be run before this
+    // build map for all properties
+    // values are the set of properties
+    // key is partnerLinkName:portTypeQName:operationName
+    AeDefEntryPointPropertiesVisitor propsVisitor = new AeDefEntryPointPropertiesVisitor();
+    propsVisitor.visit(this);
+    getCorrelatedReceivesProperties().putAll(propsVisitor.getPropertiesMap());
+    getCorrelatedReceivesMessagePartsMap().putAll(propsVisitor.getMessagePartsMap());
+    // this visitor caches the property aliases so we don't have to resolve at runtime
+    IAeDefVisitor propAliasViz = AeDefVisitorFactory.getInstance(getNamespace()).createPropertyAliasInlineVisitor(aContextProvider, aExpressionLanguageFactory);
+    accept(propAliasViz);
+}

@@ -1,0 +1,78 @@
+public void prepare() {
+    if (!isPrepared) {
+        isPrepared = true;
+        // Restore the original pre-hookProcess rules
+        rules = rawRules;
+        // Is there any data to bind in yet?
+        Graph data = null;
+        if (fdata != null)
+            data = fdata.getGraph();
+        // initilize the deductions graph
+        fdeductions = new FGraph(Factory.createGraphMem());
+        dataFind = (data == null) ? fdeductions : FinderUtil.cascade(fdeductions, fdata);
+        // Initialize the optional TGC caches
+        if (useTGCCaching) {
+            if (schemaGraph != null) {
+                // Check if we can just reuse the copy of the raw
+                if ((transitiveEngine.checkOccurance(TransitiveReasoner.subPropertyOf, data) || transitiveEngine.checkOccurance(TransitiveReasoner.subClassOf, data) || transitiveEngine.checkOccurance(RDFS.domain.asNode(), data) || transitiveEngine.checkOccurance(RDFS.range.asNode(), data))) {
+                    // The data graph contains some ontology knowledge so split the caches
+                    // now and rebuild them using merged data
+                    transitiveEngine.insert(((OrigFBRuleInfGraph) schemaGraph).fdata, fdata);
+                }
+            } else {
+                if (data != null) {
+                    transitiveEngine.insert(null, fdata);
+                }
+            }
+            // Insert any axiomatic statements into the caches
+            for (Iterator i = rules.iterator(); i.hasNext(); ) {
+                Rule r = (Rule) i.next();
+                if (r.bodyLength() == 0) {
+                    // An axiom
+                    for (int j = 0; j < r.headLength(); j++) {
+                        Object head = r.getHeadElement(j);
+                        if (head instanceof TriplePattern) {
+                            TriplePattern h = (TriplePattern) head;
+                            transitiveEngine.add(h.asTriple());
+                        }
+                    }
+                }
+            }
+            transitiveEngine.setCaching(true, true);
+            // dataFind = FinderUtil.cascade(subClassCache, subPropertyCache, dataFind);
+            dataFind = FinderUtil.cascade(dataFind, transitiveEngine.getSubClassCache(), transitiveEngine.getSubPropertyCache());
+        }
+        // Call any optional preprocessing hook
+        Finder dataSource = fdata;
+        if (preprocessorHooks != null && preprocessorHooks.size() > 0) {
+            Graph inserts = Factory.createGraphMem();
+            for (Iterator i = preprocessorHooks.iterator(); i.hasNext(); ) {
+                RulePreprocessHook hook = (RulePreprocessHook) i.next();
+                // hook.run(this, dataFind, inserts);
+                throw new ReasonerException("Internal error: attempted to invoke obsoleted reasoner with preprocessing hook");
+            }
+            if (inserts.size() > 0) {
+                FGraph finserts = new FGraph(inserts);
+                dataSource = FinderUtil.cascade(fdata, finserts);
+                dataFind = FinderUtil.cascade(dataFind, finserts);
+            }
+        }
+        boolean rulesLoaded = false;
+        if (schemaGraph != null) {
+            Graph rawPreload = ((InfGraph) schemaGraph).getRawGraph();
+            if (rawPreload != null) {
+                dataFind = FinderUtil.cascade(dataFind, new FGraph(rawPreload));
+            }
+            rulesLoaded = preloadDeductions(schemaGraph);
+        }
+        if (rulesLoaded) {
+            engine.fastInit(dataSource);
+        } else {
+            // No preload so do the rule separation
+            addBRules(extractPureBackwardRules(rules));
+            engine.init(true, dataSource);
+        }
+        // Prepare the context for builtins run in backwards engine
+        context = new BBRuleContext(this);
+    }
+}

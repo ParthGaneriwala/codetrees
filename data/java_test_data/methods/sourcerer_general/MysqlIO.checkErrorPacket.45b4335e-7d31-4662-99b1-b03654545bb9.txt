@@ -1,0 +1,65 @@
+private void checkErrorPacket(Buffer resultPacket) throws SQLException {
+    int statusCode = resultPacket.readByte();
+    // Error handling
+    if (statusCode == (byte) 0xff) {
+        String serverErrorMessage;
+        int errno = 2000;
+        if (this.protocolVersion > 9) {
+            errno = resultPacket.readInt();
+            String xOpen = null;
+            serverErrorMessage = resultPacket.readString(this.connection.getErrorMessageEncoding(), getExceptionInterceptor());
+            if (serverErrorMessage.charAt(0) == '#') {
+                // we have an SQLState
+                if (serverErrorMessage.length() > 6) {
+                    xOpen = serverErrorMessage.substring(1, 6);
+                    serverErrorMessage = serverErrorMessage.substring(6);
+                    if (xOpen.equals("HY000")) {
+                        // $NON-NLS-1$
+                        xOpen = SQLError.mysqlToSqlState(errno, this.connection.getUseSqlStateCodes());
+                    }
+                } else {
+                    xOpen = SQLError.mysqlToSqlState(errno, this.connection.getUseSqlStateCodes());
+                }
+            } else {
+                xOpen = SQLError.mysqlToSqlState(errno, this.connection.getUseSqlStateCodes());
+            }
+            clearInputStream();
+            StringBuffer errorBuf = new StringBuffer();
+            String xOpenErrorMessage = SQLError.get(xOpen);
+            if (!this.connection.getUseOnlyServerErrorMessages()) {
+                if (xOpenErrorMessage != null) {
+                    errorBuf.append(xOpenErrorMessage);
+                    // $NON-NLS-1$
+                    errorBuf.append(Messages.getString("MysqlIO.68"));
+                }
+            }
+            errorBuf.append(serverErrorMessage);
+            if (!this.connection.getUseOnlyServerErrorMessages()) {
+                if (xOpenErrorMessage != null) {
+                    // $NON-NLS-1$
+                    errorBuf.append("\"");
+                }
+            }
+            appendInnodbStatusInformation(xOpen, errorBuf);
+            if (xOpen != null && xOpen.startsWith("22")) {
+                throw new MysqlDataTruncation(errorBuf.toString(), 0, true, false, 0, 0, errno);
+            } else {
+                throw SQLError.createSQLException(errorBuf.toString(), xOpen, errno, false, getExceptionInterceptor(), this.connection);
+            }
+        }
+        serverErrorMessage = resultPacket.readString(this.connection.getErrorMessageEncoding(), getExceptionInterceptor());
+        clearInputStream();
+        if (serverErrorMessage.indexOf(Messages.getString("MysqlIO.70")) != -1) {
+            // $NON-NLS-1$
+            throw SQLError.createSQLException(SQLError.get(SQLError.SQL_STATE_COLUMN_NOT_FOUND) + // $NON-NLS-1$
+            ", " + serverErrorMessage, SQLError.SQL_STATE_COLUMN_NOT_FOUND, -1, false, getExceptionInterceptor(), this.connection);
+        }
+        StringBuffer errorBuf = new StringBuffer(Messages.getString(// $NON-NLS-1$
+        "MysqlIO.72"));
+        errorBuf.append(serverErrorMessage);
+        // $NON-NLS-1$
+        errorBuf.append("\"");
+        throw SQLError.createSQLException(SQLError.get(SQLError.SQL_STATE_GENERAL_ERROR) + // $NON-NLS-1$
+        ", " + errorBuf.toString(), SQLError.SQL_STATE_GENERAL_ERROR, -1, false, getExceptionInterceptor(), this.connection);
+    }
+}

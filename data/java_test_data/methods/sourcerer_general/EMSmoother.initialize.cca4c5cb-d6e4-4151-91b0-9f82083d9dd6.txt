@@ -1,0 +1,83 @@
+public void initialize(boolean useLambdas) {
+    lambdas = new double[maxClusterId];
+    if (useLambdas) {
+        for (BinaryTreeIterator<HistoryTreePayload> i = theTree.getPreOrderIterator(); i.hasNext(); ) {
+            HistoryTreePayload payload = i.next();
+            lambdas[payload.clusterid] = payload.lambda;
+        }
+    } else {
+        for (int i = 0; i < maxClusterId; ++i) {
+            lambdas[i] = 0.5 + (Math.random() - 0.5) * 0.1;
+        }
+    }
+    clusterCounts = new long[maxClusterId];
+    clusterSizes = new int[maxClusterId];
+    for (byte dataId : trainingDataIds) {
+        ConstCountDistribution dataDist = distStorage.getDistribution(theTree.getPayload().clusterid, dataId);
+        if (dataDist == null) {
+            System.out.printf("data #%d root cluster is null\n", dataId);
+        } else {
+            System.out.printf("data #%d root cluster count %d\n", dataId, dataDist.getTotalCount());
+        }
+    }
+    for (byte dataId : devDataIds) {
+        ConstCountDistribution dataDist = distStorage.getDistribution(theTree.getPayload().clusterid, dataId);
+        if (dataDist == null) {
+            System.out.printf("data #%d root cluster is null\n", dataId);
+        } else {
+            System.out.printf("data #%d root cluster count %d\n", dataId, dataDist.getTotalCount());
+        }
+    }
+    JobManager manager = JobManager.getInstance();
+    JobGroup group = manager.createJobGroup("cluster counts");
+    // final float avgClusterCounts[] = new float[nrClusters];
+    for (int clusterid = 0; clusterid < maxClusterId; ++clusterid) {
+        final int cid = clusterid;
+        if (nodes[clusterid] == null)
+            continue;
+        Runnable run = new Runnable() {
+
+            @Override
+            public void run() {
+                Long2LongMap map = null;
+                long totalCount = 0;
+                for (byte dataId : trainingDataIds) {
+                    ConstCountDistribution dataDist = distStorage.getDistribution(cid, dataId);
+                    if (dataDist != null) {
+                        // System.err.printf("dist clusterid %d, dataid %d count = %d\n", cid, dataId, dataDist.totalCount);
+                        totalCount += dataDist.getTotalCount();
+                        if (trainingDataIds.length == 1) {
+                            map = dataDist.toLong2LongMap();
+                        } else {
+                            if (map == null) {
+                                map = dataDist.toLong2LongMap();
+                            } else {
+                                long[] keys = dataDist.keys();
+                                long[] values = dataDist.values();
+                                for (int i = 0; i < keys.length; ++i) {
+                                    map.addAndGet(keys[i], values[i]);
+                                }
+                            }
+                        }
+                    } else {
+                    // System.err.printf("null dist clusterid %d, dataid %d\n", cid, dataId);
+                    }
+                }
+                clusterCounts[cid] = totalCount;
+                if (map != null) {
+                    clusterSizes[cid] = map.size();
+                }
+            // an approximation
+            // avgClusterCounts[cid] = (float) totalCount / nr_items ;
+            }
+        };
+        manager.addJob(group, new Job(run, "cluster #" + Integer.toString(cid)));
+    }
+    group.join();
+    long totalTrainingCount = 0;
+    for (BinaryTreeIterator<HistoryTreePayload> it = theTree.getLeafIterator(); it.hasNext(); ) {
+        totalTrainingCount += clusterCounts[it.next().clusterid];
+    }
+    long rootCount = clusterCounts[theTree.getPayload().clusterid];
+    System.out.printf("Total training counts: leaves %d, root %d\n", totalTrainingCount, rootCount);
+}

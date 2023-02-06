@@ -1,0 +1,221 @@
+public Object convertElementToObject(Element e) throws ClassNotFoundException, InstantiationException, IllegalAccessException, IllegalArgumentException, SecurityException, InvocationTargetException, NoSuchMethodException {
+    if (e.getAttributeValue("xmlIdentifier") != null) {
+        String ident = e.getAttributeValue("xmlIdentifier").intern();
+        if (cache.containsKey(ident)) {
+            return cache.get(ident);
+        }
+    }
+    String text = e.getAttributeValue("class");
+    boolean isArray = false;
+    if (text == null)
+        return null;
+    if (text.endsWith("_Array")) {
+        text = text.replaceAll("_Array", "");
+        isArray = true;
+    }
+    Object o = null;
+    Class c = null;
+    if ((isArray) && ("boolean, char, byte, short, int, long, float, double".indexOf(text) != -1)) {
+        if ("boolean".equals(text)) {
+            c = boolean.class;
+        } else if ("byte".equals(text)) {
+            c = byte.class;
+        } else if ("char".equals(text)) {
+            c = char.class;
+        } else if ("short".equals(text)) {
+            c = short.class;
+        } else if ("int".equals(text)) {
+            c = int.class;
+        } else if ("long".equals(text)) {
+            c = long.class;
+        } else if ("float".equals(text)) {
+            c = float.class;
+        } else if ("double".equals(text)) {
+            c = double.class;
+        }
+    } else {
+        c = loader.loadClass(text);
+    }
+    if (isArray) {
+        int size = 0;
+        Iterator iterator = e.getChildren().iterator();
+        do {
+            if (!iterator.hasNext())
+                break;
+            if (iterator.next() instanceof Element)
+                size++;
+        } while (true);
+        o = Array.newInstance(c, size);
+    } else if (c == Character.class) {
+        o = e.getText().charAt(0);
+    } else if (c == java.util.Date.class) {
+        o = new java.util.Date(Long.parseLong(e.getText()));
+    } else if (c == java.sql.Date.class) {
+        o = new java.sql.Date(Long.parseLong(e.getText()));
+    } else if (customInstantiations.containsKey(c)) {
+        CustomInstantiator instantiator = (CustomInstantiator) customInstantiations.get(c);
+        o = instantiator.instantiate(e);
+    } else if (c.isEnum()) {
+        o = Enum.valueOf(c, e.getText());
+    } else {
+        Constructor constructor = null;
+        try {
+            constructor = c.getDeclaredConstructor(new Class[] { String.class });
+        } catch (NoSuchMethodException exc) {
+        }
+        if (constructor == null) {
+            constructor = c.getDeclaredConstructor(new Class[0]);
+            constructor.setAccessible(true);
+            o = constructor.newInstance();
+        } else {
+            constructor.setAccessible(true);
+            o = constructor.newInstance(new Object[] { e.getText() });
+        }
+    }
+    if (e.getAttributeValue("xmlIdentifier") != null) {
+        cache.put(e.getAttributeValue("xmlIdentifier").intern(), o);
+    }
+    if (o instanceof AbstractList) {
+        Iterator list = e.getChildren().iterator();
+        do {
+            if (!list.hasNext())
+                break;
+            Content tmp = (Content) list.next();
+            if (tmp instanceof Element) {
+                try {
+                    ((AbstractList) o).add(convertElementToObject((Element) tmp));
+                } catch (NoSuchMethodException exc) {
+                // Unable to construct this object
+                }
+            }
+        } while (true);
+    } else if (o instanceof AbstractCollection) {
+        Iterator list = e.getChildren().iterator();
+        do {
+            if (!list.hasNext())
+                break;
+            Content tmp = (Content) list.next();
+            if (tmp instanceof Element) {
+                try {
+                    ((AbstractCollection) o).add(convertElementToObject((Element) tmp));
+                } catch (NoSuchMethodException exc) {
+                // Unable to construct this object
+                }
+            }
+        } while (true);
+    } else if (o.getClass().isArray()) {
+        Iterator list = e.getChildren().iterator();
+        int j = 0;
+        do {
+            if (!list.hasNext())
+                break;
+            Content tmp = (Content) list.next();
+            if (tmp instanceof Element) {
+                Object sub = convertElementToObject((Element) tmp);
+                // ((Object[]) (Object[]) o)[j] = sub;
+                Array.set(o, j, sub);
+                j++;
+            }
+        } while (true);
+    } else if (o instanceof AbstractMap) {
+        Iterator list = e.getChildren().iterator();
+        do {
+            if (!list.hasNext())
+                break;
+            Content tmp = (Content) list.next();
+            if ((tmp instanceof Element) && ((Element) tmp).getName().equals("entry")) {
+                try {
+                    Object key = null;
+                    Object value = null;
+                    Element child = (Element) ((Element) tmp).getChildren().get(0);
+                    if (child.getAttributeValue("name").equals("key"))
+                        key = convertElementToObject(child);
+                    else
+                        value = convertElementToObject(child);
+                    child = (Element) ((Element) tmp).getChildren().get(1);
+                    if (child.getAttributeValue("name").equals("key"))
+                        key = convertElementToObject(child);
+                    else
+                        value = convertElementToObject(child);
+                    if (key == null)
+                        System.out.println("CRAP!: " + key + ", " + value);
+                    ((AbstractMap) o).put(key, value);
+                } catch (NoSuchMethodException exc) {
+                // Unable to construct this object
+                }
+            }
+        } while (true);
+    } else if (o instanceof Dictionary) {
+        Iterator list = e.getChildren().iterator();
+        do {
+            if (!list.hasNext())
+                break;
+            Content tmp = (Content) list.next();
+            if ((tmp instanceof Element) && ((Element) tmp).getName().equals("entry")) {
+                try {
+                    Object key = null;
+                    Object value = null;
+                    Element child = (Element) ((Element) tmp).getChildren().get(0);
+                    if (child.getAttribute("name").equals("key"))
+                        key = convertElementToObject(child);
+                    else
+                        value = convertElementToObject(child);
+                    child = (Element) ((Element) tmp).getChildren().get(0);
+                    if (child.getAttribute("name").equals("key"))
+                        key = convertElementToObject(child);
+                    else
+                        value = convertElementToObject(child);
+                    ((Dictionary) o).put(key, value);
+                } catch (NoSuchMethodException exc) {
+                // Unable to construct this object
+                }
+            }
+        } while (true);
+    } else if (o instanceof Calendar) {
+        try {
+            ((Calendar) o).setTimeInMillis(Long.parseLong(e.getTextTrim()));
+        } catch (NumberFormatException exc) {
+            o = null;
+        }
+    } else {
+        for (Content tmp : (List<Content>) e.getChildren()) {
+            if (tmp instanceof Element) {
+                Element child = (Element) tmp;
+                Object value = convertElementToObject(child);
+                String name = child.getAttributeValue("name");
+                Field field = ClassUtilities.getField(c, name, false);
+                if (field != null) {
+                    field.set(o, value);
+                }
+            }
+        }
+    /*Iterator list = e.getChildren().iterator();
+			do {
+				if (!list.hasNext()) break;
+				Content tmp = (Content) list.next();
+				if (tmp instanceof Element) {
+					Element child = (Element) tmp;
+					Object value = convertElementToObject(child);
+					try {
+						Method setter = null;
+						try {
+							setter =
+											c.getMethod("set" + child.getAttributeValue("name"), new Class[] {value
+															.getClass()});
+						} catch (Exception exc) {
+							setter =
+											c.getMethod("set" + child.getAttributeValue("name"),
+															new Class[] {convertToPrimitive(value.getClass())});
+						}
+						setter.invoke(o, new Object[] {value});
+					} catch (NoSuchMethodException exc) {
+					} catch (Throwable t) {
+					}
+				}
+			} while (true);*/
+    }
+    if (e.getAttributeValue("xmlIdentifier") != null) {
+        cache.put(e.getAttributeValue("xmlIdentifier").intern(), o);
+    }
+    return o;
+}

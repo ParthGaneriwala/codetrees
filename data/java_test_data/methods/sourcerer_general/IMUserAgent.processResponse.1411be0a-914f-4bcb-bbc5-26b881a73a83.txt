@@ -1,0 +1,81 @@
+public void processResponse(ResponseEvent responseEvent) {
+    Response response = responseEvent.getResponse();
+    System.out.println("@@@ IMua processing response: " + response.toString());
+    ClientTransaction clientTransaction = responseEvent.getClientTransaction();
+    try {
+        DebugIM.println("\n\nResponse " + response.getStatusCode() + " " + response.getReasonPhrase() + " :\n" + response);
+        Response responseCloned = (Response) response.clone();
+        CSeqHeader cseqHeader = (CSeqHeader) responseCloned.getHeader(CSeqHeader.NAME);
+        if (response.getStatusCode() == Response.OK || response.getStatusCode() == 202) {
+            if (cseqHeader.getMethod().equals("INVITE")) {
+                imInviteProcessing.processOK(responseCloned, clientTransaction);
+            }
+            if (cseqHeader.getMethod().equals("REGISTER")) {
+                imRegisterProcessing.processOK(responseCloned, clientTransaction);
+            }
+            if (cseqHeader.getMethod().equals("MESSAGE")) {
+                imMessageProcessing.processOK(responseCloned, clientTransaction);
+            }
+            if (cseqHeader.getMethod().equals("BYE")) {
+                imByeProcessing.processOK(responseCloned, clientTransaction);
+            }
+            if (cseqHeader.getMethod().equals("SUBSCRIBE")) {
+                imSubscribeProcessing.processOK(responseCloned, clientTransaction);
+            }
+            // Henrik Leion added NOTIFY processing
+            if (cseqHeader.getMethod().equals("NOTIFY")) {
+                imNotifyProcessing.processOk(responseCloned, clientTransaction);
+            }
+        } else if (response.getStatusCode() == Response.NOT_FOUND || response.getStatusCode() == Response.TEMPORARILY_UNAVAILABLE) {
+            if (cseqHeader.getMethod().equals("SUBSCRIBE")) {
+                new AlertInstantMessaging("��Ҫ��ӵĺ��Ѳ����ڣ�");
+            } else {
+                ListenerInstantMessaging listenerInstantMessaging = imGUI.getListenerInstantMessaging();
+                ChatSessionManager chatSessionManager = listenerInstantMessaging.getChatSessionManager();
+                ChatSession chatSession = null;
+                String toURL = IMUtilities.getKey(response, "To");
+                if (chatSessionManager.hasAlreadyChatSession(toURL)) {
+                    chatSession = chatSessionManager.getChatSession(toURL);
+                    chatSession.setExitedSession(true, "��ϵ��δ�ҵ�!");
+                }
+                new AlertInstantMessaging(// + " The contact is not available!!!");
+                "�����Ϣ���ܷ��ͣ���ϵ����Ч��");
+            }
+        } else if (response.getStatusCode() == Response.DECLINE || response.getStatusCode() == Response.FORBIDDEN) {
+            String fromURL = IMUtilities.getKey(response, "From");
+            // new AlertInstantMessaging("The contact " + fromURL
+            // + " has rejected your subscription!!!");
+            new AlertInstantMessaging("��ϵ�˵� " + fromURL + " �ܾ�!");
+        } else {
+            if (response.getStatusCode() == Response.PROXY_AUTHENTICATION_REQUIRED || response.getStatusCode() == Response.UNAUTHORIZED) {
+                DebugIM.println("IMUserAgent, processResponse(), Credentials to " + " provide!");
+                // WE start the authentication process!!!
+                // Let's get the Request related to this response:
+                Request request = clientTransaction.getRequest();
+                if (request == null) {
+                    DebugIM.println("IMUserAgent, processResponse(), the request " + " that caused the 407 has not been retrieved!!! Return cancelled!");
+                } else {
+                    Request clonedRequest = (Request) request.clone();
+                    // Let's increase the Cseq:
+                    cseqHeader = (CSeqHeader) clonedRequest.getHeader(CSeqHeader.NAME);
+                    cseqHeader.setSequenceNumber(cseqHeader.getSequenceNumberLong() + 1);
+                    // Let's add a Proxy-Authorization header:
+                    // We send the informations stored:
+                    AuthenticationProcess authenticationProcess = imGUI.getAuthenticationProcess();
+                    Header header = authenticationProcess.getHeader(response);
+                    if (header == null) {
+                        DebugIM.println("IMUserAgent, processResponse(), Proxy-Authorization " + " header is null, the request is not resent");
+                    } else {
+                        clonedRequest.setHeader(header);
+                        ClientTransaction newClientTransaction = sipProvider.getNewClientTransaction(clonedRequest);
+                        newClientTransaction.sendRequest();
+                        DebugIM.println("IMUserAgent, processResponse(), REGISTER " + "with credentials sent:\n" + clonedRequest);
+                        DebugIM.println();
+                    }
+                }
+            }
+        }
+    } catch (Exception ex) {
+        ex.printStackTrace();
+    }
+}

@@ -1,0 +1,150 @@
+@Override
+public void processIncoming(Data data) throws WekaException {
+    if (isStopRequested()) {
+        return;
+    }
+    if (getStepManager().isStreamFinished(data)) {
+        // done
+        // notify downstream steps of end of stream
+        Data d = new Data(StepManager.CON_CHART);
+        getStepManager().throughputFinished(d);
+        // save memory if using windowed evaluation
+        m_windowEval = null;
+        m_window = null;
+        m_windowedPreds = null;
+        if (getStepManager().numOutgoingConnectionsOfType(StepManager.CON_TEXT) > 0) {
+            try {
+                String textTitle = m_classifierName;
+                String results = "=== Performance information ===\n\n" + "Scheme:   " + textTitle + "\n" + "Relation: " + m_eval.getHeader().relationName() + "\n\n" + m_eval.toSummaryString();
+                if (m_eval.getHeader().classIndex() >= 0 && m_eval.getHeader().classAttribute().isNominal() && (m_outputInfoRetrievalStats)) {
+                    results += "\n" + m_eval.toClassDetailsString();
+                }
+                if (m_eval.getHeader().classIndex() >= 0 && m_eval.getHeader().classAttribute().isNominal()) {
+                    results += "\n" + m_eval.toMatrixString();
+                }
+                textTitle = "Results: " + textTitle;
+                Data textData = new Data(StepManager.CON_TEXT);
+                textData.setPayloadElement(StepManager.CON_TEXT, results);
+                textData.setPayloadElement(StepManager.CON_AUX_DATA_TEXT_TITLE, textTitle);
+                getStepManager().outputData(textData);
+            } catch (Exception ex) {
+                throw new WekaException(ex);
+            }
+        }
+        return;
+    }
+    weka.classifiers.Classifier classifier = (weka.classifiers.Classifier) data.getPayloadElement(StepManager.CON_INCREMENTAL_CLASSIFIER);
+    Instance instance = (Instance) data.getPayloadElement(StepManager.CON_AUX_DATA_TEST_INSTANCE);
+    try {
+        if (m_reset) {
+            m_reset = false;
+            m_classifierName = classifier.getClass().getName();
+            m_classifierName = m_classifierName.substring(m_classifierName.lastIndexOf(".") + 1, m_classifierName.length());
+            m_eval = new Evaluation(instance.dataset());
+            m_eval.useNoPriors();
+            if (m_windowSize > 0) {
+                m_windowEval = new Evaluation(instance.dataset());
+                m_windowEval.useNoPriors();
+            }
+            if (instance.classAttribute().isNominal()) {
+                if (!instance.classIsMissing()) {
+                    m_dataPoint = new double[3];
+                    m_dataLegend.add("Accuracy");
+                    m_dataLegend.add("RMSE (prob)");
+                    m_dataLegend.add("Kappa");
+                } else {
+                    m_dataPoint = new double[1];
+                    m_dataLegend.add("Confidence");
+                }
+            } else {
+                m_dataPoint = new double[1];
+                if (instance.classIsMissing()) {
+                    m_dataLegend.add("Prediction");
+                } else {
+                    m_dataLegend.add("RMSE");
+                }
+            }
+        }
+        getStepManager().throughputUpdateStart();
+        m_instanceCount++;
+        double[] dist = classifier.distributionForInstance(instance);
+        double pred = 0;
+        if (!instance.classIsMissing()) {
+            if (m_outputInfoRetrievalStats) {
+                m_eval.evaluateModelOnceAndRecordPrediction(dist, instance);
+            } else {
+                m_eval.evaluateModelOnce(dist, instance);
+            }
+            if (m_windowSize > 0) {
+                m_windowEval.evaluateModelOnce(dist, instance);
+                m_window.addFirst(instance);
+                m_windowedPreds.addFirst(dist);
+                if (m_instanceCount > m_windowSize) {
+                    // forget the oldest prediction
+                    Instance oldest = m_window.removeLast();
+                    double[] oldDist = m_windowedPreds.removeLast();
+                    oldest.setWeight(-oldest.weight());
+                    m_windowEval.evaluateModelOnce(oldDist, oldest);
+                    oldest.setWeight(-oldest.weight());
+                }
+            }
+        } else {
+            pred = classifier.classifyInstance(instance);
+        }
+        if (instance.classIndex() >= 0) {
+            // need to check that the class is not missing
+            if (instance.classAttribute().isNominal()) {
+                if (!instance.classIsMissing()) {
+                    if (m_windowSize > 0) {
+                        m_dataPoint[1] = m_windowEval.rootMeanSquaredError();
+                        m_dataPoint[2] = m_windowEval.kappa();
+                    } else {
+                        m_dataPoint[1] = m_eval.rootMeanSquaredError();
+                        m_dataPoint[2] = m_eval.kappa();
+                    }
+                }
+                double primaryMeasure = 0;
+                if (!instance.classIsMissing()) {
+                    primaryMeasure = m_windowSize > 0 ? 1.0 - m_windowEval.errorRate() : 1.0 - m_eval.errorRate();
+                } else {
+                    // record confidence as the primary measure
+                    // (another possibility would be entropy of
+                    // the distribution, or perhaps average
+                    // confidence)
+                    primaryMeasure = dist[Utils.maxIndex(dist)];
+                }
+                m_dataPoint[0] = primaryMeasure;
+                m_chartData.setPayloadElement(StepManager.CON_AUX_DATA_CHART_MIN, 0.0);
+                m_chartData.setPayloadElement(StepManager.CON_AUX_DATA_CHART_MAX, 1.0);
+                m_chartData.setPayloadElement(StepManager.CON_AUX_DATA_CHART_LEGEND, m_dataLegend);
+                m_chartData.setPayloadElement(StepManager.CON_AUX_DATA_CHART_DATA_POINT, m_dataPoint);
+            } else {
+                // numeric class
+                double update;
+                if (!instance.classIsMissing()) {
+                    update = m_windowSize > 0 ? m_windowEval.rootMeanSquaredError() : m_eval.rootMeanSquaredError();
+                } else {
+                    update = pred;
+                }
+                m_dataPoint[0] = update;
+                if (update > m_max) {
+                    m_max = update;
+                }
+                if (update < m_min) {
+                    m_min = update;
+                }
+                m_chartData.setPayloadElement(StepManager.CON_AUX_DATA_CHART_MIN, instance.classIsMissing() ? m_min : 0.0);
+                m_chartData.setPayloadElement(StepManager.CON_AUX_DATA_CHART_MAX, m_max);
+                m_chartData.setPayloadElement(StepManager.CON_AUX_DATA_CHART_LEGEND, m_dataLegend);
+                m_chartData.setPayloadElement(StepManager.CON_AUX_DATA_CHART_DATA_POINT, m_dataPoint);
+            }
+            if (isStopRequested()) {
+                return;
+            }
+            getStepManager().throughputUpdateEnd();
+            getStepManager().outputData(m_chartData.getConnectionName(), m_chartData);
+        }
+    } catch (Exception ex) {
+        throw new WekaException(ex);
+    }
+}

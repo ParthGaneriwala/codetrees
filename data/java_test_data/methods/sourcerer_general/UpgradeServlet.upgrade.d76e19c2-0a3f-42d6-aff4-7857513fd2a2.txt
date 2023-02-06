@@ -1,0 +1,106 @@
+private void upgrade(HttpServletRequest request, ModelAndView next, WikiPageInfo pageInfo) throws Exception {
+    if (!this.login(request)) {
+        next.addObject("error", new WikiMessage("error.login"));
+        pageInfo.setContentJsp(JSP_UPGRADE);
+        pageInfo.setSpecial(true);
+        pageInfo.setPageTitle(new WikiMessage("upgrade.title"));
+        return;
+    }
+    Vector messages = new Vector();
+    boolean success = true;
+    WikiVersion oldVersion = new WikiVersion(Environment.getValue(Environment.PROP_BASE_WIKI_VERSION));
+    if (oldVersion.before(0, 4, 0)) {
+        messages.add(new WikiMessage("upgrade.error.oldversion", WikiVersion.CURRENT_WIKI_VERSION, "0.4.0"));
+        success = false;
+    } else {
+        // first perform database upgrades
+        if (!Environment.getValue(Environment.PROP_BASE_PERSISTENCE_TYPE).equals("FILE")) {
+            try {
+                if (oldVersion.before(0, 4, 2)) {
+                    messages = DatabaseUpgrades.upgrade042(messages);
+                }
+                if (oldVersion.before(0, 5, 0)) {
+                    messages = DatabaseUpgrades.upgrade050(messages);
+                }
+                if (oldVersion.before(0, 6, 0)) {
+                    messages = DatabaseUpgrades.upgrade060(messages);
+                }
+                if (oldVersion.before(0, 6, 1)) {
+                    messages = DatabaseUpgrades.upgrade061(messages);
+                }
+                if (oldVersion.before(0, 6, 3)) {
+                    messages = DatabaseUpgrades.upgrade063(messages);
+                }
+            } catch (Exception e) {
+                // FIXME - hard coding
+                String msg = "Unable to complete upgrade to new JAMWiki version.";
+                logger.severe(msg, e);
+                messages.add(msg + ": " + e.getMessage());
+                success = false;
+            }
+        }
+        // then perform other needed upgrades
+        boolean stylesheet = false;
+        if (oldVersion.before(0, 4, 2)) {
+            stylesheet = true;
+        }
+        if (oldVersion.before(0, 5, 1)) {
+            stylesheet = true;
+        }
+        if (oldVersion.before(0, 6, 0)) {
+            stylesheet = true;
+        }
+        if (oldVersion.before(0, 6, 1)) {
+            stylesheet = true;
+        }
+        if (oldVersion.before(0, 6, 2)) {
+            stylesheet = true;
+        }
+        if (oldVersion.before(0, 6, 3)) {
+            stylesheet = true;
+        }
+        if (oldVersion.before(0, 6, 6)) {
+            stylesheet = true;
+        }
+        if (stylesheet) {
+            // upgrade stylesheet
+            if (!upgradeStyleSheet(request, messages)) {
+                success = false;
+            }
+        }
+        Vector errors = ServletUtil.validateSystemSettings(Environment.getInstance());
+        if (!errors.isEmpty()) {
+            next.addObject("errors", errors);
+            success = false;
+        }
+    }
+    if (success) {
+        Environment.setValue(Environment.PROP_BASE_WIKI_VERSION, WikiVersion.CURRENT_WIKI_VERSION);
+        Environment.saveProperties();
+        // reset data handler and other instances.  this probably hides a bug
+        // elsewhere since no reset should be needed, but it's anyone's guess
+        // where that might be...
+        WikiBase.reload();
+        VirtualWiki virtualWiki = WikiBase.getDataHandler().lookupVirtualWiki(WikiBase.DEFAULT_VWIKI);
+        WikiLink wikiLink = new WikiLink();
+        wikiLink.setDestination(virtualWiki.getDefaultTopicName());
+        String htmlLink = LinkUtil.buildInternalLinkHtml(request.getContextPath(), virtualWiki.getName(), wikiLink, virtualWiki.getDefaultTopicName(), null, null, true);
+        WikiMessage wm = new WikiMessage("upgrade.caption.upgradecomplete");
+        // do not escape the HTML link
+        wm.setParamsWithoutEscaping(new String[] { htmlLink });
+        next.addObject("message", wm);
+        // force logout to ensure current user will be re-validated.  this is
+        // necessary because the upgrade may have changed underlying data structures.
+        SecurityContextHolder.clearContext();
+        // force group permissions to reset
+        WikiUserAuth.resetDefaultGroupRoles();
+        WikiUserAuth.resetAnonymousGroupRoles();
+    } else {
+        next.addObject("error", new WikiMessage("upgrade.caption.upgradefailed"));
+        next.addObject("failure", "true");
+    }
+    next.addObject("messages", messages);
+    pageInfo.setContentJsp(JSP_UPGRADE);
+    pageInfo.setSpecial(true);
+    pageInfo.setPageTitle(new WikiMessage("upgrade.title"));
+}

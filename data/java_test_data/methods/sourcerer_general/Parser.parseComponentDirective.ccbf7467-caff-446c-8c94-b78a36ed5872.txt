@@ -1,0 +1,91 @@
+private void parseComponentDirective(PageDefinition pgdef, ProcessingInstruction pi, Map params) throws Exception {
+    final String name = (String) params.remove("name");
+    noELnorEmpty("name", name, pi);
+    String macroURI = (String) params.remove("macroURI");
+    // backward compatible (2.4.x)
+    if (macroURI == null)
+        macroURI = (String) params.remove("macro-uri");
+    final String extds = (String) params.remove("extends");
+    final String clsnm = (String) params.remove("class");
+    final String lang = (String) params.remove("language");
+    final LanguageDefinition langdef = lang != null ? LanguageDefinition.lookup(lang) : pgdef.getLanguageDefinition();
+    ComponentDefinition compdef;
+    if (macroURI != null) {
+        // if (D.ON && log.finerable()) log.finer("macro component definition: "+name);
+        final String inline = (String) params.remove("inline");
+        noEL("inline", inline, pi);
+        noEL("macroURI", macroURI, pi);
+        // no EL because pagedef must be loaded to resolve
+        // the impl class before creating an instance of macro
+        final boolean bInline = "true".equals(inline);
+        compdef = langdef.getMacroDefinition(name, toAbsoluteURI(macroURI, false), bInline, pgdef);
+        if (!isEmpty(clsnm)) {
+            if (bInline)
+                throw new UiException("class not allowed with inline macros, " + pi.getLocator());
+            noEL("class", clsnm, pi);
+            compdef.setImplementationClass(clsnm);
+        // Resolve later since might defined in zscript
+        }
+    } else {
+        ComponentDefinition ref = null;
+        if (extds != null) {
+            // extends
+            // if (D.ON && log.finerable()) log.finer("Override component definition: "+name);
+            noEL("extends", extds, pi);
+            ref = langdef.getComponentDefinition(extds);
+        } else {
+            try {
+                final Class cls = Classes.forNameByThread(clsnm);
+                if (lang != null) {
+                    ref = langdef.getComponentDefinition(cls);
+                // throw exception if not found
+                } else {
+                    ref = pgdef.getComponentDefinition(cls, true);
+                    if (// return null if not found
+                    ref == null)
+                        ref = Components.getDefinitionByDeviceType(langdef.getDeviceType(), cls);
+                }
+            } catch (Throwable ex) {
+            // ignore
+            }
+        }
+        if (ref != null) {
+            if (ref.isMacro())
+                throw new UiException("Unable to extend from a macro component, " + pi.getLocator());
+            compdef = ref.clone(null, name);
+            if (!isEmpty(clsnm)) {
+                noEL("class", clsnm, pi);
+                compdef.setImplementationClass(clsnm);
+            // Resolve later since might defined in zscript
+            }
+        } else {
+            // if (D.ON && log.finerable()) log.finer("Add component definition: name="+name);
+            noELnorEmpty("class", clsnm, pi);
+            final ComponentDefinitionImpl cdi = new ComponentDefinitionImpl(null, pgdef, name, (Class) null);
+            cdi.setCurrentDirectory(getLocator().getDirectory());
+            // mold URI requires it
+            compdef = cdi;
+            compdef.setImplementationClass(clsnm);
+        // Resolve later since might be defined in zscript
+        }
+    }
+    String wgtnm = (String) params.remove("widgetClass");
+    if (wgtnm == null)
+        wgtnm = (String) params.remove("widget-class");
+    if (wgtnm != null)
+        compdef.setDefaultWidgetClass(wgtnm);
+    pgdef.addComponentDefinition(compdef);
+    Object o = params.remove("moldURI");
+    if (o == null)
+        o = params.remove("mold-uri");
+    if (o != null)
+        throw new UnsupportedOperationException("moldURI not supported in 5.0. Use <?script?> or lang-addon.xml instead, " + pi.getLocator());
+    o = params.remove("cssURI");
+    if (o != null)
+        throw new UnsupportedOperationException("cssURI not supported in 5.0. Use <?link?> or lang-addon.xml instead, " + pi.getLocator());
+    compdef.setApply((String) params.remove("apply"));
+    for (Iterator e = params.entrySet().iterator(); e.hasNext(); ) {
+        final Map.Entry me = (Map.Entry) e.next();
+        compdef.addProperty((String) me.getKey(), (String) me.getValue());
+    }
+}

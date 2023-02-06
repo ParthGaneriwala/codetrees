@@ -1,0 +1,60 @@
+protected void buildSchemaMap(Definition aDef, boolean aRecurse) throws AeWSDLException {
+    // Get the Types section.
+    Types types = aDef.getTypes();
+    if ((types != null) && !types.getExtensibilityElements().isEmpty()) {
+        Set schemaRefs = new HashSet();
+        List schemas = new ArrayList();
+        // First, create a list of all the <schema> elements.
+        for (Iterator it = types.getExtensibilityElements().iterator(); it.hasNext(); ) {
+            UnknownExtensibilityElement extElement = (UnknownExtensibilityElement) it.next();
+            if (// $NON-NLS-1$
+            "schema".equals(extElement.getElement().getLocalName())) {
+                try {
+                    // need to convert the parsed elements back to text as
+                    // the schema reader expects an input stream
+                    Element element = AeSchemaParserUtil.extractSchemaElement(extElement);
+                    StringWriter sw = new StringWriter(2048);
+                    StreamResult result = new StreamResult(sw);
+                    TransformerFactory transFactory = TransformerFactory.newInstance();
+                    Transformer transformer = transFactory.newTransformer();
+                    transformer.transform(new DOMSource(element), result);
+                    // now read back in via the schema reader
+                    InputSource input = new InputSource(new StringReader(sw.toString()));
+                    input.setSystemId(aDef.getDocumentBaseURI());
+                    // Create the URI resolver to use when reading the schema.
+                    AeWSDLSchemaResolver resolver = new AeWSDLSchemaResolver(getLocator(), aDef, getStandardResolver());
+                    Schema schema = AeSchemaParserUtil.readSchema(input, resolver);
+                    if (schema != null) {
+                        schemas.add(schema);
+                        // Add schema location to our master list of imported/included schemas
+                        if (schema.getSchemaLocation() != null)
+                            schemaRefs.add(AeUTF8Util.urlDecode(schema.getSchemaLocation()));
+                    }
+                    // Add any schemas which were resolved, add the URL decoded ref to our list of references
+                    for (Iterator refIter = resolver.getURIReferences(); refIter.hasNext(); ) schemaRefs.add(AeUTF8Util.urlDecode(refIter.next().toString()));
+                } catch (Exception e) {
+                    throw new AeWSDLException(e);
+                }
+            }
+        }
+        // if we have messages then recursively process schemas in imported wsdl
+        if (aRecurse && (!aDef.getMessages().isEmpty()) && (!aDef.getImports().isEmpty())) {
+            for (Iterator iter = aDef.getImports().values().iterator(); iter.hasNext(); ) {
+                Object impObj = iter.next();
+                Vector vecImp = (Vector) impObj;
+                for (Enumeration en = vecImp.elements(); en.hasMoreElements(); ) {
+                    Import imp = (Import) en.nextElement();
+                    if (imp.getDefinition() != null) {
+                        buildSchemaMap(imp.getDefinition(), false);
+                    }
+                }
+            }
+        }
+        // Merge schemas with the same namespace into a single Schema object
+        schemas = mergeSchemaList(schemas);
+        // Now iterate through the remaining schemas and catalog them
+        for (Iterator iter = schemas.iterator(); iter.hasNext(); ) catalogSchemaAndImports((Schema) iter.next(), new HashSet(), true);
+        // Add all references we've collected so far to the master list for the WSDL def
+        mSchemaReferences = new ArrayList(schemaRefs);
+    }
+}

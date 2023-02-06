@@ -1,0 +1,171 @@
+@Override
+public void buildEvaluator(Instances data) throws Exception {
+    data = new Instances(data);
+    data.deleteWithMissingClass();
+    ReplaceMissingValues rmv = new ReplaceMissingValues();
+    rmv.setInputFormat(data);
+    data = Filter.useFilter(data, rmv);
+    int numClasses = data.classAttribute().numValues();
+    int classIndex = data.classIndex();
+    int numInstances = data.numInstances();
+    m_correlations = new double[data.numAttributes()];
+    /*
+     * boolean hasNominals = false; boolean hasNumerics = false;
+     */
+    List<Integer> numericIndexes = new ArrayList<Integer>();
+    List<Integer> nominalIndexes = new ArrayList<Integer>();
+    if (m_detailedOutput) {
+        m_detailedOutputBuff = new StringBuffer();
+    }
+    // TODO for instance weights (folded into computing weighted correlations)
+    // add another dimension just before the last [2] (0 for 0/1 binary vector
+    // and
+    // 1 for corresponding instance weights for the 1's)
+    double[][][] nomAtts = new double[data.numAttributes()][][];
+    for (int i = 0; i < data.numAttributes(); i++) {
+        if (data.attribute(i).isNominal() && i != classIndex) {
+            nomAtts[i] = new double[data.attribute(i).numValues()][data.numInstances()];
+            // set zero index for this att to all
+            Arrays.fill(nomAtts[i][0], 1.0);
+            // 1's
+            nominalIndexes.add(i);
+        } else if (data.attribute(i).isNumeric() && i != classIndex) {
+            numericIndexes.add(i);
+        }
+    }
+    // do the nominal attributes
+    if (nominalIndexes.size() > 0) {
+        for (int i = 0; i < data.numInstances(); i++) {
+            Instance current = data.instance(i);
+            for (int j = 0; j < current.numValues(); j++) {
+                if (current.attribute(current.index(j)).isNominal() && current.index(j) != classIndex) {
+                    // Will need to check for zero in case this isn't a sparse
+                    // instance (unless we add 1 and subtract 1)
+                    nomAtts[current.index(j)][(int) current.valueSparse(j)][i] += 1;
+                    nomAtts[current.index(j)][0][i] -= 1;
+                }
+            }
+        }
+    }
+    if (data.classAttribute().isNumeric()) {
+        double[] classVals = data.attributeToDoubleArray(classIndex);
+        // do the numeric attributes
+        for (Integer i : numericIndexes) {
+            double[] numAttVals = data.attributeToDoubleArray(i);
+            m_correlations[i] = Utils.correlation(numAttVals, classVals, numAttVals.length);
+            if (m_correlations[i] == 1.0) {
+                // check for zero variance (useless numeric attribute)
+                if (Utils.variance(numAttVals) == 0) {
+                    m_correlations[i] = 0;
+                }
+            }
+        }
+        // do the nominal attributes
+        if (nominalIndexes.size() > 0) {
+            // now compute the correlations for the binarized nominal attributes
+            for (Integer i : nominalIndexes) {
+                double sum = 0;
+                double corr = 0;
+                double sumCorr = 0;
+                double sumForValue = 0;
+                if (m_detailedOutput) {
+                    m_detailedOutputBuff.append("\n\n").append(data.attribute(i).name());
+                }
+                for (int j = 0; j < data.attribute(i).numValues(); j++) {
+                    sumForValue = Utils.sum(nomAtts[i][j]);
+                    corr = Utils.correlation(nomAtts[i][j], classVals, classVals.length);
+                    // useless attribute - all instances have the same value
+                    if (sumForValue == numInstances || sumForValue == 0) {
+                        corr = 0;
+                    }
+                    if (corr < 0.0) {
+                        corr = -corr;
+                    }
+                    sumCorr += sumForValue * corr;
+                    sum += sumForValue;
+                    if (m_detailedOutput) {
+                        m_detailedOutputBuff.append("\n\t").append(data.attribute(i).value(j)).append(": ");
+                        m_detailedOutputBuff.append(Utils.doubleToString(corr, 6));
+                    }
+                }
+                m_correlations[i] = (sum > 0) ? sumCorr / sum : 0;
+            }
+        }
+    } else {
+        // class is nominal
+        // TODO extra dimension for storing instance weights too
+        double[][] binarizedClasses = new double[data.classAttribute().numValues()][data.numInstances()];
+        // this is equal to the number of instances for all inst weights = 1
+        double[] classValCounts = new double[data.classAttribute().numValues()];
+        for (int i = 0; i < data.numInstances(); i++) {
+            Instance current = data.instance(i);
+            binarizedClasses[(int) current.classValue()][i] = 1;
+        }
+        for (int i = 0; i < data.classAttribute().numValues(); i++) {
+            classValCounts[i] = Utils.sum(binarizedClasses[i]);
+        }
+        double sumClass = Utils.sum(classValCounts);
+        // do numeric attributes first
+        if (numericIndexes.size() > 0) {
+            for (Integer i : numericIndexes) {
+                double[] numAttVals = data.attributeToDoubleArray(i);
+                double corr = 0;
+                double sumCorr = 0;
+                for (int j = 0; j < data.classAttribute().numValues(); j++) {
+                    corr = Utils.correlation(numAttVals, binarizedClasses[j], numAttVals.length);
+                    if (corr < 0.0) {
+                        corr = -corr;
+                    }
+                    if (corr == 1.0) {
+                        // check for zero variance (useless numeric attribute)
+                        if (Utils.variance(numAttVals) == 0) {
+                            corr = 0;
+                        }
+                    }
+                    sumCorr += classValCounts[j] * corr;
+                }
+                m_correlations[i] = sumCorr / sumClass;
+            }
+        }
+        if (nominalIndexes.size() > 0) {
+            for (Integer i : nominalIndexes) {
+                if (m_detailedOutput) {
+                    m_detailedOutputBuff.append("\n\n").append(data.attribute(i).name());
+                }
+                double sumForAtt = 0;
+                double corrForAtt = 0;
+                for (int j = 0; j < data.attribute(i).numValues(); j++) {
+                    double sumForValue = Utils.sum(nomAtts[i][j]);
+                    double corr = 0;
+                    double sumCorr = 0;
+                    double avgCorrForValue = 0;
+                    sumForAtt += sumForValue;
+                    for (int k = 0; k < numClasses; k++) {
+                        // corr between value j and class k
+                        corr = Utils.correlation(nomAtts[i][j], binarizedClasses[k], binarizedClasses[k].length);
+                        // useless attribute - all instances have the same value
+                        if (sumForValue == numInstances || sumForValue == 0) {
+                            corr = 0;
+                        }
+                        if (corr < 0.0) {
+                            corr = -corr;
+                        }
+                        sumCorr += classValCounts[k] * corr;
+                    }
+                    avgCorrForValue = sumCorr / sumClass;
+                    corrForAtt += sumForValue * avgCorrForValue;
+                    if (m_detailedOutput) {
+                        m_detailedOutputBuff.append("\n\t").append(data.attribute(i).value(j)).append(": ");
+                        m_detailedOutputBuff.append(Utils.doubleToString(avgCorrForValue, 6));
+                    }
+                }
+                // the weighted average corr for att i as
+                // a whole (wighted by value frequencies)
+                m_correlations[i] = (sumForAtt > 0) ? corrForAtt / sumForAtt : 0;
+            }
+        }
+    }
+    if (m_detailedOutputBuff != null && m_detailedOutputBuff.length() > 0) {
+        m_detailedOutputBuff.append("\n");
+    }
+}

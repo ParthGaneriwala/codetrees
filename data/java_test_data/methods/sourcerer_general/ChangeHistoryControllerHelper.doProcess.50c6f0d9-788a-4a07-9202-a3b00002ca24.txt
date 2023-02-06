@@ -1,0 +1,67 @@
+@SuppressWarnings("unchecked")
+public Map doProcess(Class<?> clazz, String formView, HttpServletRequest request, Map model, int pageSize) throws Exception {
+    Integer firstRecord = DisplayTagHelper.getFirstRecord(request, DISPLAYTAG_TABLE_ID, pageSize);
+    Long id = null;
+    boolean hasEmptyId = false;
+    try {
+        id = ServletRequestUtils.getLongParameter(request, MODEL_ID);
+    } catch (ServletRequestBindingException e) {
+        // this can happen when a discussion has not yet been created for
+        // an event.  The URL will say ?id=&eventId=1234
+        hasEmptyId = true;
+    }
+    String user = ServletRequestUtils.getStringParameter(request, MODEL_USER);
+    String catalog = CatalogUtil.getCatalog(request);
+    Long totalResults = 0L;
+    // TODO - split this into two controllers one for user contribs, one for event changes
+    if ((id != null) || (hasEmptyId)) {
+        // we are doing history for an Auditable
+        Long eventId = ServletRequestUtils.getLongParameter(request, MODEL_EVENT_ID);
+        Event event;
+        // TODO this is a UI hack : auditables are event or event.discussion
+        if (null == eventId) {
+            event = eventDao.findById(id);
+        } else {
+            event = eventDao.findById(eventId);
+        }
+        model.put(MODEL_EVENT_ID, eventId);
+        model.put(MODEL_EVENT, event);
+        if (!hasEmptyId) {
+            Auditable auditable = (Auditable) clazz.newInstance();
+            auditable.setId(id);
+            List<AuditEntry> auditEntries = auditEntryDao.getAuditEntries(auditable, firstRecord, pageSize);
+            totalResults = auditEntryDao.getAuditEntriesCount(auditable);
+            model.put(MODEL_AUDIT_ENTRIES, auditEntries);
+            Set<String> titles = new HashSet<String>();
+            for (AuditEntry auditEntry : auditEntries) {
+                addTitle(titles, auditEntry.getUser());
+            }
+            updateModelUserPages(model, titles);
+        }
+    } else if (!StringUtils.isEmpty(user)) {
+        // we are doing history for a user
+        List<AuditUserChange> userChanges = auditEntryDao.getAuditEntries(catalog, user, clazz, firstRecord, pageSize);
+        totalResults = auditEntryDao.getAuditEntriesCount(catalog, user, clazz);
+        model.put(MODEL_EVENT_CHANGES, userChanges);
+        Set<String> titles = new HashSet<String>();
+        addTitle(titles, user);
+        updateModelUserPages(model, titles);
+    } else {
+        // just get everything
+        List<AuditUserChange> eventChanges = auditEntryDao.getLatestEventEntries(catalog, firstRecord, pageSize);
+        List<AuditUserChange> wikiChanges = auditEntryDao.getLatestAuditEntries(catalog, WikiText.class, firstRecord, pageSize);
+        totalResults = auditEntryDao.getAuditEntriesCount(catalog, Event.class);
+        model.put(MODEL_EVENT_CHANGES, eventChanges);
+        model.put(MODEL_WIKI_CHANGES, wikiChanges);
+        Set<String> titles = new HashSet<String>();
+        for (AuditUserChange auditUserChange : eventChanges) {
+            addTitle(titles, auditUserChange.getAuditEntry().getUser());
+        }
+        updateModelUserPages(model, titles);
+    }
+    model.put(DisplayTagHelper.MODEL_PAGESIZE, pageSize);
+    model.put(DisplayTagHelper.MODEL_REQUEST_URI, request.getRequestURI());
+    model.put(DisplayTagHelper.MODEL_TOTAL_RESULTS, Math.round(totalResults));
+    model.put(MODEL_ID, id);
+    return model;
+}

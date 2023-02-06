@@ -1,0 +1,75 @@
+public void solveVelocityConstraints(final BBTimeStep step) {
+    BBBody b1 = m_bodyA;
+    BBBody b2 = m_bodyB;
+    BBVec2 v1 = b1.m_linearVelocity;
+    float w1 = b1.m_angularVelocity;
+    BBVec2 v2 = b2.m_linearVelocity;
+    float w2 = b2.m_angularVelocity;
+    // solve linear motor constraint.
+    if (m_enableMotor & m_limitState != e_equalLimits) {
+        float Cdot = BBMath.dot(m_axis, sub(v2, v1)) + m_a2 * w2 - m_a1 * w1;
+        float impulse = m_motorMass * (m_motorSpeed - Cdot);
+        float oldImpulse = m_motorImpulse;
+        float maxImpulse = step.dt * m_maxMotorForce;
+        m_motorImpulse = clamp(m_motorImpulse + impulse, -maxImpulse, maxImpulse);
+        impulse = m_motorImpulse - oldImpulse;
+        BBVec2 P = mul(impulse, m_axis);
+        float L1 = impulse * m_a1;
+        float L2 = impulse * m_a2;
+        v1.sub(mul(m_invMass1, P));
+        w1 -= m_invI1 * L1;
+        v2.add(mul(m_invMass2, P));
+        w2 += m_invI2 * L2;
+    }
+    float Cdot1 = BBMath.dot(m_perp, sub(v2, v1)) + m_s2 * w2 - m_s1 * w1;
+    if (m_enableLimit & m_limitState != e_inactiveLimit) {
+        // solve prismatic and limit constraint in block form.
+        float Cdot2 = BBMath.dot(m_axis, sub(v2, v1)) + m_a2 * w2 - m_a1 * w1;
+        BBVec2 Cdot = new BBVec2(Cdot1, Cdot2);
+        BBVec2 f1 = m_impulse;
+        BBVec2 df = m_K.solve(Cdot.neg());
+        m_impulse.add(df);
+        if (m_limitState == e_atLowerLimit) {
+            m_impulse.y = max(m_impulse.y, 0.0f);
+        } else if (m_limitState == e_atUpperLimit) {
+            m_impulse.y = min(m_impulse.y, 0.0f);
+        }
+        // f2(1) = invK(1,1) * (-Cdot(1) - K(1,2) * (f2(2) - f1(2))) + f1(1)
+        float b = -Cdot1 - (m_impulse.y - f1.y) * m_K.col2.x;
+        float f2r;
+        if (m_K.col1.x != 0.0f) {
+            f2r = b / m_K.col1.x + f1.x;
+        } else {
+            f2r = f1.x;
+        }
+        m_impulse.x = f2r;
+        df = sub(m_impulse, f1);
+        BBVec2 P = add(mul(df.x, m_perp), mul(df.y, m_axis));
+        float L1 = df.x * m_s1 + df.y * m_a1;
+        float L2 = df.x * m_s2 + df.y * m_a2;
+        v1.sub(mul(m_invMass1, P));
+        w1 -= m_invI1 * L1;
+        v2.add(mul(m_invMass2, P));
+        w2 += m_invI2 * L2;
+    } else {
+        // Limit is inactive, just solve the prismatic constraint in block form.
+        float df;
+        if (m_K.col1.x != 0.0f) {
+            df = -Cdot1 / m_K.col1.x;
+        } else {
+            df = 0.0f;
+        }
+        m_impulse.x += df;
+        BBVec2 P = mul(df, m_perp);
+        float L1 = df * m_s1;
+        float L2 = df * m_s2;
+        v1.sub(mul(m_invMass1, P));
+        w1 -= m_invI1 * L1;
+        v2.add(mul(m_invMass2, P));
+        w2 += m_invI2 * L2;
+    }
+    b1.m_linearVelocity = v1;
+    b1.m_angularVelocity = w1;
+    b2.m_linearVelocity = v2;
+    b2.m_angularVelocity = w2;
+}

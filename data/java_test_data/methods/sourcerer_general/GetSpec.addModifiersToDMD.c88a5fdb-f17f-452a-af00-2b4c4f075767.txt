@@ -1,0 +1,111 @@
+private static void addModifiersToDMD(/* @ non_null */
+DerivedMethodDecl dmd, /* @ non_null */
+RoutineDecl rd) {
+    /*
+     * Compute the substitution on parameter names to change a spec for an
+     * overridden method to refer to our method's parameter names instead of
+     * its; propagate non_nulls:
+     */
+    Hashtable subst = new Hashtable();
+    if (rd != dmd.original) {
+        for (int i = 0; i < rd.args.size(); i++) {
+            GenericVarDecl newDecl = dmd.original.args.elementAt(i);
+            GenericVarDecl oldDecl = rd.args.elementAt(i);
+            // This may no longer be necessary, but it doesn't hurt
+            SimpleModifierPragma nonnull = NonNullPragma(oldDecl);
+            if (nonnull != null)
+                setNonNullPragma(newDecl, nonnull);
+            VariableAccess va = VariableAccess.make(newDecl.id, Location.NULL, newDecl);
+            subst.put(oldDecl, va);
+        }
+    }
+    if (rd.pmodifiers == null)
+        return;
+    for (int i = 0; i < rd.pmodifiers.size(); i++) {
+        // with the rest
+        try {
+            ModifierPragma mp = rd.pmodifiers.elementAt(i);
+            switch(mp.getTag()) {
+                case TagConstants.REQUIRES:
+                case TagConstants.ALSO_REQUIRES:
+                case TagConstants.PRECONDITION:
+                    {
+                        ExprModifierPragma emp = (ExprModifierPragma) mp;
+                        emp = doSubst(subst, emp);
+                        dmd.requires.addElement(emp);
+                        break;
+                    }
+                case TagConstants.MODIFIESGROUPPRAGMA:
+                    {
+                        ModifiesGroupPragma em = (ModifiesGroupPragma) mp;
+                        for (int ii = 0; ii < em.items.size(); ++ii) {
+                            CondExprModifierPragma emp = em.items.elementAt(ii);
+                            if (emp.expr == null) {
+                                em.items.removeElementAt(i);
+                                --ii;
+                                continue;
+                            }
+                            int t = emp.expr.getTag();
+                            // FIXME - no contribution to spec for these keywords
+                            if (t == TagConstants.EVERYTHINGEXPR) {
+                                dmd.modifiesEverything = true;
+                            } else if (t == TagConstants.NOTSPECIFIEDEXPR) {
+                                dmd.modifiesEverything = true;
+                                emp.expr = EverythingExpr.make(emp.expr.getStartLoc());
+                            // } else if (t == TagConstants.NOTHINGEXPR ) {
+                            // no action
+                            }
+                            emp = doSubst(subst, emp);
+                            em.items.setElementAt(emp, ii);
+                        }
+                        dmd.modifies.addElement(em);
+                        break;
+                    }
+                /*
+           * case TagConstants.MODIFIES: case TagConstants.ALSO_MODIFIES: case
+           * TagConstants.MODIFIABLE: case TagConstants.ASSIGNABLE: {
+           * CondExprModifierPragma emp = (CondExprModifierPragma)mp; if
+           * (emp.expr == null) break; // ignore - informal int t =
+           * emp.expr.getTag(); // FIXME - no contribution to spec for these
+           * keywords if (t == TagConstants.EVERYTHINGEXPR) {
+           * dmd.modifiesEverything = true; } else if (t ==
+           * TagConstants.NOTSPECIFIEDEXPR) { dmd.modifiesEverything = true;
+           * //emp = doSubst(subst, // EverythingExpr.make(emp.getStartLoc()) );
+           * break; // FIXME } else if (t == TagConstants.NOTHINGEXPR ) { // no
+           * action } else { } emp = doSubst(subst, emp);
+           * dmd.modifies.addElement(emp); break; }
+           */
+                case TagConstants.ENSURES:
+                case TagConstants.ALSO_ENSURES:
+                case TagConstants.POSTCONDITION:
+                    {
+                        ExprModifierPragma emp = (ExprModifierPragma) mp;
+                        int t = emp.errorTag;
+                        emp = doSubst(subst, emp);
+                        emp.errorTag = t;
+                        dmd.ensures.addElement(emp);
+                        break;
+                    }
+                case TagConstants.NON_NULL:
+                    /*
+             * if (dmd.nonnull == null) { dmd.nonnull =
+             * (SimpleModifierPragma)mp; }
+             */
+                    break;
+                case TagConstants.EXSURES:
+                case TagConstants.ALSO_EXSURES:
+                case TagConstants.SIGNALS:
+                    {
+                        VarExprModifierPragma vemp = (VarExprModifierPragma) mp;
+                        vemp = doSubst(subst, vemp);
+                        dmd.exsures.addElement(vemp);
+                        break;
+                    }
+                default:
+                    break;
+            }
+        } catch (NotImplementedException e) {
+        // Error message already printed
+        }
+    }
+}

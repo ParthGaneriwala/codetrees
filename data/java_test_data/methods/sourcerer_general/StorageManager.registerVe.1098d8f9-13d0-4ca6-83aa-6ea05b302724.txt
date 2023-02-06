@@ -1,0 +1,58 @@
+@Override
+public boolean registerVe(String name, String sourceHost, String filePath, Integer ftTech) {
+    ImageFileInfo ifi = this.getFileInfo(sourceHost, filePath);
+    if (ifi == null) {
+        logger.info("Can't get the VM file info");
+        return false;
+    }
+    VirtualMachine vm = new VirtualMachine();
+    vm.Name = name;
+    vm.Size = ifi.Size;
+    if (!checkName(vm.Name)) {
+        logger.info("A virtual machine with this logical name already exists");
+        return false;
+    }
+    vm.Host = this.findHostToSave(vm.Size);
+    if (vm.Host == null) {
+        logger.info("Can't find a host with enough free space for the VM");
+        return false;
+    }
+    // Transferring the file and getting the local path for the VM
+    String destHost = null;
+    switch(ftTech) {
+        case ImageManager.SOCK:
+            destHost = this.prepareFT(ifi.Name, vm);
+            if (destHost == null) {
+                this.logger.info("Could not prepare the TCP Socket-file transfer");
+                return false;
+            }
+            String path = (String) this.doFT(name, filePath, sourceHost, destHost, ftTech);
+            if (path == null) {
+                logger.info("TCP Socket-based file transfer failed");
+                return false;
+            }
+            vm.Path = path;
+            break;
+        case ImageManager.XMPP:
+            destHost = vm.Host;
+            boolean res = (Boolean) this.doFT(name, filePath, sourceHost, destHost, ftTech);
+            if (!res) {
+                logger.info("XMPP-based file transfer failed");
+                return false;
+            }
+            vm.Path = this.getVMPath(vm);
+            if (vm.Path == null) {
+                this.logger.info("Can't assign a local path to the VM");
+                return false;
+            }
+            break;
+        default:
+            logger.info("Invalid file transfer technology case");
+            return false;
+    }
+    // Creating a VE entry with the HyperVisor
+    if (!this.createVE(vm))
+        return false;
+    // Writing the VM info into Sedna database
+    return this.insertVM(vm);
+}

@@ -1,0 +1,56 @@
+public void run() {
+    ArrayList<DataPoint> pointBuffer0 = new ArrayList<DataPoint>();
+    int m_timestamp = 0;
+    int decayHorizon = stream.getDecayHorizon();
+    double decay_threshold = stream.getDecayThreshold();
+    double decay_rate = (-1 * Math.log(decay_threshold) / decayHorizon);
+    int counter = decayHorizon;
+    while (m_timestamp < totalInstances && stream.hasMoreInstances()) {
+        m_timestamp++;
+        counter--;
+        Instance next = stream.nextInstance().getData();
+        DataPoint point0 = new DataPoint(next, m_timestamp);
+        pointBuffer0.add(point0);
+        Instance traininst0 = new DenseInstance(point0);
+        if (clusterer instanceof ClusterGenerator)
+            traininst0.setDataset(point0.dataset());
+        else
+            traininst0.deleteAttributeAt(point0.classIndex());
+        clusterer.trainOnInstanceImpl(traininst0);
+        if (counter <= 0) {
+            // System.out.println("Thread"+threadID+":"+(m_timestamp*100/totalInstances)+"% ");
+            for (DataPoint p : pointBuffer0) p.updateWeight(m_timestamp, decay_rate);
+            Clustering gtClustering0;
+            Clustering clustering0 = null;
+            gtClustering0 = new Clustering(pointBuffer0);
+            if (useMicroGT && stream instanceof RandomRBFGeneratorEvents) {
+                gtClustering0 = ((RandomRBFGeneratorEvents) stream).getMicroClustering();
+            }
+            clustering0 = clusterer.getClusteringResult();
+            if (clusterer.implementsMicroClusterer()) {
+                if (clusterer instanceof ClusterGenerator && stream instanceof RandomRBFGeneratorEvents) {
+                    ((ClusterGenerator) clusterer).setSourceClustering(((RandomRBFGeneratorEvents) stream).getMicroClustering());
+                }
+                Clustering microC = clusterer.getMicroClusteringResult();
+                if (clusterer.evaluateMicroClusteringOption.isSet()) {
+                    clustering0 = microC;
+                } else {
+                    if (clustering0 == null && microC != null)
+                        clustering0 = moa.clusterers.KMeans.gaussianMeans(gtClustering0, microC);
+                }
+            }
+            // evaluate
+            for (int i = 0; i < measures.length; i++) {
+                try {
+                    /*double sec =*/
+                    measures[i].evaluateClusteringPerformance(clustering0, gtClustering0, pointBuffer0);
+                // System.out.println("Eval of "+measures[i].getClass().getSimpleName()+" at "+m_timestamp+" took "+sec);
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                }
+            }
+            pointBuffer0.clear();
+            counter = decayHorizon;
+        }
+    }
+}

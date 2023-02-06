@@ -1,0 +1,62 @@
+public static void execute(RETERuleContext context, boolean isAdd) {
+    Rule rule = context.getRule();
+    BindingEnvironment env = context.getEnv();
+    ForwardRuleInfGraphI infGraph = (ForwardRuleInfGraphI) context.getGraph();
+    if (infGraph.shouldTrace()) {
+        logger.info("Fired rule: " + rule.toShortString());
+    }
+    RETEEngine engine = context.getEngine();
+    engine.incRuleCount();
+    List matchList = null;
+    if (infGraph.shouldLogDerivations() && isAdd) {
+        // Create derivation record
+        matchList = new ArrayList(rule.bodyLength());
+        for (int i = 0; i < rule.bodyLength(); i++) {
+            Object clause = rule.getBodyElement(i);
+            if (clause instanceof TriplePattern) {
+                matchList.add(env.instantiate((TriplePattern) clause));
+            }
+        }
+    }
+    for (int i = 0; i < rule.headLength(); i++) {
+        Object hClause = rule.getHeadElement(i);
+        if (hClause instanceof TriplePattern) {
+            Triple t = env.instantiate((TriplePattern) hClause);
+            if (!t.getSubject().isLiteral()) {
+                // that we can't record in RDF
+                if (isAdd) {
+                    if (!context.contains(t)) {
+                        engine.addTriple(t, true);
+                        if (infGraph.shouldLogDerivations()) {
+                            infGraph.logDerivation(t, new RuleDerivation(rule, t, matchList, infGraph));
+                        }
+                    }
+                } else {
+                    if (context.contains(t)) {
+                        // Remove the generated triple
+                        engine.deleteTriple(t, true);
+                    }
+                }
+            }
+        } else if (hClause instanceof Functor && isAdd) {
+            Functor f = (Functor) hClause;
+            Builtin imp = f.getImplementor();
+            if (imp != null) {
+                imp.headAction(f.getBoundArgs(env), f.getArgLength(), context);
+            } else {
+                throw new ReasonerException("Invoking undefined Functor " + f.getName() + " in " + rule.toShortString());
+            }
+        } else if (hClause instanceof Rule) {
+            Rule r = (Rule) hClause;
+            if (r.isBackward()) {
+                if (isAdd) {
+                    infGraph.addBRule(r.instantiate(env));
+                } else {
+                    infGraph.deleteBRule(r.instantiate(env));
+                }
+            } else {
+                throw new ReasonerException("Found non-backward subrule : " + r);
+            }
+        }
+    }
+}

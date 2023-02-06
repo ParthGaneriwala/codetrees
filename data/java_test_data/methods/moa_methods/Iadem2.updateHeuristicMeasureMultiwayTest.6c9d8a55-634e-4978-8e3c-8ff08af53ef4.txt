@@ -1,0 +1,103 @@
+public void updateHeuristicMeasureMultiwayTest(Instance instance) throws IademException {
+    if (!this.heuristicMeasureUpdated) {
+        this.bestSplitSuggestion = null;
+        double measureLower, measureUpper;
+        IademSplitCriterion measure = tree.getMeasure();
+        int numberOfValues = tree.getValuesOfNominalAttributes(attIndex, instance);
+        int numberOfClasses = instance.attribute(instance.classIndex()).numValues();
+        double[][] classDist_lower = new double[numberOfValues][numberOfClasses];
+        double[][] classDist_upper = new double[numberOfValues][numberOfClasses];
+        computeClassDistPerValue(classDist_lower, classDist_upper);
+        double[] sumPerValue_lower = new double[numberOfValues];
+        double[] availableErrorPerValue = new double[numberOfValues];
+        Arrays.fill(sumPerValue_lower, 0.0);
+        for (int i = 0; i < numberOfValues; i++) {
+            for (int j = 0; j < numberOfClasses; j++) {
+                sumPerValue_lower[i] += classDist_lower[i][j];
+            }
+            availableErrorPerValue[i] = 1.0 - sumPerValue_lower[i];
+            if (availableErrorPerValue[i] < 0.0) {
+                if (Math.abs(availableErrorPerValue[i]) < Iadem2.ERROR_MARGIN) {
+                    availableErrorPerValue[i] = 0.0;
+                } else {
+                    throw new IademException("NominalVirtualNode", "updateHeuristicMeasureMultiwayTest", "Problems when calculating measures");
+                }
+            }
+        }
+        double[] measuerPerValue_upper = new double[numberOfValues];
+        double[] valueLevels = new double[numberOfValues];
+        for (int i = 0; i < numberOfValues; i++) {
+            ArrayList<Double> lot = new ArrayList<Double>();
+            lot.add(0.0);
+            lot.add(1.0);
+            ArrayList<Integer> hole = new ArrayList<Integer>();
+            hole.add(0);
+            for (int j = 0; j < numberOfClasses; j++) {
+                IademCommonProcedures.insertLotsHoles(lot, hole, classDist_lower[i][j], classDist_upper[i][j]);
+            }
+            valueLevels[i] = IademCommonProcedures.computeLevel(lot, hole, availableErrorPerValue[i]);
+        }
+        for (int i = 0; i < numberOfValues; i++) {
+            ArrayList<Double> vectorToMeasure = new ArrayList<Double>();
+            for (int j = 0; j < numberOfClasses; j++) {
+                double p_sup_medida = Math.max(valueLevels[i], classDist_lower[i][j]);
+                p_sup_medida = Math.min(classDist_upper[i][j], p_sup_medida);
+                vectorToMeasure.add(p_sup_medida);
+            }
+            measuerPerValue_upper[i] = measure.doMeasure(vectorToMeasure);
+        }
+        // compute measure lower bounds
+        double[] measurePerValue_lower = new double[numberOfValues];
+        for (int i = 0; i < numberOfValues; i++) {
+            double availableError = availableErrorPerValue[i];
+            ArrayList<Integer> decOrderClassDist_upper = new ArrayList<Integer>();
+            ArrayList<Integer> unusedClasses = new ArrayList<Integer>();
+            for (int j = 0; j < numberOfClasses; j++) {
+                unusedClasses.add(j);
+            }
+            double auxAvailable = availableErrorPerValue[i];
+            for (int j = 0; j < numberOfClasses; j++) {
+                if (auxAvailable < 0.0) {
+                    if (Math.abs(auxAvailable) < Iadem2.ERROR_MARGIN) {
+                        auxAvailable = 0.0;
+                    } else {
+                        throw new IademException("NominalVirtualNode", "updateHeuristicMeasureMultiwayTest", "Problems when calculating measures");
+                    }
+                }
+                int classID = getClassProbabilities(i, unusedClasses, classDist_lower, classDist_upper, auxAvailable);
+                double probUp = Math.min(classDist_upper[i][classID], classDist_lower[i][classID] + auxAvailable);
+                auxAvailable -= (probUp - classDist_lower[i][classID]);
+                unusedClasses.remove(new Integer(classID));
+                decOrderClassDist_upper.add(new Integer(classID));
+            }
+            ArrayList<Double> vectorToMeasure = new ArrayList<Double>();
+            for (int j = 0; j < decOrderClassDist_upper.size(); j++) {
+                int classID = decOrderClassDist_upper.get(j);
+                if (availableError < 0.0) {
+                    if (Math.abs(availableError) < Iadem2.ERROR_MARGIN) {
+                        availableError = 0.0;
+                    } else {
+                        throw new IademException("NominalVirtualNode", "updateHeuristicMeasureMultiwayTest", "Problems when calculating measures");
+                    }
+                }
+                double probUp = Math.min(classDist_upper[i][classID], classDist_lower[i][classID] + availableError);
+                availableError -= (probUp - classDist_lower[i][classID]);
+                vectorToMeasure.add(probUp);
+            }
+            measurePerValue_lower[i] = measure.doMeasure(vectorToMeasure);
+        }
+        double dividendUpper = 0.0;
+        double dividendLower = 0.0;
+        double divisor = 0.0;
+        for (int i = 0; i < attValueDist.numValues(); i++) {
+            dividendUpper += (measuerPerValue_upper[i] * attValueDist.getValue(i));
+            dividendLower += (measurePerValue_lower[i] * attValueDist.getValue(i));
+            divisor += attValueDist.getValue(i);
+        }
+        measureLower = dividendLower / divisor;
+        measureUpper = dividendUpper / divisor;
+        int maxBranches = instance.attribute(attIndex).numValues();
+        IademNominalAttributeMultiwayTest test = new IademNominalAttributeMultiwayTest(this.attIndex, maxBranches);
+        bestSplitSuggestion = new IademAttributeSplitSuggestion(test, new double[0][0], measureUpper, measureLower);
+    }
+}

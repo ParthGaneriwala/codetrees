@@ -1,0 +1,72 @@
+@Override
+public void buildClassifier(Instances data) throws Exception {
+    // can classifier handle the data?
+    getCapabilities().testWithFail(data);
+    // Has user asked to represent copies using weights?
+    if (getRepresentCopiesUsingWeights() && !(m_Classifier instanceof WeightedInstancesHandler)) {
+        throw new IllegalArgumentException("Cannot represent copies using weights when " + "base learner in bagging does not implement " + "WeightedInstancesHandler.");
+    }
+    // get fresh Instances object
+    m_data = new Instances(data);
+    super.buildClassifier(m_data);
+    m_random = new Random(m_Seed);
+    m_inBag = null;
+    if (m_CalcOutOfBag)
+        m_inBag = new boolean[m_Classifiers.length][];
+    for (int j = 0; j < m_Classifiers.length; j++) {
+        if (m_Classifier instanceof Randomizable) {
+            ((Randomizable) m_Classifiers[j]).setSeed(m_random.nextInt());
+        }
+    }
+    m_Numeric = m_data.classAttribute().isNumeric();
+    buildClassifiers();
+    // calc OOB error?
+    if (getCalcOutOfBag()) {
+        m_OutOfBagEvaluationObject = new Evaluation(m_data);
+        for (int i = 0; i < m_data.numInstances(); i++) {
+            double[] votes;
+            if (m_Numeric)
+                votes = new double[1];
+            else
+                votes = new double[m_data.numClasses()];
+            // determine predictions for instance
+            int voteCount = 0;
+            for (int j = 0; j < m_Classifiers.length; j++) {
+                if (m_inBag[j][i])
+                    continue;
+                if (m_Numeric) {
+                    double pred = m_Classifiers[j].classifyInstance(m_data.instance(i));
+                    if (!Utils.isMissingValue(pred)) {
+                        votes[0] += pred;
+                        voteCount++;
+                    }
+                } else {
+                    voteCount++;
+                    double[] newProbs = m_Classifiers[j].distributionForInstance(m_data.instance(i));
+                    // sum the probability estimates
+                    for (int k = 0; k < newProbs.length; k++) {
+                        votes[k] += newProbs[k];
+                    }
+                }
+            }
+            // "vote"
+            if (m_Numeric) {
+                if (voteCount > 0) {
+                    votes[0] /= voteCount;
+                    m_OutOfBagEvaluationObject.evaluationForSingleInstance(votes, m_data.instance(i), getStoreOutOfBagPredictions());
+                }
+            } else {
+                double sum = Utils.sum(votes);
+                if (sum > 0) {
+                    Utils.normalize(votes, sum);
+                    m_OutOfBagEvaluationObject.evaluationForSingleInstance(votes, m_data.instance(i), getStoreOutOfBagPredictions());
+                }
+            }
+        }
+    } else {
+        m_OutOfBagEvaluationObject = null;
+    }
+    // save memory
+    m_inBag = null;
+    m_data = new Instances(m_data, 0);
+}

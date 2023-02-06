@@ -1,0 +1,45 @@
+@SuppressWarnings("nls")
+public Set<Partition> prune() throws HiveException {
+    LOG.trace("Started pruning partiton");
+    LOG.trace("tabname = " + this.tab.getName());
+    LOG.trace("prune Expression = " + this.prunerExpr);
+    HashSet<Partition> ret_parts = new HashSet<Partition>();
+    try {
+        StructObjectInspector rowObjectInspector = (StructObjectInspector) this.tab.getDeserializer().getObjectInspector();
+        Object[] rowWithPart = new Object[2];
+        InspectableObject inspectableObject = new InspectableObject();
+        ExprNodeEvaluator evaluator = ExprNodeEvaluatorFactory.get(this.prunerExpr);
+        for (Partition part : Hive.get().getPartitions(this.tab)) {
+            // Set all the variables here
+            LinkedHashMap<String, String> partSpec = part.getSpec();
+            // Create the row object
+            ArrayList<String> partNames = new ArrayList<String>();
+            ArrayList<String> partValues = new ArrayList<String>();
+            ArrayList<ObjectInspector> partObjectInspectors = new ArrayList<ObjectInspector>();
+            for (Map.Entry<String, String> entry : partSpec.entrySet()) {
+                partNames.add(entry.getKey());
+                partValues.add(entry.getValue());
+                partObjectInspectors.add(ObjectInspectorFactory.getStandardPrimitiveObjectInspector(String.class));
+            }
+            StructObjectInspector partObjectInspector = ObjectInspectorFactory.getStandardStructObjectInspector(partNames, partObjectInspectors);
+            rowWithPart[1] = partValues;
+            ArrayList<StructObjectInspector> ois = new ArrayList<StructObjectInspector>(2);
+            ois.add(rowObjectInspector);
+            ois.add(partObjectInspector);
+            StructObjectInspector rowWithPartObjectInspector = ObjectInspectorFactory.getUnionStructObjectInspector(ois);
+            // evaluate the expression tree
+            evaluator.evaluate(rowWithPart, rowWithPartObjectInspector, inspectableObject);
+            LOG.trace("prune result for partition " + partSpec + ": " + inspectableObject.o);
+            if (!Boolean.FALSE.equals(inspectableObject.o)) {
+                LOG.debug("retained partition: " + partSpec);
+                ret_parts.add(part);
+            } else {
+                LOG.trace("pruned partition: " + partSpec);
+            }
+        }
+    } catch (Exception e) {
+        throw new HiveException(e);
+    }
+    // Now return the set of partitions
+    return ret_parts;
+}

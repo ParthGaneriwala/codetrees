@@ -1,0 +1,72 @@
+boolean unprotectedRenameTo(String src, String dst, long timestamp) throws QuotaExceededException {
+    synchronized (rootDir) {
+        INode[] srcInodes = rootDir.getExistingPathINodes(src);
+        // check the validation of the source
+        if (srcInodes[srcInodes.length - 1] == null) {
+            NameNode.stateChangeLog.warn("DIR* FSDirectory.unprotectedRenameTo: " + "failed to rename " + src + " to " + dst + " because source does not exist");
+            return false;
+        } else if (srcInodes.length == 1) {
+            NameNode.stateChangeLog.warn("DIR* FSDirectory.unprotectedRenameTo: " + "failed to rename " + src + " to " + dst + " because source is the root");
+            return false;
+        }
+        if (isDir(dst)) {
+            dst += Path.SEPARATOR + new Path(src).getName();
+        }
+        // remove source
+        INode srcChild = null;
+        try {
+            srcChild = removeChild(srcInodes, srcInodes.length - 1);
+        } catch (IOException e) {
+        // srcChild == null; go to next if statement
+        }
+        if (srcChild == null) {
+            NameNode.stateChangeLog.warn("DIR* FSDirectory.unprotectedRenameTo: " + "failed to rename " + src + " to " + dst + " because the source can not be removed");
+            return false;
+        }
+        String srcChildName = srcChild.getLocalName();
+        // check the validity of the destination
+        INode dstChild = null;
+        QuotaExceededException failureByQuota = null;
+        byte[][] dstComponents = INode.getPathComponents(dst);
+        INode[] dstInodes = new INode[dstComponents.length];
+        rootDir.getExistingPathINodes(dstComponents, dstInodes);
+        if (dstInodes[dstInodes.length - 1] != null) {
+            // check if destination exists
+            NameNode.stateChangeLog.warn("DIR* FSDirectory.unprotectedRenameTo: " + "failed to rename " + src + " to " + dst + " because destination exists");
+        } else if (dstInodes[dstInodes.length - 2] == null) {
+            // check if its parent exists
+            NameNode.stateChangeLog.warn("DIR* FSDirectory.unprotectedRenameTo: " + "failed to rename " + src + " to " + dst + " because destination's parent does not exists");
+        } else {
+            // add to the destination
+            srcChild.setLocalName(dstComponents[dstInodes.length - 1]);
+            try {
+                // add it to the namespace
+                dstChild = addChild(dstInodes, dstInodes.length - 1, srcChild, false);
+            } catch (QuotaExceededException qe) {
+                failureByQuota = qe;
+            }
+        }
+        if (dstChild != null) {
+            if (NameNode.stateChangeLog.isDebugEnabled()) {
+                NameNode.stateChangeLog.debug("DIR* FSDirectory.unprotectedRenameTo: " + src + " is renamed to " + dst);
+            }
+            // update modification time of dst and the parent of src
+            srcInodes[srcInodes.length - 2].setModificationTime(timestamp);
+            dstInodes[dstInodes.length - 2].setModificationTime(timestamp);
+            return true;
+        } else {
+            NameNode.stateChangeLog.warn("DIR* FSDirectory.unprotectedRenameTo: " + "failed to rename " + src + " to " + dst);
+            try {
+                // put it back
+                srcChild.setLocalName(srcChildName);
+                addChild(srcInodes, srcInodes.length - 1, srcChild, false);
+            } catch (IOException ignored) {
+            }
+            if (failureByQuota != null) {
+                throw failureByQuota;
+            } else {
+                return false;
+            }
+        }
+    }
+}

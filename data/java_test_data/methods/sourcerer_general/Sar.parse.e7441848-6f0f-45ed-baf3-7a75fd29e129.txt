@@ -1,0 +1,73 @@
+@Override
+protected void parse(String recordEntry, OutputCollector<Text, ChukwaRecord> output, Reporter reporter) {
+    log.debug("Sar record: [" + recordEntry + "] type[" + chunk.getDataType() + "]");
+    StringBuilder sb = new StringBuilder();
+    int i = 0;
+    String logLevel = null;
+    String className = null;
+    String body = null;
+    matcher = p.matcher(recordEntry);
+    while (matcher.find()) {
+        log.debug("Sar Processor Matches");
+        try {
+            Date d = sdf.parse(matcher.group(1).trim());
+            logLevel = matcher.group(2);
+            className = matcher.group(3);
+            String hostname = matcher.group(5);
+            // TODO create a more specific key structure
+            // part of ChukwaArchiveKey + record index if needed
+            key.set("" + d.getTime());
+            String[] lines = recordEntry.split("\n");
+            String[] headers = null;
+            while (i < (lines.length - 1) && lines[i + 1].indexOf("Average:") < 0) {
+                // Skip to the average lines
+                log.debug("skip:" + lines[i]);
+                i++;
+            }
+            while (i < lines.length) {
+                DatabaseHelper databaseRecord = null;
+                if (lines[i].equals("")) {
+                    i++;
+                    headers = parseHeader(lines[i]);
+                    i++;
+                }
+                String[] data = parseData(lines[i]);
+                if (headers[1].equals("IFACE") && headers[2].equals("rxpck/s")) {
+                    log.debug("Matched Sar-Network");
+                    databaseRecord = new DatabaseHelper("system");
+                } else if (headers[1].equals("IFACE") && headers[2].equals("rxerr/s")) {
+                    log.debug("Matched Sar-Network");
+                    databaseRecord = new DatabaseHelper("system");
+                } else if (headers[1].equals("kbmemfree")) {
+                    log.debug("Matched Sar-Memory");
+                    databaseRecord = new DatabaseHelper("system");
+                } else if (headers[1].equals("totsck")) {
+                    log.debug("Matched Sar-NetworkSockets");
+                    databaseRecord = new DatabaseHelper("system");
+                } else if (headers[1].equals("runq-sz")) {
+                    log.debug("Matched Sar-LoadAverage");
+                    databaseRecord = new DatabaseHelper("system");
+                } else {
+                    log.debug("No match:" + headers[1] + " " + headers[2]);
+                }
+                if (databaseRecord != null) {
+                    int j = 0;
+                    log.debug("Data Length: " + data.length);
+                    while (j < data.length) {
+                        log.debug("header:" + headers[j] + " data:" + data[j]);
+                        if (!headers[j].equals("Average:")) {
+                            databaseRecord.add(d.getTime(), headers[j], data[j]);
+                        }
+                        j++;
+                    }
+                    // Output Sar info to database
+                    output.collect(key, databaseRecord.buildChukwaRecord());
+                }
+                i++;
+            }
+        // End of parsing
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}

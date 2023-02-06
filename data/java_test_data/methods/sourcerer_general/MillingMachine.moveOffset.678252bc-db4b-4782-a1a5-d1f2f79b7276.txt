@@ -1,0 +1,146 @@
+public void moveOffset(int xOffset, int yOffset, int zOffset) {
+    try {
+        MillLocation startLocation = getLocation();
+        // first check for software limits
+        int newloc = xLocation + xOffset;
+        if (newloc < xMin || newloc > xMax) {
+            throw new MillingException(MillingException.SOFT_LIMIT, "X: " + newloc);
+        }
+        newloc = yLocation + yOffset;
+        if (newloc < yMin || newloc > yMax) {
+            throw new MillingException(MillingException.SOFT_LIMIT, "Y: " + newloc);
+        }
+        newloc = zLocation + zOffset;
+        if (newloc < zMin || newloc > zMax) {
+            throw new MillingException(MillingException.SOFT_LIMIT, "Z: " + newloc);
+        }
+        String sign = "+";
+        // all three specified - move Z first.
+        if (zOffset < 0) {
+            sign = "-";
+            zOffset = Math.abs(zOffset);
+        } else {
+            sign = "+";
+        }
+        int offset = 0;
+        while (zOffset > 0) {
+            // handles bigger than 255 numbers
+            if (zOffset > 255) {
+                offset = 255;
+            } else {
+                offset = zOffset;
+            }
+            MillingException me = null;
+            String response = null;
+            try {
+                response = processCommand("MZ" + sign + toThreeChar(offset));
+            } catch (MillingException e) {
+                me = e;
+                response = e.getResponse();
+            }
+            if (getFirmwareVersionAsFloat() >= 1.1F) {
+                int[] moves = extractMovement(response, new int[] { 0, 0, offset });
+                offset = moves[2];
+            }
+            if (sign.equals("-")) {
+                zLocation -= offset;
+            } else {
+                zLocation += offset;
+            }
+            zOffset -= offset;
+            if (me != null) {
+                // rethrow the milling exception after handling the steps processed
+                throw me;
+            }
+        }
+        // Move x and y
+        String xsign = "+";
+        if (xOffset < 0) {
+            xsign = "-";
+            xOffset = Math.abs(xOffset);
+        }
+        String ysign = "+";
+        if (yOffset < 0) {
+            ysign = "-";
+            yOffset = Math.abs(yOffset);
+        }
+        while (xOffset > 0 || yOffset > 0) {
+            double slope = (double) yOffset / (double) xOffset;
+            int xSteps = xOffset;
+            int ySteps = yOffset;
+            if (xOffset > 255 && xOffset >= yOffset) {
+                // calculate the number of ySteps based on 255 xSteps
+                xSteps = 255;
+                ySteps = (int) Math.round((double) xSteps * slope);
+            }
+            if (yOffset > 255 && yOffset > xOffset) {
+                // calculate the number of xSteps based on 255 ySteps
+                ySteps = 255;
+                xSteps = (int) Math.round((double) ySteps / slope);
+            }
+            String s = "M";
+            if (xSteps > 0) {
+                s = s + "X" + xsign + toThreeChar(xSteps);
+            }
+            if (ySteps > 0) {
+                s = s + "Y" + ysign + toThreeChar(ySteps);
+            }
+            if (s.length() > 1) {
+                MillingException me = null;
+                String response = null;
+                try {
+                    response = processCommand(s);
+                } catch (MillingException e) {
+                    me = e;
+                    response = e.getResponse();
+                }
+                if (getFirmwareVersionAsFloat() >= 1.1F) {
+                    int[] moves = extractMovement(response, new int[] { xSteps, ySteps, 0 });
+                    xSteps = moves[0];
+                    ySteps = moves[1];
+                }
+                if (xsign.equals("-")) {
+                    xLocation -= xSteps;
+                } else {
+                    xLocation += xSteps;
+                }
+                xOffset -= xSteps;
+                if (ysign.equals("-")) {
+                    yLocation -= ySteps;
+                } else {
+                    yLocation += ySteps;
+                }
+                yOffset -= ySteps;
+                if (me != null) {
+                    // rethrow the milling exception after handling the steps processed
+                    throw me;
+                }
+            }
+        }
+        if (simulating) {
+            // One second delay for simulations
+            try {
+                Thread.sleep(simulateDelay);
+            } catch (InterruptedException e) {
+            }
+        }
+        // if we got this far, limits must all be off
+        clearLimits();
+        firePropertyChange("location", startLocation, getLocation());
+        log.info("Position: " + xLocation + "," + yLocation + "," + zLocation);
+    } catch (MillingException e) {
+        if (e.getReason() == MillingException.BROWNOUT_ERROR) {
+            // Special handling of brownouts during a move
+            // Assume this system has better location data than the mill does, so force it all back to
+            // stored values
+            log.error("Reseting mill locations due to Brownout!");
+            calibrateX(xLocation);
+            calibrateY(yLocation);
+            calibrateZ(zLocation);
+            setXDelay(xDelay);
+            setYDelay(yDelay);
+            setZDelay(zDelay);
+        }
+        throw e;
+    }
+}

@@ -1,0 +1,51 @@
+private void syncBreakpointsImpl(final Direction direction, final StatusBuilder statusBuilder) {
+    // Collect the remote breakpoints.
+    Collection<? extends Breakpoint> sdkBreakpoints = readSdkBreakpoints(javascriptVm);
+    // Collect all local breakpoints.
+    Set<ChromiumLineBreakpoint> uiBreakpoints = getUiBreakpoints();
+    List<Breakpoint> sdkBreakpoints2 = new ArrayList<Breakpoint>(sdkBreakpoints.size());
+    if (direction != Direction.MERGE) {
+        breakpointInTargetMap.clear();
+    }
+    // Throw away all already linked breakpoints and put remaining into sdkBreakpoints2 list.
+    for (Breakpoint sdkBreakpoint : sdkBreakpoints) {
+        ChromiumLineBreakpoint uiBreakpoint = breakpointInTargetMap.getUiBreakpoint(sdkBreakpoint);
+        if (uiBreakpoint == null) {
+            // No mapping. Schedule for further processing.
+            sdkBreakpoints2.add(sdkBreakpoint);
+        } else {
+            // There is a live mapping. This set should also contain this breakpoint.
+            removeSafe(uiBreakpoints, uiBreakpoint);
+            statusBuilder.getReportBuilder().increment(ReportBuilder.Property.LINKED);
+        }
+    }
+    // Sort all breakpoints by (script_name, line_number).
+    SortedBreakpoints<ChromiumLineBreakpoint> sortedUiBreakpoints = sortBreakpoints(uiBreakpoints, uiBreakpointHandler);
+    SortedBreakpoints<Breakpoint> sortedSdkBreakpoints = sortBreakpoints(sdkBreakpoints2, sdkBreakpointHandler);
+    BreakpointMerger breakpointMerger = new BreakpointMerger(direction, breakpointInTargetMap);
+    // Find all unlinked breakpoints on both sides.
+    mergeBreakpoints(breakpointMerger, sortedUiBreakpoints, sortedSdkBreakpoints);
+    List<Breakpoint> sdkBreakpointsToDelete;
+    List<Breakpoint> sdkBreakpointsToCreate;
+    List<ChromiumLineBreakpoint> uiBreakpointsToDelete;
+    List<ChromiumLineBreakpoint> uiBreakpointsToCreate;
+    // Plan actions for all breakpoints without pair.
+    if (direction == Direction.RESET_REMOTE) {
+        sdkBreakpointsToDelete = breakpointMerger.getMissingSdk();
+        sdkBreakpointsToCreate = Collections.emptyList();
+    } else {
+        sdkBreakpointsToCreate = breakpointMerger.getMissingSdk();
+        sdkBreakpointsToDelete = Collections.emptyList();
+    }
+    if (direction == Direction.RESET_LOCAL) {
+        uiBreakpointsToDelete = breakpointMerger.getMissingUi();
+        uiBreakpointsToCreate = Collections.emptyList();
+    } else {
+        uiBreakpointsToCreate = breakpointMerger.getMissingUi();
+        uiBreakpointsToDelete = Collections.emptyList();
+    }
+    // First delete everything, then create (we may need to re-create some breakpoints, so order
+    // is significant).
+    deteleBreakpoints(sdkBreakpointsToDelete, uiBreakpointsToDelete, statusBuilder);
+    createBreakpoints(sdkBreakpointsToCreate, uiBreakpointsToCreate, statusBuilder);
+}

@@ -1,0 +1,87 @@
+@SuppressWarnings("nls")
+private void genTaskPlan(Operator<? extends Serializable> op, Task<? extends Serializable> currTask, HashMap<Operator<? extends Serializable>, Task<? extends Serializable>> redTaskMap, Task<? extends Serializable> mvTask) {
+    // Check if this is a file sink operator
+    if (op.getClass() == FileSinkOperator.class) {
+        // If this is a file sink operator then set the move task to be dependent
+        // on the current task
+        currTask.addDependentTask(mvTask);
+    }
+    List<Operator<? extends Serializable>> childOps = op.getChildOperators();
+    // If there are no children then we are done
+    if (childOps == null) {
+        return;
+    }
+    // Otherwise go through the children and check for the operator following
+    // the reduce sink operator
+    mapredWork plan = (mapredWork) currTask.getWork();
+    for (int i = 0; i < childOps.size(); ++i) {
+        Operator<? extends Serializable> child = childOps.get(i);
+        if (child.getClass() == ReduceSinkOperator.class) {
+            // Get the operator following the reduce sink
+            assert (child.getChildOperators().size() == 1);
+            Operator<? extends Serializable> reducer = child.getChildOperators().get(0);
+            assert (plan.getReducer() != null);
+            if (plan.getReducer() == reducer) {
+                if (child.getChildOperators().get(0).getClass() == JoinOperator.class)
+                    plan.setNeedsTagging(true);
+                // Recurse on the reducer
+                genTaskPlan(reducer, currTask, redTaskMap, mvTask);
+            } else if (plan.getReducer() != reducer) {
+                Task<? extends Serializable> ctask = null;
+                mapredWork cplan = null;
+                // First check if the reducer already has an associated task
+                ctask = redTaskMap.get(reducer);
+                if (ctask == null) {
+                    // For this case we need to generate a new task
+                    cplan = getMapRedWork();
+                    ctask = TaskFactory.get(cplan, this.conf);
+                    // Add the reducer
+                    cplan.setReducer(reducer);
+                    redTaskMap.put(reducer, ctask);
+                    // Recurse on the reducer
+                    genTaskPlan(reducer, ctask, redTaskMap, mvTask);
+                    // generate the temporary file
+                    String taskTmpDir = this.scratchDir + File.separator + this.randomid + '.' + this.pathid;
+                    this.pathid++;
+                    // Go over the row schema of the input operator and generate the
+                    // column names using that
+                    StringBuilder sb = new StringBuilder();
+                    boolean isfirst = true;
+                    for (ColumnInfo colInfo : op.getSchema().getSignature()) {
+                        if (!isfirst) {
+                            sb.append(",");
+                        }
+                        sb.append(colInfo.getInternalName());
+                        isfirst = false;
+                    }
+                    tableDesc tt_desc = PlanUtils.getDefaultTableDesc(Integer.toString(Utilities.ctrlaCode), sb.toString());
+                    // Create a file sink operator for this file name
+                    Operator<? extends Serializable> fs_op = OperatorFactory.get(new fileSinkDesc(taskTmpDir, tt_desc), op.getSchema());
+                    // replace the reduce child with this operator
+                    childOps.set(i, fs_op);
+                    // Add the path to alias mapping
+                    if (cplan.getPathToAliases().get(taskTmpDir) == null) {
+                        cplan.getPathToAliases().put(taskTmpDir, new ArrayList<String>());
+                    }
+                    String streamDesc;
+                    if (child.getChildOperators().get(0).getClass() == JoinOperator.class)
+                        streamDesc = "$INTNAME";
+                    else
+                        streamDesc = taskTmpDir;
+                    cplan.getPathToAliases().get(taskTmpDir).add(streamDesc);
+                    cplan.getPathToPartitionInfo().put(taskTmpDir, new partitionDesc(tt_desc, null));
+                    cplan.getAliasToWork().put(streamDesc, child);
+                    // Make this task dependent on the current task
+                    currTask.addDependentTask(ctask);
+                    // dependent on the cTask
+                    if (child.getChildOperators().get(0).getClass() == JoinOperator.class)
+                        cplan.setNeedsTagging(true);
+                }
+            }
+            child.setChildOperators(null);
+        } else {
+            // For any other operator just recurse
+            genTaskPlan(child, currTask, redTaskMap, mvTask);
+        }
+    }
+}

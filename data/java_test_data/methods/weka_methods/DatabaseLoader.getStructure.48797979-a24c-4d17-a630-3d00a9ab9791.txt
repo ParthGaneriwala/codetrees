@@ -1,0 +1,209 @@
+@Override
+public Instances getStructure() throws IOException {
+    if (m_DataBaseConnection == null) {
+        throw new IOException("No source database has been specified");
+    }
+    connectToDatabase();
+    pseudo: try {
+        if (m_pseudoIncremental && m_structure == null) {
+            if (getRetrieval() == BATCH) {
+                throw new IOException("Cannot mix getting instances in both incremental and batch modes");
+            }
+            setRetrieval(NONE);
+            m_datasetPseudoInc = getDataSet();
+            m_structure = new Instances(m_datasetPseudoInc, 0);
+            setRetrieval(NONE);
+            return m_structure;
+        }
+        if (m_structure == null) {
+            if (m_checkForTable) {
+                if (!m_DataBaseConnection.tableExists(endOfQuery(true))) {
+                    throw new IOException("Table does not exist according to metadata from JDBC driver. " + "If you are convinced the table exists, set 'checkForTable' " + "to 'False' in your DatabaseUtils.props file and try again.");
+                }
+            }
+            // finds out which SQL statement to use for the DBMS to limit the number
+            // of resulting rows to one
+            int choice = 0;
+            boolean rightChoice = false;
+            while (!rightChoice) {
+                try {
+                    String limitQ = limitQuery(m_query, 0, choice);
+                    if (m_DataBaseConnection.execute(limitQ) == false) {
+                        throw new IOException("Query didn't produce results");
+                    }
+                    m_choice = choice;
+                    rightChoice = true;
+                } catch (SQLException ex) {
+                    choice++;
+                    if (choice == 3) {
+                        System.out.println("Incremental loading not supported for that DBMS. Pseudoincremental mode is used if you use incremental loading.\nAll rows are loaded into memory once and retrieved incrementally from memory instead of from the database.");
+                        m_pseudoIncremental = true;
+                        break pseudo;
+                    }
+                }
+            }
+            String end = endOfQuery(false);
+            ResultSet rs = m_DataBaseConnection.getResultSet();
+            ResultSetMetaData md = rs.getMetaData();
+            // rs.close();
+            int numAttributes = md.getColumnCount();
+            int[] attributeTypes = new int[numAttributes];
+            m_nominalIndexes = Utils.cast(new Hashtable[numAttributes]);
+            m_nominalStrings = Utils.cast(new ArrayList[numAttributes]);
+            for (int i = 1; i <= numAttributes; i++) {
+                switch(m_DataBaseConnection.translateDBColumnType(md.getColumnTypeName(i))) {
+                    case DatabaseConnection.STRING:
+                        String columnName = md.getColumnLabel(i);
+                        if (m_DataBaseConnection.getUpperCase()) {
+                            columnName = columnName.toUpperCase();
+                        }
+                        m_nominalIndexes[i - 1] = new Hashtable<String, Double>();
+                        m_nominalStrings[i - 1] = new ArrayList<String>();
+                        // structure is determined by InstanceQuery in getDataSet()
+                        if (getRetrieval() != INCREMENTAL) {
+                            attributeTypes[i - 1] = Attribute.STRING;
+                            break;
+                        }
+                        // System.err.println("String --> nominal");
+                        ResultSet rs1;
+                        String query = "SELECT COUNT(DISTINCT( " + columnName + " )) FROM " + end;
+                        if (m_DataBaseConnection.execute(query) == true) {
+                            rs1 = m_DataBaseConnection.getResultSet();
+                            rs1.next();
+                            int count = rs1.getInt(1);
+                            rs1.close();
+                            // end) == false){
+                            if (count > m_nominalToStringLimit || m_DataBaseConnection.execute("SELECT DISTINCT ( " + columnName + " ) FROM " + end + " ORDER BY " + columnName) == false) {
+                                attributeTypes[i - 1] = Attribute.STRING;
+                                break;
+                            }
+                            rs1 = m_DataBaseConnection.getResultSet();
+                        } else {
+                            // System.err.println("Count for nominal values cannot be calculated. Attribute "+columnName+" treated as String.");
+                            attributeTypes[i - 1] = Attribute.STRING;
+                            break;
+                        }
+                        attributeTypes[i - 1] = Attribute.NOMINAL;
+                        stringToNominal(rs1, i);
+                        rs1.close();
+                        break;
+                    case DatabaseConnection.TEXT:
+                        // System.err.println("boolean --> string");
+                        columnName = md.getColumnLabel(i);
+                        if (m_DataBaseConnection.getUpperCase()) {
+                            columnName = columnName.toUpperCase();
+                        }
+                        m_nominalIndexes[i - 1] = new Hashtable<String, Double>();
+                        m_nominalStrings[i - 1] = new ArrayList<String>();
+                        // structure is determined by InstanceQuery in getDataSet()
+                        if (getRetrieval() != INCREMENTAL) {
+                            attributeTypes[i - 1] = Attribute.STRING;
+                            break;
+                        }
+                        query = "SELECT COUNT(DISTINCT( " + columnName + " )) FROM " + end;
+                        if (m_DataBaseConnection.execute(query) == true) {
+                            rs1 = m_DataBaseConnection.getResultSet();
+                            stringToNominal(rs1, i);
+                            rs1.close();
+                        }
+                        attributeTypes[i - 1] = Attribute.STRING;
+                        break;
+                    case DatabaseConnection.BOOL:
+                        // System.err.println("boolean --> nominal");
+                        attributeTypes[i - 1] = Attribute.NOMINAL;
+                        m_nominalIndexes[i - 1] = new Hashtable<String, Double>();
+                        m_nominalIndexes[i - 1].put("false", new Double(0));
+                        m_nominalIndexes[i - 1].put("true", new Double(1));
+                        m_nominalStrings[i - 1] = new ArrayList<String>();
+                        m_nominalStrings[i - 1].add("false");
+                        m_nominalStrings[i - 1].add("true");
+                        break;
+                    case DatabaseConnection.DOUBLE:
+                        // System.err.println("BigDecimal --> numeric");
+                        attributeTypes[i - 1] = Attribute.NUMERIC;
+                        break;
+                    case DatabaseConnection.BYTE:
+                        // System.err.println("byte --> numeric");
+                        attributeTypes[i - 1] = Attribute.NUMERIC;
+                        break;
+                    case DatabaseConnection.SHORT:
+                        // System.err.println("short --> numeric");
+                        attributeTypes[i - 1] = Attribute.NUMERIC;
+                        break;
+                    case DatabaseConnection.INTEGER:
+                        // System.err.println("int --> numeric");
+                        attributeTypes[i - 1] = Attribute.NUMERIC;
+                        break;
+                    case DatabaseConnection.LONG:
+                        // System.err.println("long --> numeric");
+                        attributeTypes[i - 1] = Attribute.NUMERIC;
+                        break;
+                    case DatabaseConnection.FLOAT:
+                        // System.err.println("float --> numeric");
+                        attributeTypes[i - 1] = Attribute.NUMERIC;
+                        break;
+                    case DatabaseConnection.DATE:
+                        attributeTypes[i - 1] = Attribute.DATE;
+                        break;
+                    case DatabaseConnection.TIME:
+                        attributeTypes[i - 1] = Attribute.DATE;
+                        break;
+                    default:
+                        // System.err.println("Unknown column type");
+                        attributeTypes[i - 1] = Attribute.STRING;
+                }
+            }
+            ArrayList<Attribute> attribInfo = new ArrayList<Attribute>();
+            for (int i = 0; i < numAttributes; i++) {
+                /* Fix for databases that uppercase column names */
+                // String attribName = attributeCaseFix(md.getColumnName(i + 1));
+                String attribName = md.getColumnLabel(i + 1);
+                switch(attributeTypes[i]) {
+                    case Attribute.NOMINAL:
+                        attribInfo.add(new Attribute(attribName, m_nominalStrings[i]));
+                        break;
+                    case Attribute.NUMERIC:
+                        attribInfo.add(new Attribute(attribName));
+                        break;
+                    case Attribute.STRING:
+                        Attribute att = new Attribute(attribName, (ArrayList<String>) null);
+                        for (int n = 0; n < m_nominalStrings[i].size(); n++) {
+                            att.addStringValue(m_nominalStrings[i].get(n));
+                        }
+                        attribInfo.add(att);
+                        break;
+                    case Attribute.DATE:
+                        attribInfo.add(new Attribute(attribName, (String) null));
+                        break;
+                    default:
+                        throw new IOException("Unknown attribute type");
+                }
+            }
+            m_structure = new Instances(endOfQuery(true), attribInfo, 0);
+            // get rid of m_idColumn
+            if (m_DataBaseConnection.getUpperCase()) {
+                m_idColumn = m_idColumn.toUpperCase();
+            }
+            // System.out.println(m_structure.attribute(0).name().equals(idColumn));
+            if (m_structure.attribute(0).name().equals(m_idColumn)) {
+                m_oldStructure = new Instances(m_structure, 0);
+                m_oldStructure.deleteAttributeAt(0);
+            // System.out.println(m_structure);
+            } else {
+                m_oldStructure = new Instances(m_structure, 0);
+            }
+            if (m_DataBaseConnection.getResultSet() != null) {
+                rs.close();
+            }
+        } else {
+            if (m_oldStructure == null) {
+                m_oldStructure = new Instances(m_structure, 0);
+            }
+        }
+        m_DataBaseConnection.disconnectFromDatabase();
+    } catch (Exception ex) {
+        ex.printStackTrace();
+        printException(ex);
+    }
+    return m_oldStructure;
+}

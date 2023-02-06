@@ -1,0 +1,110 @@
+public static boolean loadCheck(Package toLoad, File packageRoot, PrintStream... progress) {
+    // first check against the base version of the system
+    boolean load;
+    try {
+        load = toLoad.isCompatibleBaseSystem();
+    } catch (Exception ex) {
+        ex.printStackTrace();
+        return false;
+    }
+    if (!load) {
+        for (PrintStream p : progress) {
+            p.println("[WekaPackageManager] Skipping package " + toLoad.getName() + " because it is not compatible with Weka " + PACKAGE_MANAGER.getBaseSystemVersion().toString());
+        }
+        return false;
+    }
+    // check to see if this package has been disabled for all users
+    try {
+        Package repoP = getRepositoryPackageInfo(toLoad.getName(), toLoad.getPackageMetaDataElement(VERSION_KEY).toString());
+        if (repoP != null) {
+            Object disabled = repoP.getPackageMetaDataElement(DISABLED_KEY);
+            if (disabled == null) {
+                disabled = repoP.getPackageMetaDataElement(DISABLE_KEY);
+            }
+            if (disabled != null && disabled.toString().equalsIgnoreCase("true")) {
+                for (PrintStream p : progress) {
+                    p.println("[WekaPackageManager] Skipping package " + toLoad.getName() + " because it has been marked as disabled at the repository");
+                }
+                return false;
+            }
+        }
+    } catch (Exception ex) {
+    // Ignore - we will get an exception when checking for an unofficial
+    // package
+    // return true;
+    }
+    if (!osAndArchCheck(toLoad, progress)) {
+        return false;
+    }
+    // check for precludes
+    Object precludes = toLoad.getPackageMetaDataElement(PRECLUDES_KEY);
+    if (precludes != null) {
+        try {
+            List<Package> installed = getInstalledPackages();
+            List<Package> preclusions = toLoad.getPrecludedPackages(installed);
+            if (preclusions.size() > 0) {
+                for (PrintStream p : progress) {
+                    p.println("[WekaPackageManager] Skipping package " + toLoad.getName() + " because it precludes one or more packages that are " + "already installed: ");
+                    for (Package prec : preclusions) {
+                        p.println("\t" + prec);
+                    }
+                }
+                return false;
+            }
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+    }
+    load = !m_doNotLoadList.contains(toLoad.getName());
+    if (!load) {
+        for (PrintStream p : progress) {
+            p.println("[WekaPackageManager] Skipping package " + toLoad.getName() + " because it is has been marked as do not load");
+        }
+        return false;
+    }
+    if (m_offline) {
+        return true;
+    }
+    // now check for missing dependencies
+    try {
+        List<Dependency> missing = toLoad.getMissingDependencies();
+        if (missing.size() > 0) {
+            for (PrintStream p : progress) {
+                p.println("[WekaPackageManager] " + toLoad.getName() + " can't be loaded because the following" + " packages are missing:");
+                for (Dependency d : missing) {
+                    p.println(d.getTarget());
+                }
+            }
+            return false;
+        }
+    } catch (Exception ex) {
+        ex.printStackTrace();
+        return false;
+    }
+    // now check for buggered dependencies
+    try {
+        List<Dependency> depends = toLoad.getDependencies();
+        for (Dependency d : depends) {
+            if (d.getTarget().getPackage().isInstalled()) {
+                if (!loadCheck(d.getTarget().getPackage(), packageRoot, progress)) {
+                    for (PrintStream p : progress) {
+                        p.println("[WekaPackageManager] Can't load " + toLoad.getName() + " because " + d.getTarget() + " can't be loaded.");
+                    }
+                    return false;
+                }
+                // check that the version of installed dependency is OK
+                Package installedD = getInstalledPackageInfo(d.getTarget().getPackage().getName());
+                if (!d.getTarget().checkConstraint(installedD)) {
+                    for (PrintStream p : progress) {
+                        p.println("[WekaPackageManager] Can't load " + toLoad.getName() + " because the installed " + d.getTarget().getPackage().getName() + " is not compatible (requires: " + d.getTarget() + ")");
+                    }
+                    return false;
+                }
+            }
+        }
+    } catch (Exception ex) {
+        ex.printStackTrace();
+        return false;
+    }
+    return true;
+}

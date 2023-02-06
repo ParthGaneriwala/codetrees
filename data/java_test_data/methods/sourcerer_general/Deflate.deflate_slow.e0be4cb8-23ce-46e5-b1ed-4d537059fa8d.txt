@@ -1,0 +1,102 @@
+// Same as above, but achieves better compression. We use a lazy
+// evaluation for matches: a match is finally adopted only if there is
+int deflate_slow(int flush) {
+    // short hash_head = 0; // head of hash chain
+    // head of hash chain
+    int hash_head = 0;
+    // set if current block must be flushed
+    boolean bflush;
+    // Process the input block.
+    while (true) {
+        if (lookahead < MIN_LOOKAHEAD) {
+            fill_window();
+            if (lookahead < MIN_LOOKAHEAD && flush == Z_NO_FLUSH) {
+                return NeedMore;
+            }
+            if (lookahead == 0)
+                // flush the current block
+                break;
+        }
+        if (lookahead >= MIN_MATCH) {
+            ins_h = (((ins_h) << hash_shift) ^ (window[(strstart) + (MIN_MATCH - 1)] & 0xff)) & hash_mask;
+            // prev[strstart&w_mask]=hash_head=head[ins_h];
+            hash_head = (head[ins_h] & 0xffff);
+            prev[strstart & w_mask] = head[ins_h];
+            head[ins_h] = (short) strstart;
+        }
+        // Find the longest match, discarding those <= prev_length.
+        prev_length = match_length;
+        prev_match = match_start;
+        match_length = MIN_MATCH - 1;
+        if (hash_head != 0 && prev_length < max_lazy_match && ((strstart - hash_head) & 0xffff) <= w_size - MIN_LOOKAHEAD) {
+            if (strategy != Z_HUFFMAN_ONLY) {
+                match_length = longest_match(hash_head);
+            }
+            if (match_length <= 5 && (strategy == Z_FILTERED || (match_length == MIN_MATCH && strstart - match_start > 4096))) {
+                // If prev_match is also MIN_MATCH, match_start is garbage
+                // but we will ignore the current match anyway.
+                match_length = MIN_MATCH - 1;
+            }
+        }
+        // match is not better, output the previous match:
+        if (prev_length >= MIN_MATCH && match_length <= prev_length) {
+            int max_insert = strstart + lookahead - MIN_MATCH;
+            // Do not insert strings in hash table beyond this.
+            // check_match(strstart-1, prev_match, prev_length);
+            bflush = _tr_tally(strstart - 1 - prev_match, prev_length - MIN_MATCH);
+            // Insert in hash table all strings up to the end of the match.
+            // strstart-1 and strstart are already inserted. If there is not
+            // enough lookahead, the last two strings are not inserted in
+            // the hash table.
+            lookahead -= prev_length - 1;
+            prev_length -= 2;
+            do {
+                if (++strstart <= max_insert) {
+                    ins_h = (((ins_h) << hash_shift) ^ (window[(strstart) + (MIN_MATCH - 1)] & 0xff)) & hash_mask;
+                    // prev[strstart&w_mask]=hash_head=head[ins_h];
+                    hash_head = (head[ins_h] & 0xffff);
+                    prev[strstart & w_mask] = head[ins_h];
+                    head[ins_h] = (short) strstart;
+                }
+            } while (--prev_length != 0);
+            match_available = 0;
+            match_length = MIN_MATCH - 1;
+            strstart++;
+            if (bflush) {
+                flush_block_only(false);
+                if (strm.avail_out == 0)
+                    return NeedMore;
+            }
+        } else if (match_available != 0) {
+            // If there was no match at the previous position, output a
+            // single literal. If there was a match but the current match
+            // is longer, truncate the previous match to a single literal.
+            bflush = _tr_tally(0, window[strstart - 1] & 0xff);
+            if (bflush) {
+                flush_block_only(false);
+            }
+            strstart++;
+            lookahead--;
+            if (strm.avail_out == 0)
+                return NeedMore;
+        } else {
+            // There is no previous match to compare with, wait for
+            // the next step to decide.
+            match_available = 1;
+            strstart++;
+            lookahead--;
+        }
+    }
+    if (match_available != 0) {
+        bflush = _tr_tally(0, window[strstart - 1] & 0xff);
+        match_available = 0;
+    }
+    flush_block_only(flush == Z_FINISH);
+    if (strm.avail_out == 0) {
+        if (flush == Z_FINISH)
+            return FinishStarted;
+        else
+            return NeedMore;
+    }
+    return flush == Z_FINISH ? FinishDone : BlockDone;
+}

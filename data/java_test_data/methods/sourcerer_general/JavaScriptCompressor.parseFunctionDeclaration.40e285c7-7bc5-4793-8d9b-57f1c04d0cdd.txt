@@ -1,0 +1,87 @@
+private void parseFunctionDeclaration() {
+    String symbol;
+    JavaScriptToken token;
+    ScriptOrFnScope currentScope, fnScope;
+    JavaScriptIdentifier identifier;
+    currentScope = getCurrentScope();
+    token = consumeToken();
+    if (token.getType() == Token.NAME) {
+        if (mode == BUILDING_SYMBOL_TREE) {
+            // Get the name of the function and declare it in the current scope.
+            symbol = token.getValue();
+            if (currentScope.getIdentifier(symbol) != null) {
+                warn("The function " + symbol + " has already been declared in the same scope...", true);
+            }
+            currentScope.declareIdentifier(symbol);
+        }
+        token = consumeToken();
+    }
+    assert token.getType() == Token.LP;
+    if (mode == BUILDING_SYMBOL_TREE) {
+        fnScope = new ScriptOrFnScope(braceNesting, currentScope);
+        indexedScopes.put(new Integer(offset), fnScope);
+    } else {
+        fnScope = (ScriptOrFnScope) indexedScopes.get(new Integer(offset));
+    }
+    // Parse function arguments.
+    int argpos = 0;
+    while ((token = consumeToken()).getType() != Token.RP) {
+        assert token.getType() == Token.NAME || token.getType() == Token.COMMA;
+        if (token.getType() == Token.NAME && mode == BUILDING_SYMBOL_TREE) {
+            symbol = token.getValue();
+            identifier = fnScope.declareIdentifier(symbol);
+            if (symbol.equals("$super") && argpos == 0) {
+                // Exception for Prototype 1.6...
+                identifier.preventMunging();
+            }
+            argpos++;
+        }
+    }
+    token = consumeToken();
+    assert token.getType() == Token.LC;
+    braceNesting++;
+    token = getToken(0);
+    if (token.getType() == Token.STRING && getToken(1).getType() == Token.SEMI) {
+        // This is a hint. Hints are empty statements that look like
+        // "localvar1:nomunge, localvar2:nomunge"; They allow developers
+        // to prevent specific symbols from getting obfuscated (some heretic
+        // implementations, such as Prototype 1.6, require specific variable
+        // names, such as $super for example, in order to work appropriately.
+        // Note: right now, only "nomunge" is supported in the right hand side
+        // of a hint. However, in the future, the right hand side may contain
+        // other values.
+        consumeToken();
+        String hints = token.getValue();
+        // Remove the leading and trailing quotes...
+        hints = hints.substring(1, hints.length() - 1).trim();
+        StringTokenizer st1 = new StringTokenizer(hints, ",");
+        while (st1.hasMoreTokens()) {
+            String hint = st1.nextToken();
+            int idx = hint.indexOf(':');
+            if (idx <= 0 || idx >= hint.length() - 1) {
+                if (mode == BUILDING_SYMBOL_TREE) {
+                    // No need to report the error twice, hence the test...
+                    warn("Invalid hint syntax: " + hint, true);
+                }
+                break;
+            }
+            String variableName = hint.substring(0, idx).trim();
+            String variableType = hint.substring(idx + 1).trim();
+            if (mode == BUILDING_SYMBOL_TREE) {
+                fnScope.addHint(variableName, variableType);
+            } else if (mode == CHECKING_SYMBOL_TREE) {
+                identifier = fnScope.getIdentifier(variableName);
+                if (identifier != null) {
+                    if (variableType.equals("nomunge")) {
+                        identifier.preventMunging();
+                    } else {
+                        warn("Unsupported hint value: " + hint, true);
+                    }
+                } else {
+                    warn("Hint refers to an unknown identifier: " + hint, true);
+                }
+            }
+        }
+    }
+    parseScope(fnScope);
+}

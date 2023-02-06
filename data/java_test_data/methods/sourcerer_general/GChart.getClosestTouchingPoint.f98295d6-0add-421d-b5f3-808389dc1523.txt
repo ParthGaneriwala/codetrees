@@ -1,0 +1,110 @@
+/*
+     * Returns the index of the point on this curve whose rendered symbol
+     * intersects a rectangle with the specified width and height centered on
+     * the specified point (this rectangle is typically a point selection
+     * "brush", centered on the mouse cursor). <p>
+     * 
+     * In the event that more than one point's rendered symbol intersects with
+     * the specified rectangle, the point whose center is closest to the
+     * specified rectangle's center is returned. In the event of a tie, the
+     * point with the largest point index is returned. If no point "touches" the
+     * rectangle, <tt>GChart.NAI</tt> is returned. <p>
+     * 
+     * Assumes/requires up-to-date <tt>bandList</tt> array and related
+     * <tt>iNextInBand</tt> indexes (these get defined within the
+     * <tt>bandSeparatePoints</tt> method).
+     */
+int getClosestTouchingPoint(int xBrushIn, int yBrushIn) {
+    /*
+       * Reverse-shifting brush is an easier way to incorporate
+       * hit-testing impact of xShift, yShift than actually shifting
+       * object positions.
+       * 
+       */
+    int xBrush = xBrushIn - xShift;
+    // '+': cartesion-to-pixel transform
+    int yBrush = yBrushIn + yShift;
+    int result = GChart.NAI;
+    // ANCHOR_MOUSE symbol type curves not band separated/hit tested
+    if (null == bandList)
+        return result;
+    SymbolType symType = getSymbol().getSymbolType();
+    // closest touching pt's distance^2
+    double dBest = Double.MAX_VALUE;
+    int iBandFirst;
+    int iBandLast;
+    int brushWidth = symType.getBrushWidth(getSymbol());
+    /*
+       * In every tested browser EXCEPT FF3, we don't need the +1 below
+       * to select a 1px tall, off-chart, symbol with a 1x1 px brush
+       * (specifically, to select the leftmost vertical bar on
+       * TestGChart28). The +1 below in effect adds 1 px to the height
+       * of the brush to workaround this problem.
+       */
+    int brushHeight = symType.getBrushHeight(getSymbol()) + 1;
+    AnnotationLocation brushLocation = symType.getBrushLocation(getSymbol());
+    int nBands = bandList.length;
+    /*
+       * Determine range of bands touched by brush, taking into account
+       * potential for symbols whose centers are in one band to "stick
+       * out" into an adjacent band by half-band thickening of either
+       * end of the brush.
+       *
+       * Note that the 0th and (nBand-1)th bands represent
+       * "pseudo-bands" that hold all points that fall to the left or
+       * right (or above or below if horizontally banded) the
+       * rectangular plot area. The tacit assumption is that such
+       * completely off-the-plot-area points are rare, so it's OK to
+       * bunch them up into just 2 bands.
+       *
+       */
+    if (getSymbol().isHorizontallyBanded()) {
+        // horizontal bars and curves with "wider than high" brushes
+        double top = brushLocation.getUpperLeftY(yBrush, brushHeight, 0);
+        double bottom = top + brushHeight;
+        top -= bandThickness / 2.;
+        bottom += bandThickness / 2.;
+        iBandFirst = (int) Math.max(0, Math.min(nBands - 1, 1 + Math.floor(top / bandThickness)));
+        iBandLast = (int) Math.max(0, Math.min(nBands - 1, 1 + Math.floor(bottom / bandThickness)));
+    } else {
+        // vertical bars, some curves with "tall or square" brushes
+        double left = brushLocation.getUpperLeftX(xBrush, brushWidth, 0);
+        double right = left + brushWidth;
+        left -= bandThickness / 2.0;
+        right += bandThickness / 2.0;
+        iBandFirst = (int) Math.max(0, Math.min(nBands - 1, 1 + Math.floor(left / bandThickness)));
+        iBandLast = (int) Math.max(0, Math.min(nBands - 1, 1 + Math.floor(right / bandThickness)));
+    }
+    /*
+       * Every point whose symbol touches the brush must be in one
+       * of these bands. Search them to find closest touching point.
+       * 
+       */
+    for (int iBand = iBandFirst; iBand <= iBandLast; iBand++) {
+        Point p = null;
+        for (int iPoint = bandList[iBand]; iPoint != GChart.NAI; iPoint = p.getINextInBand()) {
+            if (iPoint < 0 || iPoint >= getNPoints())
+                throw new IllegalStateException("Inappropriately terminated band-point-list, GChart bug likely. " + "iPoint=" + iPoint + " nPoints=" + getNPoints() + " iBand=" + iBand + " iBandFirst=" + iBandFirst + " iBandLast=" + iBandLast + " xBrush=" + xBrush + " yBrush=" + yBrush + " brushWidth=" + brushWidth + " brushHeight=" + brushHeight + " bandThickness=" + bandThickness);
+            p = getPoint(iPoint);
+            if (symType.isIntersecting(plotPanel, getSymbol(), iPoint, onY2(), xBrush, yBrush, brushWidth, brushHeight)) {
+                // this point touches the brush (keep it if closest)
+                double xPoint = symType.getCenterX(plotPanel, getSymbol(), iPoint);
+                double yPoint = symType.getCenterY(plotPanel, getSymbol(), iPoint, onY2());
+                double dx = getSymbol().xScaleFactor * (xPoint - xBrush);
+                double dy = getSymbol().yScaleFactor * (yPoint - yBrush);
+                double d = dx * dx + dy * dy;
+                if (d < dBest) {
+                    result = iPoint;
+                    dBest = d;
+                } else if (d == dBest && iPoint > result) {
+                    /*
+               * In the case of ties, choose largest point index
+               * (highest "z-order" -- the one "on top")
+               */
+                    result = iPoint;
+                }
+            }
+        }
+    }
+    return result;
+}

@@ -1,0 +1,101 @@
+@Override
+public void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+    response.setContentType("image/svg+xml");
+    JobTracker tracker = (JobTracker) getServletContext().getAttribute("job.tracker");
+    String jobIdStr = request.getParameter("jobid");
+    if (jobIdStr == null)
+        return;
+    JobID jobId = JobID.forName(jobIdStr);
+    String typeStr = request.getParameter("type");
+    boolean isMap = false;
+    if ("map".equalsIgnoreCase(typeStr)) {
+        isMap = true;
+    }
+    PrintWriter out = response.getWriter();
+    TaskReport[] reports = null;
+    reports = isMap ? tracker.getMapTaskReports(jobId) : tracker.getReduceTaskReports(jobId);
+    int numTasks = reports.length;
+    if (numTasks <= 0) {
+        return;
+    }
+    int tasksPerBar = (int) Math.ceil(numTasks / 600d);
+    int numBars = (int) Math.ceil((double) numTasks / tasksPerBar);
+    int w = Math.max(600, numBars);
+    // min 1px, max 10px
+    int barWidth = Math.min(10, w / numBars);
+    int barsPerNotch = (int) Math.ceil(10d / barWidth);
+    w = w + numBars / barsPerNotch;
+    int totalWidth = w + 2 * xmargin;
+    // draw a white rectangle
+    out.print("<?xml version=\"1.0\" standalone=\"no\"?>\n" + "<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \n" + "\"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">\n" + "<?xml-stylesheet type=\"text/css\" href=\"/static/org.fit.hiai.hadoop.css\"?>\n\n" + "<svg width=\"");
+    out.print(totalWidth);
+    out.print("\" height=\"");
+    out.print(height + 2 * ymargin);
+    out.print("\" version=\"1.1\"\n" + "xmlns=\"http://www.w3.org/2000/svg\">\n\n");
+    // axes
+    printLine(out, xmargin - 1, xmargin - 1, height + ymargin + 1, ymargin - 1, "black");
+    printLine(out, xmargin - 1, w + xmargin + 1, height + ymargin + 1, height + ymargin + 1, "black");
+    // borderlines
+    printLine(out, w + xmargin + 1, w + xmargin + 1, height + ymargin + 1, ymargin - 1, "#CCCCCC");
+    printLine(out, xmargin - 1, w + xmargin + 1, ymargin - 1, ymargin - 1, "#CCCCCC");
+    String[] colors = new String[] { "#00DD00", "#E50000", "#AAAAFF" };
+    // determine the notch interval using the number of digits for numTasks
+    int xNotchInterval = (int) (Math.ceil(numTasks / 10d));
+    int xOffset = -1;
+    int xNotchCount = 0;
+    // task bar graph
+    if (reports != null) {
+        for (int i = 0, barCnt = 0; ; i += tasksPerBar, barCnt++) {
+            if (barCnt % barsPerNotch == 0) {
+                xOffset++;
+            }
+            int x = barCnt * barWidth + xmargin + xOffset;
+            // x axis notches
+            if (i >= xNotchInterval * xNotchCount) {
+                printLine(out, x, x, height + ymargin + 3, height + ymargin - 2, "black");
+                printText(out, x, height + ymargin + 15, String.valueOf(xNotchInterval * xNotchCount++), "middle");
+            }
+            if (i >= reports.length)
+                break;
+            if (isMap) {
+                float progress = getMapAvarageProgress(tasksPerBar, i, reports);
+                int barHeight = (int) Math.ceil(height * progress);
+                int y = height - barHeight + ymargin;
+                printRect(out, barWidth, barHeight, x, y, colors[2]);
+            } else {
+                float[] progresses = getReduceAvarageProgresses(tasksPerBar, i, reports);
+                // draw three bars stacked, for copy, sort, reduce
+                int prevHeight = 0;
+                for (int j = 0; j < 3; j++) {
+                    int barHeight = (int) ((height / 3) * progresses[j]);
+                    if (// fix rounding error
+                    barHeight > height / 3 - 3)
+                        barHeight = height / 3 + 1;
+                    int y = height - barHeight + ymargin - prevHeight;
+                    prevHeight += barHeight;
+                    printRect(out, barWidth, barHeight, x, y, colors[j]);
+                }
+            }
+        }
+    }
+    // y axis notches
+    for (int i = 0; i <= 10; i++) {
+        printLine(out, xmargin - 3, xmargin + 2, ymargin + (i * height) / 10, ymargin + (i * height) / 10, "black");
+        printText(out, xmargin - 10, ymargin + 4 + (i * height) / 10, String.valueOf(100 - i * 10), "end");
+    }
+    if (!isMap) {
+        // print color codes for copy, sort, reduce
+        printRect(out, 14, 14, xmargin + w + 4, ymargin + 20, colors[0]);
+        printText(out, xmargin + w + 24, ymargin + 30, "copy", "start");
+        printRect(out, 14, 14, xmargin + w + 4, ymargin + 50, colors[1]);
+        printText(out, xmargin + w + 24, ymargin + 60, "sort", "start");
+        printRect(out, 14, 14, xmargin + w + 4, ymargin + 80, colors[2]);
+        printText(out, xmargin + w + 24, ymargin + 90, "reduce", "start");
+    }
+    // firefox curently does not support vertical text
+    // out.print("<text x=\"");out.print(6);
+    // out.print("\" y=\""); out.print(ymargin + height / 2);
+    // out.print("\" style=\"text-anchor:middle;writing-mode:tb\">"
+    // +"Percent</text>\n");
+    out.print("</svg>");
+}

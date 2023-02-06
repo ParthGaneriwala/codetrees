@@ -1,0 +1,112 @@
+private MenuElement createMenuElementPath(MenuElement parentElement, String itemKey, String actionKey1, int p1) {
+    String actionKey = actionKey1;
+    int p = itemKey.indexOf('.', p1 + 1);
+    String currentItemKey = p < 0 ? itemKey : itemKey.substring(0, p);
+    // Try to find the current menu element in the path.
+    // Variants:
+    // 1) JMenuBar - JMenu
+    // 2) (JMenu containing JPopupMenu) - (JMenuItem or JMenu)
+    // 3) JPopupMenu - (JMenuItem or JMenu)
+    MenuElement currMenuElement = null;
+    find_child: for (MenuElement child : parentElement.getSubElements()) {
+        Component c = child.getComponent();
+        // case (2) -- go to the deeper level
+        if (c instanceof JPopupMenu) {
+            JPopupMenu pu = (JPopupMenu) c;
+            for (MenuElement puChild : pu.getSubElements()) {
+                String childName = puChild.getComponent().getName();
+                if (currentItemKey.equals(childName)) {
+                    currMenuElement = puChild;
+                    break find_child;
+                }
+            }
+        }
+        // else: (1) or (3) -- c is not JPopupMenu
+        String childName = c.getName();
+        if (currentItemKey.equals(childName)) {
+            currMenuElement = child;
+            break;
+        }
+    }
+    // create a new one.
+    if (currMenuElement == null) {
+        JComponent parentComponent = (JComponent) parentElement.getComponent();
+        // specific menu elements
+        if (currentItemKey.endsWith("+separator")) {
+            if (p > 0)
+                throw new RuntimeException("invalid menu structure: " + itemKey);
+            ((JMenu) parentComponent).addSeparator();
+            return null;
+        }
+        if (currentItemKey.endsWith("+glue")) {
+            if (p > 0)
+                throw new RuntimeException("invalid menu structure: " + itemKey);
+            parentComponent.add(Box.createGlue());
+            return null;
+        }
+        JMenuItem item = null;
+        String effectiveKey;
+        if (p < 0 && actionKey != null) {
+            boolean action = true;
+            if (actionKey.startsWith("m:")) {
+                action = false;
+                actionKey = actionKey.substring("m:".length());
+            } else if (actionKey.startsWith("menu:")) {
+                action = false;
+                actionKey = actionKey.substring("menu:".length());
+            } else if (actionKey.startsWith("a:")) {
+                actionKey = actionKey.substring("a:".length());
+            } else if (actionKey.startsWith("action:")) {
+                actionKey = actionKey.substring("action:".length());
+            }
+            if (action) {
+                item = new JMenuItem();
+                item.setAction(menuActionDispatcher);
+                item.setActionCommand(actionKey);
+                effectiveKey = actionKey;
+            } else {
+                JMenu menu;
+                try {
+                    Class factoryClass = Thread.currentThread().getContextClassLoader().loadClass(actionKey);
+                    Object factory = factoryClass.newInstance();
+                    context.add(factory);
+                    menu = (JMenu) new Expression(factory, "getMenu", null).getValue();
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+                menu.setActionCommand(actionKey);
+                item = menu;
+                effectiveKey = actionKey;
+            }
+        } else {
+            JMenu m = new JMenu();
+            m.getPopupMenu().addMenuKeyListener(new JMenuSecondKeyListener(m.getPopupMenu()));
+            effectiveKey = key == null ? currentItemKey : key + '.' + currentItemKey;
+            item = m;
+        }
+        // TODO !place a menu item into context using some name, example:
+        // String componentKey = parentComponent.getName() + '.' +
+        // currentItemKey;
+        // context.getComponents().put(componentKey, item);
+        String[] text = getMessage(effectiveKey).split(":");
+        item.setText(text[0]);
+        if (text.length > 1) {
+            item.setMnemonic(text[1].charAt(0));
+        }
+        if (text.length > 2) {
+            if (parentComponent instanceof JMenuBar) {
+                KeyStroke ks = KeyStroke.getKeyStroke(text[2].charAt(0), InputEvent.ALT_MASK);
+                InputMap im = item.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
+                im.put(ks, "selectMenu");
+            }
+            item.putClientProperty("mnemonicKeyCode", Integer.valueOf(text[2].charAt(0)));
+        }
+        item.setName(currentItemKey);
+        parentComponent.add(item);
+        currMenuElement = item;
+    }
+    if (p >= 0) {
+        return createMenuElementPath(currMenuElement, itemKey, actionKey, p);
+    }
+    return currMenuElement;
+}

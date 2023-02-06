@@ -1,0 +1,62 @@
+public void open(boolean readonly) throws HsqlException {
+    fileFreePosition = 0;
+    database.logger.appLog.logContext(SimpleLog.LOG_NORMAL, "start");
+    try {
+        boolean preexists = database.isFilesInJar();
+        long freesize = 0;
+        if (!preexists && fa.isStreamElement(fileName)) {
+            if (database.isStoredFileAccess()) {
+                preexists = true;
+            } else {
+                // discard "empty" databases
+                File f = new File(fileName);
+                preexists = f.length() > INITIAL_FREE_POS;
+            }
+        }
+        if (preexists) {
+            String version = database.getProperties().getProperty(HsqlDatabaseProperties.hsqldb_cache_version);
+            boolean v17 = HsqlDatabaseProperties.VERSION_STRING_1_7_0.equals(version);
+            // for later versions
+            boolean v18 = HsqlDatabaseProperties.VERSION_STRING_1_8_0.equals(version);
+            if (!v17) {
+                throw Trace.error(Trace.WRONG_DATABASE_FILE_VERSION);
+            }
+        }
+        boolean isNio = database.getProperties().isPropertyTrue(HsqlDatabaseProperties.hsqldb_nio_data_file);
+        int fileType = isNio ? ScaledRAFile.DATA_FILE_NIO : ScaledRAFile.DATA_FILE_RAF;
+        if (database.isFilesInJar()) {
+            fileType = ScaledRAFile.DATA_FILE_JAR;
+        }
+        // oj@openofice.org - change to file access api
+        String cname = database.getURLProperties().getProperty("storage_class_name");
+        String skey = database.getURLProperties().getProperty("storage_key");
+        dataFile = ScaledRAFile.newScaledRAFile(database, fileName, readonly, fileType, cname, skey);
+        if (preexists) {
+            dataFile.seek(FLAGS_POS);
+            int flags = dataFile.readInt();
+            hasRowInfo = BitMap.isSet(flags, FLAG_ROWINFO);
+            dataFile.seek(LONG_EMPTY_SIZE);
+            freesize = dataFile.readLong();
+            dataFile.seek(LONG_FREE_POS_POS);
+            fileFreePosition = dataFile.readLong();
+            if (fileFreePosition < INITIAL_FREE_POS) {
+                fileFreePosition = INITIAL_FREE_POS;
+            }
+        } else {
+            fileFreePosition = INITIAL_FREE_POS;
+            dataFile.seek(LONG_FREE_POS_POS);
+            dataFile.writeLong(INITIAL_FREE_POS);
+            // set unsaved flag;
+            dataFile.seek(FLAGS_POS);
+            dataFile.writeInt(0);
+        }
+        initBuffers();
+        fileModified = false;
+        freeBlocks = new DataFileBlockManager(maxFreeBlocks, cacheFileScale, freesize);
+        database.logger.appLog.logContext(SimpleLog.LOG_NORMAL, "end");
+    } catch (Throwable e) {
+        database.logger.appLog.logContext(e, "failed");
+        close(false);
+        throw Trace.error(Trace.FILE_IO_ERROR, Trace.DataFileCache_open, new Object[] { e, fileName });
+    }
+}

@@ -1,0 +1,59 @@
+public void saveHWError(List<ErrorApnsCdr> cdrs) {
+    Connection con = null;
+    PreparedStatement stmt = null;
+    int now = (int) (System.currentTimeMillis() / 1000);
+    try {
+        con = DBUtils.getOracleCon();
+        String sql = "insert into CDR_MISTAKE(lac,cellid,sgsnid,reqapnni,subapnni,imsi,nettype,errcode,opentime,recordtime) values(?,?,?,?,?,?,?,?,?,?)";
+        stmt = con.prepareStatement(sql);
+        int len = cdrs.size();
+        long begin = System.currentTimeMillis();
+        List<String> no33sqls = new ArrayList<String>();
+        for (int i = 0; i < len; i++) {
+            ErrorApnsCdr cdr = cdrs.get(i);
+            if (// 郭建说4328号错误到算到38头上，因此这里统一改下入库的方式
+            cdr.getErrorcode() != null && cdr.getErrorcode().equals("4328"))
+                cdr.setErrorcode("38");
+            // System.out.println("ErrorCode:"+cdr.getErrorcode());
+            if (cdr.getErrorcode() != null && !cdr.getErrorcode().equals("33") && !cdr.getErrorcode().equals("4329") && !cdr.getErrorcode().equals("4328")) {
+                String sqlno33 = "insert into CDR_MISTAKE_NO33(lac,cellid,sgsnid,reqapnni,subapnni,imsi,nettype,errcode,opentime,recordtime,msisdn) values(" + "0,0,'" + cdr.getSgsnid() + "','" + (cdr.getReqapnni() == null ? "" : cdr.getReqapnni()) + "','" + (cdr.getSubapnni() == null ? "" : cdr.getSubapnni()) + "','" + cdr.getImsi() + "','" + cdr.getNettype() + "','" + cdr.getErrorcode() + "'," + cdr.getOpentime() + "," + now + ",'" + cdr + "')";
+                no33sqls.add(sqlno33);
+            }
+            if (cdr.getErrorcode() != null) {
+                // System.out.println("SGSNID:"+cdr.getSgsnid());
+                stmt.setLong(1, cdr.getLac());
+                stmt.setString(2, cdr.getCellid());
+                stmt.setString(3, cdr.getSgsnid());
+                stmt.setString(4, cdr.getReqapnni() == null ? "" : cdr.getReqapnni());
+                stmt.setString(5, cdr.getSubapnni() == null ? "" : cdr.getSubapnni());
+                stmt.setString(6, cdr.getImsi());
+                stmt.setInt(7, cdr.getNettype());
+                stmt.setString(8, cdr.getErrorcode());
+                stmt.setInt(9, cdr.getOpentime());
+                stmt.setInt(10, now);
+                stmt.addBatch();
+                if (((i + 1) % 300) == 0) {
+                    stmt.executeBatch();
+                    stmt.clearBatch();
+                    long time = System.currentTimeMillis();
+                    LOG.info("插入300条记录的时间：" + (time - begin));
+                    begin = time;
+                }
+            }
+        }
+        int[] s = stmt.executeBatch();
+        stmt.clearBatch();
+        // 33的错误同时入到另外一张表
+        // for (Object obj : no33sqls) {
+        // LOG.debug(obj.toString());
+        // }
+        main.util.MainStatUtil.executeSql(con, no33sqls);
+        LOG.info("最后入库记录数：" + (s != null ? s.length : 0) + ",时间:" + (System.currentTimeMillis() - begin));
+    } catch (Exception e) {
+        LOG.error("插入数据库错误:", e);
+        e.printStackTrace();
+    // ReadErrorApns.errorlog("插入数据库错误:" + e);
+    } finally {
+        DBUtils.closeResource(null, stmt, null);
+    }
+}

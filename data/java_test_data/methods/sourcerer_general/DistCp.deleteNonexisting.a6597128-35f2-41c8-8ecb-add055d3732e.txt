@@ -1,0 +1,72 @@
+private static void deleteNonexisting(FileSystem dstfs, FileStatus dstroot, Path dstsorted, FileSystem jobfs, Path jobdir, JobConf jobconf, Configuration conf) throws IOException {
+    if (!dstroot.isDir()) {
+        throw new IOException("dst must be a directory when option " + Options.DELETE.cmd + " is set, but dst (= " + dstroot.getPath() + ") is not a directory.");
+    }
+    // write dst lsr results
+    final Path dstlsr = new Path(jobdir, "_distcp_dst_lsr");
+    final SequenceFile.Writer writer = SequenceFile.createWriter(jobfs, jobconf, dstlsr, Text.class, FileStatus.class, SequenceFile.CompressionType.NONE);
+    try {
+        // do lsr to get all file statuses in dstroot
+        final Stack<FileStatus> lsrstack = new Stack<FileStatus>();
+        for (lsrstack.push(dstroot); !lsrstack.isEmpty(); ) {
+            final FileStatus status = lsrstack.pop();
+            if (status.isDir()) {
+                for (FileStatus child : dstfs.listStatus(status.getPath())) {
+                    String relative = makeRelative(dstroot.getPath(), child.getPath());
+                    writer.append(new Text(relative), child);
+                    lsrstack.push(child);
+                }
+            }
+        }
+    } finally {
+        checkAndClose(writer);
+    }
+    // sort lsr results
+    final Path sortedlsr = new Path(jobdir, "_distcp_dst_lsr_sorted");
+    SequenceFile.Sorter sorter = new SequenceFile.Sorter(jobfs, new Text.Comparator(), Text.class, FileStatus.class, jobconf);
+    sorter.sort(dstlsr, sortedlsr);
+    // compare lsr list and dst list
+    SequenceFile.Reader lsrin = null;
+    SequenceFile.Reader dstin = null;
+    try {
+        lsrin = new SequenceFile.Reader(jobfs, sortedlsr, jobconf);
+        dstin = new SequenceFile.Reader(jobfs, dstsorted, jobconf);
+        // compare sorted lsr list and sorted dst list
+        final Text lsrpath = new Text();
+        final FileStatus lsrstatus = new FileStatus();
+        final Text dstpath = new Text();
+        final Text dstfrom = new Text();
+        final FsShell shell = new FsShell(conf);
+        final String[] shellargs = { "-rmr", null };
+        boolean hasnext = dstin.next(dstpath, dstfrom);
+        for (; lsrin.next(lsrpath, lsrstatus); ) {
+            int dst_cmp_lsr = dstpath.compareTo(lsrpath);
+            for (; hasnext && dst_cmp_lsr < 0; ) {
+                hasnext = dstin.next(dstpath, dstfrom);
+                dst_cmp_lsr = dstpath.compareTo(lsrpath);
+            }
+            if (dst_cmp_lsr == 0) {
+                // lsrpath exists in dst, skip it
+                hasnext = dstin.next(dstpath, dstfrom);
+            } else {
+                // lsrpath does not exist, delete it
+                String s = new Path(dstroot.getPath(), lsrpath.toString()).toString();
+                if (shellargs[1] == null || !isAncestorPath(shellargs[1], s)) {
+                    shellargs[1] = s;
+                    int r = 0;
+                    try {
+                        r = shell.run(shellargs);
+                    } catch (Exception e) {
+                        throw new IOException("Exception from shell.", e);
+                    }
+                    if (r != 0) {
+                        throw new IOException("\"" + shellargs[0] + " " + shellargs[1] + "\" returns non-zero value " + r);
+                    }
+                }
+            }
+        }
+    } finally {
+        checkAndClose(lsrin);
+        checkAndClose(dstin);
+    }
+}

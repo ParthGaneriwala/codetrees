@@ -1,0 +1,37 @@
+@Override
+protected Result evaluate(final LogicContext context, final Integer patientId, final Map<String, Object> parameters) throws LogicException {
+    Result result = new Result();
+    Patient patient = Context.getPatientService().getPatient(patientId);
+    if (patient.getBirthdate() != null) {
+        Calendar calendar = Calendar.getInstance();
+        calendar.setTime(patient.getBirthdate());
+        // 18 months after birth date
+        calendar.add(Calendar.MONTH, 18);
+        Date eighteenMonths = calendar.getTime();
+        if (eighteenMonths.before(new Date())) {
+            // only pull the positive and negative results
+            parameters.put(EvaluableConstants.OBS_FETCH_SIZE, 1);
+            parameters.put(EvaluableConstants.OBS_VALUE_CODED, Arrays.asList(EvaluableNameConstants.POSITIVE, EvaluableNameConstants.NEGATIVE));
+            ValidElisaRule validElisaRule = new ValidElisaRule();
+            parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.HIV_ENZYME_IMMUNOASSAY_QUALITATIVE));
+            Result validElisaResults = validElisaRule.eval(context, patientId, parameters);
+            ValidRapidElisaRule validRapidElisaRule = new ValidRapidElisaRule();
+            parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.HIV_RAPID_TEST_QUALITATIVE));
+            Result validRapidElisaResults = validRapidElisaRule.eval(context, patientId, parameters);
+            if (CollectionUtils.isEmpty(validElisaResults) && CollectionUtils.isEmpty(validRapidElisaResults)) {
+                // get the latest test ordered
+                parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.TESTS_ORDERED));
+                parameters.put(EvaluableConstants.OBS_VALUE_CODED, Arrays.asList(EvaluableNameConstants.HIV_ENZYME_IMMUNOASSAY_QUALITATIVE, EvaluableNameConstants.HIV_RAPID_TEST_QUALITATIVE));
+                ObsWithRestrictionRule obsWithRestrictionRule = new ObsWithStringRestrictionRule();
+                Result testResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+                calendar.setTime(new Date());
+                calendar.add(Calendar.MONTH, -6);
+                Date sixMonthsAgo = calendar.getTime();
+                // if no test or the test was ordered more than six months ago, then show the reminder
+                if (CollectionUtils.isEmpty(testResults) || testResults.getResultDate().before(sixMonthsAgo) || testResults.getResultDate().before(eighteenMonths))
+                    result.add(new Result(String.valueOf(parameters.get(ReminderParameters.DISPLAYED_REMINDER_TEXT))));
+            }
+        }
+    }
+    return result;
+}

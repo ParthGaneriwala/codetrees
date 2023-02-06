@@ -1,0 +1,69 @@
+private Object compileImpl(Scriptable scope, Reader sourceReader, String sourceString, String sourceName, int lineno, Object securityDomain, boolean returnFunction, Evaluator compiler, ErrorReporter compilationErrorReporter) throws IOException {
+    if (sourceName == null) {
+        sourceName = "unnamed script";
+    }
+    if (securityDomain != null && getSecurityController() == null) {
+        throw new IllegalArgumentException("securityDomain should be null if setSecurityController() was never called");
+    }
+    // One of sourceReader or sourceString has to be null
+    if (!(sourceReader == null ^ sourceString == null))
+        Kit.codeBug();
+    // scope should be given if and only if compiling function
+    if (!(scope == null ^ returnFunction))
+        Kit.codeBug();
+    CompilerEnvirons compilerEnv = new CompilerEnvirons();
+    compilerEnv.initFromContext(this);
+    if (compilationErrorReporter == null) {
+        compilationErrorReporter = compilerEnv.getErrorReporter();
+    }
+    if (debugger != null) {
+        if (sourceReader != null) {
+            sourceString = Kit.readReader(sourceReader);
+            sourceReader = null;
+        }
+    }
+    Parser p = new Parser(compilerEnv, compilationErrorReporter);
+    if (returnFunction) {
+        p.calledByCompileFunction = true;
+    }
+    AstRoot ast;
+    if (sourceString != null) {
+        ast = p.parse(sourceString, sourceName, lineno);
+    } else {
+        ast = p.parse(sourceReader, sourceName, lineno);
+    }
+    if (returnFunction) {
+        // parser no longer adds function to script node
+        if (!(ast.getFirstChild() != null && ast.getFirstChild().getType() == Token.FUNCTION)) {
+            // with sources like function() {};;;
+            throw new IllegalArgumentException("compileFunction only accepts source with single JS function: " + sourceString);
+        }
+    }
+    IRFactory irf = new IRFactory(compilerEnv, compilationErrorReporter);
+    ScriptNode tree = irf.transformTree(ast);
+    // discard everything but the IR tree
+    p = null;
+    ast = null;
+    irf = null;
+    if (compiler == null) {
+        compiler = createCompiler();
+    }
+    Object bytecode = compiler.compile(compilerEnv, tree, tree.getEncodedSource(), returnFunction);
+    if (debugger != null) {
+        if (sourceString == null)
+            Kit.codeBug();
+        if (bytecode instanceof DebuggableScript) {
+            DebuggableScript dscript = (DebuggableScript) bytecode;
+            notifyDebugger_r(this, dscript, sourceString);
+        } else {
+            throw new RuntimeException("NOT SUPPORTED");
+        }
+    }
+    Object result;
+    if (returnFunction) {
+        result = compiler.createFunctionObject(this, scope, bytecode, securityDomain);
+    } else {
+        result = compiler.createScriptObject(bytecode, securityDomain);
+    }
+    return result;
+}

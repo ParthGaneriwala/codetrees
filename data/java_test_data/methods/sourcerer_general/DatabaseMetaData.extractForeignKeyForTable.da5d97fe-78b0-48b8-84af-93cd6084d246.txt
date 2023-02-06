@@ -1,0 +1,102 @@
+public List extractForeignKeyForTable(ArrayList rows, java.sql.ResultSet rs, String catalog) throws SQLException {
+    byte[][] row = new byte[3][];
+    row[0] = rs.getBytes(1);
+    row[1] = s2b(SUPPORTS_FK);
+    String createTableString = rs.getString(2);
+    StringTokenizer lineTokenizer = new StringTokenizer(createTableString, "\n");
+    StringBuffer commentBuf = new StringBuffer("comment; ");
+    boolean firstTime = true;
+    String quoteChar = getIdentifierQuoteString();
+    if (quoteChar == null) {
+        quoteChar = "`";
+    }
+    while (lineTokenizer.hasMoreTokens()) {
+        String line = lineTokenizer.nextToken().trim();
+        String constraintName = null;
+        if (StringUtils.startsWithIgnoreCase(line, "CONSTRAINT")) {
+            boolean usingBackTicks = true;
+            int beginPos = line.indexOf(quoteChar);
+            if (beginPos == -1) {
+                beginPos = line.indexOf("\"");
+                usingBackTicks = false;
+            }
+            if (beginPos != -1) {
+                int endPos = -1;
+                if (usingBackTicks) {
+                    endPos = line.indexOf(quoteChar, beginPos + 1);
+                } else {
+                    endPos = line.indexOf("\"", beginPos + 1);
+                }
+                if (endPos != -1) {
+                    constraintName = line.substring(beginPos + 1, endPos);
+                    line = line.substring(endPos + 1, line.length()).trim();
+                }
+            }
+        }
+        if (line.startsWith("FOREIGN KEY")) {
+            if (line.endsWith(",")) {
+                line = line.substring(0, line.length() - 1);
+            }
+            char quote = this.quotedId.charAt(0);
+            int indexOfFK = line.indexOf("FOREIGN KEY");
+            String localColumnName = null;
+            String referencedCatalogName = this.quotedId + catalog + this.quotedId;
+            String referencedTableName = null;
+            String referencedColumnName = null;
+            if (indexOfFK != -1) {
+                int afterFk = indexOfFK + "FOREIGN KEY".length();
+                int indexOfRef = StringUtils.indexOfIgnoreCaseRespectQuotes(afterFk, line, "REFERENCES", quote, true);
+                if (indexOfRef != -1) {
+                    int indexOfParenOpen = line.indexOf('(', afterFk);
+                    int indexOfParenClose = StringUtils.indexOfIgnoreCaseRespectQuotes(indexOfParenOpen, line, ")", quote, true);
+                    if (indexOfParenOpen == -1 || indexOfParenClose == -1) {
+                    // throw SQLError.createSQLException();
+                    }
+                    localColumnName = line.substring(indexOfParenOpen + 1, indexOfParenClose);
+                    int afterRef = indexOfRef + "REFERENCES".length();
+                    int referencedColumnBegin = StringUtils.indexOfIgnoreCaseRespectQuotes(afterRef, line, "(", quote, true);
+                    if (referencedColumnBegin != -1) {
+                        referencedTableName = line.substring(afterRef, referencedColumnBegin);
+                        int referencedColumnEnd = StringUtils.indexOfIgnoreCaseRespectQuotes(referencedColumnBegin + 1, line, ")", quote, true);
+                        if (referencedColumnEnd != -1) {
+                            referencedColumnName = line.substring(referencedColumnBegin + 1, referencedColumnEnd);
+                        }
+                        int indexOfCatalogSep = StringUtils.indexOfIgnoreCaseRespectQuotes(0, referencedTableName, ".", quote, true);
+                        if (indexOfCatalogSep != -1) {
+                            referencedCatalogName = referencedTableName.substring(0, indexOfCatalogSep);
+                            referencedTableName = referencedTableName.substring(indexOfCatalogSep + 1);
+                        }
+                    }
+                }
+            }
+            if (!firstTime) {
+                commentBuf.append("; ");
+            } else {
+                firstTime = false;
+            }
+            if (constraintName != null) {
+                commentBuf.append(constraintName);
+            } else {
+                commentBuf.append("not_available");
+            }
+            commentBuf.append("(");
+            commentBuf.append(localColumnName);
+            commentBuf.append(") REFER ");
+            commentBuf.append(referencedCatalogName);
+            commentBuf.append("/");
+            commentBuf.append(referencedTableName);
+            commentBuf.append("(");
+            commentBuf.append(referencedColumnName);
+            commentBuf.append(")");
+            int lastParenIndex = line.lastIndexOf(")");
+            if (lastParenIndex != (line.length() - 1)) {
+                String cascadeOptions = line.substring(lastParenIndex + 1);
+                commentBuf.append(" ");
+                commentBuf.append(cascadeOptions);
+            }
+        }
+    }
+    row[2] = s2b(commentBuf.toString());
+    rows.add(new ByteArrayRow(row, getExceptionInterceptor()));
+    return rows;
+}

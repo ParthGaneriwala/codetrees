@@ -1,0 +1,186 @@
+protected JPanel rebuildUI() {
+    JPanel initialPanel = new JPanel(new BorderLayout());
+    // build server connection panel
+    JPanel serverConnector = new JPanel(new FlowLayout());
+    serverConnector.add(new JLabel("Enter server hostname/IP-address: "));
+    // field to store the server's name
+    serverField = new JTextField(21);
+    serverConnector.add(serverField);
+    serverConnector.add(new JLabel("         Enter username: "));
+    usernameField = new JTextField(21);
+    try {
+        usernameField.setText(InetAddress.getLocalHost().getHostName());
+    } catch (UnknownHostException e) {
+        // ignore exceptions here, just leave the text field blank
+        e.printStackTrace();
+    }
+    serverConnector.add(usernameField);
+    initialPanel.add(serverConnector, BorderLayout.NORTH);
+    // build the tabbed pane for each ontology
+    SimpleURIShortFormProvider shortener = new SimpleURIShortFormProvider();
+    JTabbedPane tabbedPane = new JTabbedPane();
+    Set<OWLOntology> ontologies = manager.getOntologies();
+    for (OWLOntology onto : ontologies) {
+        final String ontoURI = onto.getURI().toString();
+        // use or create a new ChangeMonitor for each loaded ontology
+        final ChangeMonitor changeMonitor;
+        if (!changeMonitors.containsKey(ontoURI)) {
+            HistoryManagerImpl historyManager = (HistoryManagerImpl) manager.getHistoryManager();
+            changeMonitor = new ChangeMonitor(onto, historyManager.getChanges());
+            changeMonitors.put(ontoURI, changeMonitor);
+        } else {
+            changeMonitor = changeMonitors.get(ontoURI);
+        }
+        manager.addOntologyChangeListener(changeMonitor);
+        // add a versioning strategy for each loaded ontology (non-locking varierty)
+        if (!versioningStrategies.containsKey(ontoURI)) {
+            VersioningStrategy versioningStrategy = new VersioningStrategy_NonLocking(onto, operationsClient, changeMonitor, manager.getOWLOntologyManager());
+            versioningStrategies.put(ontoURI, versioningStrategy);
+        }
+        JPanel tab = new JPanel(new BorderLayout());
+        // vertically align everything in the tab
+        JPanel tabContents = new JPanel();
+        tabContents.setLayout(new BoxLayout(tabContents, BoxLayout.PAGE_AXIS));
+        tabContents.setAlignmentY(Component.CENTER_ALIGNMENT);
+        tabContents.setAlignmentY(Component.TOP_ALIGNMENT);
+        // displays if change recording is active
+        // 10 pixels caps between grid elements
+        JPanel activeDisplay = new JPanel(new GridLayout(1, 2, XGRIDSPACING, YGRIDSPACING));
+        activeDisplay.add(new JLabel("local change history recording: "));
+        // create the set of information providing labels for this ontology
+        LabelSet labelSet;
+        if (!labelSets.containsKey(ontoURI)) {
+            labelSet = new LabelSet();
+            labelSets.put(ontoURI, labelSet);
+        } else {
+            labelSet = labelSets.get(ontoURI);
+        }
+        // make sure the change count label is always up to date
+        ChangeCountUpdater changeCountUpdater;
+        if (!changeCountUpdaters.containsKey(ontoURI)) {
+            changeCountUpdater = new ChangeCountUpdater(labelSet, changeMonitor);
+            changeCountUpdaters.put(ontoURI, changeCountUpdater);
+        } else {
+            changeCountUpdater = changeCountUpdaters.get(ontoURI);
+        }
+        manager.addOntologyChangeListener(changeCountUpdater);
+        labelSet.active = new JToggleButton("inactive");
+        labelSet.active.addItemListener(new ItemListener() {
+
+            public void itemStateChanged(ItemEvent e) {
+                if (e.getStateChange() == ItemEvent.SELECTED) {
+                    if (!changeMonitor.enabled())
+                        changeMonitor.setEnabled(true);
+                } else {
+                    if (changeMonitor.enabled())
+                        changeMonitor.setEnabled(false);
+                }
+            }
+        });
+        activeDisplay.add(labelSet.active);
+        tabContents.add(activeDisplay);
+        // counts the number of changes recorded
+        // 10 pixels caps between grid elements
+        JPanel changeCountPanel = new JPanel(new GridLayout(1, 2, XGRIDSPACING, YGRIDSPACING));
+        changeCountPanel.add(new JLabel("number of changes recorded: "));
+        labelSet.changeCount = new JLabel("0");
+        changeCountPanel.add(labelSet.changeCount);
+        tabContents.add(changeCountPanel);
+        // display sequence number of the tag currently downloaded to the client
+        // 10 pixels caps between grid elements
+        JPanel sequenceNumberPanel1 = new JPanel(new GridLayout(1, 2, XGRIDSPACING, YGRIDSPACING));
+        sequenceNumberPanel1.add(new JLabel("current change sequence number on client: "));
+        labelSet.clientSequenceNumber = new JLabel("--");
+        sequenceNumberPanel1.add(labelSet.clientSequenceNumber);
+        tabContents.add(sequenceNumberPanel1);
+        // load , save and clear changes button
+        JPanel localChangeControlsPanel = new JPanel(new GridLayout(1, 3, XGRIDSPACING, YGRIDSPACING));
+        JButton loadButton = new JButton("load & apply");
+        loadButton.addActionListener(new ActionListener() {
+
+            public void actionPerformed(ActionEvent actionEvent) {
+                loadChanges(ontoURI);
+            }
+        });
+        localChangeControlsPanel.add(loadButton);
+        JButton clearButton = new JButton("undo & clear");
+        clearButton.addActionListener(new ActionListener() {
+
+            public void actionPerformed(ActionEvent actionEvent) {
+                clearChanges(ontoURI);
+            }
+        });
+        localChangeControlsPanel.add(clearButton);
+        JButton saveButton = new JButton("save");
+        saveButton.addActionListener(new ActionListener() {
+
+            public void actionPerformed(ActionEvent actionEvent) {
+                saveChanges(ontoURI);
+            }
+        });
+        localChangeControlsPanel.add(saveButton);
+        // publish button
+        JButton publishButton = new JButton("PUBLISH / COMMIT");
+        publishButton.addActionListener(new ActionListener() {
+
+            public void actionPerformed(ActionEvent actionEvent) {
+                publishChanges(ontoURI);
+            }
+        });
+        // add a dividing line
+        tabContents.add(new JSeparator());
+        // display sequence number of latest change available on the server
+        // 10 pixels caps between grid elements
+        JPanel sequenceNumberPanel2 = new JPanel(new GridLayout(1, 2, XGRIDSPACING, YGRIDSPACING));
+        sequenceNumberPanel2.add(new JLabel("latest change sequence number: "));
+        labelSet.serverSequenceNumber = new JLabel("--");
+        sequenceNumberPanel2.add(labelSet.serverSequenceNumber);
+        tabContents.add(sequenceNumberPanel2);
+        // username
+        // 10 pixels caps between grid elements
+        JPanel latestChangeUser = new JPanel(new GridLayout(1, 2, XGRIDSPACING, YGRIDSPACING));
+        latestChangeUser.add(new JLabel("latest change author: "));
+        labelSet.serverChangeAuthor = new JLabel("--");
+        latestChangeUser.add(labelSet.serverChangeAuthor);
+        tabContents.add(latestChangeUser);
+        // timestamp
+        // 10 pixels caps between grid elements
+        JPanel latestChangeTimestamp = new JPanel(new GridLayout(1, 2, XGRIDSPACING, YGRIDSPACING));
+        latestChangeTimestamp.add(new JLabel("latest change timestamp: "));
+        labelSet.serverChangeTimestamp = new JLabel("--");
+        latestChangeTimestamp.add(labelSet.serverChangeTimestamp);
+        tabContents.add(latestChangeTimestamp);
+        // summary
+        // 10 pixels caps between grid elements
+        JPanel latestChangeSummary = new JPanel(new GridLayout(1, 2, XGRIDSPACING, YGRIDSPACING));
+        latestChangeSummary.add(new JLabel("latest change summary: "));
+        labelSet.serverChangeSummary = new JLabel("--");
+        latestChangeSummary.add(labelSet.serverChangeSummary);
+        tabContents.add(latestChangeSummary);
+        // controls for refreshing and downloading changes
+        // 10 pixels caps between grid elements
+        JPanel serverControlsPanel = new JPanel(new GridLayout(2, 1, XGRIDSPACING * 4, YGRIDSPACING));
+        JButton refreshButton = new JButton("refresh");
+        refreshButton.addActionListener(new ActionListener() {
+
+            public void actionPerformed(ActionEvent actionEvent) {
+                queryChanges(ontoURI);
+            }
+        });
+        JButton downloadButton = new JButton("DOWNLOAD / UPDATE");
+        downloadButton.addActionListener(new ActionListener() {
+
+            public void actionPerformed(ActionEvent actionEvent) {
+                downloadChanges(ontoURI);
+            }
+        });
+        serverControlsPanel.add(refreshButton);
+        serverControlsPanel.add(downloadButton);
+        tabContents.add(serverControlsPanel);
+        tab.add(tabContents, BorderLayout.CENTER);
+        // tooltip of complete URI, name of just the last bit of the URI
+        tabbedPane.addTab(shortener.getShortForm(onto.getURI()), null, tab, onto.getURI().toString());
+    }
+    initialPanel.add(tabbedPane, BorderLayout.SOUTH);
+    return initialPanel;
+}

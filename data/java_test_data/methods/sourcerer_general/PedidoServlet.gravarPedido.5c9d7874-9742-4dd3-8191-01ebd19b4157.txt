@@ -1,0 +1,82 @@
+private void gravarPedido(HttpServletRequest request, HttpServletResponse response, PedidoDAO pedidoDAO) throws DAOFactoryException, ServletException, IOException {
+    System.out.println("entrou no insere pedido");
+    String mensagem = "";
+    Pedido pedido = null;
+    boolean sucesso = false;
+    RequestConvert converter = new RequestConvert(request);
+    DAOFactory dao = DAOFactory.getInstance(DAOFactory.MYSQLDB);
+    Connection conn = dao.getConnection();
+    pedidoDAO.setConnection(conn);
+    try {
+        conn.setAutoCommit(false);
+    } catch (SQLException e2) {
+        throw new DAOFactoryException(e2);
+    }
+    pedido = getPedido(request);
+    try {
+        // Lendo os materiais do pedido e qtde de cada um
+        List<ItemPedido> lstItemMaterial = pedido.getLstItens();
+        for (ItemPedido itemPedido : lstItemMaterial) {
+            String chave = "qde_id" + itemPedido.getIdMaterial();
+            int qtdeMaterial = converter.getInt(chave);
+            if (qtdeMaterial == 0) {
+                PedidoInvalidoException ex = new PedidoInvalidoException(" Material '" + itemPedido.getMaterial().getNomeMaterial() + "' deve possuir Qtde > 0. ");
+                ex.setPedido(pedido);
+                throw ex;
+            }
+            itemPedido.setQtdeItemPedido(qtdeMaterial);
+        }
+        for (ItemPedido itemPedido : lstItemMaterial) {
+            int qtdItemPedido = itemPedido.getQtdeItemPedido();
+            Material mat = itemPedido.getMaterial();
+            if (mat.getQtdDispMaterial() < qtdItemPedido) {
+                PedidoInvalidoException ex = new PedidoInvalidoException(" O estoque n�o possui a quantidade solicitada para o material " + mat.getNomeMaterial() + ".\n" + " A quantidade dispon�vel � " + mat.getQtdDispMaterial() + ".");
+                ex.setPedido(pedido);
+                throw ex;
+            }
+        }
+        if (pedido.getUnidadeId() == 0) {
+            PedidoInvalidoException ex = new PedidoInvalidoException("Favor preencher a unidade para o pedido!");
+            ex.setPedido(pedido);
+            throw ex;
+        }
+        if (pedido.getLstItens().size() == 0) {
+            PedidoInvalidoException ex = new PedidoInvalidoException("N�o foi poss�vel " + "cadastrar o pedido. Deve possuir no m�nimo 1 material");
+            ex.setPedido(pedido);
+            throw ex;
+        }
+        if (pedido.getPedidoId() == 0) {
+            sucesso = pedidoDAO.incluir(pedido);
+            mensagem = "Pedido realizado com sucesso";
+        } else {
+            sucesso = pedidoDAO.alterar(pedido);
+            mensagem = "Pedido atualizado com sucesso";
+        }
+        if (!sucesso) {
+            mensagem = "Falha ao atualizado pedido";
+        } else {
+            conn.commit();
+        }
+    } catch (PedidoInvalidoException e) {
+        pedido = e.getPedido();
+        request.setAttribute("resposta", e.getMessage());
+        request.setAttribute("pedido", pedido);
+        viewPedido(request, response);
+        return;
+    } catch (SQLException e) {
+        try {
+            conn.rollback();
+        } catch (SQLException e1) {
+            throw new DAOFactoryException(e1);
+        }
+        throw new DAOFactoryException(e);
+    } finally {
+        try {
+            conn.setAutoCommit(true);
+        } catch (SQLException e1) {
+            throw new DAOFactoryException(e1);
+        }
+    }
+    request.setAttribute("resposta", mensagem);
+    viewPesquisaPedido(request, response);
+}

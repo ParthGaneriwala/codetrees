@@ -1,0 +1,134 @@
+public synchronized Triple next(GoalState topGoalState) {
+    GoalResults topGoal = topGoalState.getGoalResultsEntry();
+    int numResults = 0;
+    BindingVector env = null;
+    RuleState current = null;
+    RuleState continuation = null;
+    try {
+        while (true) {
+            // System.gc();
+            boolean foundResult = false;
+            RuleState delayedRSClose = null;
+            if (current == null) {
+                // Move to the next agenda item
+                // (if empty then an exception is thrown and caught later)
+                current = nextAgendaItem();
+                numResults = 0;
+                if (traceOn) {
+                    logger.debug("Waken:   " + current);
+                }
+            }
+            Object result = current.next();
+            if (result == StateFlag.FAIL) {
+                // shift to the next agenda item
+                if (traceOn) {
+                    logger.debug("Failed");
+                }
+                delayedRSClose = current;
+                current = current.prev;
+            } else if (result == StateFlag.SUSPEND) {
+                // Can do no more with this goal
+                if (traceOn) {
+                    logger.debug("Suspend: " + current);
+                }
+                GoalResults waitingFor = current.goalState.results;
+                waitingFor.addDependent(current);
+                current = current.prev;
+            } else if (result == StateFlag.SATISFIED) {
+                // The rule had no clauses left to check, so return answers
+                foundResult = true;
+                env = current.env;
+                delayedRSClose = current;
+                continuation = current.prev;
+            } else {
+                // We have a result so continue extending this search tree depth first
+                env = current.newEnvironment((Triple) result);
+                if (env == null) {
+                    // Might be better to reschedule onto the end of the agenda?
+                    continue;
+                }
+                Rule rule = current.ruleInstance.rule;
+                boolean foundGoal = false;
+                int maxClause = rule.bodyLength();
+                int clauseIndex = current.nextClauseIndex();
+                while (clauseIndex < maxClause && !foundGoal) {
+                    ClauseEntry clause = rule.getBodyElement(clauseIndex++);
+                    if (clause instanceof TriplePattern) {
+                        // found next subgoal to try
+                        // Push current state onto stack
+                        TriplePattern subgoal = env.partInstantiate((TriplePattern) clause);
+                        if (!subgoal.isLegal()) {
+                            // branch has failed
+                            delayedRSClose = current;
+                            current = current.prev;
+                        } else {
+                            current = new RuleState(current, subgoal, clauseIndex, env);
+                        }
+                        foundGoal = true;
+                    } else {
+                        if (!infGraph.processBuiltin(clause, rule, env)) {
+                            // This branch has failed
+                            delayedRSClose = current;
+                            current = current.prev;
+                            foundGoal = true;
+                        }
+                    }
+                }
+                if (!foundGoal) {
+                    // If we get to here then this branch has completed and we have a result
+                    foundResult = true;
+                    continuation = current;
+                }
+            }
+            if (foundResult) {
+                // If we get to here then this branch has completed and we have a result
+                GoalResults resultDest = current.ruleInstance.generator;
+                Triple finalResult = current.getResult(env);
+                if (traceOn) {
+                    logger.debug("Result:  " + PrintUtil.print(finalResult) + " <- " + current + ", newenv=" + env);
+                }
+                boolean newresult = resultDest.addResult(finalResult);
+                if (delayedRSClose != null) {
+                    delayedRSClose.close();
+                }
+                numResults++;
+                current = continuation;
+                nRulesFired++;
+                if (newresult && recordDerivations) {
+                    Rule rule = current.ruleInstance.rule;
+                    List matchList = new ArrayList(rule.bodyLength());
+                    for (int i = 0; i < rule.bodyLength(); i++) {
+                        Object clause = rule.getBodyElement(i);
+                        if (clause instanceof TriplePattern) {
+                            matchList.add(env.instantiate((TriplePattern) clause));
+                        }
+                    }
+                    RuleDerivation derivation = new RuleDerivation(rule, finalResult, matchList, infGraph);
+                    infGraph.logDerivation(finalResult, derivation);
+                }
+                if (newresult && resultDest == topGoal) {
+                    // Found a top level goal result so return it now
+                    if (current != null)
+                        prependToAgenda(current);
+                    return finalResult;
+                } else if (numResults > batchSize) {
+                    // push the current state lower down agenda and try another
+                    if (current != null)
+                        appendToAgenda(current);
+                    current = null;
+                }
+            } else {
+                if (delayedRSClose != null) {
+                    delayedRSClose.close();
+                }
+            }
+        }
+    } catch (NoSuchElementException e) {
+        // No more agenda items can be processed, so the topGoal is as satisfied as it can be
+        if (traceOn) {
+            logger.debug("Completed all");
+        }
+        goalTable.setAllComplete();
+        return null;
+    }
+}

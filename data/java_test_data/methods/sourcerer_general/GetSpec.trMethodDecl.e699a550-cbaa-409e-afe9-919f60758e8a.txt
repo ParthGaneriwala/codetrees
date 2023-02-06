@@ -1,0 +1,83 @@
+// -------------------------------------------------------------------------
+// -------------------------------------------------------------------------
+// -------------------------------------------------------------------------
+/**
+ * Translates a MethodDecl to a Spec.
+ */
+private static Spec trMethodDecl(/* @ non_null */
+DerivedMethodDecl dmd, Hashtable premap) {
+    Assert.notNull(dmd);
+    /*
+     * Unlike any body we may be translating, for these translations this's type
+     * is that of the type that contains the method or constructor dmd.original.
+     */
+    TypeSig T = TypeSig.getSig(dmd.getContainingClass());
+    Type savedType = GC.thisvar.decl.type;
+    GC.thisvar.decl.type = T;
+    // (we restore GC.thisvar.decl.type just before returning)
+    ExprVec preAssumptions = ExprVec.make();
+    ConditionVec pre = trMethodDeclPreconditions(dmd, preAssumptions);
+    ExprVec targets = ExprVec.make();
+    ExprVec specialTargets = ExprVec.make();
+    if (!Utils.isPure(dmd.original)) {
+        targets.addElement(GC.statevar);
+        specialTargets.addElement(GC.statevar);
+    }
+    if (dmd.usesFresh)
+        targets.addElement(GC.allocvar);
+    if (dmd.usesFresh)
+        specialTargets.addElement(GC.allocvar);
+    for (int k = 0; k < dmd.modifies.size(); ++k) {
+        Frame.ModifiesIterator ii = new Frame.ModifiesIterator(dmd.getContainingClass(), dmd.modifies.elementAt(k).items, true, true);
+        while (ii.hasNext()) {
+            Expr designator = (Expr) ii.next();
+            // if (Utils.isModel(designator)) continue;
+            Expr gcDesignator = TrAnExpr.trSpecExpr(designator);
+            // array-range, wild-ref expressions FIXME!!
+            if (gcDesignator != null)
+                targets.addElement(gcDesignator);
+        }
+    }
+    // handle targets stuff, and create preVarMap
+    // set of GenericVarDecls
+    Set roots = new Set();
+    for (int i = 0; i < targets.size(); i++) {
+        Expr gcDesignator = targets.elementAt(i);
+        VariableAccess shaved = shave(gcDesignator);
+        roots.add(shaved.decl);
+    }
+    Hashtable preVarMap = premap;
+    if (premap == null)
+        preVarMap = makeSubst(roots.elements(), "pre");
+    // else
+    // preVarMap = restrict( premap, roots.elements() );
+    /*
+     * Re the change above: premap is a map from variables with a @pre suffix to
+     * their declarations; preVarMap is the relevant piece of this for the
+     * currnet method. However, that was determined by the set of locations
+     * specified in modifies clauses. That leads to erroneous behavior if the
+     * modifies clause is incorrect.
+     * 
+     * The change is to use the premap without restriction. That allows the
+     * verification of a body of a method to proceed without dependence on the
+     * accuracy of the modifies clause. However it also adds a lot of conjuncts
+     * into the verification condition - and the premap is accumulated from the
+     * entire class declaration. An improvement would be to simply use the
+     * premap generated from the uses of \old in the body of the method + the
+     * spec of the method + the spec of the class.
+     */
+    // Now create the postconditions
+    ExprVec postAssumptions = ExprVec.make();
+    ConditionVec post = trMethodDeclPostcondition(dmd, preVarMap, postAssumptions);
+    java.util.Set postlocs = new java.util.HashSet();
+    int size = post.size();
+    for (int ic = 0; ic < size; ++ic) {
+        collectFields(post.elementAt(ic).pred, postlocs);
+    }
+    Spec spec = Spec.make(dmd, targets, specialTargets, preVarMap, preAssumptions, pre, postAssumptions, post, false && dmd.modifiesEverything, // FIXME - turning off
+    postlocs);
+    // modifies everything for
+    // now
+    GC.thisvar.decl.type = savedType;
+    return spec;
+}

@@ -1,0 +1,98 @@
+protected double evaluateFoldCV(Instances fold, int[] fs) throws Exception {
+    int i;
+    int numFold = fold.numInstances();
+    int numCl = m_theInstances.classAttribute().numValues();
+    double[][] class_distribs = new double[numFold][numCl];
+    double[] instA = new double[fs.length];
+    double[] normDist;
+    DecisionTableHashKey thekey;
+    double acc = 0.0;
+    int classI = m_theInstances.classIndex();
+    Instance inst;
+    if (m_classIsNominal) {
+        normDist = new double[numCl];
+    } else {
+        normDist = new double[2];
+    }
+    // first *remove* instances
+    for (i = 0; i < numFold; i++) {
+        inst = fold.instance(i);
+        for (int j = 0; j < fs.length; j++) {
+            if (fs[j] == classI) {
+                // missing for the class
+                instA[j] = Double.MAX_VALUE;
+            } else if (inst.isMissing(fs[j])) {
+                instA[j] = Double.MAX_VALUE;
+            } else {
+                instA[j] = inst.value(fs[j]);
+            }
+        }
+        thekey = new DecisionTableHashKey(instA);
+        if ((class_distribs[i] = m_entries.get(thekey)) == null) {
+            throw new Error("This should never happen!");
+        } else {
+            if (m_classIsNominal) {
+                class_distribs[i][(int) inst.classValue()] -= inst.weight();
+            } else {
+                class_distribs[i][0] -= (inst.classValue() * inst.weight());
+                class_distribs[i][1] -= inst.weight();
+            }
+        }
+        m_classPriorCounts[(int) inst.classValue()] -= inst.weight();
+    }
+    double[] classPriors = m_classPriorCounts.clone();
+    Utils.normalize(classPriors);
+    // now classify instances
+    for (i = 0; i < numFold; i++) {
+        inst = fold.instance(i);
+        System.arraycopy(class_distribs[i], 0, normDist, 0, normDist.length);
+        if (m_classIsNominal) {
+            boolean ok = false;
+            for (double element : normDist) {
+                if (Utils.gr(element, 1.0)) {
+                    ok = true;
+                    break;
+                }
+            }
+            if (!ok) {
+                // majority class
+                normDist = classPriors.clone();
+            }
+            // if (ok) {
+            Utils.normalize(normDist);
+            if (m_evaluationMeasure == EVAL_AUC) {
+                m_evaluation.evaluateModelOnceAndRecordPrediction(normDist, inst);
+            } else {
+                m_evaluation.evaluateModelOnce(normDist, inst);
+            }
+        /*
+         * } else { normDist[(int)m_majority] = 1.0; if (m_evaluationMeasure ==
+         * EVAL_AUC) {
+         * m_evaluation.evaluateModelOnceAndRecordPrediction(normDist, inst); }
+         * else { m_evaluation.evaluateModelOnce(normDist, inst); } }
+         */
+        } else {
+            if (Utils.eq(normDist[1], 0.0)) {
+                double[] temp = new double[1];
+                temp[0] = m_majority;
+                m_evaluation.evaluateModelOnce(temp, inst);
+            } else {
+                double[] temp = new double[1];
+                temp[0] = normDist[0] / normDist[1];
+                m_evaluation.evaluateModelOnce(temp, inst);
+            }
+        }
+    }
+    // now re-insert instances
+    for (i = 0; i < numFold; i++) {
+        inst = fold.instance(i);
+        m_classPriorCounts[(int) inst.classValue()] += inst.weight();
+        if (m_classIsNominal) {
+            class_distribs[i][(int) inst.classValue()] += inst.weight();
+        } else {
+            class_distribs[i][0] += (inst.classValue() * inst.weight());
+            class_distribs[i][1] += inst.weight();
+        }
+    }
+    return acc;
+}

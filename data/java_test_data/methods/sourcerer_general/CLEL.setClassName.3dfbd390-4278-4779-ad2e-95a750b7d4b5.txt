@@ -1,0 +1,58 @@
+public void setClassName(ClassDescriptor oldName, ClassDescriptor newName) throws ClassNotFoundException, InvalidNameException {
+    if (oldName != null && !oldName.getName().equals("<Module>")) {
+        if (newName == null || !isValidName(newName.getName()))
+            throw new InvalidNameException("Error: Invalid name for new class");
+        StreamTable st = parser.getPoundTildaStream().getStreamTable(CLELConstants.TYPEDEF_TABLE);
+        ArrayList<StreamTableRow> rows = st.getRows();
+        StreamTableRow r;
+        int i;
+        String name, namespace;
+        String des_name = oldName.getName() + "\0";
+        String des_namespace = "\0";
+        if (oldName.getNamespace() != null)
+            des_namespace = oldName.getNamespace() + "\0";
+        int difference;
+        for (i = 0; i < rows.size(); i++) {
+            r = rows.get(i);
+            name = getValueStringHeap(r.getTypeDefName());
+            namespace = getValueStringHeap(r.getTypeDefNamespace());
+            if (name.equals(des_name) && namespace.equals(des_namespace)) {
+                MetaDataStreamHeader mdsh = parser.getStringsMetaDataStreamHeader();
+                int orig_name_off = r.getTypeDefName();
+                int orig_namespace_off = r.getTypeDefNamespace();
+                int old_string_heap_size = mdsh.getSize();
+                // strings in string heap must end in null
+                int name_off = setValueStringHeap(getLastOffsetIntoStringHeap(), newName.getName() + "\0");
+                int namespace_off = 0;
+                if (newName.getNamespace() != null)
+                    namespace_off = setValueStringHeap(getLastOffsetIntoStringHeap(), newName.getNamespace() + "\0");
+                // update offset to new name and namespace in typedef stream table
+                r.setTypeDefName(name_off);
+                r.setTypeDefNamespace(namespace_off);
+                // move for name
+                // caculate difference in length, so that sections can be moved
+                int diff = mdsh.getSize() - old_string_heap_size;
+                // check and see if anything uses the old value in string heap
+                int shared_diff = checkSharedStringHeapValue(orig_name_off, diff);
+                diff += shared_diff;
+                // move all sections in .text section after strings heap
+                int string_heap_off = mdsh.getOffset() + parser.getCLRHeader().getMetaData();
+                moveTextSections(string_heap_off, diff);
+                if (namespace_off != 0) {
+                    old_string_heap_size = mdsh.getSize();
+                    // move for namespace
+                    // caculate difference in length, so that sections can be moved
+                    diff = mdsh.getSize() - old_string_heap_size;
+                    // check and see if anything uses the old value in string heap
+                    shared_diff = checkSharedStringHeapValue(orig_namespace_off, diff);
+                    diff += shared_diff;
+                    // move all sections in .text section after strings heap
+                    string_heap_off = mdsh.getOffset() + parser.getCLRHeader().getMetaData();
+                    moveTextSections(string_heap_off, diff);
+                }
+                return;
+            }
+        }
+    }
+    throw new ClassNotFoundException("Error: Specified class does not exist");
+}

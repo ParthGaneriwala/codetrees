@@ -1,0 +1,103 @@
+// fredt@users 20020221 - patch 520213 by boucherb@users - self reference FK
+// allows foreign keys that reference a column in the same table
+private Constraint processCreateFK(Table t, HsqlName cname) throws HsqlException {
+    int[] localcol;
+    int[] expcol;
+    String expTableName;
+    Table expTable;
+    String token;
+    localcol = processColumnList(t, false);
+    tokenizer.getThis(Token.T_REFERENCES);
+    expTableName = tokenizer.getName();
+    String constraintSchema = tokenizer.getLongNameFirst();
+    if (constraintSchema != null) {
+        constraintSchema = session.getSchemaNameForWrite(tokenizer.getLongNameFirst());
+        if (!t.getSchemaName().equals(constraintSchema)) {
+            throw Trace.error(Trace.INVALID_SCHEMA_NAME_NO_SUBCLASS, constraintSchema);
+        }
+    }
+    if (t.getName().name.equals(expTableName)) {
+        expTable = t;
+    } else {
+        expTable = database.schemaManager.getTable(session, expTableName, t.getSchemaName());
+    }
+    expcol = null;
+    token = tokenizer.getSimpleToken();
+    tokenizer.back();
+    if (token.equals(Token.T_OPENBRACKET)) {
+        expcol = processColumnList(expTable, false);
+    } else {
+        if (expTable.getPrimaryKey() == null) {
+            // getPrimaryKey() == null is true while creating the table
+            // fredt - FK statement is part of CREATE TABLE and is self-referencing
+            // reference must be to same table being created
+            // it is resolved in the calling method
+            Trace.check(t == expTable, Trace.TABLE_HAS_NO_PRIMARY_KEY);
+        } else {
+            if (expTable.hasPrimaryKey()) {
+                expcol = expTable.getPrimaryKey();
+            } else {
+                throw Trace.error(Trace.CONSTRAINT_NOT_FOUND, Trace.TABLE_HAS_NO_PRIMARY_KEY);
+            }
+        }
+    }
+    token = tokenizer.getSimpleToken();
+    // -- In a while loop we parse a maximium of two
+    // -- "ON" statements following the foreign key
+    // -- definition this can be
+    // -- ON [UPDATE|DELETE] [NO ACTION|RESTRICT|CASCADE|SET [NULL|DEFAULT]]
+    int deleteAction = Constraint.NO_ACTION;
+    int updateAction = Constraint.NO_ACTION;
+    while (token.equals(Token.T_ON)) {
+        token = tokenizer.getSimpleToken();
+        if (deleteAction == Constraint.NO_ACTION && token.equals(Token.T_DELETE)) {
+            token = tokenizer.getSimpleToken();
+            if (token.equals(Token.T_SET)) {
+                token = tokenizer.getSimpleToken();
+                if (token.equals(Token.T_DEFAULT)) {
+                    deleteAction = Constraint.SET_DEFAULT;
+                } else if (token.equals(Token.T_NULL)) {
+                    deleteAction = Constraint.SET_NULL;
+                } else {
+                    throw Trace.error(Trace.UNEXPECTED_TOKEN, token);
+                }
+            } else if (token.equals(Token.T_CASCADE)) {
+                deleteAction = Constraint.CASCADE;
+            } else if (token.equals(Token.T_RESTRICT)) {
+            // LEGACY compatibility/usability
+            // - same as NO ACTION or nothing at all
+            } else {
+                tokenizer.matchThis(Token.T_NO);
+                tokenizer.getThis(Token.T_ACTION);
+            }
+        } else if (updateAction == Constraint.NO_ACTION && token.equals(Token.T_UPDATE)) {
+            token = tokenizer.getSimpleToken();
+            if (token.equals(Token.T_SET)) {
+                token = tokenizer.getSimpleToken();
+                if (token.equals(Token.T_DEFAULT)) {
+                    updateAction = Constraint.SET_DEFAULT;
+                } else if (token.equals(Token.T_NULL)) {
+                    updateAction = Constraint.SET_NULL;
+                } else {
+                    throw Trace.error(Trace.UNEXPECTED_TOKEN, token);
+                }
+            } else if (token.equals(Token.T_CASCADE)) {
+                updateAction = Constraint.CASCADE;
+            } else if (token.equals(Token.T_RESTRICT)) {
+            // LEGACY compatibility/usability
+            // - same as NO ACTION or nothing at all
+            } else {
+                tokenizer.matchThis(Token.T_NO);
+                tokenizer.getThis(Token.T_ACTION);
+            }
+        } else {
+            throw Trace.error(Trace.UNEXPECTED_TOKEN, token);
+        }
+        token = tokenizer.getSimpleToken();
+    }
+    tokenizer.back();
+    if (cname == null) {
+        cname = database.nameManager.newAutoName("FK");
+    }
+    return new Constraint(cname, localcol, expTable, expcol, Constraint.FOREIGN_KEY, deleteAction, updateAction);
+}

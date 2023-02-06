@@ -1,0 +1,59 @@
+void retypeColumn(ColumnSchema oldCol, ColumnSchema newCol) {
+    boolean allowed = true;
+    int oldType = oldCol.getDataType().typeCode;
+    int newType = newCol.getDataType().typeCode;
+    checkModifyTable();
+    if (!table.isEmpty(session) && oldType != newType) {
+        allowed = newCol.getDataType().canConvertFrom(oldCol.getDataType());
+        switch(oldType) {
+            case Types.OTHER:
+            case Types.JAVA_OBJECT:
+                allowed = false;
+                break;
+        }
+    }
+    if (!allowed) {
+        throw Error.error(ErrorCode.X_42561);
+    }
+    int colIndex = table.getColumnIndex(oldCol.getName().name);
+    // if there is a multi-column PK, do not change the PK attributes
+    if (newCol.isIdentity() && table.hasIdentityColumn() && table.identityColumn != colIndex) {
+        throw Error.error(ErrorCode.X_42525);
+    }
+    if (table.getPrimaryKey().length > 1) {
+        newCol.setPrimaryKey(oldCol.isPrimaryKey());
+        if (ArrayUtil.find(table.getPrimaryKey(), colIndex) != -1) {
+        }
+    } else if (table.hasPrimaryKey()) {
+        if (oldCol.isPrimaryKey()) {
+            newCol.setPrimaryKey(true);
+        } else if (newCol.isPrimaryKey()) {
+            throw Error.error(ErrorCode.X_42532);
+        }
+    } else if (newCol.isPrimaryKey()) {
+        throw Error.error(ErrorCode.X_42530);
+    }
+    // apply and return if only metadata change is required
+    boolean meta = newType == oldType;
+    meta &= oldCol.isNullable() == newCol.isNullable();
+    meta &= oldCol.getDataType().scale == newCol.getDataType().scale;
+    meta &= (oldCol.isIdentity() == newCol.isIdentity());
+    meta &= (oldCol.getDataType().precision == newCol.getDataType().precision || (oldCol.getDataType().precision < newCol.getDataType().precision && (oldType == Types.SQL_VARCHAR || oldType == Types.SQL_VARBINARY)));
+    if (meta) {
+        // size of some types may be increased with this command
+        // default expressions can change
+        oldCol.setType(newCol);
+        oldCol.setDefaultExpression(newCol.getDefaultExpression());
+        if (newCol.isIdentity()) {
+            oldCol.setIdentity(newCol.getIdentitySequence());
+        }
+        table.setColumnTypeVars(colIndex);
+        table.resetDefaultsFlag();
+        return;
+    }
+    database.schemaManager.checkColumnIsReferenced(table.getName(), table.getColumn(colIndex).getName());
+    table.checkColumnInCheckConstraint(colIndex);
+    table.checkColumnInFKConstraint(colIndex);
+    checkConvertColDataType(oldCol, newCol);
+    retypeColumn(newCol, colIndex);
+}

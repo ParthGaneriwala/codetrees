@@ -1,0 +1,83 @@
+public void createHIT(Product product, int tier) {
+    String parentCategoryName = turkDAO.getParentCategoryNameForProduct(product.getId());
+    log.info("creating tier " + tier + " hit for productId " + product.getId());
+    // String hitTypeId = null;
+    String title = "Choose the best category for this " + parentCategoryName + " product";
+    String description = "Please look at this product and select a categorization for it.";
+    String keywords = "shopping,product,merchandise,categorization,shopzilla";
+    double reward = 0.0;
+    try {
+        if (tier == 1) {
+            reward = tierOneReward;
+        } else {
+            reward = tierTwoReward;
+        }
+    } catch (Exception ignore) {
+    }
+    int maxAssignments = 3 - tier;
+    // one hour
+    long assignmentDurationInSeconds = 60 * 60;
+    // one month
+    long autoApprovalDelayInSeconds = 60 * 60 * 24 * 30;
+    // one day
+    long lifetimeInSeconds = 60 * 60 * 24;
+    String requesterAnnotation = "ShopZilla two plus one HIT";
+    String externalURL = "http://" + hostname + "/cloudsort/hit.do?id=" + product.getId();
+    if (tier == 2) {
+        externalURL += "&amp;tier=2";
+    }
+    log.info("creating tier " + tier + " hit, url: " + externalURL);
+    String question = "<?xml version=\"1.0\"?>" + "<ExternalQuestion xmlns=\"http://mechanicalturk.amazonaws.com/AWSMechanicalTurkDataSchemas/2006-07-14/ExternalQuestion.xsd\">" + "	<ExternalURL>" + externalURL + "</ExternalURL>" + "	<FrameHeight>500</FrameHeight>" + "</ExternalQuestion>";
+    QualificationRequirement[] qualificationRequirements = null;
+    Qualification qualification = null;
+    try {
+        qualification = turkDAO.getQualificationForCategoryId(product.getParentCategoryId());
+    } catch (Exception ignore) {
+        log.info("no qualification data found for parent category " + product.getParentCategoryId());
+    }
+    if (qualification != null) {
+        if (tier == 2 && qualification.getQualTypeIdTrusted() != null && qualification.getQualTypeIdTrusted().length() > 0 || tier == 1 && qualification.getQualTypeIdGeneral() != null && qualification.getQualTypeIdGeneral().length() > 0) {
+            qualificationRequirements = new QualificationRequirement[1];
+            qualificationRequirements[0] = new QualificationRequirement();
+            qualificationRequirements[0].setComparator(Comparator.GreaterThanOrEqualTo);
+            if (tier == 1) {
+                qualificationRequirements[0].setQualificationTypeId(qualification.getQualTypeIdGeneral());
+                qualificationRequirements[0].setIntegerValue(qualification.getQualTypeScoreGeneral());
+            } else {
+                qualificationRequirements[0].setQualificationTypeId(qualification.getQualTypeIdGeneral());
+                qualificationRequirements[0].setIntegerValue(qualification.getQualTypeScoreGeneral());
+            }
+            qualificationRequirements[0].setRequiredToPreview(false);
+            log.info("qualification typeID: " + qualificationRequirements[0].getQualificationTypeId() + ", score: " + qualificationRequirements[0].getIntegerValue());
+        }
+    }
+    String[] responseGroup = null;
+    String hitTypeId = null;
+    long startTime = System.currentTimeMillis();
+    HIT hit = service.createHIT(hitTypeId, title, description, keywords, question, reward, assignmentDurationInSeconds, autoApprovalDelayInSeconds, lifetimeInSeconds, maxAssignments, requesterAnnotation, qualificationRequirements, responseGroup);
+    long elapsed = System.currentTimeMillis() - startTime;
+    log.info("hit id " + hit.getHITId() + ", hitType " + hit.getHITTypeId() + " created in " + elapsed + " ms");
+    Request request = new Request();
+    request.setProductId(product.getId());
+    request.setCreatedDate(new Date());
+    request.setHitId(hit.getHITId());
+    request.setParentCategoryId(product.getParentCategoryId());
+    request.setTier(tier);
+    startTime = System.currentTimeMillis();
+    turkDAO.saveRequest(request);
+    elapsed = System.currentTimeMillis() - startTime;
+    log.info("request saved in " + elapsed + " ms");
+    if (hitTypes.contains(hit.getHITTypeId())) {
+        log.info("notification already set up for hitTypeId " + hit.getHITTypeId());
+    } else {
+        log.info("setting up notification for hitTypeId " + hit.getHITTypeId());
+        NotificationSpecification notification = new NotificationSpecification();
+        notification.setDestination("http://" + hostname + "/cloudsort/hitresult");
+        notification.setEventType(new EventType[] { EventType.AssignmentSubmitted });
+        notification.setTransport(NotificationTransport.REST);
+        notification.setVersion("2006-05-05");
+        service.setHITTypeNotification(hit.getHITTypeId(), notification, true);
+        hitTypes.add(hit.getHITTypeId());
+        log.info("notification set up for Hit TypeID = " + hit.getHITTypeId());
+    }
+}

@@ -1,0 +1,68 @@
+public void readMdf() {
+    // get all the peptide identifications for the datfile
+    iPeptideIdentifications = this.getPeptideIdentifiations();
+    // get the quantitationtype from the parameter section in the mascot datfile
+    Parameters lParam = iDatFile.getMascotDatFile().getParametersSection();
+    iQuantitationType = lParam.getQuantiation();
+    // check if the quantitation type is itraq
+    if (iQuantitationType.toLowerCase().indexOf("tmt") == -1 && iQuantitationType.toLowerCase().indexOf("itraq") == -1) {
+        iFlamable.passHotPotato(new Throwable("No correct quantification information could be extracted from the datfile '" + iRatioGroupCollection.getMetaData(QuantitationMetaType.FILENAME) + "'! The quantitation type was: " + iQuantitationType + "."));
+        return;
+    }
+    // get the mass type
+    String lMassString = lParam.getMass();
+    Mass lMass = null;
+    for (Mass lMassEnum : Mass.values()) {
+        if (lMassEnum.toString().equalsIgnoreCase(lMassString)) {
+            lMass = lMassEnum;
+        }
+    }
+    // get the fragment ion tolerance
+    double lMassTolerance = Double.valueOf(lParam.getITOL());
+    // Get all the queries
+    Vector queries = iDatFile.getMascotDatFile().getQueryList();
+    // Create the iterator
+    Iterator iter = queries.iterator();
+    while (iter.hasNext()) {
+        // Get the query.
+        Query lQuery = (Query) iter.next();
+        if (iUseMgfs) {
+            // the peaks are not in the mdf, get them from the mergefile
+            // we will search in the spectra hashmap for the peaks that are linked to the same component as this query
+            Peak[] lPeaks = (Peak[]) iSpectra.get(this.getComponentNumberFromTitle(lQuery.getTitle()));
+            lQuery.setPeakList(lPeaks);
+        }
+        // create the ratiogroup
+        RatioGroup lRatioGroup = new RatioGroup(iRatioGroupCollection);
+        // add an peptide identification to the group
+        PeptideIdentification lIdent = iPeptideIdentifications.get(lQuery.getQueryNumber());
+        if (lIdent != null) {
+            if (lQuery.getQueryNumber() == lIdent.getDatfile_query()) {
+                // the query number matches the query number from the peptide identification
+                // set the quantitation type
+                lIdent.setType(iQuantitationType);
+                // add the identificatoin to the ratiogroup
+                lRatioGroup.addIdentification(lIdent, iQuantitationType);
+                // add the different ratios
+                for (int j = 0; j < iRatioTypes.length; j++) {
+                    Ratio lMDFRatio = iRatioTypes[j];
+                    double lRatioDouble = lMDFRatio.calculate(lQuery.getPeakList(), lMassTolerance, lMass);
+                    if (lRatioDouble >= 0.0) {
+                        ITraqRatio lRatio = new ITraqRatio(lRatioDouble, lMDFRatio.getName(), true, lRatioGroup);
+                        lRatioGroup.addRatio(lRatio);
+                    }
+                }
+                // set the peptide sequence
+                lRatioGroup.setPeptideSequence(lIdent.getSequence());
+                // add the ratiogroup to the ratiogroup collection
+                if (lRatioGroup.getNumberOfRatios() > 0) {
+                    iRatioGroupCollection.add(lRatioGroup);
+                }
+            }
+        }
+    }
+    // check if we have added anything
+    if (iRatioGroupCollection.size() == 0) {
+        iFlamable.passHotPotato(new Throwable("No information could be extracted from the datfile '" + iRatioGroupCollection.getMetaData(QuantitationMetaType.FILENAME) + "' !"));
+    }
+}

@@ -1,0 +1,48 @@
+@Override
+public void processIncoming(Data data) throws WekaException {
+    if (!m_structureCheckComplete) {
+        m_structureCheckComplete = true;
+        Instances structure = null;
+        if (data.getConnectionName().equals(StepManager.CON_INSTANCE)) {
+            structure = ((Instance) data.getPrimaryPayload()).dataset();
+        } else if (data.getConnectionName().equals(StepManager.CON_ENVIRONMENT)) {
+            structure = ((Instance) data.getPayloadElement(StepManager.CON_AUX_DATA_INSTANCE)).dataset();
+        } else {
+            structure = data.getPrimaryPayload();
+        }
+        checkStructure(structure);
+    }
+    getStepManager().processing();
+    if (data.getConnectionName().equals(StepManager.CON_INSTANCE) || data.getConnectionName().equals(StepManager.CON_ENVIRONMENT)) {
+        if (isStopRequested()) {
+            getStepManager().interrupted();
+            return;
+        }
+        if (getStepManager().isStreamFinished(data)) {
+            Data finished = new Data(StepManager.CON_ENVIRONMENT);
+            if (data.getConnectionName().equals(StepManager.CON_ENVIRONMENT)) {
+                finished.setPayloadElement(StepManager.CON_AUX_DATA_ENVIRONMENT_VARIABLES, data.getPayloadElement(StepManager.CON_AUX_DATA_ENVIRONMENT_VARIABLES));
+                finished.setPayloadElement(StepManager.CON_AUX_DATA_ENVIRONMENT_PROPERTIES, data.getPayloadElement(StepManager.CON_AUX_DATA_ENVIRONMENT_PROPERTIES));
+            }
+            getStepManager().throughputFinished(finished);
+            return;
+        }
+        Instance toProcess = (Instance) (data.getConnectionName().equals(StepManager.CON_INSTANCE) ? data.getPrimaryPayload() : data.getPayloadElement(StepManager.CON_AUX_DATA_INSTANCE));
+        getStepManager().throughputUpdateStart();
+        processInstance(toProcess, data.getConnectionName().equals(StepManager.CON_ENVIRONMENT) ? data : null);
+        getStepManager().throughputUpdateEnd();
+    } else {
+        Instances insts = data.getPrimaryPayload();
+        for (int i = 0; i < insts.numInstances(); i++) {
+            if (isStopRequested()) {
+                break;
+            }
+            processInstance(insts.instance(i), null);
+            Data finished = new Data(StepManager.CON_ENVIRONMENT);
+            getStepManager().throughputFinished(finished);
+        }
+        if (isStopRequested()) {
+            getStepManager().interrupted();
+        }
+    }
+}

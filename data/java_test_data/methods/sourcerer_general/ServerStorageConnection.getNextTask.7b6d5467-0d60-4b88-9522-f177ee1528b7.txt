@@ -1,0 +1,88 @@
+public Task getNextTask() {
+    while (true) {
+        Message message = null;
+        SocketChannel channel = null;
+        // synchronized(selector) {
+        lock.lock();
+        try {
+            selector.select();
+        } catch (IOException e) {
+            e.printStackTrace();
+            return null;
+        }
+        Iterator<SelectionKey> iterator = selector.selectedKeys().iterator();
+        while (true) {
+            if (!iterator.hasNext()) {
+                // lock.unlock();
+                break;
+            }
+            SelectionKey key = iterator.next();
+            iterator.remove();
+            if (!key.isValid()) {
+                continue;
+            }
+            if (key.isAcceptable()) {
+                try {
+                    System.err.println("selected an acceptable key");
+                    acceptConnection((ServerSocketChannel) key.channel());
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            } else if (key.isReadable()) {
+                channel = (SocketChannel) key.channel();
+                if (!channel.isOpen()) {
+                    key.cancel();
+                    break;
+                }
+                ClientConnection connection = connections.get(channel);
+                connection.readLock.lock();
+                // otherwise another thread may attempt to finished this channel
+                try {
+                    message = readMessage(channel);
+                } catch (IOException e) {
+                    try {
+                        channel.close();
+                    } catch (IOException e1) {
+                    }
+                    key.cancel();
+                } finally {
+                    connection.readLock.unlock();
+                }
+                break;
+            } else if (key.isWritable()) {
+                channel = (SocketChannel) key.channel();
+                boolean hasMore = false;
+                ClientConnection connection = connections.get(channel);
+                try {
+                    connection.writeLock.lock();
+                    hasMore = connection.send();
+                } catch (IOException e) {
+                    try {
+                        channel.close();
+                    } catch (IOException e1) {
+                    }
+                    key.cancel();
+                } finally {
+                    connection.writeLock.unlock();
+                }
+                if (!hasMore) {
+                    // lock.lock();
+                    key.interestOps(SelectionKey.OP_READ);
+                    selector.wakeup();
+                // lock.unlock();
+                }
+            }
+            break;
+        }
+        lock.unlock();
+        if (message != null) {
+            Task task = null;
+            try {
+                task = makeTask(channel, message);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            return task;
+        }
+    }
+}

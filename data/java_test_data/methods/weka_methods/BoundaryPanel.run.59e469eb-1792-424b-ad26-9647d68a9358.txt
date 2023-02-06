@@ -1,0 +1,95 @@
+@Override
+@SuppressWarnings("unchecked")
+public void run() {
+    m_stopPlotting = false;
+    try {
+        initialize();
+        repaint();
+        // train the classifier
+        m_probabilityCache = new double[m_panelHeight][m_panelWidth][];
+        m_classifier.buildClassifier(m_trainingData);
+        // build DataGenerator
+        m_attsToWeightOn = new boolean[m_trainingData.numAttributes()];
+        m_attsToWeightOn[m_xAttribute] = true;
+        m_attsToWeightOn[m_yAttribute] = true;
+        m_dataGenerator.setWeightingDimensions(m_attsToWeightOn);
+        m_dataGenerator.buildGenerator(m_trainingData);
+        // generate samples
+        m_weightingAttsValues = new double[m_attsToWeightOn.length];
+        m_vals = new double[m_trainingData.numAttributes()];
+        m_predInst = new DenseInstance(1.0, m_vals);
+        m_predInst.setDataset(m_trainingData);
+        // Current sample region size
+        m_size = 1 << 4;
+        m_initialTiling = true;
+        // Display the initial coarse image tiling.
+        abortInitial: for (int i = 0; i <= m_panelHeight; i += m_size) {
+            for (int j = 0; j <= m_panelWidth; j += m_size) {
+                if (m_stopPlotting) {
+                    break abortInitial;
+                }
+                if (m_pausePlotting) {
+                    synchronized (m_dummy) {
+                        try {
+                            m_dummy.wait();
+                        } catch (InterruptedException ex) {
+                            m_pausePlotting = false;
+                        }
+                    }
+                }
+                plotPoint(j, i, m_size, m_size, calculateRegionProbs(j, i), (j == 0));
+            }
+        }
+        if (!m_stopPlotting) {
+            m_initialTiling = false;
+        }
+        // Sampling and gridding loop
+        int size2 = m_size / 2;
+        abortPlot: while (m_size > 1) {
+            // Subdivide down to the pixel level
+            for (int i = 0; i <= m_panelHeight; i += m_size) {
+                for (int j = 0; j <= m_panelWidth; j += m_size) {
+                    if (m_stopPlotting) {
+                        break abortPlot;
+                    }
+                    if (m_pausePlotting) {
+                        synchronized (m_dummy) {
+                            try {
+                                m_dummy.wait();
+                            } catch (InterruptedException ex) {
+                                m_pausePlotting = false;
+                            }
+                        }
+                    }
+                    boolean update = (j == 0 && i % 2 == 0);
+                    // Draw the three new subpixel regions
+                    plotPoint(j, i + size2, size2, size2, calculateRegionProbs(j, i + size2), update);
+                    plotPoint(j + size2, i + size2, size2, size2, calculateRegionProbs(j + size2, i + size2), update);
+                    plotPoint(j + size2, i, size2, size2, calculateRegionProbs(j + size2, i), update);
+                }
+            }
+            // The new region edge length is half the old edge length
+            m_size = size2;
+            size2 = size2 / 2;
+        }
+        update();
+        if (m_plotTrainingData) {
+            plotTrainingData();
+        }
+    } catch (Exception ex) {
+        ex.printStackTrace();
+        JOptionPane.showMessageDialog(null, "Error while plotting: \"" + ex.getMessage() + "\"");
+    } finally {
+        m_plotThread = null;
+        // notify any listeners that we are finished
+        Vector<ActionListener> l;
+        ActionEvent e = new ActionEvent(this, 0, "");
+        synchronized (this) {
+            l = (Vector<ActionListener>) m_listeners.clone();
+        }
+        for (int i = 0; i < l.size(); i++) {
+            ActionListener al = l.elementAt(i);
+            al.actionPerformed(e);
+        }
+    }
+}

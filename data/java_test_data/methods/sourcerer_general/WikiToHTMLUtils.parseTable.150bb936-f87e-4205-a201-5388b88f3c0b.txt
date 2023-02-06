@@ -1,0 +1,128 @@
+protected static String parseTable(WikiToHTMLContext context, Connection db, BufferedReader in, String line, StringBuffer sb) throws Exception {
+    if (line == null) {
+        return line;
+    }
+    // Implement tables as...
+    // ||header col1||header col2
+    // !continued||
+    // |colA1|colA2
+    // !continued
+    // !continued|
+    // |colB1|colB2 [[Security, Registration, Invitation|Installation Options]]|
+    append(context, sb, "<table class=\"wikiTable\">");
+    append(context, sb, CRLF);
+    int rowHighlight = 0;
+    int rowCount = 0;
+    // Keep track of the table's custom styles
+    HashMap<Integer, String> cStyle = new HashMap<Integer, String>();
+    while (line != null && (line.startsWith("|") || line.startsWith("!"))) {
+        // Build a complete line
+        String lineToParse = line;
+        while (!line.endsWith("|")) {
+            line = in.readLine();
+            if (line == null) {
+                // there is an error in the line to process
+                return null;
+            }
+            if (line.startsWith("!")) {
+                lineToParse += CRLF + line.substring(1);
+            }
+        }
+        line = lineToParse;
+        // Determine if the row can output
+        boolean canOutput = true;
+        // Track the row being processed
+        ++rowCount;
+        String cellType = null;
+        Scanner sc = null;
+        if (line.startsWith("||") && line.endsWith("||")) {
+            cellType = "th";
+            sc = new Scanner(line).useDelimiter("[|][|]");
+        // sc = new Scanner(line.substring(2, line.length() - 2)).useDelimiter("[|][|]");
+        } else if (line.startsWith("|")) {
+            cellType = "td";
+            sc = new Scanner(line.substring(1, line.length() - 1)).useDelimiter("\\|(?=[^\\]]*(?:\\[|$))");
+        }
+        if (sc != null) {
+            // Determine the column span
+            int colSpan = 1;
+            // Determine the cell being output
+            int cellCount = 0;
+            while (sc.hasNext()) {
+                String cellData = sc.next();
+                if (cellData.length() == 0) {
+                    ++colSpan;
+                    continue;
+                }
+                // Track the cell count being output
+                ++cellCount;
+                if (rowCount == 1) {
+                    // Parse and validate the style input
+                    LOG.debug("Checking style value: " + cellData);
+                    if (cellData.startsWith("{") && cellData.endsWith("}")) {
+                        String[] style = cellData.substring(1, cellData.length() - 1).split(":");
+                        String attribute = style[0].trim();
+                        String value = style[1].trim();
+                        if ("width".equals(attribute)) {
+                            // Validate the width style
+                            if (StringUtils.hasAllowedOnly("0123456789%.", value)) {
+                                cStyle.put(cellCount, attribute + ": " + value + ";");
+                            }
+                        } else {
+                            LOG.debug("Unsupported style: " + cellData);
+                        }
+                        canOutput = false;
+                    }
+                }
+                // Output the header
+                if (canOutput) {
+                    if (cellCount == 1) {
+                        // This is the table header row
+                        if ("td".equals(cellType)) {
+                            rowHighlight = (rowHighlight != 1 ? 1 : 2);
+                            append(context, sb, "<tr class=\"row" + rowHighlight + "\">");
+                        } else {
+                            append(context, sb, "<tr>");
+                        }
+                    }
+                    // Start the cell output
+                    append(context, sb, "<" + cellType);
+                    // Output the colspan
+                    if (colSpan > 1) {
+                        append(context, sb, " colspan=\"" + colSpan + "\"");
+                    }
+                    // Output any style
+                    if (cStyle.size() > 0 && rowCount == 2) {
+                        String style = cStyle.get(cellCount);
+                        if (style != null) {
+                            append(context, sb, " style=\"" + style + "\"");
+                        }
+                    }
+                    // End the cell output
+                    append(context, sb, ">");
+                    // Output the data
+                    if (" ".equals(cellData) || "¬†".equals(cellData)) {
+                        // Put a blank space in blank cells for output consistency
+                        append(context, sb, "&nbsp;");
+                    } else {
+                        // Output the cell as a complete wiki
+                        String formatted = getHTML(context, db, cellData, true).trim();
+                        LOG.trace(formatted);
+                        sb.append(formatted);
+                    }
+                    // Close the cell
+                    append(context, sb, "</" + cellType + ">");
+                }
+            }
+            if (canOutput) {
+                append(context, sb, "</tr>");
+                append(context, sb, CRLF);
+            }
+        }
+        // read another line to see if it's part of the table
+        line = in.readLine();
+    }
+    append(context, sb, "</table>");
+    append(context, sb, CRLF);
+    return line;
+}

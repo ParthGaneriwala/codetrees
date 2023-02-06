@@ -1,0 +1,90 @@
+static void run_till_stable(int num_threads, int num_trials, int impl) throws Exception {
+    ConcurrentMap<String, String> HM = make_map(impl);
+    if (HM == null) {
+        return;
+    }
+    String name = names[impl];
+    System.out.printf("=== %10.10s  %3d", name, num_threads);
+    // Quicky sanity check
+    for (int i = 0; i < 100; i++) {
+        HM.put(KEYS[i], KEYS[i]);
+        for (int j = 0; j < i; j++) {
+            if (HM.get(KEYS[j]) != KEYS[j]) {
+                throw new Error("Broken table, put " + i + " but cannot find #" + j);
+            }
+        }
+    }
+    // Number of trials
+    long[] trials = new long[num_trials];
+    long total = 0;
+    for (int j = 0; j < trials.length; j++) {
+        long[] ops = new long[num_threads];
+        long[] nanos = new long[num_threads];
+        long millis = run_once(num_threads, HM, ops, nanos);
+        long sum_ops = 0;
+        long sum_nanos = 0;
+        for (int i = 0; i < num_threads; i++) {
+            sum_ops += ops[i];
+            sum_nanos += nanos[i];
+        }
+        long ops_per_sec = (sum_ops * 1000L) / millis;
+        trials[j] = ops_per_sec;
+        total += ops_per_sec;
+        if (j == 0) {
+            System.out.printf("  cnts/sec=");
+        }
+        System.out.printf(" %10d", ops_per_sec);
+        // System.out.printf("+-%f%%",(ops_per_sec - ops_per_sec_n)*100.0/ops_per_sec);
+        if (HM instanceof NonBlockingHashMap) {
+            long reprobes = ((NonBlockingHashMap) HM).reprobes();
+            if (reprobes > 0) {
+                System.out.printf("(%5.2f)", (double) reprobes / (double) sum_ops);
+            }
+        }
+    }
+    if (trials.length > 2) {
+        // Toss out low & high
+        int lo = 0;
+        int hi = 0;
+        for (int j = 1; j < trials.length; j++) {
+            if (trials[lo] < trials[j]) {
+                lo = j;
+            }
+            if (trials[hi] > trials[j]) {
+                hi = j;
+            }
+        }
+        total -= (trials[lo] + trials[hi]);
+        trials[lo] = trials[trials.length - 1];
+        trials[hi] = trials[trials.length - 2];
+        // Print avg,stddev
+        long avg = total / (trials.length - 2);
+        long stddev = compute_stddev(trials, trials.length - 2);
+        // std-dev as a percent
+        long p = stddev * 100 / avg;
+        if (trials.length - 2 > 2) {
+            // Toss out low & high
+            lo = 0;
+            hi = 0;
+            for (int j = 1; j < trials.length - 2; j++) {
+                if (trials[lo] < trials[j]) {
+                    lo = j;
+                }
+                if (trials[hi] > trials[j]) {
+                    hi = j;
+                }
+            }
+            total -= (trials[lo] + trials[hi]);
+            trials[lo] = trials[trials.length - 2 - 1];
+            trials[hi] = trials[trials.length - 2 - 2];
+            // Print avg,stddev
+            avg = total / (trials.length - 2 - 2);
+            stddev = compute_stddev(trials, trials.length - 2 - 2);
+            // std-dev as a percent
+            p = stddev * 100 / avg;
+        }
+        System.out.printf(" %10d", avg);
+        System.out.printf(" (+/-%2d%%)  %d", p, HM.size());
+    }
+    System.out.println();
+}

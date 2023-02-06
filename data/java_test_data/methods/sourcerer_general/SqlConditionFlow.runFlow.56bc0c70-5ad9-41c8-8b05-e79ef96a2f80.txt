@@ -1,0 +1,134 @@
+/*
+	 *  (non-Javadoc)
+	 * @see com.sunbay.as.chain.flow.FlowType#drowFlow(javax.servlet.jsp.JspWriter)
+	 */
+/**
+ * public void drowFlow(JspWriter out) {
+ * try {
+ * out.print("<style>#flow" + this.getChainFlow().getFlowId()
+ * + "{POSITION: relative;}</style>");
+ * out.print("<div id=\"flow" + this.getChainFlow().getFlowId()
+ * + "\" class=\"constyle"
+ * + this.getChainFlow().getStyle() + "\">");
+ * out.print(" <div class=\"condelCls" + this.getChainFlow().getStyle()
+ * + "\"><a href=\"javascript:FunDel('" + this.getChainFlow().getFlowId()
+ * + "')\" ><img src=images/del.gif border=0></a></div>");
+ * out.print("<div class=\"conflowinfo" + this.getChainFlow().getStyle() + "\" ><a href=\""
+ * + getForward()
+ * + "&flowId="+ getChainFlow().getFlowId()
+ * + "&chainId=" + getChainFlow().getChain().getChainId()
+ * + "\" >" +this.getChainFlow().getFlowCode()+ "</a><br>");
+ * out.print("Y<a href=\"javascript:FunNext('" + this.getChainFlow().getFlowId()
+ * + "',0)\"><font color=blue>--></font></a>" +this.getChainFlow().getAttr1());
+ * out.print("　N<a href=\"javascript:FunNext('" + this.getChainFlow().getFlowId()
+ * + "',1)\"><font color=blue>--></font></a>" + this.getChainFlow().getAttr2()
+ * + "<br>");
+ * out.print(this.getChainFlow().getFlowName() + "</div>");
+ * out.print("</div>");
+ * } catch (Exception e) {
+ * log.warn("Draw SQL Condition Flow ["+this.getChainFlow().toString() +"] error.", e);
+ * }
+ * }
+ */
+public String runFlow(ChainFlow chainFlow, ChainContext chainContext) throws FlowException {
+    DataSource ds = null;
+    Connection conn = null;
+    try {
+        List<String> script = chainFlow.getScripts();
+        String sqlstr = "";
+        log.info("Start to run the flow [" + chainFlow.getFlowCode() + "]");
+        chainContext.addSimuList("<font color=blue><b>" + "Start to run the flow [" + chainFlow.getFlowCode() + "]" + "</b></font>");
+        if ("Y".equals(chainFlow.getSkipYn())) {
+            log.info("The flow [" + chainFlow.getFlowCode() + "]: skipFlag=true");
+            chainContext.addSimuList("The flow [" + chainFlow.getFlowCode() + "]: skipFlag=true<br>=================");
+            chainFlow.setNextFlowCode(this.getChainFlow().getAttr1());
+            return "0";
+        }
+        if (script.size() < 1) {
+            log.info("The flow [" + chainFlow.getFlowCode() + "] runFlow(): there is no statement");
+            chainContext.addSimuList("The flow [" + chainFlow.getFlowCode() + "]: there is no statement<br>=================");
+            chainFlow.setNextFlowCode(this.getChainFlow().getAttr1());
+            return "0";
+        }
+        String dataSourceId = chainFlow.getAttr4();
+        try {
+            Datasource ktiDs = DatasourceManager.getDatasourceByName(dataSourceId);
+            log.info("Datasoure: " + ktiDs.toString());
+            chainContext.addSimuList("Datasoure: " + ktiDs.getName());
+            ds = DbUtil.setupDataSource(ktiDs);
+        } catch (Exception e) {
+            log.error("Connection not exist.", e);
+            chainContext.addSimuList("Connection not exist. [" + e.getMessage() + "]");
+            throw new FlowException("Connection not exist.", e);
+        // chainFlow.setNextFlowCode(this.getChainFlow().getAttr1());
+        }
+        conn = ds.getConnection();
+        if (conn == null) {
+            log.error("getConnection() return null.");
+            chainContext.addSimuList("getConnection() return null. ");
+            chainFlow.setNextFlowCode(this.getChainFlow().getAttr2());
+            throw new FlowException("getConnection() return null. ");
+        }
+        for (int i = 0; i < script.size(); i++) {
+            int recordcount = 0;
+            sqlstr = script.get(i).toString();
+            Iterator<Object> iter = chainContext.getDataMapIterator();
+            while (iter.hasNext()) {
+                DataMapping dataMapping = (DataMapping) iter.next();
+                sqlstr = StringUtils.replace(sqlstr, dataMapping.getFieldName(), dataMapping.getFieldMapping());
+            }
+            sqlstr = FormulaFactory.getInstance().run(sqlstr);
+            log.info(sqlstr);
+            chainContext.addSimuList(sqlstr);
+            sqlstr = "select count(1) from (" + sqlstr + ") t ";
+            ResultSet rs = null;
+            try {
+                rs = conn.prepareStatement(sqlstr).executeQuery();
+                if (rs != null) {
+                    if (rs.next()) {
+                        recordcount = rs.getInt(1);
+                    }
+                }
+            // end if
+            } catch (Exception e) {
+                log.error("Execute sql query exception :" + e.getMessage());
+                chainContext.addSimuList("Execute sql query exception :" + e.getMessage());
+                chainFlow.setNextFlowCode(this.getChainFlow().getAttr1());
+                throw new FlowException("Execute sql query exception :" + e.getMessage());
+            } finally {
+                DbUtil.closeQuietly(rs);
+            }
+            // end try
+            if ("1".equals(this.getChainFlow().getAttr3())) {
+                if (recordcount >= 1) {
+                    chainFlow.setNextFlowCode(this.getChainFlow().getAttr1());
+                } else {
+                    chainFlow.setNextFlowCode(this.getChainFlow().getAttr2());
+                    break;
+                }
+            // end if
+            } else {
+                if (recordcount >= 1) {
+                    chainFlow.setNextFlowCode(this.getChainFlow().getAttr1());
+                    break;
+                } else {
+                    chainFlow.setNextFlowCode(this.getChainFlow().getAttr2());
+                }
+            // end if
+            }
+        // end if
+        }
+        // end for
+        chainContext.addSimuList("Next ID: " + this.getChainFlow().getNextFlowCode());
+        chainContext.addSimuList("SqlConditionFlow::runFlow OK<br>--------------------------------");
+        return "0";
+    } catch (Exception e) {
+        DbUtil.closeQuietly(conn);
+        log.error("SQLConditionFlowImp::runFlow" + e.getMessage());
+        chainContext.addSimuList("SQLConditionFlowImp::runFlow" + e.getMessage());
+        return "98";
+    } finally {
+        DbUtil.closeQuietly(conn);
+        DbUtil.shutdownDataSourceQuietly(ds);
+    }
+}

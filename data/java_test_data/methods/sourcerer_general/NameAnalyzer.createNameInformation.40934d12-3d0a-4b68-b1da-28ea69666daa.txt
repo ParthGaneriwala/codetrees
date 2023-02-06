@@ -1,0 +1,89 @@
+private NameInformation createNameInformation(NodeTraversal t, Node n, Node parent) {
+    // Build the full name and find its root node by iterating down through all
+    // GETPROP/GETELEM nodes.
+    String name = "";
+    Node rootNameNode = n;
+    boolean bNameWasShortened = false;
+    while (true) {
+        if (NodeUtil.isGet(rootNameNode)) {
+            Node prop = rootNameNode.getLastChild();
+            if (rootNameNode.getType() == Token.GETPROP) {
+                name = "." + prop.getString() + name;
+            } else {
+                // We consider the name to be "a.b" in a.b['c'] or a.b[x].d.
+                bNameWasShortened = true;
+                name = "";
+            }
+            rootNameNode = rootNameNode.getFirstChild();
+        } else if (NodeUtil.isObjectLitKey(rootNameNode, rootNameNode.getParent())) {
+            name = "." + rootNameNode.getString() + name;
+            // Check if this is an object literal assigned to something.
+            Node objLit = rootNameNode.getParent();
+            Node objLitParent = objLit.getParent();
+            if (objLitParent.getType() == Token.ASSIGN) {
+                // This must be the right side of the assign.
+                rootNameNode = objLitParent.getFirstChild();
+            } else if (objLitParent.getType() == Token.NAME) {
+                // This must be a VAR initialization.
+                rootNameNode = objLitParent;
+            } else if (objLitParent.getType() == Token.STRING) {
+                // This must be a object literal key initialization.
+                rootNameNode = objLitParent;
+            } else {
+                return null;
+            }
+        } else {
+            break;
+        }
+    }
+    // in the global scope.
+    if (NodeUtil.isCall(parent) && t.inGlobalScope()) {
+        CodingConvention convention = compiler.getCodingConvention();
+        SubclassRelationship classes = convention.getClassesDefinedByCall(parent);
+        if (classes != null) {
+            NameInformation nameInfo = new NameInformation();
+            nameInfo.name = classes.subclassName;
+            nameInfo.onlyAffectsClassDef = true;
+            nameInfo.superclass = classes.superclassName;
+            return nameInfo;
+        }
+        String singletonGetterClass = convention.getSingletonGetterClassName(parent);
+        if (singletonGetterClass != null) {
+            NameInformation nameInfo = new NameInformation();
+            nameInfo.name = singletonGetterClass;
+            nameInfo.onlyAffectsClassDef = true;
+            return nameInfo;
+        }
+    }
+    switch(rootNameNode.getType()) {
+        case Token.NAME:
+            // of an object defined in the global scope.
+            if (!bNameWasShortened && n.getType() == Token.GETPROP && parent.getType() == Token.ASSIGN && "prototype".equals(n.getLastChild().getString())) {
+                if (createNameInformation(t, n.getFirstChild(), n) != null) {
+                    name = rootNameNode.getString() + name;
+                    name = name.substring(0, name.length() - PROTOTYPE_SUFFIX_LEN);
+                    NameInformation nameInfo = new NameInformation();
+                    nameInfo.name = name;
+                    return nameInfo;
+                } else {
+                    return null;
+                }
+            }
+            return createNameInformation(rootNameNode.getString() + name, t.getScope(), rootNameNode);
+        case Token.THIS:
+            if (t.inGlobalScope()) {
+                NameInformation nameInfo = new NameInformation();
+                if (name.indexOf('.') == 0) {
+                    // strip leading "."
+                    nameInfo.name = name.substring(1);
+                } else {
+                    nameInfo.name = name;
+                }
+                nameInfo.isExternallyReferenceable = true;
+                return nameInfo;
+            }
+            return null;
+        default:
+            return null;
+    }
+}

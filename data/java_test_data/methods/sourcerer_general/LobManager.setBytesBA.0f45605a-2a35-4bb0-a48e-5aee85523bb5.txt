@@ -1,0 +1,47 @@
+public synchronized Result setBytesBA(long lobID, byte[] dataBytes, long offset, int length) {
+    int blockOffset = (int) (offset / lobBlockSize);
+    int byteBlockOffset = (int) (offset % lobBlockSize);
+    int blockLimit = (int) ((offset + length) / lobBlockSize);
+    int byteLimitOffset = (int) ((offset + length) % lobBlockSize);
+    if (byteLimitOffset == 0) {
+        byteLimitOffset = lobBlockSize;
+    } else {
+        blockLimit++;
+    }
+    int[][] blockAddresses = getBlockAddresses(lobID, blockOffset, blockLimit);
+    byte[] newBytes = new byte[(blockLimit - blockOffset) * lobBlockSize];
+    if (blockAddresses.length > 0) {
+        int blockAddress = blockAddresses[0][LOBS.BLOCK_ADDR] + (blockOffset - blockAddresses[0][LOBS.BLOCK_OFFSET]);
+        try {
+            byte[] block = getLobStore().getBlockBytes(blockAddress, 1);
+            System.arraycopy(block, 0, newBytes, 0, lobBlockSize);
+            if (blockAddresses.length > 1) {
+                blockAddress = blockAddresses[blockAddresses.length - 1][LOBS.BLOCK_ADDR] + (blockLimit - blockAddresses[blockAddresses.length - 1][LOBS.BLOCK_OFFSET] - 1);
+                block = getLobStore().getBlockBytes(blockAddress, 1);
+                System.arraycopy(block, 0, newBytes, blockLimit - blockOffset - 1, lobBlockSize);
+            } else if (blockLimit - blockOffset > 1) {
+                blockAddress = blockAddresses[0][LOBS.BLOCK_ADDR] + (blockLimit - blockAddresses[0][LOBS.BLOCK_OFFSET] - 1);
+                block = getLobStore().getBlockBytes(blockAddress, 1);
+                System.arraycopy(block, 0, newBytes, (blockLimit - blockOffset - 1) * lobBlockSize, lobBlockSize);
+            }
+        } catch (HsqlException e) {
+            return Result.newErrorResult(e);
+        }
+        // should turn into SP
+        divideBlockAddresses(lobID, blockOffset);
+        divideBlockAddresses(lobID, blockLimit);
+        deleteBlockAddresses(lobID, blockOffset, blockLimit);
+    }
+    createBlockAddresses(lobID, blockOffset, blockLimit - blockOffset);
+    System.arraycopy(dataBytes, 0, newBytes, byteBlockOffset, length);
+    blockAddresses = getBlockAddresses(lobID, blockOffset, blockLimit);
+    // 
+    try {
+        for (int i = 0; i < blockAddresses.length; i++) {
+            getLobStore().setBlockBytes(newBytes, blockAddresses[i][0], blockAddresses[i][1]);
+        }
+    } catch (HsqlException e) {
+        return Result.newErrorResult(e);
+    }
+    return ResultLob.newLobSetResponse(lobID, 0);
+}

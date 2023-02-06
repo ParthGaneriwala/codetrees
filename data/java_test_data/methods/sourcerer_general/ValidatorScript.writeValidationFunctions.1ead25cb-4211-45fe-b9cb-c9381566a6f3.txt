@@ -1,0 +1,77 @@
+private void writeValidationFunctions(ResponseWriter writer, FacesContext context) throws IOException {
+    StringBuffer buff = new StringBuffer();
+    buff.append("var bCancel = false;\n").append("function ").append(getAttributes().get("functionName").toString()).append("(form) {\n").append("\tif(document.getElementById('" + CVExtConstants.BYPASS_VALIDATION_FIELDNAME + "').value == 'true') return true;\n").append("\tvar activeValidationGroup = document.getElementById('").append(CVExtConstants.ACTIVE_VALIDATION_GROUP_FIELDNAME).append("').value;\n").append("\tvar bValid = true;\n").append("\tvar sFormName = jcv_retrieveFormName(form);\n");
+    Map formValidators = getValidatorsGroupByFormName();
+    Iterator formIter = formValidators.entrySet().iterator();
+    while (formIter.hasNext()) {
+        Map.Entry typeEntry = (Map.Entry) formIter.next();
+        String formName = (String) typeEntry.getKey();
+        Map formGroupValidators = (Map) typeEntry.getValue();
+        // for each validator type, write callback
+        buff.append("\tif ((bValid && !bCancel && (\"").append(formName).append("\" == sFormName))) {\n\t\t");
+        Iterator groupIter = formGroupValidators.entrySet().iterator();
+        while (groupIter.hasNext()) {
+            Map.Entry groupEntry = (Map.Entry) groupIter.next();
+            String groupId = (String) groupEntry.getKey();
+            Map formGroupTypeValidators = (Map) groupEntry.getValue();
+            buff.append("if(activeValidationGroup == '" + groupId + "') {\n").append("\t\t\tbValid = ( ");
+            Iterator iter = getTypesOrderedByDependencies(formGroupTypeValidators.keySet()).iterator();
+            boolean first = true;
+            while (iter.hasNext()) {
+                String type = (String) iter.next();
+                ValidatorAction a = CommonsValidator.getValidatorAction(type);
+                // validator script method gets active validation group value too
+                buff.append((!first ? " && " : "")).append(a.getJsFunctionName()).append("(form,activeValidationGroup)");
+                first = false;
+                writer.write("function ");
+                StringBuffer callback = new StringBuffer();
+                // most of the type the callback function is based on the
+                // form name and
+                // type but for some rules require special names
+                String fnameMnemonic = CommonsValidator.getJsCallbackMnemonic(type);
+                // append group value to jscallback function names
+                callback.append(formName).append('_').append(groupId).append('_').append(fnameMnemonic);
+                writer.write(callback.toString());
+                writer.write("() { \n");
+                // for each field validated by this type, add configuration
+                // object
+                Map map = (Map) formGroupTypeValidators.get(type);
+                Iterator iter2 = map.keySet().iterator();
+                int k = 0;
+                while (iter2.hasNext()) {
+                    String id = (String) iter2.next();
+                    CommonsValidator v = (CommonsValidator) map.get(id);
+                    writer.write("this[" + k + "] = ");
+                    k++;
+                    writeJavaScriptParams(writer, context, id, v);
+                    writer.write(";\n");
+                }
+                writer.write("\t}\n");
+            }
+            buff.append(" );").append("\n\t\t}");
+            if (groupIter.hasNext())
+                buff.append(" else ");
+        }
+        buff.append("\n\t}");
+    }
+    formValidators.clear();
+    // when validation fails, clear the hidden field values not to effect later validations.
+    buff.append("\n\tif (bValid == false) {");
+    buff.append("\n\t\tdocument.getElementById('").append(CVExtConstants.BYPASS_VALIDATION_FIELDNAME).append("').value = 'false';");
+    buff.append("\n\t\tdocument.getElementById('").append(CVExtConstants.ACTIVE_VALIDATION_GROUP_FIELDNAME).append("').value = '").append(CVExtConstants.NO_VALIDATIONGROUPID_VALUE).append("';");
+    buff.append("\n\t}");
+    // write out the form function
+    buff.append("\n\treturn bValid;\n").append("}\n");
+    writer.write(buff.toString());
+    // resolve dependencies for a complete types list
+    List types = new ArrayList(validators.keySet());
+    types.add("includeJavaScriptUtilities");
+    Iterator iter = types.iterator();
+    while (iter.hasNext()) {
+        String type = (String) iter.next();
+        ValidatorAction a = CommonsValidator.getValidatorAction(type);
+        writer.write(a.getJavascript());
+        writer.write("\n");
+    }
+    types.clear();
+}

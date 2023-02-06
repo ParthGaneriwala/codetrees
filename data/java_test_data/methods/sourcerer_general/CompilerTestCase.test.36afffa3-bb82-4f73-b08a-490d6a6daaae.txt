@@ -1,0 +1,136 @@
+private void test(Compiler compiler, String[] expected, DiagnosticType error, DiagnosticType warning, String description) {
+    RecentChange recentChange = new RecentChange();
+    compiler.addChangeHandler(recentChange);
+    Node root = compiler.parseInputs();
+    assertTrue("Unexpected parse error(s): " + Joiner.on("\n").join(compiler.getErrors()), root != null);
+    if (astValidationEnabled) {
+        (new AstValidator()).validateRoot(root);
+    }
+    Node externsRoot = root.getFirstChild();
+    Node mainRoot = root.getLastChild();
+    // Save the tree for later comparison.
+    Node rootClone = root.cloneTree();
+    Node externsRootClone = rootClone.getFirstChild();
+    Node mainRootClone = rootClone.getLastChild();
+    int numRepetitions = getNumRepetitions();
+    ErrorManager[] errorManagers = new ErrorManager[numRepetitions];
+    int aggregateWarningCount = 0;
+    List<JSError> aggregateWarnings = Lists.newArrayList();
+    boolean hasCodeChanged = false;
+    assertFalse("Code should not change before processing", recentChange.hasCodeChanged());
+    for (int i = 0; i < numRepetitions; ++i) {
+        if (compiler.getErrorCount() == 0) {
+            errorManagers[i] = new BlackHoleErrorManager(compiler);
+            // uses reference equality to compare many types.
+            if (typeCheckEnabled && i == 0) {
+                TypeCheck check = createTypeCheck(compiler, typeCheckLevel);
+                check.processForTesting(externsRoot, mainRoot);
+            }
+            // Only run the normalize pass once, if asked.
+            if (normalizeEnabled && i == 0) {
+                normalizeActualCode(compiler, externsRoot, mainRoot);
+            }
+            if (markNoSideEffects && i == 0) {
+                MarkNoSideEffectCalls mark = new MarkNoSideEffectCalls(compiler);
+                mark.process(externsRoot, mainRoot);
+            }
+            recentChange.reset();
+            getProcessor(compiler).process(externsRoot, mainRoot);
+            if (astValidationEnabled) {
+                (new AstValidator()).validateRoot(root);
+            }
+            if (checkLineNumbers) {
+                (new LineNumberCheck(compiler)).process(externsRoot, mainRoot);
+            }
+            hasCodeChanged = hasCodeChanged || recentChange.hasCodeChanged();
+            aggregateWarningCount += errorManagers[i].getWarningCount();
+            aggregateWarnings.addAll(Lists.newArrayList(compiler.getWarnings()));
+            if (normalizeEnabled) {
+                boolean verifyDeclaredConstants = true;
+                new Normalize.VerifyConstants(compiler, verifyDeclaredConstants).process(externsRoot, mainRoot);
+            }
+        }
+    }
+    if (error == null) {
+        assertEquals("Unexpected error(s): " + Joiner.on("\n").join(compiler.getErrors()), 0, compiler.getErrorCount());
+        // Verify the symbol table.
+        ErrorManager symbolTableErrorManager = new BlackHoleErrorManager(compiler);
+        Node expectedRoot = parseExpectedJs(expected);
+        expectedRoot.detachFromParent();
+        JSError[] stErrors = symbolTableErrorManager.getErrors();
+        if (expectedSymbolTableError != null) {
+            assertEquals("There should be one error.", 1, stErrors.length);
+            assertEquals(expectedSymbolTableError, stErrors[0].getType());
+        } else {
+            assertEquals("Unexpected symbol table error(s): " + Joiner.on("\n").join(stErrors), 0, stErrors.length);
+        }
+        if (warning == null) {
+            assertEquals("Unexpected warning(s): " + Joiner.on("\n").join(aggregateWarnings), 0, aggregateWarningCount);
+        } else {
+            assertEquals("There should be one warning, repeated " + numRepetitions + " time(s).", numRepetitions, aggregateWarningCount);
+            for (int i = 0; i < numRepetitions; ++i) {
+                JSError[] warnings = errorManagers[i].getWarnings();
+                JSError actual = warnings[0];
+                assertEquals(warning, actual.getType());
+                // Make sure that source information is always provided.
+                if (!allowSourcelessWarnings) {
+                    assertTrue("Missing source file name in warning", actual.sourceName != null && !actual.sourceName.isEmpty());
+                    assertTrue("Missing line number in warning", -1 != actual.lineNumber);
+                    assertTrue("Missing char number in warning", -1 != actual.getCharno());
+                }
+                if (description != null) {
+                    assertEquals(description, actual.description);
+                }
+            }
+        }
+        if (normalizeEnabled) {
+            normalizeActualCode(compiler, externsRootClone, mainRootClone);
+        }
+        boolean codeChange = !mainRootClone.isEquivalentTo(mainRoot);
+        boolean externsChange = !externsRootClone.isEquivalentTo(externsRoot);
+        // Generally, externs should not be change by the compiler passes.
+        if (externsChange && !allowExternsChanges) {
+            String explanation = externsRootClone.checkTreeEquals(externsRoot);
+            fail("Unexpected changes to externs" + "\nExpected: " + compiler.toSource(externsRootClone) + "\nResult: " + compiler.toSource(externsRoot) + "\n" + explanation);
+        }
+        if (!codeChange && !externsChange) {
+            assertFalse("compiler.reportCodeChange() was called " + "even though nothing changed", hasCodeChanged);
+        } else {
+            assertTrue("compiler.reportCodeChange() should have been called", hasCodeChanged);
+        }
+        if (compareAsTree) {
+            String explanation = expectedRoot.checkTreeEquals(mainRoot);
+            assertNull("\nExpected: " + compiler.toSource(expectedRoot) + "\nResult: " + compiler.toSource(mainRoot) + "\n" + explanation, explanation);
+        } else if (expected != null) {
+            assertEquals(Joiner.on("").join(expected), compiler.toSource(mainRoot));
+        }
+        // Verify normalization is not invalidated.
+        Node normalizeCheckRootClone = root.cloneTree();
+        Node normalizeCheckExternsRootClone = root.getFirstChild();
+        Node normalizeCheckMainRootClone = root.getLastChild();
+        new PrepareAst(compiler).process(normalizeCheckExternsRootClone, normalizeCheckMainRootClone);
+        String explanation = normalizeCheckMainRootClone.checkTreeEquals(mainRoot);
+        assertNull("Node structure normalization invalidated.\nExpected: " + compiler.toSource(normalizeCheckMainRootClone) + "\nResult: " + compiler.toSource(mainRoot) + "\n" + explanation, explanation);
+        // force on everywhere.
+        if (normalizeEnabled) {
+            new Normalize(compiler, true).process(normalizeCheckExternsRootClone, normalizeCheckMainRootClone);
+            explanation = normalizeCheckMainRootClone.checkTreeEquals(mainRoot);
+            assertNull("Normalization invalidated.\nExpected: " + compiler.toSource(normalizeCheckMainRootClone) + "\nResult: " + compiler.toSource(mainRoot) + "\n" + explanation, explanation);
+        }
+    } else {
+        String errors = "";
+        for (JSError actualError : compiler.getErrors()) {
+            errors += actualError.description + "\n";
+        }
+        assertEquals("There should be one error. " + errors, 1, compiler.getErrorCount());
+        assertEquals(errors, error, compiler.getErrors()[0].getType());
+        if (warning != null) {
+            String warnings = "";
+            for (JSError actualError : compiler.getWarnings()) {
+                warnings += actualError.description + "\n";
+            }
+            assertEquals("There should be one warning. " + warnings, 1, compiler.getWarningCount());
+            assertEquals(warnings, warning, compiler.getWarnings()[0].getType());
+        }
+    }
+}

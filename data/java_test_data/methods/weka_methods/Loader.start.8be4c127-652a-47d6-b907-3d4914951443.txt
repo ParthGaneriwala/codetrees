@@ -1,0 +1,88 @@
+@Override
+public void start() throws WekaException {
+    if (m_noOutputs) {
+        return;
+    }
+    getStepManager().processing();
+    weka.core.converters.Loader theLoader = (weka.core.converters.Loader) getWrappedAlgorithm();
+    String startMessage = (theLoader instanceof FileSourcedConverter) ? "Loading " + environmentSubstitute(((FileSourcedConverter) theLoader).retrieveFile().toString()) : "Loading...";
+    getStepManager().logBasic(startMessage);
+    getStepManager().statusMessage(startMessage);
+    if (!m_instanceGeneration) {
+        try {
+            theLoader.reset();
+            theLoader.setRetrieval(weka.core.converters.Loader.BATCH);
+            Instances dataset = theLoader.getDataSet();
+            getStepManager().logBasic("Loaded " + dataset.relationName());
+            Data data = new Data();
+            data.setPayloadElement(StepManager.CON_DATASET, dataset);
+            getStepManager().outputData(StepManager.CON_DATASET, data);
+        } catch (Exception ex) {
+            throw new WekaException(ex);
+        } finally {
+            getStepManager().finished();
+        }
+    } else {
+        String stm = getName() + "$" + hashCode() + 99 + "| overall flow throughput -|";
+        m_flowThroughput = new StreamThroughput(stm, "Starting flow...", ((StepManagerImpl) getStepManager()).getLog());
+        Instance nextInstance = null;
+        Instances structure = null;
+        Instances structureCopy = null;
+        Instances currentStructure = null;
+        boolean stringAttsPresent = false;
+        try {
+            theLoader.reset();
+            theLoader.setRetrieval(weka.core.converters.Loader.INCREMENTAL);
+            structure = theLoader.getStructure();
+            if (structure.checkForStringAttributes()) {
+                structureCopy = (Instances) (new SerializedObject(structure).getObject());
+                stringAttsPresent = true;
+            }
+            currentStructure = structure;
+        } catch (Exception ex) {
+            throw new WekaException(ex);
+        }
+        if (isStopRequested()) {
+            return;
+        }
+        try {
+            nextInstance = theLoader.getNextInstance(structure);
+        } catch (Exception ex) {
+            // getStepManager().throughputFinished(m_instanceData);
+            throw new WekaException(ex);
+        }
+        while (!isStopRequested() && nextInstance != null) {
+            m_flowThroughput.updateStart();
+            getStepManager().throughputUpdateStart();
+            if (stringAttsPresent) {
+                if (currentStructure == structure) {
+                    currentStructure = structureCopy;
+                } else {
+                    currentStructure = structure;
+                }
+            }
+            m_instanceData.setPayloadElement(StepManager.CON_INSTANCE, nextInstance);
+            try {
+                nextInstance = theLoader.getNextInstance(currentStructure);
+            } catch (Exception ex) {
+                getStepManager().throughputFinished(m_instanceData);
+                throw new WekaException(ex);
+            }
+            // finished read operation
+            getStepManager().throughputUpdateEnd();
+            getStepManager().outputData(StepManager.CON_INSTANCE, m_instanceData);
+            m_flowThroughput.updateEnd(((StepManagerImpl) getStepManager()).getLog());
+        }
+        if (isStopRequested()) {
+            ((StepManagerImpl) getStepManager()).getLog().statusMessage(stm + "remove");
+            return;
+        }
+        m_flowThroughput.finished(((StepManagerImpl) getStepManager()).getLog());
+        // signal end of input
+        m_instanceData.clearPayload();
+        getStepManager().throughputFinished(m_instanceData);
+    // int flowSpeed = m_flowThroughput.getAverageInstancesPerSecond();
+    // String finalMessage += ("" + flowSpeed +
+    // " insts/sec (flow throughput)");
+    }
+}

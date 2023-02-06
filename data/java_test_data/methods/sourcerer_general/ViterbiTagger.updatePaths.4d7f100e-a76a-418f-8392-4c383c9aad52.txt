@@ -1,0 +1,50 @@
+private void updatePaths(ViterbiTaggerContext taggerContext, TrellisSlice slice) {
+    final int ctxSize = decoder.getForest().getOrder() - 1;
+    TreeSet<ViterbiPath> viterbiPaths = new TreeSet<ViterbiPath>();
+    // HashMap<TaggerContext.Context, List<ViterbiPath>> pathsHash = new HashMap<TaggerContext.Context, List<ViterbiPath>>(taggerContext.currentPathsHash.size());
+    double minProb = Double.NEGATIVE_INFINITY;
+    // for(Map.Entry<TaggerContext.Context, List<ViterbiPath>> entry : taggerContext.currentPathsHash.entrySet()) {
+    for (ViterbiPath prevPath : taggerContext.currentPaths.descendingSet()) {
+        if (viterbiPaths.size() >= beamSize && prevPath.logProb < minProb) {
+            // pruned
+            break;
+        }
+        PathItem head = prevPath.tags.head();
+        TrellisItem item = head.item;
+        if (item == null) {
+            // the first element
+            TrellisItem nextItem = slice.getElements().iterator().next();
+            double logProb = Math.log10(nextItem.tree.getTotalProb());
+            int tag = taggerContext.getTag(nextItem.tree.getPrefix());
+            ViterbiPath newPath = prevPath.append(nextItem, tag, logProb);
+            viterbiPaths.add(newPath);
+            break;
+        }
+        List<TrellisItem> fwdLinks = slice.prev2curr.get(item);
+        if (fwdLinks != null) {
+            TrellisSlice afterNextSlice = slice.getNext();
+            if (afterNextSlice != null)
+                afterNextSlice = afterNextSlice.getNext();
+            for (TrellisItem nextItem : fwdLinks) {
+                double logProb = Math.log10(nextItem.tree.getTotalProb());
+                if (viterbiPaths.size() >= beamSize && logProb + prevPath.logProb < minProb) {
+                    // pruned
+                    continue;
+                }
+                if (ctxSize > 1 && afterNextSlice != null && afterNextSlice.prev2curr.containsKey(nextItem)) {
+                    // a dead end
+                    continue;
+                }
+                int tag = taggerContext.getTag(nextItem.tree.getPrefix());
+                ViterbiPath newPath = prevPath.append(nextItem, tag, logProb);
+                viterbiPaths.add(newPath);
+                if (viterbiPaths.size() > beamSize) {
+                    viterbiPaths.pollFirst();
+                    minProb = viterbiPaths.first().logProb;
+                }
+            }
+        }
+    }
+    taggerContext.currentPaths = viterbiPaths;
+// taggerContext.currentPathsHash = pathsHash;
+}

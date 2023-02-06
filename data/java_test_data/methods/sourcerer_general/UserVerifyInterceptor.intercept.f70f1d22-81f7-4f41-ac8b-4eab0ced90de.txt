@@ -1,0 +1,60 @@
+public String intercept(ActionInvocation invocation) throws Exception {
+    Action action = (Action) invocation.getAction();
+    String actionName = invocation.getProxy().getActionName();
+    if (!(action instanceof AbstractAction))
+        return invocation.invoke();
+    // 将进行是否登录以及对此action是否有权限的判断
+    AbstractAction abstractAction = (AbstractAction) action;
+    abstractAction.setRightCode(actionName);
+    // if(abstractAction.getRightCode()==null||abstractAction.getRightCode().isEmpty()||!abstractAction.isNeedsession())
+    if (!abstractAction.isNeedsession())
+        return invocation.invoke();
+    Object obj = ActionContext.getContext().getSession().get(Constants.LOGIN_USER);
+    SysUser sysUser = null;
+    if (obj == null || !(obj instanceof SysUser)) {
+        ActionContext context = ActionContext.getContext();
+        HttpServletRequest request = (HttpServletRequest) context.get(ServletActionContext.HTTP_REQUEST);
+        javax.servlet.http.Cookie[] cookies = request.getCookies();
+        Cookie cookie = null;
+        for (int i = 0; cookies != null && i < cookies.length; i++) {
+            System.out.println("cookies[i].getName():::" + cookies[i].getName());
+            if (cookies[i].getName().equals(Constants.COOKIE_LOGINNAME)) {
+                cookie = cookies[i];
+            }
+        }
+        if (cookie == null)
+            // 被动登录
+            return "pasivelogin";
+        else // 没有登录,跳转到登录页面
+        {
+            String s = cookie.getValue();
+            LOG.info("我去拿cookie了" + s);
+            int idx = s.indexOf("||");
+            int lastidx = s.lastIndexOf("||");
+            String loginName = s.substring(0, idx);
+            String password = s.substring(idx + 2, lastidx);
+            int loginid = Integer.parseInt(s.substring(lastidx + 2));
+            WebApplicationContext wac = ContextLoader.getCurrentWebApplicationContext();
+            SysUserService service = (SysUserService) wac.getBean("sysUserService");
+            service.userLogin(loginName, password);
+            sysUser = service.getSysUser();
+            sysUser.setLoginId(loginid);
+            ActionContext.getContext().getSession().put(Constants.LOGIN_USER, sysUser);
+        }
+    } else {
+        sysUser = (SysUser) obj;
+    }
+    // 登录名admin设置为超级管理员,不做任何权限验证
+    if (sysUser.getLoginname().equalsIgnoreCase("admin"))
+        return invocation.invoke();
+    // 如果数据库里面都没这个权限代码的话，那么就认为有权限
+    if (!RightTree.rightMap.containsKey(abstractAction.getRightCode())) {
+        return invocation.invoke();
+    }
+    if (RightTree.rightMap.get(abstractAction.getRightCode()).getIscommon() || sysUser.hasRight(abstractAction.getRightCode())) {
+        // 有权限的话就执行,没权限的话跳转到没权限页面
+        return invocation.invoke();
+    }
+    // 没权限的话,返回页面都是执行操作的前一个页面,即history.back();
+    return "noright";
+}

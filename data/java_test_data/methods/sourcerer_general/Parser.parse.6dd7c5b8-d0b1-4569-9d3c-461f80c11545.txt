@@ -1,0 +1,64 @@
+private void parse(PageDefinition pgdef, ProcessingInstruction pi) throws Exception {
+    final String target = pi.getTarget();
+    final Map params = pi.parseData();
+    if ("page".equals(target)) {
+        parsePageDirective(pgdef, pi, params);
+    } else if ("init".equals(target)) {
+        parseInitDirective(pgdef, pi, params);
+    } else if ("variable-resolver".equals(target) || "function-mapper".equals(target)) {
+        final String clsnm = (String) params.remove("class");
+        if (isEmpty(clsnm))
+            throw new UiException("The class attribute is required, " + pi.getLocator());
+        final Map args = new LinkedHashMap(params);
+        if ("variable-resolver".equals(target))
+            pgdef.addVariableResolverInfo(// class supports EL
+            clsnm.indexOf("${") >= 0 ? new VariableResolverInfo(clsnm, args) : new VariableResolverInfo(locateClass(clsnm), args));
+        else
+            pgdef.addFunctionMapperInfo(// class supports EL
+            clsnm.indexOf("${") >= 0 ? new FunctionMapperInfo(clsnm, args) : new FunctionMapperInfo(locateClass(clsnm), args));
+    } else if ("component".equals(target)) {
+        // declare a component
+        parseComponentDirective(pgdef, pi, params);
+    } else if ("taglib".equals(target)) {
+        final String uri = (String) params.remove("uri");
+        final String prefix = (String) params.remove("prefix");
+        if (!params.isEmpty())
+            log.warning("Ignored unknown attributes: " + params.keySet() + ", " + pi.getLocator());
+        if (uri == null || prefix == null)
+            throw new UiException("Both uri and prefix attribute are required, " + pi.getLocator());
+        // if (D.ON && log.debugable()) log.debug("taglib: prefix="+prefix+" uri="+uri);
+        noEL("prefix", prefix, pi);
+        // not support EL (kind of chicken-egg issue)
+        noEL("uri", uri, pi);
+        pgdef.addTaglib(new Taglib(prefix, toAbsoluteURI(uri, false)));
+    } else if ("evaluator".equals(target)) {
+        parseEvaluatorDirective(pgdef, pi, params);
+    } else if ("xel-method".equals(target)) {
+        parseXelMethod(pgdef, pi, params);
+    } else if ("link".equals(target) || "meta".equals(target) || "script".equals(target)) {
+        // declare a header element
+        pgdef.addHeaderInfo(new HeaderInfo(pgdef.getEvaluatorRef(), target, params, ConditionImpl.getInstance((String) params.remove("if"), (String) params.remove("unless"))));
+    } else if ("header".equals(target)) {
+        // declare a response header
+        pgdef.addResponseHeaderInfo(new ResponseHeaderInfo(pgdef.getEvaluatorRef(), (String) params.remove("name"), (String) params.remove("value"), (String) params.remove("append"), ConditionImpl.getInstance((String) params.remove("if"), (String) params.remove("unless"))));
+    } else if ("root-attributes".equals(target)) {
+        for (Iterator it = pi.parseData().entrySet().iterator(); it.hasNext(); ) {
+            final Map.Entry me = (Map.Entry) it.next();
+            pgdef.setRootAttribute((String) me.getKey(), (String) me.getValue());
+        }
+    } else if ("forward".equals(target)) {
+        // forward
+        final String uri = (String) params.remove("uri");
+        final String ifc = (String) params.remove("if");
+        final String unless = (String) params.remove("unless");
+        if (!params.isEmpty())
+            log.warning("Ignored unknown attributes: " + params.keySet() + ", " + pi.getLocator());
+        noEmpty("uri", uri, pi);
+        pgdef.addForwardInfo(new ForwardInfo(uri, ConditionImpl.getInstance(ifc, unless)));
+    } else if ("import".equals(target)) {
+        // import
+        throw new UiException("The import directive can be used only at the top level, " + pi.getLocator());
+    } else {
+        log.warning("Unknown processing instruction: " + target + ", " + pi.getLocator());
+    }
+}

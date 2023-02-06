@@ -1,0 +1,64 @@
+public void run() {
+    DataInputStream in = null;
+    try {
+        in = new DataInputStream(new BufferedInputStream(NetUtils.getInputStream(s), SMALL_BUFFER_SIZE));
+        short version = in.readShort();
+        if (version != DataTransferProtocol.DATA_TRANSFER_VERSION) {
+            throw new IOException("Version Mismatch");
+        }
+        boolean local = s.getInetAddress().equals(s.getLocalAddress());
+        byte op = in.readByte();
+        // Make sure the xciver count is not exceeded
+        int curXceiverCount = datanode.getXceiverCount();
+        if (curXceiverCount > dataXceiverServer.maxXceiverCount) {
+            throw new IOException("xceiverCount " + curXceiverCount + " exceeds the limit of concurrent xcievers " + dataXceiverServer.maxXceiverCount);
+        }
+        long startTime = DataNode.now();
+        switch(op) {
+            case DataTransferProtocol.OP_READ_BLOCK:
+                readBlock(in);
+                datanode.myMetrics.readBlockOp.inc(DataNode.now() - startTime);
+                if (local)
+                    datanode.myMetrics.readsFromLocalClient.inc();
+                else
+                    datanode.myMetrics.readsFromRemoteClient.inc();
+                break;
+            case DataTransferProtocol.OP_WRITE_BLOCK:
+                writeBlock(in);
+                datanode.myMetrics.writeBlockOp.inc(DataNode.now() - startTime);
+                if (local)
+                    datanode.myMetrics.writesFromLocalClient.inc();
+                else
+                    datanode.myMetrics.writesFromRemoteClient.inc();
+                break;
+            case DataTransferProtocol.OP_READ_METADATA:
+                readMetadata(in);
+                datanode.myMetrics.readMetadataOp.inc(DataNode.now() - startTime);
+                break;
+            case // for balancing purpose; send to a destination
+            DataTransferProtocol.OP_REPLACE_BLOCK:
+                replaceBlock(in);
+                datanode.myMetrics.replaceBlockOp.inc(DataNode.now() - startTime);
+                break;
+            case DataTransferProtocol.OP_COPY_BLOCK:
+                // for balancing purpose; send to a proxy source
+                copyBlock(in);
+                datanode.myMetrics.copyBlockOp.inc(DataNode.now() - startTime);
+                break;
+            case // get the checksum of a block
+            DataTransferProtocol.OP_BLOCK_CHECKSUM:
+                getBlockChecksum(in);
+                datanode.myMetrics.blockChecksumOp.inc(DataNode.now() - startTime);
+                break;
+            default:
+                throw new IOException("Unknown opcode " + op + " in data stream");
+        }
+    } catch (Throwable t) {
+        LOG.error(datanode.dnRegistration + ":DataXceiver", t);
+    } finally {
+        LOG.debug(datanode.dnRegistration + ":Number of active connections is: " + datanode.getXceiverCount());
+        IOUtils.closeStream(in);
+        IOUtils.closeSocket(s);
+        dataXceiverServer.childSockets.remove(s);
+    }
+}

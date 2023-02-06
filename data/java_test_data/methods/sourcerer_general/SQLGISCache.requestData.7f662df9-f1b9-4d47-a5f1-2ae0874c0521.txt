@@ -1,0 +1,63 @@
+public MapResponse requestData(MapRequest request) {
+    GeoRegion region = request.getRegion().getRegion();
+    Double resolution = request.getRegion().getResolution();
+    GeoRectangle bound = region.getBoundingRectangle();
+    StringBuffer query = new StringBuffer("SELECT datum, lastUsed, id FROM Cache WHERE ");
+    if (resolution != null)
+        query.append("(resolution IS NULL OR resolution >= " + resolution + ") AND ");
+    else
+        query.append("resolution IS NULL AND ");
+    query.append("(expiration IS NULL OR expiration >= NOW()) AND ");
+    query.append("source = ? AND layer = ? AND (");
+    queryIntersecting(query, region.getSimplified());
+    if (resolution != null)
+        query.append(')');
+    query.append(" ORDER BY ");
+    query.append("(CASE WHEN maxLong < " + bound.getMaximumLongitude() + " THEN maxLong ELSE " + bound.getMaximumLongitude() + " END - ");
+    query.append("CASE WHEN minLong > " + bound.getMinimumLongitude() + " THEN minLong ELSE " + bound.getMinimumLongitude() + " END) * ");
+    query.append("(CASE WHEN maxLat < " + bound.getMaximumLatitude() + " THEN maxLat ELSE " + bound.getMaximumLatitude() + " END - ");
+    query.append("CASE WHEN minLat > " + bound.getMinimumLatitude() + " THEN minLat ELSE " + bound.getMinimumLatitude() + " END) DESC");
+    if (resolution != null)
+        query.append(", resolution ASC");
+    PreparedStatement statement = null;
+    Database db = new Database();
+    try {
+        statement = db.prepareStatement(query.toString(), ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_UPDATABLE);
+        statement.setString(1, request.getDataSource());
+        statement.setString(2, request.getLayer());
+        ResultSet results = statement.executeQuery();
+        List<GISDatum> data = new ArrayList<GISDatum>();
+        while (region != null && results.next()) {
+            try {
+                ObjectInputStream stream = new ObjectInputStream(results.getBinaryStream("datum"));
+                GISDatum datum = (GISDatum) stream.readObject();
+                stream.close();
+                GeoRegion subtracted = region.subtract(datum.getRectangle().getRectangle());
+                if (subtracted == null || !subtracted.equals(region)) {
+                    region = subtracted;
+                    data.add(datum);
+                    results.updateTime("lastUsed", now());
+                }
+            } catch (ClassNotFoundException err) {
+                log(err);
+            } catch (ClassCastException err) {
+                log(err);
+            } catch (IOException err) {
+                log(err);
+            }
+        }
+        if (region == null)
+            return new MapResponse(request, data, null);
+        else
+            return new MapResponse(request, data, new GeoResoluteRegion(region, resolution));
+    } catch (SQLException err) {
+        log(err);
+        return null;
+    } catch (DatabaseException e) {
+        log(e);
+    } finally {
+        closeStatement(statement);
+        closeConnection(db);
+    }
+    return null;
+}

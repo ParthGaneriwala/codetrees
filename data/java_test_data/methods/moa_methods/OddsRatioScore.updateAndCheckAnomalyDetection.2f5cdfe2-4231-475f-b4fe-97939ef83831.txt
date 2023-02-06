@@ -1,0 +1,66 @@
+@Override
+public boolean updateAndCheckAnomalyDetection(MultiLabelInstance instance) {
+    boolean isAnomaly = false;
+    if (probabilityFunction == null) {
+        weightSeen = 0.0;
+        // load options
+        minInstances = minNumberInstancesOption.getValue();
+        threshold = thresholdOption.getValue();
+        probabilityFunction = (ProbabilityFunction) getPreparedClassOption(probabilityFunctionOption);
+        // free memory
+        minNumberInstancesOption = null;
+        probabilityFunctionOption = null;
+    }
+    double anomaly = 0;
+    if (weightSeen > minInstances) {
+        int ct = 0;
+        // check if it is anomaly
+        for (int i = 0; i < instance.numInputAttributes(); i++) {
+            double prob = 0;
+            double[] stats = sufficientStatistics.get(i);
+            if (instance.attribute(i).isNumeric()) {
+                double val = instance.valueInputAttribute(i);
+                double sd = Utils.computeSD(stats[1], stats[0], weightSeen);
+                if (sd > MINSTD) {
+                    prob = probabilityFunction.getProbability(stats[0] / weightSeen, sd, val);
+                    if (prob > MAXPROB)
+                        prob = MAXPROB;
+                    else if (prob < MINPROB)
+                        prob = MINPROB;
+                    anomaly += Math.log(prob) - Math.log(1 - prob);
+                    ct++;
+                }
+            }
+        }
+        if (ct > 0)
+            anomaly = anomaly / ct;
+        isAnomaly = anomaly < threshold;
+        anomalyScore = anomaly;
+    }
+    // update stats
+    if (!isAnomaly) {
+        if (sufficientStatistics == null)
+            sufficientStatistics = new AutoExpandVector<double[]>();
+        weightSeen += instance.weight();
+        for (int i = 0; i < instance.numInputAttributes(); i++) {
+            double[] stats = sufficientStatistics.get(i);
+            if (instance.attribute(i).isNumeric()) {
+                double val = instance.valueInputAttribute(i);
+                if (stats != null) {
+                    // update statistics for numeric attributes
+                    stats[0] += val;
+                    stats[1] += (val * val);
+                } else {
+                    stats = new double[] { instance.weight() * val, instance.weight() * val * val };
+                    sufficientStatistics.set(i, stats);
+                }
+            }
+        }
+    }
+    /*else
+		{
+			//System.out.println("Anomaly = " + anomaly + "#instances: " + weightSeen);
+			printAnomaly(instance, anomaly);
+		}*/
+    return isAnomaly;
+}

@@ -1,0 +1,66 @@
+private void processMsg(HttpServletRequest req, PrintWriter pw, String user, String key) throws IOException, SQLException {
+    String msg = req.getParameter("msg");
+    String region = req.getParameter("region");
+    if (user != null && key != null)
+        msg += "," + user + "," + key;
+    // log.info("received from {" + region + "}: " + msg);
+    String rline = null;
+    CICPProducer producer = null;
+    int sourcelayer = 0;
+    String[] split = null;
+    SLGraph slg = null;
+    if (!msg.startsWith("init")) {
+        split = msg.split(",");
+        sourcelayer = Integer.parseInt(split[0]);
+        slg = (SLGraph) layerTable.get(String.valueOf(sourcelayer));
+        producer = slg.producer;
+        msg = String.valueOf(slg.producerLayer);
+        for (int i = 1; i < split.length; i++) msg += "," + split[i];
+    } else {
+        if (req.getParameter("prov_url") != null) {
+            String prov_url = URLDecoder.decode(req.getParameter("prov_url"), "UTF-8");
+            producer = new CICPProducer(prov_url);
+        } else {
+            if (user != null && key != null) {
+                // no ssl; use the local private port
+                producer = new CICPProducer("127.0.0.1", 4445);
+            } else {
+                String prov_host = "glasshouse.greenphosphor.com";
+                int prov_port = 4445;
+                if (req.getParameter("prov_host") != null) {
+                    prov_host = req.getParameter("prov_host");
+                    prov_port = Integer.parseInt(req.getParameter("prov_port"));
+                }
+                producer = new CICPProducer(prov_host, prov_port);
+            }
+        }
+    }
+    try {
+        // log.info("sending {" + msg + "} to producer, logThing " + (++logThing));
+        rline = producer.getResponse(msg);
+    } catch (IOException ie) {
+        log.info("exception processing msg: " + ie);
+    } catch (InterruptedException je) {
+        log.info("exception processing msg: " + je);
+    }
+    if (!msg.startsWith("init")) {
+        if (split[2].equals("-3")) {
+            if (slg != null && !((user == null && slg.user != null) || (user != null && slg.user == null) || (key == null && slg.key != null) || (key != null && slg.key == null) || (user != null && !slg.user.equals(user)) || (key != null && !slg.key.equals(key)))) {
+                layerTable.remove(String.valueOf(sourcelayer));
+                RegionControl rcd = (RegionControl) regionTable.get(region);
+                if (rcd != null) {
+                    log.info("about to free prims for layer " + sourcelayer);
+                    rcd.freePrims(sourcelayer);
+                }
+            }
+        }
+    }
+    if (rline != null && (rline.startsWith("create") || rline.startsWith("flatImage") || rline.startsWith("modify"))) {
+        RegionControl rc = (RegionControl) regionTable.get(region);
+        loadCells(rline, pw, rc, user, key, slg, producer);
+    } else if (rline != null && rline.startsWith("dump")) {
+        String[] split2 = rline.split(",");
+        pw.println("dump," + split2[8]);
+    } else
+        pw.println("ok");
+}

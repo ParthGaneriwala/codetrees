@@ -1,0 +1,81 @@
+private void generateCallMethod(ClassFileWriter cfw) {
+    cfw.startMethod("call", "(Lorg/mozilla/javascript/Context;" + "Lorg/mozilla/javascript/Scriptable;" + "Lorg/mozilla/javascript/Scriptable;" + "[Ljava/lang/Object;)Ljava/lang/Object;", (short) (ClassFileWriter.ACC_PUBLIC | ClassFileWriter.ACC_FINAL));
+    // Generate code for:
+    // if (!ScriptRuntime.hasTopCall(cx)) {
+    // return ScriptRuntime.doTopCall(this, cx, scope, thisObj, args);
+    // }
+    int nonTopCallLabel = cfw.acquireLabel();
+    // cx
+    cfw.addALoad(1);
+    cfw.addInvoke(ByteCode.INVOKESTATIC, "org/mozilla/javascript/ScriptRuntime", "hasTopCall", "(Lorg/mozilla/javascript/Context;" + ")Z");
+    cfw.add(ByteCode.IFNE, nonTopCallLabel);
+    cfw.addALoad(0);
+    cfw.addALoad(1);
+    cfw.addALoad(2);
+    cfw.addALoad(3);
+    cfw.addALoad(4);
+    cfw.addInvoke(ByteCode.INVOKESTATIC, "org/mozilla/javascript/ScriptRuntime", "doTopCall", "(Lorg/mozilla/javascript/Callable;" + "Lorg/mozilla/javascript/Context;" + "Lorg/mozilla/javascript/Scriptable;" + "Lorg/mozilla/javascript/Scriptable;" + "[Ljava/lang/Object;" + ")Ljava/lang/Object;");
+    cfw.add(ByteCode.ARETURN);
+    cfw.markLabel(nonTopCallLabel);
+    // Now generate switch to call the real methods
+    cfw.addALoad(0);
+    cfw.addALoad(1);
+    cfw.addALoad(2);
+    cfw.addALoad(3);
+    cfw.addALoad(4);
+    int end = scriptOrFnNodes.length;
+    boolean generateSwitch = (2 <= end);
+    int switchStart = 0;
+    int switchStackTop = 0;
+    if (generateSwitch) {
+        cfw.addLoadThis();
+        cfw.add(ByteCode.GETFIELD, cfw.getClassName(), ID_FIELD_NAME, "I");
+        // do switch from (1,  end - 1) mapping 0 to
+        // the default case
+        switchStart = cfw.addTableSwitch(1, end - 1);
+    }
+    for (int i = 0; i != end; ++i) {
+        ScriptNode n = scriptOrFnNodes[i];
+        if (generateSwitch) {
+            if (i == 0) {
+                cfw.markTableSwitchDefault(switchStart);
+                switchStackTop = cfw.getStackTop();
+            } else {
+                cfw.markTableSwitchCase(switchStart, i - 1, switchStackTop);
+            }
+        }
+        if (n.getType() == Token.FUNCTION) {
+            OptFunctionNode ofn = OptFunctionNode.get(n);
+            if (ofn.isTargetOfDirectCall()) {
+                int pcount = ofn.fnode.getParamCount();
+                if (pcount != 0) {
+                    // stack top == arguments array from addALoad4()
+                    for (int p = 0; p != pcount; ++p) {
+                        cfw.add(ByteCode.ARRAYLENGTH);
+                        cfw.addPush(p);
+                        int undefArg = cfw.acquireLabel();
+                        int beyond = cfw.acquireLabel();
+                        cfw.add(ByteCode.IF_ICMPLE, undefArg);
+                        // get array[p]
+                        cfw.addALoad(4);
+                        cfw.addPush(p);
+                        cfw.add(ByteCode.AALOAD);
+                        cfw.add(ByteCode.GOTO, beyond);
+                        cfw.markLabel(undefArg);
+                        pushUndefined(cfw);
+                        cfw.markLabel(beyond);
+                        // Only one push
+                        cfw.adjustStackTop(-1);
+                        cfw.addPush(0.0);
+                        // restore invariant
+                        cfw.addALoad(4);
+                    }
+                }
+            }
+        }
+        cfw.addInvoke(ByteCode.INVOKESTATIC, mainClassName, getBodyMethodName(n), getBodyMethodSignature(n));
+        cfw.add(ByteCode.ARETURN);
+    }
+    cfw.stopMethod((short) 5);
+// 5: this, cx, scope, js this, args[]
+}

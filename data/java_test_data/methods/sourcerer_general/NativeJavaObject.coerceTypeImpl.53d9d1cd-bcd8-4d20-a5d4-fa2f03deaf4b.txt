@@ -1,0 +1,147 @@
+static Object coerceTypeImpl(Class<?> type, Object value) {
+    if (value != null && value.getClass() == type) {
+        return value;
+    }
+    switch(getJSTypeCode(value)) {
+        case JSTYPE_NULL:
+            // raise error if type.isPrimitive()
+            if (type.isPrimitive()) {
+                reportConversionError(value, type);
+            }
+            return null;
+        case JSTYPE_UNDEFINED:
+            if (type == ScriptRuntime.StringClass || type == ScriptRuntime.ObjectClass) {
+                return "undefined";
+            } else {
+                reportConversionError("undefined", type);
+            }
+            break;
+        case JSTYPE_BOOLEAN:
+            // Under LC3, only JS Booleans can be coerced into a Boolean value
+            if (type == Boolean.TYPE || type == ScriptRuntime.BooleanClass || type == ScriptRuntime.ObjectClass) {
+                return value;
+            } else if (type == ScriptRuntime.StringClass) {
+                return value.toString();
+            } else {
+                reportConversionError(value, type);
+            }
+            break;
+        case JSTYPE_NUMBER:
+            if (type == ScriptRuntime.StringClass) {
+                return ScriptRuntime.toString(value);
+            } else if (type == ScriptRuntime.ObjectClass) {
+                return coerceToNumber(Double.TYPE, value);
+            } else if ((type.isPrimitive() && type != Boolean.TYPE) || ScriptRuntime.NumberClass.isAssignableFrom(type)) {
+                return coerceToNumber(type, value);
+            } else {
+                reportConversionError(value, type);
+            }
+            break;
+        case JSTYPE_STRING:
+            if (type == ScriptRuntime.StringClass || type.isInstance(value)) {
+                return value;
+            } else if (type == Character.TYPE || type == ScriptRuntime.CharacterClass) {
+                // not other JS objects converted to strings
+                if (((String) value).length() == 1) {
+                    return Character.valueOf(((String) value).charAt(0));
+                } else {
+                    return coerceToNumber(type, value);
+                }
+            } else if ((type.isPrimitive() && type != Boolean.TYPE) || ScriptRuntime.NumberClass.isAssignableFrom(type)) {
+                return coerceToNumber(type, value);
+            } else {
+                reportConversionError(value, type);
+            }
+            break;
+        case JSTYPE_JAVA_CLASS:
+            if (value instanceof Wrapper) {
+                value = ((Wrapper) value).unwrap();
+            }
+            if (type == ScriptRuntime.ClassClass || type == ScriptRuntime.ObjectClass) {
+                return value;
+            } else if (type == ScriptRuntime.StringClass) {
+                return value.toString();
+            } else {
+                reportConversionError(value, type);
+            }
+            break;
+        case JSTYPE_JAVA_OBJECT:
+        case JSTYPE_JAVA_ARRAY:
+            if (value instanceof Wrapper) {
+                value = ((Wrapper) value).unwrap();
+            }
+            if (type.isPrimitive()) {
+                if (type == Boolean.TYPE) {
+                    reportConversionError(value, type);
+                }
+                return coerceToNumber(type, value);
+            } else {
+                if (type == ScriptRuntime.StringClass) {
+                    return value.toString();
+                } else {
+                    if (type.isInstance(value)) {
+                        return value;
+                    } else {
+                        reportConversionError(value, type);
+                    }
+                }
+            }
+            break;
+        case JSTYPE_OBJECT:
+            if (type == ScriptRuntime.StringClass) {
+                return ScriptRuntime.toString(value);
+            } else if (type.isPrimitive()) {
+                if (type == Boolean.TYPE) {
+                    reportConversionError(value, type);
+                }
+                return coerceToNumber(type, value);
+            } else if (type.isInstance(value)) {
+                return value;
+            } else if (type == ScriptRuntime.DateClass && value instanceof NativeDate) {
+                double time = ((NativeDate) value).getJSTimeValue();
+                // XXX: This will replace NaN by 0
+                return new Date((long) time);
+            } else if (type.isArray() && value instanceof NativeArray) {
+                // Make a new java array, and coerce the JS array components
+                // to the target (component) type.
+                NativeArray array = (NativeArray) value;
+                long length = array.getLength();
+                Class<?> arrayType = type.getComponentType();
+                Object Result = Array.newInstance(arrayType, (int) length);
+                for (int i = 0; i < length; ++i) {
+                    try {
+                        Array.set(Result, i, coerceType(arrayType, array.get(i, array)));
+                    } catch (EvaluatorException ee) {
+                        reportConversionError(value, type);
+                    }
+                }
+                return Result;
+            } else if (value instanceof Wrapper) {
+                value = ((Wrapper) value).unwrap();
+                if (type.isInstance(value))
+                    return value;
+                reportConversionError(value, type);
+            } else if (type.isInterface() && value instanceof Callable) {
+                // address it but for now use this restriction.
+                if (value instanceof ScriptableObject) {
+                    ScriptableObject so = (ScriptableObject) value;
+                    Object key = Kit.makeHashKeyFromPair(COERCED_INTERFACE_KEY, type);
+                    Object old = so.getAssociatedValue(key);
+                    if (old != null) {
+                        // Function was already wrapped
+                        return old;
+                    }
+                    Context cx = Context.getContext();
+                    Object glue = InterfaceAdapter.create(cx, type, (Callable) value);
+                    // Store for later retrival
+                    glue = so.associateValue(key, glue);
+                    return glue;
+                }
+                reportConversionError(value, type);
+            } else {
+                reportConversionError(value, type);
+            }
+            break;
+    }
+    return value;
+}

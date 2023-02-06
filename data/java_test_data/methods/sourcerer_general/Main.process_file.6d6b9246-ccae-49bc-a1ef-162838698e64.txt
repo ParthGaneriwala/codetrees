@@ -1,0 +1,76 @@
+private void process_file() {
+    int cur_state = 0;
+    char[] buffer = body.getBuffer();
+    int generated_begin = -1, generated_end = -1;
+    int time_stamp_begin = -1, time_stamp_end = -1;
+    body.startLineLoop();
+    while (body.nextLine()) {
+        int begin = body.getLineBegin();
+        int end = body.getLineEnd();
+        int tag_id = extract_line_tag_id(buffer, begin, end);
+        boolean bad_tag = false;
+        switch(cur_state) {
+            case NORMAL_LINE:
+                if (tag_id == SWITCH_TAG) {
+                    cur_state = SWITCH_TAG;
+                    all_pairs.clear();
+                    generated_begin = -1;
+                } else if (tag_id == -SWITCH_TAG) {
+                    bad_tag = true;
+                }
+                break;
+            case SWITCH_TAG:
+                if (tag_id == 0) {
+                    look_for_id_definitions(buffer, begin, end, false);
+                } else if (tag_id == STRING_TAG) {
+                    look_for_id_definitions(buffer, begin, end, true);
+                } else if (tag_id == GENERATED_TAG) {
+                    if (generated_begin >= 0) {
+                        bad_tag = true;
+                    } else {
+                        cur_state = GENERATED_TAG;
+                        time_stamp_begin = tag_definition_end;
+                        time_stamp_end = end;
+                    }
+                } else if (tag_id == -SWITCH_TAG) {
+                    cur_state = 0;
+                    if (generated_begin >= 0 && !all_pairs.isEmpty()) {
+                        generate_java_code();
+                        String code = P.toString();
+                        boolean different = body.setReplacement(generated_begin, generated_end, code);
+                        if (different) {
+                            String stamp = get_time_stamp();
+                            body.setReplacement(time_stamp_begin, time_stamp_end, stamp);
+                        }
+                    }
+                    break;
+                } else {
+                    bad_tag = true;
+                }
+                break;
+            case GENERATED_TAG:
+                if (tag_id == 0) {
+                    if (generated_begin < 0) {
+                        generated_begin = begin;
+                    }
+                } else if (tag_id == -GENERATED_TAG) {
+                    if (generated_begin < 0) {
+                        generated_begin = begin;
+                    }
+                    cur_state = SWITCH_TAG;
+                    generated_end = begin;
+                } else {
+                    bad_tag = true;
+                }
+                break;
+        }
+        if (bad_tag) {
+            String text = ToolErrorReporter.getMessage("msg.idswitch.bad_tag_order", tag_name(tag_id));
+            throw R.runtimeError(text, source_file, body.getLineNumber(), null, 0);
+        }
+    }
+    if (cur_state != 0) {
+        String text = ToolErrorReporter.getMessage("msg.idswitch.file_end_in_switch", tag_name(cur_state));
+        throw R.runtimeError(text, source_file, body.getLineNumber(), null, 0);
+    }
+}

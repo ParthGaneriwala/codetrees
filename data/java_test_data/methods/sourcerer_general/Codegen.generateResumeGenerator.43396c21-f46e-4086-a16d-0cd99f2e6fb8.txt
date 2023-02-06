@@ -1,0 +1,50 @@
+// How dispatch to generators works:
+// Two methods are generated corresponding to a user-written generator.
+// One of these creates a generator object (NativeGenerator), which is
+// returned to the user. The other method contains all of the body code
+// of the generator.
+// When a user calls a generator, the call() method dispatches control to
+// to the method that creates the NativeGenerator object. Subsequently when
+// the user invokes .next(), .send() or any such method on the generator
+// object, the resumeGenerator() below dispatches the call to the
+// method corresponding to the generator body. As a matter of convention
+// the generator body is given the name of the generator activation function
+private void generateResumeGenerator(ClassFileWriter cfw) {
+    boolean hasGenerators = false;
+    for (int i = 0; i < scriptOrFnNodes.length; i++) {
+        if (isGenerator(scriptOrFnNodes[i]))
+            hasGenerators = true;
+    }
+    // resumeGenerator(). The base class provides a default implementation.
+    if (!hasGenerators)
+        return;
+    cfw.startMethod("resumeGenerator", "(Lorg/mozilla/javascript/Context;" + "Lorg/mozilla/javascript/Scriptable;" + "ILjava/lang/Object;" + "Ljava/lang/Object;)Ljava/lang/Object;", (short) (ClassFileWriter.ACC_PUBLIC | ClassFileWriter.ACC_FINAL));
+    // load arguments for dispatch to the corresponding *_gen method
+    cfw.addALoad(0);
+    cfw.addALoad(1);
+    cfw.addALoad(2);
+    cfw.addALoad(4);
+    cfw.addALoad(5);
+    cfw.addILoad(3);
+    cfw.addLoadThis();
+    cfw.add(ByteCode.GETFIELD, cfw.getClassName(), ID_FIELD_NAME, "I");
+    int startSwitch = cfw.addTableSwitch(0, scriptOrFnNodes.length - 1);
+    cfw.markTableSwitchDefault(startSwitch);
+    int endlabel = cfw.acquireLabel();
+    for (int i = 0; i < scriptOrFnNodes.length; i++) {
+        ScriptNode n = scriptOrFnNodes[i];
+        cfw.markTableSwitchCase(startSwitch, i, (short) 6);
+        if (isGenerator(n)) {
+            String type = "(" + mainClassSignature + "Lorg/mozilla/javascript/Context;" + "Lorg/mozilla/javascript/Scriptable;" + "Ljava/lang/Object;" + "Ljava/lang/Object;I)Ljava/lang/Object;";
+            cfw.addInvoke(ByteCode.INVOKESTATIC, mainClassName, getBodyMethodName(n) + "_gen", type);
+            cfw.add(ByteCode.ARETURN);
+        } else {
+            cfw.add(ByteCode.GOTO, endlabel);
+        }
+    }
+    cfw.markLabel(endlabel);
+    pushUndefined(cfw);
+    cfw.add(ByteCode.ARETURN);
+    // this method uses as many locals as there are arguments (hence 6)
+    cfw.stopMethod((short) 6);
+}

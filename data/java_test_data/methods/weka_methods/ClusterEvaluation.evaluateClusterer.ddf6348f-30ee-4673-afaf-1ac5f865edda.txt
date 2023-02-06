@@ -1,0 +1,102 @@
+public void evaluateClusterer(Instances test, String testFileName, boolean outputModel) throws Exception {
+    int i = 0;
+    int cnum;
+    double loglk = 0.0;
+    int cc = m_Clusterer.numberOfClusters();
+    m_numClusters = cc;
+    double[] instanceStats = new double[cc];
+    Instances testRaw = null;
+    boolean hasClass = (test.classIndex() >= 0);
+    int unclusteredInstances = 0;
+    Vector<Double> clusterAssignments = new Vector<Double>();
+    Filter filter = null;
+    DataSource source = null;
+    Instance inst;
+    if (testFileName == null) {
+        testFileName = "";
+    }
+    // load data
+    if (testFileName.length() != 0) {
+        source = new DataSource(testFileName);
+    } else {
+        source = new DataSource(test);
+    }
+    testRaw = source.getStructure(test.classIndex());
+    // If class is set then do class based evaluation as well
+    if (hasClass) {
+        if (testRaw.classAttribute().isNumeric()) {
+            throw new Exception("ClusterEvaluation: Class must be nominal!");
+        }
+        filter = new Remove();
+        ((Remove) filter).setAttributeIndices("" + (testRaw.classIndex() + 1));
+        ((Remove) filter).setInvertSelection(false);
+        filter.setInputFormat(testRaw);
+    }
+    Instances forBatchPredictors = filter != null ? new Instances(filter.getOutputFormat(), 0) : new Instances(source.getStructure(), 0);
+    i = 0;
+    while (source.hasMoreElements(testRaw)) {
+        // next instance
+        inst = source.nextElement(testRaw);
+        if (filter != null) {
+            filter.input(inst);
+            filter.batchFinished();
+            inst = filter.output();
+        }
+        if (m_Clusterer instanceof BatchPredictor && ((BatchPredictor) m_Clusterer).implementsMoreEfficientBatchPrediction()) {
+            forBatchPredictors.add(inst);
+        } else {
+            cnum = -1;
+            try {
+                if (m_Clusterer instanceof DensityBasedClusterer) {
+                    loglk += ((DensityBasedClusterer) m_Clusterer).logDensityForInstance(inst);
+                    cnum = m_Clusterer.clusterInstance(inst);
+                    clusterAssignments.add((double) cnum);
+                } else {
+                    cnum = m_Clusterer.clusterInstance(inst);
+                    clusterAssignments.add((double) cnum);
+                }
+            } catch (Exception e) {
+                clusterAssignments.add(-1.0);
+                unclusteredInstances++;
+            }
+            if (cnum != -1) {
+                instanceStats[cnum]++;
+            }
+        }
+    }
+    if (m_Clusterer instanceof BatchPredictor && ((BatchPredictor) m_Clusterer).implementsMoreEfficientBatchPrediction()) {
+        double[][] dists = ((BatchPredictor) m_Clusterer).distributionsForInstances(forBatchPredictors);
+        for (double[] d : dists) {
+            cnum = Utils.maxIndex(d);
+            clusterAssignments.add((double) cnum);
+            instanceStats[cnum]++;
+        }
+    }
+    double sum = Utils.sum(instanceStats);
+    loglk /= sum;
+    m_logL = loglk;
+    m_clusterAssignments = new double[clusterAssignments.size()];
+    for (i = 0; i < clusterAssignments.size(); i++) {
+        m_clusterAssignments[i] = clusterAssignments.get(i);
+    }
+    int numInstFieldWidth = (int) ((Math.log(clusterAssignments.size()) / Math.log(10)) + 1);
+    if (outputModel) {
+        m_clusteringResults.append(m_Clusterer.toString());
+    }
+    m_clusteringResults.append("Clustered Instances\n\n");
+    int clustFieldWidth = (int) ((Math.log(cc) / Math.log(10)) + 1);
+    for (i = 0; i < cc; i++) {
+        if (instanceStats[i] > 0) {
+            m_clusteringResults.append(Utils.doubleToString(i, clustFieldWidth, 0) + "      " + Utils.doubleToString(instanceStats[i], numInstFieldWidth, 0) + " (" + Utils.doubleToString((instanceStats[i] / sum * 100.0), 3, 0) + "%)\n");
+        }
+    }
+    if (unclusteredInstances > 0) {
+        m_clusteringResults.append("\nUnclustered instances : " + unclusteredInstances);
+    }
+    if (m_Clusterer instanceof DensityBasedClusterer) {
+        m_clusteringResults.append("\n\nLog likelihood: " + Utils.doubleToString(loglk, 1, 5) + "\n");
+    }
+    if (hasClass) {
+        evaluateClustersWithRespectToClass(test, testFileName);
+    }
+}

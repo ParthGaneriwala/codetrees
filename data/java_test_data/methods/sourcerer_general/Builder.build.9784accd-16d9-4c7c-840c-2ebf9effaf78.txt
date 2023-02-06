@@ -1,0 +1,73 @@
+public File build() throws BuilderException {
+    final Config c = ConfigPersister.getInstance().getConfig();
+    try {
+        c.validate();
+    } catch (InvariantViolationException e) {
+        throw new BuilderException(e.getMessage());
+    }
+    File rc = null;
+    File ro = null;
+    File outfile = null;
+    FileInputStream is = null;
+    FileOutputStream os = null;
+    final RcBuilder rcb = new RcBuilder();
+    try {
+        File basedir = Util.getJarBasedir();
+        rc = rcb.build(c);
+        // $NON-NLS-1$
+        ro = Util.createTempFile("o");
+        outfile = ConfigPersister.getInstance().getOutputFile();
+        Cmd resCmd = new Cmd(basedir);
+        // $NON-NLS-1$
+        resCmd.addExe("windres").add(// $NON-NLS-1$ //$NON-NLS-2$
+        Util.WINDOWS_OS ? "--preprocessor=type" : "--preprocessor=cat").add(// $NON-NLS-1$
+        "-J rc -O coff -F pe-i386").addAbsFile(rc).addAbsFile(ro);
+        // $NON-NLS-1$
+        _log.append(Messages.getString("Builder.compiling.resources"));
+        resCmd.exec(_log);
+        Cmd ldCmd = new Cmd(basedir);
+        // $NON-NLS-1$
+        ldCmd.addExe("ld").add(// $NON-NLS-1$
+        "-mi386pe").add(// $NON-NLS-1$
+        "--oformat pei-i386").add((c.getHeaderType() == Config.GUI_HEADER) ? "--subsystem windows" : // $NON-NLS-1$ //$NON-NLS-2$
+        "--subsystem console").add(// strip symbols //$NON-NLS-1$
+        "-s").addFiles(c.getHeaderObjects()).addAbsFile(ro).addFiles(c.getLibs()).add(// $NON-NLS-1$
+        "-o").addAbsFile(outfile);
+        // $NON-NLS-1$
+        _log.append(Messages.getString("Builder.linking"));
+        ldCmd.exec(_log);
+        if (!c.isDontWrapJar()) {
+            // $NON-NLS-1$
+            _log.append(Messages.getString("Builder.wrapping"));
+            int len;
+            byte[] buffer = new byte[1024];
+            is = new FileInputStream(Util.getAbsoluteFile(ConfigPersister.getInstance().getConfigPath(), c.getJar()));
+            os = new FileOutputStream(outfile, true);
+            while ((len = is.read(buffer)) > 0) {
+                os.write(buffer, 0, len);
+            }
+        }
+        // $NON-NLS-1$
+        _log.append(Messages.getString("Builder.success") + outfile.getPath());
+        return outfile;
+    } catch (IOException e) {
+        Util.delete(outfile);
+        _log.append(e.getMessage());
+        throw new BuilderException(e);
+    } catch (ExecException e) {
+        Util.delete(outfile);
+        String msg = e.getMessage();
+        if (msg != null && msg.indexOf("windres") != -1) {
+            // $NON-NLS-1$
+            // $NON-NLS-1$
+            _log.append(Messages.getString("Builder.generated.resource.file"));
+            _log.append(rcb.getContent());
+        }
+        throw new BuilderException(e);
+    } finally {
+        Util.close(is);
+        Util.close(os);
+        Util.delete(rc);
+        Util.delete(ro);
+    }
+}

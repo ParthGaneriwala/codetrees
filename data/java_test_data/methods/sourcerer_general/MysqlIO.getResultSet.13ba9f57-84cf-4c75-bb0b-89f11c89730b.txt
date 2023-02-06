@@ -1,0 +1,44 @@
+protected ResultSetImpl getResultSet(StatementImpl callingStatement, long columnCount, int maxRows, int resultSetType, int resultSetConcurrency, boolean streamResults, String catalog, boolean isBinaryEncoded, Field[] metadataFromCache) throws SQLException {
+    // The packet from the server
+    Buffer packet;
+    Field[] fields = null;
+    if (metadataFromCache == null) /* we want the metadata from the server */
+    {
+        fields = new Field[(int) columnCount];
+        for (int i = 0; i < columnCount; i++) {
+            Buffer fieldPacket = null;
+            fieldPacket = readPacket();
+            fields[i] = unpackField(fieldPacket, false);
+        }
+    } else {
+        for (int i = 0; i < columnCount; i++) {
+            skipPacket();
+        }
+    }
+    packet = reuseAndReadPacket(this.reusablePacket);
+    readServerStatusForResultSets(packet);
+    if (this.connection.versionMeetsMinimum(5, 0, 2) && this.connection.getUseCursorFetch() && isBinaryEncoded && callingStatement != null && callingStatement.getFetchSize() != 0 && callingStatement.getResultSetType() == ResultSet.TYPE_FORWARD_ONLY) {
+        ServerPreparedStatement prepStmt = (com.mysql.jdbc.ServerPreparedStatement) callingStatement;
+        boolean usingCursor = true;
+        if (this.connection.versionMeetsMinimum(5, 0, 5)) {
+            usingCursor = (this.serverStatus & SERVER_STATUS_CURSOR_EXISTS) != 0;
+        }
+        if (usingCursor) {
+            RowData rows = new RowDataCursor(this, prepStmt, fields);
+            ResultSetImpl rs = buildResultSetWithRows(callingStatement, catalog, fields, rows, resultSetType, resultSetConcurrency, isBinaryEncoded);
+            if (usingCursor) {
+                rs.setFetchSize(callingStatement.getFetchSize());
+            }
+            return rs;
+        }
+    }
+    RowData rowData = null;
+    if (!streamResults) {
+        rowData = readSingleRowSet(columnCount, maxRows, resultSetConcurrency, isBinaryEncoded, (metadataFromCache == null) ? fields : metadataFromCache);
+    } else {
+        rowData = new RowDataDynamic(this, (int) columnCount, (metadataFromCache == null) ? fields : metadataFromCache, isBinaryEncoded);
+        this.streamingData = rowData;
+    }
+    ResultSetImpl rs = buildResultSetWithRows(callingStatement, catalog, (metadataFromCache == null) ? fields : metadataFromCache, rowData, resultSetType, resultSetConcurrency, isBinaryEncoded);
+    return rs;
+}

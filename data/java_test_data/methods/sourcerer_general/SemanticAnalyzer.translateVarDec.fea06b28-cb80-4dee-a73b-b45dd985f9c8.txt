@@ -1,0 +1,61 @@
+public AssemType translateVarDec(VarDec varDec) {
+    Symbol varName = varDec.getName();
+    NameTy nameTy = varDec.getNameTy();
+    Exp initExpression = varDec.getInitExpression();
+    TranslatedExpAndType translatedExpAndTypeInitExpr = translateExpression(initExpression);
+    TypeEntry exprType = translatedExpAndTypeInitExpr.getTypeEntry();
+    AssemType exprAssemType = translatedExpAndTypeInitExpr.getAssemType();
+    if (exprType == null) {
+        errorHandler.addError(varDec.getPosition(), ErrorHandler.INIT_EXPR_TYPE_NOT_FOUND);
+    }
+    // Check if the types are ok first
+    TypeEntry typeEntry = null;
+    if (nameTy != null) {
+        // The type has been specified; check that the type and the expression match
+        Symbol typeName = nameTy.getName();
+        typeEntry = (TypeEntry) environments.getTypeTable().get(typeName);
+        if (typeEntry == null) {
+            errorHandler.addError(nameTy.getPosition(), ErrorHandler.THE_TYPE, typeName.toString(), ErrorHandler.NOT_DEFINED);
+        } else {
+            typeEntry = translateNameTy(typeEntry);
+            if (typeEntry != exprType) {
+                // is a nil type
+                if (!(typeEntry instanceof RecordTypeEntry && exprType instanceof NilTypeEntry))
+                    errorHandler.addError(varDec.getPosition(), ErrorHandler.TYPE_MISMATCH_VARDEC);
+            }
+        }
+    } else
+        typeEntry = exprType;
+    if (environments.getVariableTable().keyInCurrentScope(varName)) {
+        errorHandler.addError(varDec.getPosition(), ErrorHandler.THE_VARIABLE, varName.toString(), ErrorHandler.ALREADY_DEFINED);
+    }
+    // Make new entry
+    // TODO - implement the following and uncomment to remove hard-coding of escaes
+    // Boolean escBool = (Boolean) environments.getEscapeTable().get(varName);
+    // boolean escapes = escBool.booleanValue();
+    boolean escapes = false;
+    AssemType varDecAssem = null;
+    if (!escapes) {
+        // Does not escape; can be kept in the register; but only if it is not a record or an array type
+        if (typeEntry instanceof RecordTypeEntry) {
+            VariableEntry varEntry = new VariableEntry(typeEntry, currentFunctionLevel);
+            environments.getVariableTable().put(varName, varEntry);
+            varDecAssem = null;
+        } else {
+            // Can be kept in the register
+            Temp newVarTemp = new Temp();
+            VariableEntry varEntry = new VariableEntry(typeEntry, newVarTemp, currentFunctionLevel);
+            environments.getVariableTable().put(varName, varEntry);
+            varDecAssem = translatingMediator.translateVarDec(newVarTemp, exprAssemType);
+        }
+    } else {
+        // Must be kept on the stack frame
+        ActivationFrame currAf = currentFunctionLevel.getActivationFrame();
+        int currVarOffSet = currAf.getCurrentOffSet();
+        currAf.setCurrentOffSet(++currVarOffSet);
+        VariableEntry varEntry = new VariableEntry(typeEntry, false, currVarOffSet, currentFunctionLevel);
+        environments.getVariableTable().put(varName, varEntry);
+        varDecAssem = translatingMediator.translateVarDec(currVarOffSet, ActivationFrame.WORDSIZE, exprAssemType);
+    }
+    return varDecAssem;
+}

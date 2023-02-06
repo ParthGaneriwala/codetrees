@@ -1,0 +1,286 @@
+protected void startClusterer() {
+    if (m_RunThread == null) {
+        m_StartBut.setEnabled(false);
+        m_StopBut.setEnabled(true);
+        m_ignoreBut.setEnabled(false);
+        m_RunThread = new Thread() {
+
+            @Override
+            public void run() {
+                m_CLPanel.addToHistory();
+                // for timing
+                long trainTimeStart = 0, trainTimeElapsed = 0;
+                // Copy the current state of things
+                m_Log.statusMessage("Setting up...");
+                Instances inst = new Instances(m_Instances);
+                inst.setClassIndex(-1);
+                Instances userTest = null;
+                ClustererAssignmentsPlotInstances plotInstances = ExplorerDefaults.getClustererAssignmentsPlotInstances();
+                plotInstances.setClusterer((Clusterer) m_ClustererEditor.getValue());
+                if (m_TestInstances != null) {
+                    userTest = new Instances(m_TestInstances);
+                }
+                boolean saveVis = m_StorePredictionsBut.isSelected();
+                String grph = null;
+                int[] ignoredAtts = null;
+                int testMode = 0;
+                int percent = 66;
+                Clusterer clusterer = (Clusterer) m_ClustererEditor.getValue();
+                Clusterer fullClusterer = null;
+                StringBuffer outBuff = new StringBuffer();
+                String name = (new SimpleDateFormat("HH:mm:ss - ")).format(new Date());
+                String cname = clusterer.getClass().getName();
+                if (cname.startsWith("weka.clusterers.")) {
+                    name += cname.substring("weka.clusterers.".length());
+                } else {
+                    name += cname;
+                }
+                String cmd = m_ClustererEditor.getValue().getClass().getName();
+                if (m_ClustererEditor.getValue() instanceof OptionHandler) {
+                    cmd += " " + Utils.joinOptions(((OptionHandler) m_ClustererEditor.getValue()).getOptions());
+                }
+                try {
+                    m_Log.logMessage("Started " + cname);
+                    m_Log.logMessage("Command: " + cmd);
+                    if (m_Log instanceof TaskLogger) {
+                        ((TaskLogger) m_Log).taskStarted();
+                    }
+                    if (m_PercentBut.isSelected()) {
+                        testMode = 2;
+                        percent = Integer.parseInt(m_PercentText.getText());
+                        if ((percent <= 0) || (percent >= 100)) {
+                            throw new Exception("Percentage must be between 0 and 100");
+                        }
+                    } else if (m_TrainBut.isSelected()) {
+                        testMode = 3;
+                    } else if (m_TestSplitBut.isSelected()) {
+                        testMode = 4;
+                        // Check the test instance compatibility
+                        if (userTest == null) {
+                            throw new Exception("No user test set has been opened");
+                        }
+                        if (!inst.equalHeaders(userTest)) {
+                            throw new Exception("Train and test set are not compatible\n" + inst.equalHeadersMsg(userTest));
+                        }
+                    } else if (m_ClassesToClustersBut.isSelected()) {
+                        testMode = 5;
+                    } else {
+                        throw new Exception("Unknown test mode");
+                    }
+                    Instances trainInst = new Instances(inst);
+                    if (m_ClassesToClustersBut.isSelected()) {
+                        trainInst.setClassIndex(m_ClassCombo.getSelectedIndex());
+                        inst.setClassIndex(m_ClassCombo.getSelectedIndex());
+                        if (inst.classAttribute().isNumeric()) {
+                            throw new Exception("Class must be nominal for class based " + "evaluation!");
+                        }
+                    }
+                    if (!m_ignoreKeyList.isSelectionEmpty()) {
+                        trainInst = removeIgnoreCols(trainInst);
+                    }
+                    // Output some header information
+                    outBuff.append("=== Run information ===\n\n");
+                    outBuff.append("Scheme:       " + cname);
+                    if (clusterer instanceof OptionHandler) {
+                        String[] o = ((OptionHandler) clusterer).getOptions();
+                        outBuff.append(" " + Utils.joinOptions(o));
+                    }
+                    outBuff.append("\n");
+                    outBuff.append("Relation:     " + inst.relationName() + '\n');
+                    outBuff.append("Instances:    " + inst.numInstances() + '\n');
+                    outBuff.append("Attributes:   " + inst.numAttributes() + '\n');
+                    if (inst.numAttributes() < 100) {
+                        boolean[] selected = new boolean[inst.numAttributes()];
+                        for (int i = 0; i < inst.numAttributes(); i++) {
+                            selected[i] = true;
+                        }
+                        if (!m_ignoreKeyList.isSelectionEmpty()) {
+                            int[] indices = m_ignoreKeyList.getSelectedIndices();
+                            for (int i = 0; i < indices.length; i++) {
+                                selected[indices[i]] = false;
+                            }
+                        }
+                        if (m_ClassesToClustersBut.isSelected()) {
+                            selected[m_ClassCombo.getSelectedIndex()] = false;
+                        }
+                        for (int i = 0; i < inst.numAttributes(); i++) {
+                            if (selected[i]) {
+                                outBuff.append("              " + inst.attribute(i).name() + '\n');
+                            }
+                        }
+                        if (!m_ignoreKeyList.isSelectionEmpty() || m_ClassesToClustersBut.isSelected()) {
+                            outBuff.append("Ignored:\n");
+                            for (int i = 0; i < inst.numAttributes(); i++) {
+                                if (!selected[i]) {
+                                    outBuff.append("              " + inst.attribute(i).name() + '\n');
+                                }
+                            }
+                        }
+                    } else {
+                        outBuff.append("              [list of attributes omitted]\n");
+                    }
+                    if (!m_ignoreKeyList.isSelectionEmpty()) {
+                        ignoredAtts = m_ignoreKeyList.getSelectedIndices();
+                    }
+                    if (m_ClassesToClustersBut.isSelected()) {
+                        // add class to ignored list
+                        if (ignoredAtts == null) {
+                            ignoredAtts = new int[1];
+                            ignoredAtts[0] = m_ClassCombo.getSelectedIndex();
+                        } else {
+                            int[] newIgnoredAtts = new int[ignoredAtts.length + 1];
+                            System.arraycopy(ignoredAtts, 0, newIgnoredAtts, 0, ignoredAtts.length);
+                            newIgnoredAtts[ignoredAtts.length] = m_ClassCombo.getSelectedIndex();
+                            ignoredAtts = newIgnoredAtts;
+                        }
+                    }
+                    outBuff.append("Test mode:    ");
+                    switch(testMode) {
+                        case // Test on training
+                        3:
+                            outBuff.append("evaluate on training data\n");
+                            break;
+                        case // Percent split
+                        2:
+                            outBuff.append("split " + percent + "% train, remainder test\n");
+                            break;
+                        case // Test on user split
+                        4:
+                            outBuff.append("user supplied test set: " + userTest.numInstances() + " instances\n");
+                            break;
+                        case // Classes to clusters evaluation on training
+                        5:
+                            outBuff.append("Classes to clusters evaluation on training data");
+                            break;
+                    }
+                    outBuff.append("\n");
+                    m_History.addResult(name, outBuff);
+                    m_History.setSingle(name);
+                    // Build the model and output it.
+                    m_Log.statusMessage("Building model on training data...");
+                    // remove the class attribute (if set) and build the clusterer
+                    trainTimeStart = System.currentTimeMillis();
+                    clusterer.buildClusterer(removeClass(trainInst));
+                    trainTimeElapsed = System.currentTimeMillis() - trainTimeStart;
+                    // if (testMode == 2) {
+                    outBuff.append("\n=== Clustering model (full training set) ===\n\n");
+                    outBuff.append(clusterer.toString() + '\n');
+                    outBuff.append("\nTime taken to build model (full training data) : " + Utils.doubleToString(trainTimeElapsed / 1000.0, 2) + " seconds\n\n");
+                    // }
+                    m_History.updateResult(name);
+                    if (clusterer instanceof Drawable) {
+                        try {
+                            grph = ((Drawable) clusterer).graph();
+                        } catch (Exception ex) {
+                        }
+                    }
+                    // copy full model for output
+                    SerializedObject so = new SerializedObject(clusterer);
+                    fullClusterer = (Clusterer) so.getObject();
+                    ClusterEvaluation eval = new ClusterEvaluation();
+                    eval.setClusterer(clusterer);
+                    switch(testMode) {
+                        case 3:
+                        case // Test on training
+                        5:
+                            m_Log.statusMessage("Clustering training data...");
+                            eval.evaluateClusterer(trainInst, "", false);
+                            plotInstances.setInstances(inst);
+                            plotInstances.setClusterEvaluation(eval);
+                            outBuff.append("=== Model and evaluation on training set ===\n\n");
+                            break;
+                        case // Percent split
+                        2:
+                            m_Log.statusMessage("Randomizing instances...");
+                            inst.randomize(new Random(1));
+                            trainInst.randomize(new Random(1));
+                            int trainSize = trainInst.numInstances() * percent / 100;
+                            int testSize = trainInst.numInstances() - trainSize;
+                            Instances train = new Instances(trainInst, 0, trainSize);
+                            Instances test = new Instances(trainInst, trainSize, testSize);
+                            Instances testVis = new Instances(inst, trainSize, testSize);
+                            m_Log.statusMessage("Building model on training split...");
+                            trainTimeStart = System.currentTimeMillis();
+                            clusterer.buildClusterer(train);
+                            trainTimeElapsed = System.currentTimeMillis() - trainTimeStart;
+                            m_Log.statusMessage("Evaluating on test split...");
+                            eval.evaluateClusterer(test, "", false);
+                            plotInstances.setInstances(testVis);
+                            plotInstances.setClusterEvaluation(eval);
+                            outBuff.append("=== Model and evaluation on test split ===\n");
+                            outBuff.append(clusterer.toString() + "\n");
+                            outBuff.append("\nTime taken to build model (percentage split) : " + Utils.doubleToString(trainTimeElapsed / 1000.0, 2) + " seconds\n\n");
+                            break;
+                        case // Test on user split
+                        4:
+                            m_Log.statusMessage("Evaluating on test data...");
+                            Instances userTestT = new Instances(userTest);
+                            if (!m_ignoreKeyList.isSelectionEmpty()) {
+                                userTestT = removeIgnoreCols(userTestT);
+                            }
+                            eval.evaluateClusterer(userTestT, "", false);
+                            plotInstances.setInstances(userTest);
+                            plotInstances.setClusterEvaluation(eval);
+                            outBuff.append("=== Evaluation on test set ===\n");
+                            break;
+                        default:
+                            throw new Exception("Test mode not implemented");
+                    }
+                    outBuff.append(eval.clusterResultsToString());
+                    outBuff.append("\n");
+                    m_History.updateResult(name);
+                    m_Log.logMessage("Finished " + cname);
+                    m_Log.statusMessage("OK");
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                    m_Log.logMessage(ex.getMessage());
+                    JOptionPane.showMessageDialog(ClustererPanel.this, "Problem evaluating clusterer:\n" + ex.getMessage(), "Evaluate clusterer", JOptionPane.ERROR_MESSAGE);
+                    m_Log.statusMessage("Problem evaluating clusterer");
+                } finally {
+                    if ((plotInstances != null) && plotInstances.canPlot(true)) {
+                        m_CurrentVis = new VisualizePanel();
+                        if (getMainApplication() != null) {
+                            Settings settings = getMainApplication().getApplicationSettings();
+                            m_CurrentVis.applySettings(settings, weka.gui.explorer.VisualizePanel.ScatterDefaults.ID);
+                        }
+                        m_CurrentVis.setName(name + " (" + inst.relationName() + ")");
+                        m_CurrentVis.setLog(m_Log);
+                        try {
+                            m_CurrentVis.addPlot(plotInstances.getPlotData(name));
+                        } catch (Exception ex) {
+                            System.err.println(ex);
+                        }
+                        plotInstances.cleanUp();
+                        ArrayList<Object> vv = new ArrayList<Object>();
+                        vv.add(fullClusterer);
+                        Instances trainHeader = new Instances(m_Instances, 0);
+                        vv.add(trainHeader);
+                        if (ignoredAtts != null) {
+                            vv.add(ignoredAtts);
+                        }
+                        if (saveVis) {
+                            vv.add(m_CurrentVis);
+                            if (grph != null) {
+                                vv.add(grph);
+                            }
+                        }
+                        m_History.addObject(name, vv);
+                    }
+                    if (isInterrupted()) {
+                        m_Log.logMessage("Interrupted " + cname);
+                        m_Log.statusMessage("See error log");
+                    }
+                    m_RunThread = null;
+                    m_StartBut.setEnabled(true);
+                    m_StopBut.setEnabled(false);
+                    m_ignoreBut.setEnabled(true);
+                    if (m_Log instanceof TaskLogger) {
+                        ((TaskLogger) m_Log).taskFinished();
+                    }
+                }
+            }
+        };
+        m_RunThread.setPriority(Thread.MIN_PRIORITY);
+        m_RunThread.start();
+    }
+}

@@ -1,0 +1,46 @@
+public void testRestartWithLostTracker() throws IOException {
+    String namenode = null;
+    MiniDFSCluster dfs = null;
+    MiniMRCluster mr = null;
+    FileSystem fileSys = null;
+    try {
+        Configuration conf = new Configuration();
+        conf.setBoolean("dfs.replication.considerLoad", false);
+        dfs = new MiniDFSCluster(conf, 1, true, null, null);
+        dfs.waitActive();
+        fileSys = dfs.getFileSystem();
+        // clean up
+        fileSys.delete(testDir, true);
+        if (!fileSys.mkdirs(inDir)) {
+            throw new IOException("Mkdirs failed to create " + inDir.toString());
+        }
+        // Write the input file
+        TestRackAwareTaskPlacement.writeFile(dfs.getNameNode(), conf, new Path(inDir + "/file"), (short) 1);
+        dfs.startDataNodes(conf, 1, true, null, null, null, null);
+        dfs.waitActive();
+        namenode = (dfs.getFileSystem()).getUri().getHost() + ":" + (dfs.getFileSystem()).getUri().getPort();
+        // Make sure that jobhistory leads to a proper job restart
+        // So keep the blocksize and the buffer size small
+        JobConf jtConf = new JobConf();
+        jtConf.set("mapred.jobtracker.job.history.block.size", "1024");
+        jtConf.set("mapred.jobtracker.job.history.buffer.size", "1024");
+        jtConf.setInt("mapred.tasktracker.reduce.tasks.maximum", 1);
+        jtConf.setLong("mapred.tasktracker.expiry.interval", 25 * 1000);
+        mr = new MiniMRCluster(2, namenode, 1, null, null, jtConf);
+        // Test Lost tracker case
+        testRecoveryWithLostTracker(dfs, mr);
+    } finally {
+        if (mr != null) {
+            try {
+                mr.shutdown();
+            } catch (Exception e) {
+            }
+        }
+        if (dfs != null) {
+            try {
+                dfs.shutdown();
+            } catch (Exception e) {
+            }
+        }
+    }
+}

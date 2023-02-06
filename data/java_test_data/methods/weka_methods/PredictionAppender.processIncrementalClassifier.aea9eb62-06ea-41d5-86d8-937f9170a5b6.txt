@@ -1,0 +1,73 @@
+protected void processIncrementalClassifier(Data data, Instance inst) throws WekaException {
+    if (isStopRequested()) {
+        return;
+    }
+    if (getStepManager().isStreamFinished(data)) {
+        // done
+        // notify downstream steps of end of stream
+        Data d = new Data(StepManager.CON_INSTANCE);
+        getStepManager().throughputFinished(d);
+        return;
+    }
+    getStepManager().throughputUpdateStart();
+    boolean labelOrNumeric = !m_appendProbabilities || inst.classAttribute().isNumeric();
+    weka.classifiers.Classifier classifier = (weka.classifiers.Classifier) data.getPayloadElement(StepManager.CON_INCREMENTAL_CLASSIFIER);
+    if (m_streamingOutputStructure == null) {
+        // start of stream
+        if (classifier == null) {
+            throw new WekaException("No classifier in incoming data object!");
+        }
+        if (!(classifier instanceof UpdateableClassifier)) {
+            throw new WekaException("Classifier in data object is not " + "an UpdateableClassifier!");
+        }
+        m_stringAttIndexes = new ArrayList<Integer>();
+        for (int i = 0; i < inst.numAttributes(); i++) {
+            if (inst.attribute(i).isString()) {
+                m_stringAttIndexes.add(i);
+            }
+        }
+        try {
+            m_streamingOutputStructure = makeOutputDataClassifier(inst.dataset(), classifier, !labelOrNumeric, "_with_predictions");
+        } catch (Exception ex) {
+            throw new WekaException(ex);
+        }
+    }
+    double[] instanceVals = new double[m_streamingOutputStructure.numAttributes()];
+    Instance newInstance = null;
+    for (int i = 0; i < inst.numAttributes(); i++) {
+        instanceVals[i] = inst.value(i);
+    }
+    if (!m_appendProbabilities || inst.classAttribute().isNumeric()) {
+        try {
+            double predClass = classifier.classifyInstance(inst);
+            instanceVals[instanceVals.length - 1] = predClass;
+        } catch (Exception ex) {
+            throw new WekaException(ex);
+        }
+    } else if (m_appendProbabilities) {
+        try {
+            double[] preds = classifier.distributionForInstance(inst);
+            int index = 0;
+            for (int i = instanceVals.length - inst.classAttribute().numValues(); i < instanceVals.length; i++) {
+                instanceVals[i] = preds[index++];
+            }
+        } catch (Exception ex) {
+            throw new WekaException(ex);
+        }
+    }
+    Instance newInst = new DenseInstance(inst.weight(), instanceVals);
+    newInst.setDataset(m_streamingOutputStructure);
+    // check for string attributes
+    if (m_stringAttIndexes != null) {
+        for (int i = 0; i < m_stringAttIndexes.size(); i++) {
+            int index = m_stringAttIndexes.get(i);
+            m_streamingOutputStructure.attribute(index).setStringValue(inst.stringValue(index));
+        }
+    }
+    m_instanceData.setPayloadElement(StepManagerImpl.CON_INSTANCE, newInst);
+    if (isStopRequested()) {
+        return;
+    }
+    getStepManager().throughputUpdateEnd();
+    getStepManager().outputData(m_instanceData.getConnectionName(), m_instanceData);
+}

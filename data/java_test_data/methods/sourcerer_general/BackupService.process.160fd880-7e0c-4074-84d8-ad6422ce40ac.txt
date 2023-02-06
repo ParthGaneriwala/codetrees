@@ -1,0 +1,43 @@
+public boolean process(TransactionItem transactionItem, Connection db) throws Exception {
+    LOG.debug("Backup requested...");
+    // TODO: Fix cyclical/endless backups; need to keep an array of ids already archived
+    // TODO: Fix if lookup value is -1, then a lookup is not needed
+    DataRecordFactory factory = DataRecordFactory.INSTANCE;
+    // Override the default response packet so that the returned data records
+    // can be replayed using the RestoreService; stream the output
+    PacketContext packetContext = transactionItem.getPacketContext();
+    packetContext.setReturnType(PacketContext.RETURN_DATARECORDS);
+    // Start with the original record(s) being backed up
+    LOG.debug("Performing buildList query");
+    Object object = transactionItem.getObject();
+    if (object instanceof java.util.AbstractList || object instanceof java.util.AbstractMap) {
+        Object result = TransactionItem.doExecute(transactionItem.getObject(), db, TransactionItem.SELECT, packetContext, "buildList");
+    // TODO: check result
+    } else {
+        Object newObject = ObjectUtils.constructObject(object.getClass(), db, ObjectUtils.getParamAsInt(object, factory.retrieveUniqueField(transactionItem.getName() + "List")));
+        transactionItem.setObject(newObject);
+    }
+    // Start backup recursion...
+    // Consider lower-memory options to stream records without holding in memory
+    // option 1: use pagedList to get x record(s) at a time
+    // option 2: consider queue for limiting backup requests and asynchronous backups
+    XMLOutputFactory outputFactory = XMLOutputFactory.newInstance();
+    OutputStream outputStream = null;
+    if (packetContext.getOutputStream() == null) {
+        outputStream = packetContext.getResponse().getOutputStream();
+    } else {
+        outputStream = packetContext.getOutputStream();
+    }
+    XMLStreamWriter writer = outputFactory.createXMLStreamWriter(outputStream, "utf-8");
+    writer.writeStartDocument();
+    writer.writeCharacters(System.getProperty("line.separator"));
+    writer.writeStartElement("concursive");
+    writer.writeCharacters(System.getProperty("line.separator"));
+    ArrayList<String> addedRecords = new ArrayList<String>();
+    addRecords(writer, transactionItem.getObject(), transactionItem, packetContext, db, addedRecords);
+    writer.writeEndElement();
+    writer.writeCharacters(System.getProperty("line.separator"));
+    writer.flush();
+    writer.close();
+    return true;
+}

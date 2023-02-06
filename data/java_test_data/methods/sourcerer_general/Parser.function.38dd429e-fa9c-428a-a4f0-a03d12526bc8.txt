@@ -1,0 +1,133 @@
+private Node function(int functionType) throws IOException, ParserException {
+    int syntheticType = functionType;
+    // line number where source starts
+    int baseLineno = ts.getLineno();
+    // char number where source starts
+    int baseCharno = ts.getCharno();
+    int functionSourceStart = decompiler.markFunctionStart(functionType);
+    String name;
+    Node memberExprNode = null;
+    // line/char where function name starts
+    int nameLineno, nameCharno;
+    if (matchToken(Token.NAME)) {
+        name = ts.getString();
+        nameLineno = ts.getLineno();
+        nameCharno = ts.getCharno();
+        decompiler.addName(name);
+        if (!matchToken(Token.LP)) {
+            if (compilerEnv.isAllowMemberExprAsFunctionName()) {
+                // Extension to ECMA: if 'function <name>' does not follow
+                // by '(', assume <name> starts memberExpr
+                Node memberExprHead = nf.createName(name, nameLineno, nameCharno);
+                name = "";
+                memberExprNode = memberExprTail(false, memberExprHead);
+            }
+            mustMatchToken(Token.LP, "msg.no.paren.parms");
+        }
+    } else {
+        // Anonymous function
+        name = "";
+        nameLineno = ts.getLineno();
+        nameCharno = ts.getCharno();
+        if (!matchToken(Token.LP)) {
+            if (compilerEnv.isAllowMemberExprAsFunctionName()) {
+                // Note that memberExpr can not start with '(' like
+                // in function (1+2).toString(), because 'function ('
+                // is already processed as anonymous function
+                memberExprNode = memberExpr(false);
+            }
+            mustMatchToken(Token.LP, "msg.no.paren.parms");
+        }
+    }
+    if (memberExprNode != null) {
+        syntheticType = FunctionNode.FUNCTION_EXPRESSION;
+    }
+    boolean nested = insideFunction();
+    FunctionNode fnNode = nf.createFunction(name, nameLineno, nameCharno);
+    if (nested || nestingOfWith > 0) {
+        // 1. Nested functions are not affected by the dynamic scope flag
+        // as dynamic scope is already a parent of their scope.
+        // 2. Functions defined under the with statement also immune to
+        // this setup, in which case dynamic scope is ignored in favor
+        // of with object.
+        fnNode.itsIgnoreDynamicScope = true;
+    }
+    int functionIndex = currentScriptOrFn.addFunction(fnNode);
+    int functionSourceEnd;
+    ScriptOrFnNode savedScriptOrFn = currentScriptOrFn;
+    currentScriptOrFn = fnNode;
+    int savedNestingOfWith = nestingOfWith;
+    nestingOfWith = 0;
+    Hashtable<String, Node> savedLabelSet = labelSet;
+    labelSet = null;
+    ObjArray savedLoopSet = loopSet;
+    loopSet = null;
+    ObjArray savedLoopAndSwitchSet = loopAndSwitchSet;
+    loopAndSwitchSet = null;
+    boolean savedHasReturnValue = hasReturnValue;
+    int savedFunctionEndFlags = functionEndFlags;
+    Node args;
+    Node body;
+    JSDocInfo info = ts.getAndResetJSDocInfo();
+    try {
+        decompiler.addToken(Token.LP);
+        args = nf.createLeaf(Token.LP, ts.getLineno(), ts.getCharno());
+        if (!matchToken(Token.RP)) {
+            boolean first = true;
+            do {
+                if (!first)
+                    decompiler.addToken(Token.COMMA);
+                first = false;
+                mustMatchToken(Token.NAME, "msg.no.parm");
+                String s = ts.getString();
+                nf.addChildToBack(args, nf.createName(s, ts.getLineno(), ts.getCharno()));
+                decompiler.addName(s);
+            } while (matchToken(Token.COMMA));
+            mustMatchToken(Token.RP, "msg.no.paren.after.parms");
+        }
+        decompiler.addToken(Token.RP);
+        mustMatchToken(Token.LC, "msg.no.brace.body");
+        decompiler.addEOL(Token.LC);
+        body = parseFunctionBody();
+        mustMatchToken(Token.RC, "msg.no.brace.after.body");
+        decompiler.addToken(Token.RC);
+        functionSourceEnd = decompiler.markFunctionEnd(functionSourceStart);
+        if (functionType != FunctionNode.FUNCTION_EXPRESSION) {
+            if (compilerEnv.getLanguageVersion() >= Context.VERSION_1_2) {
+                // function f() {} function g() {} is not allowed in 1.2
+                // or later but for compatibility with old scripts
+                // the check is done only if language is
+                // explicitly set.
+                // XXX warning needed if version == VERSION_DEFAULT ?
+                int tt = peekTokenOrEOL();
+                if (tt == Token.FUNCTION) {
+                    reportError("msg.no.semi.stmt");
+                }
+            }
+            // Add EOL only if function is not part of expression
+            // since it gets SEMI + EOL from Statement in that case
+            decompiler.addToken(Token.EOL);
+        }
+    } finally {
+        hasReturnValue = savedHasReturnValue;
+        functionEndFlags = savedFunctionEndFlags;
+        loopAndSwitchSet = savedLoopAndSwitchSet;
+        loopSet = savedLoopSet;
+        labelSet = savedLabelSet;
+        nestingOfWith = savedNestingOfWith;
+        currentScriptOrFn = savedScriptOrFn;
+    }
+    fnNode.setEncodedSourceBounds(functionSourceStart, functionSourceEnd);
+    fnNode.setSourceName(sourceURI);
+    fnNode.setBaseLineno(baseLineno);
+    fnNode.setEndLineno(ts.getLineno());
+    Node pn = nf.initFunction(fnNode, functionIndex, args, info, body, syntheticType);
+    if (memberExprNode != null) {
+        pn = nf.createAssignment(Token.ASSIGN, memberExprNode, pn, baseLineno, baseCharno);
+        if (functionType != FunctionNode.FUNCTION_EXPRESSION) {
+            // XXX check JScript behavior: should it be createExprStatement?
+            pn = nf.createExprStatementNoReturn(pn, baseLineno, baseCharno);
+        }
+    }
+    return pn;
+}

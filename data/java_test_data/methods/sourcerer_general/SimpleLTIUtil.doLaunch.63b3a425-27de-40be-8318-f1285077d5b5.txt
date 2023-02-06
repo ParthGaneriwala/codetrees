@@ -1,0 +1,152 @@
+public static Properties doLaunch(String lti2EndPoint, Properties newMap) {
+    Properties retProp = new Properties();
+    retProp.setProperty("status", "fail");
+    String postData = "";
+    // Yikes - iterating through properties is nasty
+    for (Object okey : newMap.keySet()) {
+        if (!(okey instanceof String))
+            continue;
+        String key = (String) okey;
+        if (key == null)
+            continue;
+        String value = newMap.getProperty(key);
+        if (value == null)
+            continue;
+        if (value.equals(""))
+            continue;
+        // Should this be UTF-8 ???
+        value = URLEncoder.encode(value);
+        if (postData.length() > 0)
+            postData = postData + "&";
+        postData = postData + URLEncoder.encode(key) + "=" + value;
+    }
+    if (postData != null)
+        retProp.setProperty("_post_data", postData);
+    dPrint("LTI2 POST=" + postData);
+    String postResponse = null;
+    URLConnection urlc = null;
+    try {
+        // Thanks: http://xml.nig.ac.jp/tutorial/rest/index.html
+        URL url = new URL(lti2EndPoint);
+        InputStream inp = null;
+        // make connection, use post mode, and send query
+        urlc = url.openConnection();
+        urlc.setDoOutput(true);
+        urlc.setAllowUserInteraction(false);
+        PrintStream ps = new PrintStream(urlc.getOutputStream());
+        ps.print(postData);
+        ps.close();
+        dPrint("Post Complete");
+        inp = urlc.getInputStream();
+        // Retrieve result
+        BufferedReader br = new BufferedReader(new InputStreamReader(inp));
+        String str;
+        StringBuffer sb = new StringBuffer();
+        while ((str = br.readLine()) != null) {
+            sb.append(str);
+            sb.append("\n");
+        }
+        br.close();
+        postResponse = sb.toString();
+        if (postResponse == null) {
+            setErrorMessage(retProp, "Launch REST Web Service returned nothing");
+            return retProp;
+        }
+    } catch (Exception e) {
+        // Retrieve error stream if it exists
+        if (urlc != null && urlc instanceof HttpURLConnection) {
+            try {
+                HttpURLConnection urlh = (HttpURLConnection) urlc;
+                BufferedReader br = new BufferedReader(new InputStreamReader(urlh.getErrorStream()));
+                String str;
+                StringBuffer sb = new StringBuffer();
+                while ((str = br.readLine()) != null) {
+                    sb.append(str);
+                    sb.append("\n");
+                }
+                br.close();
+                postResponse = sb.toString();
+                dPrint("LTI ERROR response=" + postResponse);
+            } catch (Exception f) {
+                dPrint("LTI Exception in REST call=" + e);
+                // e.printStackTrace();
+                setErrorMessage(retProp, "Failed REST service call. Exception=" + e);
+                postResponse = null;
+                return retProp;
+            }
+        } else {
+            dPrint("LTI General Failure" + e.getMessage());
+        // e.printStackTrace();
+        }
+    }
+    if (postResponse != null)
+        retProp.setProperty("_post_response", postResponse);
+    dPrint("LTI2 Response=" + postResponse);
+    // Check to see if we received anything - and then parse it
+    Map<String, String> respMap = null;
+    if (postResponse == null) {
+        setErrorMessage(retProp, "Web Service Returned Nothing");
+        return retProp;
+    } else {
+        if (postResponse.indexOf("<?xml") != 0) {
+            int pos = postResponse.indexOf("<launchResponse");
+            if (pos > 0) {
+                System.out.println("Warning: Dropping first " + pos + " non-XML characters of response to find <launchResponse");
+                postResponse = postResponse.substring(pos);
+            }
+        }
+        respMap = XMLMap.getMap(postResponse);
+    }
+    if (respMap == null) {
+        String errorOut = postResponse;
+        if (errorOut.length() > 500) {
+            errorOut = postResponse.substring(0, 500);
+        }
+        System.out.println("Error Parsing Web Service XML:\n" + errorOut + "\n");
+        setErrorMessage(retProp, "Error Parsing Web Service XML");
+        return retProp;
+    }
+    // We will tolerate this one backwards compatibility
+    String launchUrl = respMap.get("/launchUrl");
+    String launchWidget = null;
+    if (launchUrl == null) {
+        launchUrl = respMap.get("/launchResponse/launchUrl");
+    }
+    if (launchUrl == null) {
+        launchWidget = respMap.get("/launchResponse/widget");
+    /* Remove until we have jTidy 0.8 or later in the repository
+                if ( launchWidget != null && launchWidget.length() > 0 ) {
+			System.out.println("Pre Tidy:\n"+launchWidget);
+			Tidy tidy = new Tidy();
+			tidy.setIndentContent(true);
+			tidy.setSmartIndent(true);
+			tidy.setPrintBodyOnly(true);
+			tidy.setTidyMark(false);
+			// tidy.setQuiet(true);
+			// tidy.setShowWarnings(false);
+			InputStream is = new ByteArrayInputStream(launchWidget.getBytes());
+			OutputStream os = new ByteArrayOutputStream();
+			tidy.parse(is,os);
+			String tidyOutput = os.toString();
+			System.out.println("Post Tidy:\n"+tidyOutput);
+			if ( tidyOutput != null && tidyOutput.length() > 0 ) launchWidget = os.toString();
+		}
+*/
+    }
+    dPrint("XXX launchUrl = " + launchUrl);
+    dPrint("launchWidget = " + launchWidget);
+    if (launchUrl == null && launchWidget == null) {
+        String eMsg = respMap.get("/launchResponse/code") + ":" + respMap.get("/launchResponse/description");
+        setErrorMessage(retProp, "Error on Launch:" + eMsg);
+        return retProp;
+    }
+    if (launchUrl != null)
+        retProp.setProperty("launchurl", launchUrl);
+    if (launchWidget != null)
+        retProp.setProperty("launchwidget", launchWidget);
+    String postResp = respMap.get("/launchResponse/type");
+    if (postResp != null)
+        retProp.setProperty("type", postResp);
+    retProp.setProperty("status", "success");
+    return retProp;
+}

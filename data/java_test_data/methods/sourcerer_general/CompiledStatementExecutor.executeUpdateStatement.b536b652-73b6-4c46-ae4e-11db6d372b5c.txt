@@ -1,0 +1,42 @@
+private Result executeUpdateStatement(CompiledStatement cs) throws HsqlException {
+    Table table = cs.targetTable;
+    TableFilter filter = cs.targetFilter;
+    int count = 0;
+    if (filter.findFirst(session)) {
+        // column map
+        int[] colmap = cs.columnMap;
+        Expression[] colvalues = cs.columnValues;
+        // update condition
+        Expression condition = cs.condition;
+        int len = colvalues.length;
+        HashMappedList rowset = new HashMappedList();
+        int size = table.getColumnCount();
+        int[] coltypes = table.getColumnTypes();
+        boolean success = false;
+        do {
+            if (condition == null || condition.testCondition(session)) {
+                try {
+                    Row row = filter.currentRow;
+                    Object[] ni = table.getEmptyRowData();
+                    System.arraycopy(row.getData(), 0, ni, 0, size);
+                    for (int i = 0; i < len; i++) {
+                        int ci = colmap[i];
+                        ni[ci] = colvalues[i].getValue(session, coltypes[ci]);
+                    }
+                    rowset.add(row, ni);
+                } catch (HsqlInternalException e) {
+                }
+            }
+        } while (filter.next(session));
+        session.beginNestedTransaction();
+        try {
+            count = table.update(session, rowset, colmap);
+            success = true;
+        } finally {
+            // update failed (constraint violation) or succeeded
+            session.endNestedTransaction(!success);
+        }
+    }
+    updateResult.updateCount = count;
+    return updateResult;
+}

@@ -1,0 +1,61 @@
+private void localizeTask(Task task) throws IOException {
+    Path localTaskDir = lDirAlloc.getLocalPathForWrite((TaskTracker.getJobCacheSubdir() + Path.SEPARATOR + task.getJobID() + Path.SEPARATOR + task.getTaskID()), defaultJobConf);
+    FileSystem localFs = FileSystem.getLocal(fConf);
+    if (!localFs.mkdirs(localTaskDir)) {
+        throw new IOException("Mkdirs failed to create " + localTaskDir.toString());
+    }
+    // create symlink for ../work if it already doesnt exist
+    String workDir = lDirAlloc.getLocalPathToRead(TaskTracker.getJobCacheSubdir() + Path.SEPARATOR + task.getJobID() + Path.SEPARATOR + "work", defaultJobConf).toString();
+    String link = localTaskDir.getParent().toString() + Path.SEPARATOR + "work";
+    File flink = new File(link);
+    if (!flink.exists())
+        FileUtil.symLink(workDir, link);
+    // create the working-directory of the task
+    Path cwd = lDirAlloc.getLocalPathForWrite(TaskTracker.getJobCacheSubdir() + Path.SEPARATOR + task.getJobID() + Path.SEPARATOR + task.getTaskID() + Path.SEPARATOR + MRConstants.WORKDIR, defaultJobConf);
+    if (!localFs.mkdirs(cwd)) {
+        throw new IOException("Mkdirs failed to create " + cwd.toString());
+    }
+    Path localTaskFile = new Path(localTaskDir, "job.xml");
+    task.setJobFile(localTaskFile.toString());
+    localJobConf.set("mapred.local.dir", fConf.get("mapred.local.dir"));
+    localJobConf.set("mapred.task.id", task.getTaskID().toString());
+    keepFailedTaskFiles = localJobConf.getKeepFailedTaskFiles();
+    task.localizeConfiguration(localJobConf);
+    List<String[]> staticResolutions = NetUtils.getAllStaticResolutions();
+    if (staticResolutions != null && staticResolutions.size() > 0) {
+        StringBuffer str = new StringBuffer();
+        for (int i = 0; i < staticResolutions.size(); i++) {
+            String[] hostToResolved = staticResolutions.get(i);
+            str.append(hostToResolved[0] + "=" + hostToResolved[1]);
+            if (i != staticResolutions.size() - 1) {
+                str.append(',');
+            }
+        }
+        localJobConf.set("org.fit.hiai.hadoop.net.static.resolutions", str.toString());
+    }
+    if (task.isMapTask()) {
+        debugCommand = localJobConf.getMapDebugScript();
+    } else {
+        debugCommand = localJobConf.getReduceDebugScript();
+    }
+    String keepPattern = localJobConf.getKeepTaskFilesPattern();
+    if (keepPattern != null) {
+        alwaysKeepTaskFiles = Pattern.matches(keepPattern, task.getTaskID().toString());
+    } else {
+        alwaysKeepTaskFiles = false;
+    }
+    if (debugCommand != null || localJobConf.getProfileEnabled() || alwaysKeepTaskFiles || keepFailedTaskFiles) {
+        // disable jvm reuse
+        localJobConf.setNumTasksToExecutePerJvm(1);
+    }
+    if (isTaskMemoryManagerEnabled()) {
+        localJobConf.setBoolean("task.memory.mgmt.enabled", true);
+    }
+    OutputStream out = localFs.create(localTaskFile);
+    try {
+        localJobConf.writeXml(out);
+    } finally {
+        out.close();
+    }
+    task.setConf(localJobConf);
+}

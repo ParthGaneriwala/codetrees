@@ -1,0 +1,65 @@
+@Override
+public void process(JCas jCas) throws AnalysisEngineProcessException {
+    try {
+        JCas conllView = jCas.getView(Conll2005Constants.CONLL_2005_VIEW);
+        JCas initView = jCas.getView(CAS.NAME_DEFAULT_SOFA);
+        String conllText = conllView.getSofaDataString();
+        List<CoNLL2005Line> conll2005Lines = new ArrayList<CoNLL2005Line>();
+        for (String line : conllText.split("\n")) {
+            conll2005Lines.add(new CoNLL2005Line(line, hasVerbSenses));
+        // System.err.println(line);
+        }
+        // System.err.println();
+        StringBuffer docText = new StringBuffer();
+        List<TreebankNode> terminals = new ArrayList<TreebankNode>(conll2005Lines.size());
+        CharniakParseParser parser = new CharniakParseParser(initView);
+        int numberOfPredicates = 0;
+        for (CoNLL2005Line line : conll2005Lines) if (!line.targetVerb.equals("-"))
+            numberOfPredicates += 1;
+        int currentPredicate = 0;
+        PredicateParser[] predicateParsers = new PredicateParser[numberOfPredicates];
+        for (int i = 0; i < numberOfPredicates; i++) predicateParsers[i] = new PredicateParser(initView);
+        NamedEntityParser namedEntityParser = new NamedEntityParser(initView);
+        for (CoNLL2005Line line : conll2005Lines.toArray(new CoNLL2005Line[0])) {
+            if (line.argumentSegments.length != 0 && line.argumentSegments.length != numberOfPredicates) {
+                throw new RuntimeException(String.format("expected 0 or %d segments, found %d", numberOfPredicates, line.argumentSegments.length));
+            }
+            if (docText.length() > 0 && line.word.length() > 0) {
+                docText.append(" ");
+            }
+            int startIndex = docText.length();
+            docText.append(line.word);
+            int endIndex = docText.length();
+            Token token = new Token(initView, startIndex, endIndex);
+            token.setPos(line.pos);
+            token.addToIndexes();
+            TreebankNode terminal = new TreebankNode(initView, startIndex, endIndex);
+            terminal.setNodeType(line.pos);
+            terminal.setNodeValue(line.word);
+            terminal.setChildren(UIMAUtil.toFSArray(jCas, Collections.<TreebankNode>emptyList()));
+            terminal.setLeaf(true);
+            terminal.addToIndexes();
+            terminals.add(terminal);
+            parser.feed(line.charniakParseSegment, terminal);
+            namedEntityParser.feed(line.neSegment, token);
+            if (line.argumentSegments.length > 0) {
+                for (int i = 0; i < numberOfPredicates; i++) {
+                    predicateParsers[i].feed(line.argumentSegments[i], token);
+                }
+            }
+            if (!line.targetVerb.equals("-")) {
+                predicateParsers[currentPredicate].feedInfo(line.word, line.targetVerb, line.verbSenseTag, token);
+                currentPredicate += 1;
+            }
+        }
+        initView.setSofaDataString(docText.toString(), "text/plain");
+        Sentence sentence = new Sentence(initView, 0, docText.toString().length());
+        sentence.addToIndexes();
+        parser.makeParse();
+        for (PredicateParser predicateParser : predicateParsers) predicateParser.makePredicate();
+    } catch (CASException e) {
+        throw new AnalysisEngineProcessException(e);
+    } catch (IOException e) {
+        throw new AnalysisEngineProcessException(e);
+    }
+}

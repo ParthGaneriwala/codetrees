@@ -1,0 +1,86 @@
+@Override
+public void visit(NodeTraversal traversal, Node node, Node parent) {
+    String messageKey;
+    boolean isVar;
+    Node msgNode, msgNodeParent;
+    switch(node.getType()) {
+        case Token.NAME:
+            // var MSG_HELLO = 'Message'
+            if ((parent != null) && (parent.getType() == Token.VAR)) {
+                messageKey = node.getString();
+                isVar = true;
+            } else {
+                return;
+            }
+            msgNode = node.getFirstChild();
+            msgNodeParent = node;
+            break;
+        case Token.ASSIGN:
+            // somenamespace.someclass.MSG_HELLO = 'Message'
+            isVar = false;
+            Node getProp = node.getFirstChild();
+            if (getProp.getType() != Token.GETPROP) {
+                return;
+            }
+            Node propNode = getProp.getLastChild();
+            messageKey = propNode.getString();
+            msgNode = node.getLastChild();
+            msgNodeParent = node;
+            break;
+        case Token.CALL:
+            // goog.getMsg()
+            if (MSG_FUNCTION_NAME.equals(node.getFirstChild().getQualifiedName())) {
+                googMsgNodes.put(node, traversal.getSourceName());
+            }
+            return;
+        default:
+            return;
+    }
+    // Is this a message name?
+    boolean isNewStyleMessage = msgNode != null && msgNode.getType() == Token.CALL;
+    if (!isMessageName(messageKey, isNewStyleMessage)) {
+        return;
+    }
+    if (msgNode == null) {
+        compiler.report(traversal.makeError(node, MESSAGE_HAS_NO_VALUE, messageKey));
+        return;
+    }
+    // (e.g. "a.b.MSG_X") doesn't use goog.getMsg().
+    if (isNewStyleMessage) {
+        googMsgNodes.remove(msgNode);
+    } else if (style != JsMessage.Style.LEGACY) {
+        compiler.report(traversal.makeError(node, checkLevel, MESSAGE_NOT_INITIALIZED_USING_NEW_SYNTAX));
+    }
+    boolean isUnnamedMsg = isUnnamedMessageName(messageKey);
+    Builder builder = new Builder(isUnnamedMsg ? null : messageKey);
+    builder.setSourceName(traversal.getSourceName());
+    try {
+        if (isVar) {
+            extractMessageFromVariable(builder, node, parent, parent.getParent());
+        } else {
+            extractMessageFromProperty(builder, node.getFirstChild(), node);
+        }
+    } catch (MalformedException ex) {
+        compiler.report(traversal.makeError(ex.getNode(), MESSAGE_TREE_MALFORMED, ex.getMessage()));
+        return;
+    }
+    JsMessage extractedMessage = builder.build(idGenerator);
+    // If asked to check named internal messages.
+    if (needToCheckDuplications && !isUnnamedMsg && !extractedMessage.isExternal()) {
+        checkIfMessageDuplicated(traversal.getSourceName(), messageKey, msgNode);
+    }
+    if (extractedMessage.isEmpty()) {
+        // value of the message is an empty string. Translators do not like it.
+        compiler.report(traversal.makeError(node, MESSAGE_HAS_NO_TEXT, messageKey));
+    }
+    // New-style messages must have descriptions. We don't emit a warning
+    // for legacy-style messages, because there are thousands of
+    // them in legacy code that are not worth the effort to fix, since they've
+    // already been translated anyway.
+    String desc = extractedMessage.getDesc();
+    if (isNewStyleMessage && (desc == null || desc.trim().isEmpty()) && !extractedMessage.isExternal()) {
+        compiler.report(traversal.makeError(node, MESSAGE_HAS_NO_DESCRIPTION, messageKey));
+    }
+    JsMessageDefinition msgDefinition = new JsMessageDefinition(node, msgNode, msgNodeParent);
+    processJsMessage(extractedMessage, msgDefinition);
+}

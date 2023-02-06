@@ -1,0 +1,108 @@
+protected double distribution(double[][] props, double[][][] dists, int att, Instances data) throws Exception {
+    double splitPoint = Double.NaN;
+    Attribute attribute = data.attribute(att);
+    double[][] dist = null;
+    int indexOfFirstMissingValue = data.numInstances();
+    if (attribute.isNominal()) {
+        // For nominal attributes
+        dist = new double[attribute.numValues()][data.numClasses()];
+        for (int i = 0; i < data.numInstances(); i++) {
+            Instance inst = data.instance(i);
+            if (inst.isMissing(att)) {
+                // Skip missing values at this stage
+                if (indexOfFirstMissingValue == data.numInstances()) {
+                    indexOfFirstMissingValue = i;
+                }
+                continue;
+            }
+            dist[(int) inst.value(att)][(int) inst.classValue()] += inst.weight();
+        }
+    } else {
+        // For numeric attributes
+        double[][] currDist = new double[2][data.numClasses()];
+        dist = new double[2][data.numClasses()];
+        // Sort data
+        data.sort(att);
+        // Move all instances into second subset
+        for (int j = 0; j < data.numInstances(); j++) {
+            Instance inst = data.instance(j);
+            if (inst.isMissing(att)) {
+                // Can stop as soon as we hit a missing value
+                indexOfFirstMissingValue = j;
+                break;
+            }
+            currDist[1][(int) inst.classValue()] += inst.weight();
+        }
+        // Value before splitting
+        double priorVal = priorVal(currDist);
+        // Save initial distribution
+        for (int j = 0; j < currDist.length; j++) {
+            System.arraycopy(currDist[j], 0, dist[j], 0, dist[j].length);
+        }
+        // Try all possible split points
+        double currSplit = data.instance(0).value(att);
+        double currVal, bestVal = -Double.MAX_VALUE;
+        for (int i = 0; i < indexOfFirstMissingValue; i++) {
+            Instance inst = data.instance(i);
+            double attVal = inst.value(att);
+            // Can we place a sensible split point here?
+            if (attVal > currSplit) {
+                // Compute gain for split point
+                currVal = gain(currDist, priorVal);
+                // Is the current split point the best point so far?
+                if (currVal > bestVal) {
+                    // Store value of current point
+                    bestVal = currVal;
+                    // Save split point
+                    splitPoint = (attVal + currSplit) / 2.0;
+                    // Check for numeric precision problems
+                    if (splitPoint <= currSplit) {
+                        splitPoint = attVal;
+                    }
+                    // Save distribution
+                    for (int j = 0; j < currDist.length; j++) {
+                        System.arraycopy(currDist[j], 0, dist[j], 0, dist[j].length);
+                    }
+                }
+                // Update value
+                currSplit = attVal;
+            }
+            // Shift over the weight
+            int classVal = (int) inst.classValue();
+            currDist[0][classVal] += inst.weight();
+            currDist[1][classVal] -= inst.weight();
+        }
+    }
+    // Compute weights for subsets
+    props[0] = new double[dist.length];
+    for (int k = 0; k < props[0].length; k++) {
+        props[0][k] = Utils.sum(dist[k]);
+    }
+    if (Utils.eq(Utils.sum(props[0]), 0)) {
+        for (int k = 0; k < props[0].length; k++) {
+            props[0][k] = 1.0 / props[0].length;
+        }
+    } else {
+        Utils.normalize(props[0]);
+    }
+    // Distribute weights for instances with missing values
+    for (int i = indexOfFirstMissingValue; i < data.numInstances(); i++) {
+        Instance inst = data.instance(i);
+        if (attribute.isNominal()) {
+            // Need to check if attribute value is missing
+            if (inst.isMissing(att)) {
+                for (int j = 0; j < dist.length; j++) {
+                    dist[j][(int) inst.classValue()] += props[0][j] * inst.weight();
+                }
+            }
+        } else {
+            // Can be sure that value is missing, so no test required
+            for (int j = 0; j < dist.length; j++) {
+                dist[j][(int) inst.classValue()] += props[0][j] * inst.weight();
+            }
+        }
+    }
+    // Return distribution and split point
+    dists[0] = dist;
+    return splitPoint;
+}

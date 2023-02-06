@@ -1,0 +1,89 @@
+/**
+ * This method does the actual reading from the server and delegating
+ * the data to the handler. When the end of the input stream is reached or
+ * an IOException is thrown, the {@link Session#handleDisconnection()} method of the
+ * handler is invoked.
+ * All handler method invocations are done via {@link Session#execRunnable(Runnable)}.
+ */
+public void run() {
+    StringBuffer buf = new StringBuffer();
+    StringBuffer dgBuf = new StringBuffer();
+    try {
+        outerLoop: while (true) {
+            buf.setLength(0);
+            int b = 0;
+            while ((char) b != '\n') {
+                b = in.read();
+                if (b < 0) {
+                    handler.execRunnable(new SafeRunnable() {
+
+                        public void safeRun() {
+                            handler.handleDisconnection();
+                        }
+                    });
+                    return;
+                }
+                buf.append((char) b);
+                // Level2 parsing.
+                if (b == Datagram.DG_DELIM) {
+                    dgBuf.setLength(0);
+                    dgBuf.append((char) b);
+                    buf.setLength(buf.length() - 1);
+                    while (true) {
+                        b = in.read();
+                        if (b < 0) {
+                            handler.execRunnable(new SafeRunnable() {
+
+                                public void safeRun() {
+                                    handler.handleDisconnection();
+                                }
+                            });
+                            return;
+                        }
+                        if (b == Datagram.DG_DELIM) {
+                            int c = in.read();
+                            if (Datagram.DG_END.equals("" + (char) b + (char) c)) {
+                                dgBuf.append(Datagram.DG_END);
+                                final Datagram dg = Datagram.parseDatagram(dgBuf.toString());
+                                handler.execRunnable(new SafeRunnable() {
+
+                                    public void safeRun() {
+                                        handler.handleDatagram(dg);
+                                    }
+                                });
+                                break;
+                            } else {
+                                in.unread(c);
+                            }
+                        }
+                        dgBuf.append((char) b);
+                    }
+                } else {
+                    if (// Ignore beeps.
+                    b == 7)
+                        buf.setLength(buf.length() - 1);
+                    if (// Ignore the prompt, remove if it's possible to disable it
+                    buf.toString().equals("aics% "))
+                        continue outerLoop;
+                }
+            }
+            // Remove the '\n'
+            buf.setLength(buf.length() - 1);
+            final String line = buf.toString();
+            handler.execRunnable(new SafeRunnable() {
+
+                public void safeRun() {
+                    handler.handleLine(line);
+                }
+            });
+        }
+    } catch (IOException e) {
+        e.printStackTrace();
+        handler.execRunnable(new SafeRunnable() {
+
+            public void safeRun() {
+                handler.handleDisconnection();
+            }
+        });
+    }
+}

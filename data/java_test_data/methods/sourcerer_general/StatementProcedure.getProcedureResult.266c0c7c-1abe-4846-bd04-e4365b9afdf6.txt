@@ -1,0 +1,50 @@
+Result getProcedureResult(Session session) {
+    Object[] data = ValuePool.emptyObjectArray;
+    if (arguments.length > 0) {
+        data = new Object[arguments.length];
+    }
+    for (int i = 0; i < arguments.length; i++) {
+        Expression e = arguments[i];
+        Object value = e.getValue(session);
+        if (e != null) {
+            Type targetType = procedure.getParameter(i).getDataType();
+            data[i] = targetType.convertToType(session, value, e.getDataType());
+        }
+    }
+    session.sessionContext.push();
+    session.sessionContext.routineArguments = data;
+    session.sessionContext.routineVariables = ValuePool.emptyObjectArray;
+    Result result = Result.updateZeroResult;
+    if (procedure.isPSM()) {
+        result = executePSMProcedure(session);
+    } else {
+        result = executeJavaProcedure(session);
+    }
+    Object[] callArguments = session.sessionContext.routineArguments;
+    session.sessionContext.pop();
+    if (result.isError()) {
+        return result;
+    }
+    if (result.isSimpleValue()) {
+        result = Result.updateZeroResult;
+    }
+    boolean returnParams = false;
+    for (int i = 0; i < procedure.getParameterCount(); i++) {
+        ColumnSchema param = procedure.getParameter(i);
+        int mode = param.getParameterMode();
+        if (mode != SchemaObject.ParameterModes.PARAM_IN) {
+            if (this.arguments[i].isDynamicParam()) {
+                int paramIndex = arguments[i].parameterIndex;
+                session.sessionContext.dynamicArguments[paramIndex] = callArguments[i];
+                returnParams = true;
+            } else {
+                int varIndex = arguments[i].getColumnIndex();
+                session.sessionContext.routineVariables[varIndex] = callArguments[i];
+            }
+        }
+    }
+    if (returnParams) {
+        result = Result.newCallResponse(this.getParametersMetaData().getParameterTypes(), this.id, session.sessionContext.dynamicArguments);
+    }
+    return result;
+}

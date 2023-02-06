@@ -1,0 +1,101 @@
+public String getFileEx2(String fileName, String formatName, int pageNumber, String pageModifier, boolean getResource) throws DfException {
+    String strFileLocation = null;
+    String strTransferLocation = null;
+    String strReturnLocation = null;
+    IEpModiLogicalDoc iepLogicalDoc = null;
+    File originalFile = null;
+    File transferedFile = null;
+    File returnedFile = null;
+    File cadmosFile = null;
+    String strBase64transfered = null;
+    String strBase64returned = null;
+    boolean blnExists = false;
+    String strUrl = null;
+    URL url = null;
+    HttpURLConnection conn = null;
+    byte[] buf = null;
+    int len = 0;
+    InputStream in = null;
+    OutputStream out = null;
+    int i = 0;
+    if (!this.isTranslationCheckOut() & this.isCheckedOut() & !this.isNew()) {
+        iepLogicalDoc = this.getLogicalDoc();
+        if (iepLogicalDoc == null) {
+            DfException e = new DfException(DfException.DM_DFC_E_UNDEFINED, "No logical document found for this linguistic version");
+            throw e;
+        }
+        if (iepLogicalDoc.isCheckedOut()) {
+            DfException e = new DfException(DfException.DM_DFC_E_UNDEFINED, "This document is already checked out in another linguistic version");
+            throw e;
+        }
+        iepLogicalDoc.checkout();
+    }
+    strFileLocation = super.getFileEx2(fileName, formatName, pageNumber, pageModifier, getResource);
+    // CADMOS integration
+    if (this.getFormat().getName().equals("xml")) {
+        try {
+            if (this.isCadmosXml()) {
+                // CADMOS Integration logic
+                originalFile = new File(strFileLocation);
+                // Create a file that will tell the ContentTransferService
+                // it needs to use the CADMOS logic
+                cadmosFile = new File(originalFile.getParent() + "/cadmos_enabled");
+                cadmosFile.createNewFile();
+                strTransferLocation = "//eiciappdev/CAD_TRANS$/xml/" + originalFile.getName();
+                transferedFile = new File(strTransferLocation);
+                // Copies src file to dst file.
+                // If the dst file does not exist, it is created
+                in = new FileInputStream(originalFile);
+                out = new FileOutputStream(transferedFile);
+                // Transfer bytes from in to out
+                buf = new byte[1024];
+                while ((len = in.read(buf)) > 0) {
+                    out.write(buf, 0, len);
+                }
+                in.close();
+                out.close();
+                strReturnLocation = "//eiciappdev/CAD_TRANS$/wml/" + originalFile.getName();
+                strBase64transfered = Base64Encoder.encode(("/dvl/app/jbcadmosintdv/jboss/server/cadmosint/data/transfert/xml/" + originalFile.getName()).getBytes()).toString();
+                strBase64transfered = URLEncoder.encode(strBase64transfered, "UTF-8");
+                strBase64returned = Base64Encoder.encode(("/dvl/app/jbcadmosintdv/jboss/server/cadmosint/data/transfert/wml/" + originalFile.getName()).getBytes()).toString();
+                strBase64returned = URLEncoder.encode(strBase64returned, "UTF-8");
+                // Send data to servlet
+                strUrl = "http://www.cadmosintdv.ep.parl.union.eu/Cadmos-Web/transform?xmlpath=" + strBase64transfered + "&wmlpath=" + strBase64returned;
+                url = new URL(strUrl);
+                conn = (HttpURLConnection) url.openConnection();
+                conn.connect();
+                conn.getContent();
+                blnExists = new File(strReturnLocation).exists();
+                while (!blnExists) {
+                    blnExists = new File(strReturnLocation).exists();
+                    i++;
+                    if (i > 100000) {
+                        throw new DfException(DfException.DM_DFC_E_UNDEFINED, "Unable to retrieve the Word ML conversion from the CADMOS servlet.");
+                    }
+                }
+                returnedFile = new File(strReturnLocation);
+                // String strOriginalName = originalFile.getName();
+                strFileLocation = strFileLocation.replaceAll(".xml", "_Temp.xml");
+                if (!new File(strFileLocation).exists()) {
+                    originalFile = new File(strFileLocation);
+                }
+                // Copies src file to dst file.
+                // If the dst file does not exist, it is created
+                in = new FileInputStream(returnedFile);
+                out = new FileOutputStream(originalFile);
+                // Transfer bytes from in to out
+                buf = new byte[1024];
+                while ((len = in.read(buf)) > 0) {
+                    out.write(buf, 0, len);
+                }
+                in.close();
+                out.close();
+                transferedFile.delete();
+            }
+        } catch (Exception e) {
+            // e.printStackTrace();
+            throw new DfException(DfException.DM_DFC_E_UNDEFINED, e.toString());
+        }
+    }
+    return strFileLocation;
+}

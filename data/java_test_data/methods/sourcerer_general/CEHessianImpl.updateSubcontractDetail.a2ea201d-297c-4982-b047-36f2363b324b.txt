@@ -1,0 +1,84 @@
+private Result updateSubcontractDetail(Subcontract sub, String oldrfc, String rfc, int costtype, String co, String jobrfc, boolean approved) throws SQLException {
+    Result result = new Result(Action.NO_ACTION);
+    ResultSet rs = getSubitem(sub, oldrfc);
+    boolean created = false;
+    int jcunique = 0;
+    String subnum = null;
+    if (!rs.first()) {
+        rs.moveToInsertRow();
+        created = true;
+        log.debug("Creating subitem");
+        result = new Result(Action.CREATED);
+        subnum = sub.getAltContractId() == null ? Integer.toString(sub.getContractId()) : sub.getAltContractId();
+        rs.updateString("subnum", subnum);
+        ResultSet jcu = cdb.dbQuery("select * from jcunique where id = 0", true);
+        if (jcu.first()) {
+            jcunique = jcu.getInt("lastused") + 1;
+            jcu.updateInt("lastused", jcunique);
+            jcu.updateRow();
+        }
+        if (jcu != null)
+            jcu.getStatement().close();
+    } else {
+        result = new Result(Action.UPDATED);
+        subnum = rs.getString("subnum");
+        jcunique = rs.getInt("jcunique");
+        log.debug("Found subitem: " + subnum);
+    }
+    rs.updateInt("sequence", 1);
+    Code code = sub.getCode();
+    rs.updateString("rfcnum", rfc);
+    rs.updateString("jobnum", code.getJobNum());
+    rs.updateString("phasenum", code.getDivision());
+    rs.updateString("catnum", code.getCostCode());
+    rs.updateString("des", sub.getDescription());
+    rs.updateInt("flatprice", 1);
+    rs.updateDouble("amount", sub.getAmount());
+    rs.updateInt("costtype", costtype);
+    rs.updateInt("jcunique", jcunique);
+    if (created)
+        rs.insertRow();
+    else
+        rs.updateRow();
+    if (rs != null)
+        rs.getStatement().close();
+    rs = cdb.dbQuery("select * from subheader where subnum = '" + subnum + "' and " + getRfcQuery(oldrfc), true);
+    created = false;
+    if (!rs.first()) {
+        rs.moveToInsertRow();
+        created = true;
+    }
+    rs.updateString("subnum", subnum);
+    rs.updateString("rfcnum", rfc);
+    rs.updateString("jobnum", code.getJobNum());
+    rs.updateString("vennum", sub.getAltCompanyId());
+    rs.updateString("des", sub.getDescription());
+    rs.updateString("contracttext", sub.getText());
+    log.debug("updateSubcontractDetail: conum->" + co);
+    rs.updateString("conum", co);
+    rs.updateString("jobrfcnum", jobrfc);
+    rs.updateDate("entereddate", (java.sql.Date) sub.getDate());
+    rs.updateDate("contractdate", (java.sql.Date) sub.getDate());
+    if (approved) {
+        rs.updateDate("approveddate", (java.sql.Date) sub.getDate());
+        rs.updateInt("approved", 1);
+    } else {
+        rs.updateDate("approveddate", null);
+        rs.updateInt("approved", 0);
+    }
+    log.debug("Setting retention: " + sub.getRetention() * 100);
+    rs.updateDouble("retentionpct", sub.getRetention() * 100);
+    rs.updateDouble("contracttotal", sub.getAmount());
+    if (created)
+        rs.insertRow();
+    else
+        rs.updateRow();
+    if (rs != null)
+        rs.getStatement().close();
+    result.setId("jcunique", Integer.toString(jcunique));
+    result.setId("altContractId", subnum);
+    if (log.isDebugEnabled())
+        log.debug(result.getAction() + " subcontract using jcunique: " + result.getId("jcunique") + " and altContractId: " + result.getId("altContractId"));
+    updateCommittedCosts(subnum, jcunique, sub, true);
+    return result;
+}

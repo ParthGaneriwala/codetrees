@@ -1,0 +1,107 @@
+public synchronized void processData(byte[] data, int size) {
+    int start = 0;
+    int dim = 0;
+    int channel = 0;
+    if (// ci sono dati parziali
+    bufferSize > 0) {
+        // System.out.println("Ci sono dati parziali dal buffer precedente: " + bufferSize + " byte");
+        int bufferPosition = 0;
+        byte[] header = new byte[8];
+        // creazione dell'header
+        if (// l'intero header è presente nel buffer
+        bufferSize >= 8) {
+            System.arraycopy(buffer, 0, header, 0, 8);
+        } else // header non completo
+        {
+            // System.out.println("Copio i dati parziali dal vecchio buffer..");
+            // copia della parte salvata...
+            System.arraycopy(buffer, 0, header, 0, bufferSize);
+            // copia parte restante header..
+            System.arraycopy(data, 0, header, bufferSize, 8 - bufferSize);
+            start += 8 - bufferSize;
+        }
+        // recupero informazioni
+        DataInputStream in = new DataInputStream(new ByteArrayInputStream(header));
+        try {
+            dim = in.readInt();
+            channel = in.readInt();
+            if (// ci sono abbastanza dati in questo pacchetto..
+            dim <= (bufferSize - 8) + size) {
+                byte[] b = new byte[dim];
+                if (// altri dati nel buffer parziale...
+                bufferSize > 8) {
+                    System.arraycopy(buffer, 8, b, 0, bufferSize - 8);
+                    bufferPosition += 8;
+                    System.arraycopy(data, start, b, bufferSize - 8, dim - bufferSize + 8);
+                    // aumentiamo lo start con i dati letti dal nuovo buffer
+                    start += dim - bufferSize + 8;
+                } else {
+                    System.arraycopy(data, start, b, 0, dim);
+                    // System.out.println(" -- B size" + bufferSize + " start " + start);
+                    // aumentiamo lo start con i dati letti dal nuovo buffer
+                    start += dim;
+                }
+                // comunicator.getChannel(channel).onReceive(session, new MessageInputStream(b));
+                comunicator.getWorkerThreadPool().addWorker(new Worker(comunicator.getChannel(channel), session, new MessageInputStream(b)));
+                // azzeriamo il buffer che è stato consumato tutto il buffer...
+                bufferSize = 0;
+            } else // non ci sono abbastanza dati nel pacchetto salviamolo nel buffer..
+            {
+                // System.out.println("Non ho abbastanza dati parziali...");
+                System.arraycopy(data, 8, buffer, bufferSize, size);
+                start = size;
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            System.exit(0);
+        }
+    }
+    // scansioniamo il resto del messaggio se presente...
+    while (start < size) {
+        // System.out.println("start: " + start + " - size: " + size);
+        if (// posso leggere l'intero header...
+        size - start >= 8) {
+            byte[] header = new byte[8];
+            System.arraycopy(data, start, header, 0, 8);
+            DataInputStream in = new DataInputStream(new ByteArrayInputStream(header));
+            try {
+                dim = in.readInt();
+                channel = in.readInt();
+                // System.out.println("-- dim: " + dim + "  channel: " + channel);
+                start += 8;
+                if (// posso leggere l'intero messaggio
+                dim <= size - start) {
+                    byte[] b = new byte[dim];
+                    System.arraycopy(data, start, b, 0, dim);
+                    try {
+                        // comunicator.getChannel(channel).onReceive(session, new MessageInputStream(b));
+                        comunicator.getWorkerThreadPool().addWorker(new Worker(comunicator.getChannel(channel), session, new MessageInputStream(b)));
+                    } catch (Exception e) {
+                        // System.err.println(" ------ channel: " + channel);
+                        e.printStackTrace();
+                        System.exit(0);
+                    }
+                    start += dim;
+                    // azzeriamo il buffer che è stato consumato tutto il buffer...
+                    bufferSize = 0;
+                } else // non posso leggere l'intero messaggio salviamo tutto nel buffer.
+                {
+                    // System.out.println("Messaggio spezzato...");
+                    System.arraycopy(data, start - 8, buffer, 0, size - start + 8);
+                    bufferSize = size - start + 8;
+                    // abbiamo consumato tutti i dati...
+                    start = size;
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        } else // l'header non è completo, salviamolo nel buffer
+        {
+            bufferSize = size - start;
+            System.arraycopy(data, start, buffer, 0, bufferSize);
+            // System.out.println("Header non completo, copio " + bufferSize + " byte");
+            // abbiamo consumato tutti i dati...
+            start = size;
+        }
+    }
+}

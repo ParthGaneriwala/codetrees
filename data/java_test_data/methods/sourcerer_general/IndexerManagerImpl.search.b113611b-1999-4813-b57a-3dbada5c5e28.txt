@@ -1,0 +1,87 @@
+@SuppressWarnings("unchecked")
+public List search(SearchQuery searchQuery, User user) throws Exception {
+    Directory directory = null;
+    IndexSearcher is = null;
+    BooleanQuery query = new BooleanQuery();
+    boolean timeSearch = true;
+    RangeFilter filter = null;
+    try {
+        directory = getIndexDirectory(user.getCommunityId(), false);
+        is = new IndexSearcher(directory);
+        if (addFilterFor("name", searchQuery.getName(), query, BooleanClause.Occur.SHOULD, true)) {
+            timeSearch = false;
+        }
+        if (StringUtils.hasText(searchQuery.getQuickSearch())) {
+            Collection<String> fieldNames = is.getIndexReader().getFieldNames(IndexReader.FieldOption.ALL);
+            if (fieldNames != null) {
+                String[] fields = new String[fieldNames.size()];
+                Occur[] occur = new Occur[fields.length];
+                int i = 0;
+                for (String name : fieldNames) {
+                    fields[i] = name;
+                    occur[i++] = BooleanClause.Occur.SHOULD;
+                }
+                query.add(MultiFieldQueryParser.parse(searchQuery.getQuickSearch(), fields, occur, new StandardAnalyzer()), BooleanClause.Occur.SHOULD);
+            }
+        }
+        if (searchQuery.getTypeId() != 0) {
+            if (addFilterFor("typeId", Integer.toString(searchQuery.getTypeId()), query, BooleanClause.Occur.SHOULD, true)) {
+                timeSearch = false;
+            }
+        }
+        if (StringUtils.hasText(searchQuery.getFree())) {
+            query.add(new QueryParser("", new StandardAnalyzer()).parse(searchQuery.getFree()), BooleanClause.Occur.SHOULD);
+        }
+        Map<String, String> fields = searchQuery.getFields();
+        for (String name : fields.keySet()) {
+            String value = fields.get(name);
+            if (StringUtils.hasText(value)) {
+                if (addFilterFor(name, value, query, BooleanClause.Occur.SHOULD, true)) {
+                    timeSearch = false;
+                }
+            }
+        }
+        filter = getTimeFilter(searchQuery, filter);
+        if (timeSearch && filter != null) {
+            query.add(new WildcardQuery(new Term("name", "*")), BooleanClause.Occur.MUST);
+        }
+        LOG.debug(query.toString());
+        Hits hits = is.search(query, filter);
+        if (hits.length() > 0) {
+            int length = hits.length();
+            List<Map<String, Object>> list = new ArrayList<Map<String, Object>>(length);
+            for (int i = 0; i < length; ++i) {
+                Document doc = hits.doc(i);
+                Map<String, Object> map = new HashMap<String, Object>();
+                for (Enumeration enumer = doc.fields(); enumer.hasMoreElements(); ) {
+                    Field field = (Field) enumer.nextElement();
+                    String name = field.name();
+                    if ("modified".equals(name) || "createdate".equals(name)) {
+                        String value = doc.get(name);
+                        if (StringUtils.hasText(value)) {
+                            map.put(name, DateTools.stringToDate(value));
+                        }
+                    } else {
+                        map.put(name, doc.get(name));
+                    }
+                }
+                map.put("score", NumberFormat.getPercentInstance().format(hits.score(i)));
+                list.add(map);
+            }
+            return list;
+        }
+    } catch (FileNotFoundException fnfe) {
+    /* ignore no index has been created for this community => no results */
+    } catch (BooleanQuery.TooManyClauses tmc) {
+    /* ignore */
+    } finally {
+        if (is != null) {
+            try {
+                is.close();
+            } catch (Exception e) {
+            }
+        }
+        close(directory);
+    }
+    return null;
+}

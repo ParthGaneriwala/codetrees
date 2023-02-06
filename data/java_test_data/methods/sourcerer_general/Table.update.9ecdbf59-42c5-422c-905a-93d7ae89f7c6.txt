@@ -1,0 +1,55 @@
+int update(Session session, HashMappedList updateList, int[] cols) throws HsqlException {
+    HashSet path = constraintPath == null ? new HashSet() : constraintPath;
+    constraintPath = null;
+    HashMappedList tUpdateList = tableUpdateList == null ? new HashMappedList() : tableUpdateList;
+    tableUpdateList = null;
+    // set identity column where null and check columns
+    for (int i = 0; i < updateList.size(); i++) {
+        Object[] data = (Object[]) updateList.get(i);
+        // this means the identity column can be set to null to force
+        // creation of a new identity value
+        setIdentityColumn(session, data);
+        enforceFieldValueLimits(data, cols);
+        enforceNullConstraints(data);
+    }
+    // perform check/cascade operations
+    if (database.isReferentialIntegrity()) {
+        for (int i = 0; i < updateList.size(); i++) {
+            Object[] data = (Object[]) updateList.get(i);
+            Row row = (Row) updateList.getKey(i);
+            checkCascadeUpdate(session, this, tUpdateList, row, data, cols, null, path);
+        }
+    }
+    fireAll(session, Trigger.UPDATE_BEFORE);
+    // merge any triggered change to this table with the update list
+    HashMappedList triggeredList = (HashMappedList) tUpdateList.get(this);
+    if (triggeredList != null) {
+        for (int i = 0; i < triggeredList.size(); i++) {
+            Row row = (Row) triggeredList.getKey(i);
+            Object[] data = (Object[]) triggeredList.get(i);
+            mergeKeepUpdate(session, updateList, cols, colTypes, row, data);
+        }
+        triggeredList.clear();
+    }
+    // check transactions
+    for (int i = 0; i < tUpdateList.size(); i++) {
+        Table table = (Table) tUpdateList.getKey(i);
+        HashMappedList updateListT = (HashMappedList) tUpdateList.get(i);
+        database.txManager.checkDelete(session, updateListT);
+    }
+    database.txManager.checkDelete(session, updateList);
+    // update lists - main list last
+    for (int i = 0; i < tUpdateList.size(); i++) {
+        Table table = (Table) tUpdateList.getKey(i);
+        HashMappedList updateListT = (HashMappedList) tUpdateList.get(i);
+        table.updateRowSet(session, updateListT, null, false);
+        updateListT.clear();
+    }
+    updateRowSet(session, updateList, cols, true);
+    fireAll(session, Trigger.UPDATE_AFTER);
+    path.clear();
+    constraintPath = path;
+    tableUpdateList = tUpdateList;
+    clearUpdateLists(tableUpdateList);
+    return updateList.size();
+}

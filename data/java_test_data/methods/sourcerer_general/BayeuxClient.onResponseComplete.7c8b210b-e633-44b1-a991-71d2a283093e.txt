@@ -1,0 +1,80 @@
+protected void onResponseComplete() throws IOException {
+    super.onResponseComplete();
+    if (!isRunning())
+        return;
+    if (getResponseStatus() == 200 && _responses != null && _responses.length > 0) {
+        try {
+            startBatch();
+            for (int i = 0; i < _responses.length; i++) {
+                Message msg = _responses[i];
+                // get advice if there is any
+                Map adviceField = (Map) msg.get(Bayeux.ADVICE_FIELD);
+                if (adviceField != null)
+                    _advice = new Advice(adviceField);
+                if (Bayeux.META_CONNECT.equals(msg.get(Bayeux.CHANNEL_FIELD))) {
+                    Boolean successful = (Boolean) msg.get(Bayeux.SUCCESSFUL_FIELD);
+                    if (successful != null && successful.booleanValue()) {
+                        metaConnect(true, msg);
+                        if (!isRunning())
+                            break;
+                        synchronized (_outQ) {
+                            if (_disconnecting)
+                                continue;
+                            if (!isInitialized()) {
+                                setInitialized(true);
+                                {
+                                    if (_outQ.size() > 0) {
+                                        _push = new Publish();
+                                        send(_push);
+                                    }
+                                }
+                            }
+                        }
+                        // send a Connect (ie longpoll) possibly with
+                        // delay according to interval advice
+                        _pull = new Connect();
+                        send(_pull, false);
+                    } else {
+                        // received a failure to our connect message,
+                        // check the advice to see what to do:
+                        // reconnect: none = hard error
+                        // reconnect: handshake = send a handshake
+                        // message
+                        // reconnect: retry = send another connect,
+                        // possibly using interval
+                        setInitialized(false);
+                        metaConnect(false, msg);
+                        synchronized (_outQ) {
+                            if (!isRunning() || _disconnecting)
+                                break;
+                        }
+                        if (_advice != null && _advice.isReconnectNone())
+                            throw new IOException("Connect failed, advice reconnect=none");
+                        else if (_advice != null && _advice.isReconnectHandshake()) {
+                            if (Log.isDebugEnabled())
+                                Log.debug("connect received success=false, advice is to rehandshake");
+                            _pull = new Handshake();
+                            send(_pull, true);
+                        } else {
+                            // assume retry = reconnect
+                            if (Log.isDebugEnabled())
+                                Log.debug("Assuming retry=reconnect");
+                            resend(true);
+                        }
+                    }
+                }
+                deliver(null, msg);
+            }
+        } finally {
+            endBatch();
+        }
+    } else {
+        Message error = _msgPool.newMessage();
+        error.put(Bayeux.SUCCESSFUL_FIELD, Boolean.FALSE);
+        error.put("status", getResponseStatus());
+        error.put("content", getResponseContent());
+        metaConnect(false, error);
+        resend(true);
+    }
+    recycle();
+}

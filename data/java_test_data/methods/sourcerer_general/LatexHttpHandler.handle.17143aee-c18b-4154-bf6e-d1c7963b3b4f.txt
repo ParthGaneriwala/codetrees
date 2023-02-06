@@ -1,0 +1,90 @@
+@Override
+public void handle(HttpExchange exchange) throws IOException {
+    String requestMethod = exchange.getRequestMethod();
+    String clientIp = exchange.getRemoteAddress().getAddress().getHostAddress();
+    System.out.println("Received " + requestMethod + " request for " + exchange.getRequestURI().getPath() + " from " + clientIp);
+    if (!clientIp.equals("127.0.0.1")) {
+        exchange.sendResponseHeaders(401, 0);
+        exchange.getResponseBody().close();
+        return;
+    }
+    if (requestMethod.equalsIgnoreCase("GET")) {
+        String contentPath = exchange.getRequestURI().getPath();
+        if (contentPath.startsWith("/" + sig)) {
+            contentPath = contentPath.substring(sig.length() + 1);
+        } else {
+            exchange.sendResponseHeaders(401, 0);
+            exchange.getResponseBody().close();
+            return;
+        }
+        if (content.containsKey(contentPath)) {
+            HttpContent rv = content.get(contentPath);
+            switch(rv.getSource()) {
+                case FILE:
+                    File rvFile = new File(rv.getValue());
+                    if (rvFile.exists()) {
+                        Headers responseHeaders = exchange.getResponseHeaders();
+                        responseHeaders.set("Content-Type", rv.getContentType());
+                        exchange.sendResponseHeaders(200, 0);
+                        OutputStream responseBody = exchange.getResponseBody();
+                        FileInputStream pngStream = new FileInputStream(rvFile);
+                        byte[] pngBuffer = new byte[1024];
+                        int read;
+                        while ((read = pngStream.read(pngBuffer)) >= 0) {
+                            responseBody.write(pngBuffer, 0, read);
+                        }
+                        responseBody.close();
+                    }
+                    break;
+                case STRING:
+                    Headers responseHeaders = exchange.getResponseHeaders();
+                    responseHeaders.set("Content-Type", rv.getContentType());
+                    exchange.sendResponseHeaders(200, 0);
+                    OutputStream responseBody = exchange.getResponseBody();
+                    responseBody.write(rv.getValue().getBytes());
+                    responseBody.close();
+                    break;
+            }
+        } else {
+            exchange.sendResponseHeaders(404, 0);
+            exchange.getResponseBody().close();
+        }
+    } else if (requestMethod.equalsIgnoreCase("POST")) {
+        content.clear();
+        OutputStream responseBody = exchange.getResponseBody();
+        String req = read(exchange.getRequestBody());
+        req = URLDecoder.decode(req, "UTF-8");
+        if (req.startsWith("request")) {
+            req = req.substring(8);
+        }
+        try {
+            ClsiServiceCompileRequest clsiReq = ClsiServiceCompileRequest.parse(req);
+            CompilerProcess compiler = new CompilerProcess(siteRoot, clsiReq, new CompilerFileOutputHandler() {
+
+                @Override
+                public String onFileOutput(File outputFile, String mimeType) {
+                    String webPath = "/out/" + outputFile.getName();
+                    content.put(webPath, new HttpContent(HttpContentSource.FILE, outputFile.getPath(), mimeType));
+                    return getRootPath() + webPath;
+                }
+
+                @Override
+                public String onFileOutput(String contents, String name, String mimeType) {
+                    String webPath = "/out/" + name;
+                    content.put(webPath, new HttpContent(HttpContentSource.STRING, contents, mimeType));
+                    return getRootPath() + webPath;
+                }
+            });
+            compiler.execute();
+        } catch (ClsiServiceFormatException e) {
+            e.printStackTrace();
+            exchange.sendResponseHeaders(500, 0);
+            exchange.getResponseBody().close();
+            return;
+        }
+        Headers responseHeaders = exchange.getResponseHeaders();
+        responseHeaders.set("Content-Type", "text/html");
+        exchange.sendResponseHeaders(200, 0);
+        responseBody.close();
+    }
+}

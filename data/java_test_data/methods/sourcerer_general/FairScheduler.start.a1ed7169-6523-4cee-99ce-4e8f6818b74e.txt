@@ -1,0 +1,39 @@
+@Override
+public void start() {
+    try {
+        Configuration conf = getConf();
+        eagerInitListener.start();
+        taskTrackerManager.addJobInProgressListener(eagerInitListener);
+        taskTrackerManager.addJobInProgressListener(jobListener);
+        poolMgr = new PoolManager(conf);
+        loadMgr = (LoadManager) ReflectionUtils.newInstance(conf.getClass("mapred.fairscheduler.loadmanager", CapBasedLoadManager.class, LoadManager.class), conf);
+        loadMgr.setTaskTrackerManager(taskTrackerManager);
+        loadMgr.start();
+        taskSelector = (TaskSelector) ReflectionUtils.newInstance(conf.getClass("mapred.fairscheduler.taskselector", DefaultTaskSelector.class, TaskSelector.class), conf);
+        taskSelector.setTaskTrackerManager(taskTrackerManager);
+        taskSelector.start();
+        Class<?> weightAdjClass = conf.getClass("mapred.fairscheduler.weightadjuster", null);
+        if (weightAdjClass != null) {
+            weightAdjuster = (WeightAdjuster) ReflectionUtils.newInstance(weightAdjClass, conf);
+        }
+        assignMultiple = conf.getBoolean("mapred.fairscheduler.assignmultiple", false);
+        sizeBasedWeight = conf.getBoolean("mapred.fairscheduler.sizebasedweight", false);
+        initialized = true;
+        running = true;
+        lastUpdateTime = clock.getTime();
+        // Start a thread to update deficits every UPDATE_INTERVAL
+        if (runBackgroundUpdates)
+            new UpdateThread().start();
+        // Register servlet with JobTracker's Jetty server
+        if (taskTrackerManager instanceof JobTracker) {
+            JobTracker jobTracker = (JobTracker) taskTrackerManager;
+            StatusHttpServer infoServer = jobTracker.infoServer;
+            infoServer.setAttribute("scheduler", this);
+            infoServer.addServlet("scheduler", "/scheduler", FairSchedulerServlet.class);
+        }
+    } catch (Exception e) {
+        // starting up so that the user notices.
+        throw new RuntimeException("Failed to start FairScheduler", e);
+    }
+    LOG.info("Successfully configured FairScheduler");
+}

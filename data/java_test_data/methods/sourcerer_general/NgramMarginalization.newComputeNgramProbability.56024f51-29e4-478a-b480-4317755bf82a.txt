@@ -1,0 +1,59 @@
+// computes probability of an ngram with tags marginalized
+// the ngram is in order w_{i-n+1}...w_{i-1} w_{i}
+public double newComputeNgramProbability(long[] ngram) {
+    byte addedStarts = 0;
+    // find the LAST <s>, to handle crazy strings like "<s> the <s> key"
+    for (int pos = ngram.length - 1; pos >= 0; --pos) {
+        if (Dictionary.isStart(FactorTuple.getValue(ngram[pos], wordFactorIdx))) {
+            if (pos == ngram.length - 1) {
+                // return very small probability
+                return -100.0;
+            }
+            ngram = Arrays.copyOfRange(ngram, pos, ngram.length);
+            addedStarts = 1;
+            ForestModel maxForest = forests[forests.length - 1];
+            if (maxForestStarts && ngram.length < maxForest.getOrder()) {
+                long[] newNgram = new long[maxForest.getOrder()];
+                Arrays.fill(newNgram, 0, newNgram.length - ngram.length, ngram[0]);
+                System.arraycopy(ngram, 0, newNgram, newNgram.length - ngram.length, ngram.length);
+                addedStarts += newNgram.length - ngram.length;
+                ngram = newNgram;
+            }
+            break;
+        }
+    }
+    TreeTrellisNode currentNode = head == null ? new TreeTrellisNode() : head;
+    byte forestOffset = addedStarts;
+    if (addedStarts > 0) {
+        currentNode = Decoder.addStarts(currentNode, addedStarts);
+    }
+    for (byte i = addedStarts; i < ngram.length; ++i, ++forestOffset) {
+        ForestModel forest = forests[Math.min(i, forests.length - 1)];
+        long word = ngram[i] & overtMask;
+        currentNode = currentNode.appendNodeAndLock(word);
+        TreeTrellisNode prevNode = currentNode.getPreviousNode();
+        try {
+            if (!currentNode.isDecoded()) {
+                prevNode.lock(forest.getOrder());
+                try {
+                    DecodingContext context = new DecodingContext(currentNode, forest);
+                    forest.getDecoder().partition(context);
+                    currentNode.finishDecoding();
+                } finally {
+                    prevNode.unlock(forest.getOrder());
+                }
+            }
+        } finally {
+            currentNode.unlock();
+        }
+    }
+    TreeTrellisNode prevNode = currentNode.getPreviousNode();
+    double prob = currentNode.getCumulativeLogScale() + Math.log10(currentNode.getTotalProb());
+    double prevProb = prevNode.getCumulativeLogScale() + Math.log10(prevNode.getTotalProb());
+    currentNode.releasePath();
+    double theProb = prob - prevProb;
+    if (dumpNgrams != null) {
+        dumpNgram(ngram, theProb);
+    }
+    return theProb;
+}

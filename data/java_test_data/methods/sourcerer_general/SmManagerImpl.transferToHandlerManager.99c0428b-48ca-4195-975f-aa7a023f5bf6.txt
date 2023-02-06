@@ -1,0 +1,83 @@
+private void transferToHandlerManager(OnlineUserImpl onlineUser, RouteMessage routeMessage) {
+    XmlStanza stanza = routeMessage.getXmlStanza();
+    String from = routeMessage.getFrom();
+    // message from local user's client
+    if (from.startsWith("c2s_")) {
+        String streamId = routeMessage.getStreamId();
+        String node = routeMessage.getToUserNode();
+        UserResource userResource = null;
+        // user == null when user is not online or to=example.com
+        if (onlineUser != null) {
+            userResource = onlineUser.getUserResourceByStreamId(streamId);
+        }
+        if (userResource == null) {
+            if (!(stanza instanceof Iq)) {
+                RouteMessage mess = new RouteMessage(SmManagerImpl.this.getName(), routeMessage.getFrom(), routeMessage.getStreamId());
+                mess.setCloseStream(true);
+                sendToRouter(mess);
+                if (loggerServiceTracker.isDebugEnabled()) {
+                    loggerServiceTracker.debug("user's resource not exist, binding resource first:" + routeMessage.toXml());
+                }
+                return;
+            }
+            Iq iq = (Iq) stanza;
+            IqBind bind = (IqBind) iq.getExtension(IqBind.ELEMENTNAME, IqBind.NAMESPACE);
+            if (bind == null) {
+                RouteMessage mess = new RouteMessage(SmManagerImpl.this.getName(), routeMessage.getFrom(), routeMessage.getStreamId());
+                mess.setCloseStream(true);
+                sendToRouter(mess);
+                if (loggerServiceTracker.isDebugEnabled()) {
+                    loggerServiceTracker.debug("bind is null:" + routeMessage.toXml());
+                }
+                return;
+            }
+        }
+        MessageQueueWrapper wrapper = new MessageQueueWrapper(routeMessage, true);
+        handlerManager.handleWrapper(node, onlineUser, (UserResourceImpl) userResource, wrapper);
+    } else // message from other user
+    {
+        if (!(stanza instanceof Packet)) {
+            return;
+        }
+        Packet packet = (Packet) stanza;
+        JID to = packet.getTo();
+        String node = to.getNode();
+        String resource = to.getResource();
+        if (onlineUser != null) {
+            UserResource[] resources = new UserResource[] {};
+            // to is fullJID
+            if (resource != null) {
+                UserResource userResource = onlineUser.getUserResource(resource);
+                if (userResource != null && !userResource.isAvailable()) {
+                    return;
+                }
+                resources = new UserResource[] { userResource };
+            } else {
+                resources = smHandlerServiceTracker.checkResource(SmManagerImpl.this, onlineUser, packet);
+                if (resources == null || resources.length == 0) {
+                    // contact send presence or probe presence to me
+                    if (packet instanceof Presence) {
+                        resources = contactManager.checkResource(SmManagerImpl.this, onlineUser, packet);
+                    } else {
+                        resources = new UserResource[] { null };
+                    }
+                }
+            }
+            for (UserResource res : resources) {
+                // block
+                if (privacyManager.shouldBlockReceivePacket(onlineUser, res, packet)) {
+                    if (loggerServiceTracker.isDebugEnabled()) {
+                        loggerServiceTracker.debug("block" + onlineUser.getNode() + "/" + res.getResource() + " receivePacket:" + packet.toXml());
+                    }
+                    return;
+                }
+                MessageQueueWrapper wrapper = new MessageQueueWrapper(routeMessage, false);
+                handlerManager.handleWrapper(node, onlineUser, (UserResourceImpl) res, wrapper);
+            }
+            return;
+        }
+        // no resource online
+        MessageQueueWrapper wrapper = new MessageQueueWrapper(routeMessage, false);
+        handlerManager.handleWrapper(node, onlineUser, null, wrapper);
+    }
+}

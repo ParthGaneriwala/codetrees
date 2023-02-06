@@ -1,0 +1,59 @@
+public void run() {
+    DNSOutgoing out = null;
+    try {
+        // send probes for JmDNS itself
+        if (state == taskState) {
+            if (out == null) {
+                out = new DNSOutgoing(DNSConstants.FLAGS_QR_RESPONSE | DNSConstants.FLAGS_AA);
+            }
+            DNSRecord answer = localHost.getDNS4AddressRecord();
+            if (answer != null) {
+                out.addAnswer(answer, 0);
+            }
+            answer = localHost.getDNS6AddressRecord();
+            if (answer != null) {
+                out.addAnswer(answer, 0);
+            }
+            advanceState();
+        }
+        // send announces for services
+        // Defensively copy the services into a local list,
+        // to prevent race conditions with methods registerService
+        // and unregisterService.
+        List list;
+        synchronized (JmDNS.this) {
+            list = new ArrayList(services.values());
+        }
+        for (Iterator i = list.iterator(); i.hasNext(); ) {
+            ServiceInfo info = (ServiceInfo) i.next();
+            synchronized (info) {
+                if (info.getState() == taskState && info.task == this) {
+                    info.advanceState();
+                    logger.finer("run() JmDNS announcing " + info.getQualifiedName() + " state " + info.getState());
+                    if (out == null) {
+                        out = new DNSOutgoing(DNSConstants.FLAGS_QR_RESPONSE | DNSConstants.FLAGS_AA);
+                    }
+                    out.addAnswer(new DNSRecord.Pointer(info.type, DNSConstants.TYPE_PTR, DNSConstants.CLASS_IN, DNSConstants.DNS_TTL, info.getQualifiedName()), 0);
+                    out.addAnswer(new DNSRecord.Service(info.getQualifiedName(), DNSConstants.TYPE_SRV, DNSConstants.CLASS_IN, DNSConstants.DNS_TTL, info.priority, info.weight, info.port, localHost.getName()), 0);
+                    out.addAnswer(new DNSRecord.Text(info.getQualifiedName(), DNSConstants.TYPE_TXT, DNSConstants.CLASS_IN, DNSConstants.DNS_TTL, info.text), 0);
+                }
+            }
+        }
+        if (out != null) {
+            logger.finer("run() JmDNS announcing #" + taskState);
+            send(out);
+        } else {
+            // If we have nothing to send, another timer taskState ahead
+            // of us has done the job for us. We can cancel.
+            cancel();
+        }
+    } catch (Throwable e) {
+        logger.log(Level.WARNING, "run() exception ", e);
+        recover();
+    }
+    taskState = taskState.advance();
+    if (!taskState.isAnnouncing()) {
+        cancel();
+        new Renewer().start();
+    }
+}

@@ -1,0 +1,66 @@
+public static void main(String[] args) throws DatabaseException, IOException, ClassNotFoundException {
+    OptionParser optParser = new OptionParser(Options.class);
+    final Options opts = (Options) optParser.parse(args, true);
+    Experiment.initialize(opts.config);
+    Experiment experiment = Experiment.getInstance();
+    ForestModel forest = experiment.getForest(opts.forest);
+    DecodingRuntime runtime = forest.getDecodingRuntime();
+    int nrModels = forest.getModels().size();
+    final double[] limits = new double[] { 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0 };
+    double[][] histogram = new double[nrModels][];
+    for (int lmnum = 0; lmnum < nrModels; ++lmnum) {
+        LanguageModel lm = forest.getModels().get(lmnum);
+        double[] weights = runtime.getWeights(lmnum);
+        BinaryTree<HistoryTreePayload>[] nodes = lm.getNodes();
+        double minWeight = Double.POSITIVE_INFINITY;
+        double maxWeight = Double.NEGATIVE_INFINITY;
+        double avgWeight = 0;
+        int nonBackoffNodes = 0;
+        int leafNodes = 0;
+        int[] countByLimit = new int[limits.length];
+        for (int clusterid = 1; clusterid < weights.length; ++clusterid) {
+            BinaryTree<HistoryTreePayload> node = nodes[clusterid];
+            if (node.isLeaf()) {
+                ++leafNodes;
+                if (!node.getPayload().isBackoff) {
+                    double weight = weights[clusterid];
+                    ++nonBackoffNodes;
+                    avgWeight += weight;
+                    if (weight < minWeight) {
+                        minWeight = weight;
+                    }
+                    if (weight > maxWeight) {
+                        maxWeight = weight;
+                    }
+                    for (int l = 0; l < limits.length; ++l) {
+                        if (weight <= limits[l]) {
+                            countByLimit[l] += 1;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        avgWeight /= nonBackoffNodes;
+        histogram[lmnum] = new double[limits.length];
+        for (int l = 0; l < limits.length; ++l) {
+            histogram[lmnum][l] = (double) countByLimit[l] / nonBackoffNodes;
+        }
+        System.out.printf("Model %s: %d non-backoff nodes out of %d leaves, %g min, %g avg, %g max\n", lm.getId(), nonBackoffNodes, leafNodes, minWeight, avgWeight, maxWeight);
+    }
+    System.out.println();
+    System.out.println("Histogram:");
+    System.out.printf("%10s", " ");
+    for (double l : limits) {
+        System.out.printf("%-10s", "<" + String.format("%.1g", l));
+    }
+    System.out.println();
+    for (int lmnum = 0; lmnum < nrModels; ++lmnum) {
+        LanguageModel lm = forest.getModels().get(lmnum);
+        System.out.printf("%-10s", lm.getId());
+        for (double fraction : histogram[lmnum]) {
+            System.out.printf("%-10s", String.format("%.3g", fraction * 100) + "%");
+        }
+        System.out.println();
+    }
+}

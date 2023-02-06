@@ -1,0 +1,66 @@
+public Object invoke(Object proxy, Method method, Object[] args, boolean swapAtTransactionBoundary) throws Throwable {
+    String methodName = method.getName();
+    if ("getLoadBalanceSafeProxy".equals(methodName)) {
+        return this.currentConn;
+    }
+    if ("equals".equals(methodName) && args.length == 1) {
+        if (args[0] instanceof Proxy) {
+            return Boolean.valueOf((((Proxy) args[0]).equals(this)));
+        }
+        return Boolean.valueOf(this.equals(args[0]));
+    }
+    if ("hashCode".equals(methodName)) {
+        return new Integer(this.hashCode());
+    }
+    if ("close".equals(methodName)) {
+        closeAllConnections();
+        this.isClosed = true;
+        this.closedReason = "Connection explicitly closed.";
+        return null;
+    }
+    if ("isClosed".equals(methodName)) {
+        return Boolean.valueOf(this.isClosed);
+    }
+    if (this.isClosed) {
+        String reason = "No operations allowed after connection closed.";
+        if (this.closedReason != null) {
+            reason += ("  " + this.closedReason);
+        }
+        throw SQLError.createSQLException(reason, SQLError.SQL_STATE_CONNECTION_NOT_OPEN, null);
+    }
+    if (!inTransaction) {
+        this.inTransaction = true;
+        this.transactionStartTime = getLocalTimeBestResolution();
+        this.transactionCount++;
+    }
+    Object result = null;
+    try {
+        this.lastUsed = System.currentTimeMillis();
+        result = method.invoke(thisAsConnection, args);
+        if (result != null) {
+            if (result instanceof com.mysql.jdbc.Statement) {
+                ((com.mysql.jdbc.Statement) result).setPingTarget(this);
+            }
+            result = proxyIfInterfaceIsJdbc(result, result.getClass());
+        }
+    } catch (InvocationTargetException e) {
+        dealWithInvocationException(e);
+    } finally {
+        if (swapAtTransactionBoundary && ("commit".equals(methodName) || "rollback".equals(methodName))) {
+            this.inTransaction = false;
+            // Update stats
+            String host = this.connectionsToHostsMap.get(this.currentConn);
+            // in invalidateCurrenctConnection()
+            if (host != null) {
+                synchronized (this.responseTimes) {
+                    int hostIndex = (this.hostsToListIndexMap.get(host)).intValue();
+                    if (hostIndex < this.responseTimes.length) {
+                        this.responseTimes[hostIndex] = getLocalTimeBestResolution() - this.transactionStartTime;
+                    }
+                }
+            }
+            pickNewConnection();
+        }
+    }
+    return result;
+}

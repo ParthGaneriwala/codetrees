@@ -1,0 +1,143 @@
+// ------------------------------------------------------------------------------
+// ------------------------------------------
+// callback for sub-activities
+protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+    super.onActivityResult(requestCode, resultCode, data);
+    Logger.log(TAG + ".onActivityResult()");
+    Logger.log("requestCode", requestCode);
+    Logger.log("resultCode", resultCode);
+    switch(requestCode) {
+        case R.id.btnCamera:
+            if (resultCode == Activity.RESULT_OK) {
+                Bitmap bm = Media.getTmpImage(64, 48);
+                if (bm != null) {
+                    mItem.image = Media.getTmpImageUri().toString();
+                    Logger.log("tmp.image.URI", mItem.image);
+                    ImageView preview = (ImageView) findViewById(R.id.imgImage);
+                    preview.setImageBitmap(bm);
+                } else
+                    Logger.log("onActivityResult: bm is null");
+            }
+            break;
+        case R.id.btnRecord:
+            /* ***Pulse
+        	  * 
+        	  * We use the Intent "MediaStore.Audio.Media.RECORD_SOUND_ACTION" to record audio for 
+        	  * attachment to entries. The standard behaviour of this intent is to 
+        	  * 1) display a recording screen with Record/Stop/Play buttons, and 
+        	  * 2) give the user a coice to "Use this recording" or "Cancel" after recording something.
+        	  * 
+        	  * Unfortunately the T-Mobile Pulse seems to have "customised" this intent. 
+        	  * The Pulse dor *not* give users a choice to "Use this recording" or "Cancel". 
+        	  * Instead, users have to press the Menu button and then choose from a number of 
+        	  * options like "Share", "Set as Ringtone", ...
+        	  * 
+        	  * This forces us to work around the Pulse "customisation". 
+        	  * 
+        	  * We know from logcat info and phone inspection that
+        	  * - we can identify the Pulse
+        	  * - all recordings are stored in SDCard/Recordings/ 
+        	  * - recorded audio files follow this naming scheme: "recordingYYYMMDD_NNN.amr"
+        	  * - the intent always returns requestCode=R.id.btnRecord resultCode=0
+        	  * 
+        	  * Based on this information we now
+        	  * - check if it's a Pulse phone
+        	  * - identify the youngest recording in SDCard/Recordings/ 
+        	  * - verify that it is not older than <threshold> milliseconds 
+        	  * - display an alert asking whether to use the recording or not
+        	  * 
+        	  * Search for CB.isTMobilePulse() to track down all Pulse Hacks!
+        	  * 
+        	  */
+            if (CB.isTMobilePulse()) {
+                Logger.log("Start work-around for audio recording on T-Mobile Pulse");
+                // max age of recordings to be considered 'current'
+                int MAX_REC_AGE = 60000;
+                // locate folder where Pulse stores recordings
+                File recordings = new File(Environment.getExternalStorageDirectory(), "Recordings");
+                if (recordings.exists() && recordings.isDirectory()) {
+                    // get newest recording
+                    mPulseLastRecording = null;
+                    long pulse_last_modified = 0;
+                    File[] recs = recordings.listFiles();
+                    for (int i = 0; i < recs.length; i++) {
+                        long m = recs[i].lastModified();
+                        if (m > pulse_last_modified) {
+                            pulse_last_modified = m;
+                            mPulseLastRecording = recs[i];
+                        }
+                    }
+                    // see if last recording is 'current'
+                    if (mPulseLastRecording != null) {
+                        Time now = new Time();
+                        now.setToNow();
+                        long age = now.toMillis(false) - pulse_last_modified;
+                        Logger.log("rec age", age);
+                        if (age < MAX_REC_AGE) {
+                            // -------------------------------
+                            // OK we have a current recording.
+                            // does the user want to use it?
+                            // -------------------------------
+                            new AlertDialog.Builder(ActivityEdit.this).setMessage("Use recording for this entry?").setPositiveButton("Use recording", new DialogInterface.OnClickListener() {
+
+                                public void onClick(DialogInterface dialog, int whichButton) {
+                                    if (Media.retrieveAudioFromPhone(mPulseLastRecording.getAbsolutePath())) {
+                                        mItem.audio = Media.getTmpAudioUri().toString();
+                                        Logger.log("Media.getTmpAudioUri()", mItem.audio);
+                                        ImageView preview = (ImageView) findViewById(R.id.imgAudio);
+                                        preview.setImageResource(R.drawable.edit_audio);
+                                    }
+                                }
+                            }).setNegativeButton("Discard", null).show();
+                        }
+                    }
+                }
+                Logger.log("End work-around for audio recording on T-Mobile Pulse");
+            } else {
+                // 
+                if ((resultCode == Activity.RESULT_OK) && data != null) {
+                    try {
+                        // 
+                        // The default SoundRecorder stores recorded audio as .3gpp files
+                        // on the SD card (root) and creates an entry in the MediaStore
+                        // referencing this file. The Activity then returns an uri_with_id
+                        // that gives direct access to the record in the MediaStore database
+                        // e.g. content://media/external/audio/media/2  ('2' is the _id)
+                        // We use this uri to retrieve the MediaStore column and find
+                        // out the path to the actual audio file. This is then copied to
+                        // our own Media.tmp_audio_path (to avoid the user accidentally
+                        // deleting it) from there it is uploaded to the server.
+                        // 
+                        Logger.log("data.getData()", data.getDataString());
+                        String[] cols = new String[] { MediaStore.MediaColumns.DATA };
+                        Cursor c = getContentResolver().query(data.getData(), cols, null, null, null);
+                        c.moveToFirst();
+                        String audio_file = c.getString(0);
+                        c.close();
+                        if (Media.retrieveAudioFromPhone(audio_file)) {
+                            mItem.audio = Media.getTmpAudioUri().toString();
+                            Logger.log("Media.getTmpAudioUri()", mItem.audio);
+                            ImageView preview = (ImageView) findViewById(R.id.imgAudio);
+                            preview.setImageResource(R.drawable.edit_audio);
+                        }
+                    } catch (Exception e) {
+                        Logger.log(e);
+                    }
+                }
+            }
+            break;
+        case R.id.btnBrowse:
+            if (resultCode == Activity.RESULT_OK) {
+                try {
+                    String url = data.getExtras().getString("url");
+                    Logger.log("selected URL", url);
+                    mItem.link = url;
+                    ImageView preview = (ImageView) findViewById(R.id.imgLink);
+                    preview.setImageResource(R.drawable.edit_link);
+                } catch (Exception e) {
+                    Logger.log(e);
+                }
+            }
+            break;
+    }
+}

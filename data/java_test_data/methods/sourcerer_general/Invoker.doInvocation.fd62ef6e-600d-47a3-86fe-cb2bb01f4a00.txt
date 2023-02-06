@@ -1,0 +1,121 @@
+private void doInvocation(String[] args, String[] argTypes, String[] typeParams) {
+    int numArgs = (args == null ? 0 : args.length);
+    final String className = member.getClassName();
+    // Generic methods currently require special handling
+    boolean isGenericMethod = member.isGeneric() && !member.isConstructor();
+    // prepare variables (assigned with actual values) for each parameter
+    StringBuffer buffer = new StringBuffer();
+    if (!isGenericMethod) {
+        for (int i = 0; i < numArgs; i++) {
+            buffer.append(argTypes[i]);
+            buffer.append(" __bluej_param" + i);
+            buffer.append(" = " + args[i]);
+            buffer.append(";" + Config.nl);
+        }
+    }
+    String paramInit = buffer.toString();
+    // Build two strings with parameter lists: one using the variable names
+    // "(__bluej_param0,__bluej_param1,...)" for internal use, one using the
+    // actual values for interface display.
+    buffer.setLength(0);
+    StringBuffer argBuffer = new StringBuffer();
+    buildArgStrings(buffer, argBuffer, args);
+    String argString = buffer.toString();
+    String actualArgString = argBuffer.toString();
+    if (isGenericMethod)
+        argString = actualArgString;
+    // build the invocation string
+    buffer.setLength(0);
+    // the interactive command in text form
+    String command;
+    boolean isVoid = false;
+    String constype = null;
+    if (constructing) {
+        constype = cleverQualifyTypeName(pkg, className);
+        if (typeParams != null && typeParams.length > 0) {
+            constype += "<";
+            for (int i = 0; i < typeParams.length; i++) {
+                String typeParam = typeParams[i];
+                constype += typeParam;
+                if (i < (typeParams.length - 1)) {
+                    constype += ",";
+                }
+            }
+            constype += ">";
+        }
+        command = "new " + constype;
+        ir = new ConstructionInvokerRecord(constype, instanceName, command + actualArgString, args);
+    // BeanShell
+    // commandAsString = command + actualArgString;
+    } else {
+        // it's a method call
+        MethodView method = (MethodView) member;
+        isVoid = method.isVoid();
+        if (method.isStatic())
+            command = cleverQualifyTypeName(pkg, className) + "." + method.getName();
+        else {
+            command = objName + "." + method.getName();
+        }
+        if (isVoid) {
+            if (method.isMain()) {
+                // call)
+                if (!Config.isGreenfoot()) {
+                    pmf.getProject().removeClassLoader();
+                    pmf.getProject().newRemoteClassLoaderLeavingBreakpoints();
+                }
+                ir = new StaticVoidMainMethodInvokerRecord();
+            } else {
+                ir = new VoidMethodInvokerRecord(command + actualArgString, args);
+            }
+            instanceName = null;
+        } else {
+            ir = new MethodInvokerRecord(method.getGenericReturnType(), command + actualArgString, args, pmf);
+            instanceName = "result";
+        }
+    // BeanShell
+    // commandAsString = "bluej.runtime.Shell.makeObj(" + command +
+    // actualArgString + ");";
+    }
+    if (constructing && member.getParameterCount() == 0 && (typeParams == null || typeParams.length == 0)) {
+        // Special case for construction of a class using the default constructor.
+        // We can do this without writing and compiling a shell file.
+        commandString = command + actualArgString;
+        BlueJEvent.raiseEvent(BlueJEvent.METHOD_CALL, commandString);
+        // We must however do so in a seperate thread. Otherwise a constructor which
+        // goes into an infinite loop can hang BlueJ.
+        new Thread() {
+
+            public void run() {
+                EventQueue.invokeLater(new Runnable() {
+
+                    public void run() {
+                        closeCallDialog();
+                    }
+                });
+                final DebuggerResult result = pkg.getProject().getDebugger().instantiateClass(className);
+                EventQueue.invokeLater(new Runnable() {
+
+                    public void run() {
+                        // the execution is completed, get the result if there was one
+                        // (this could be either a construction or a function result)
+                        // handles error situations
+                        handleResult(result);
+                        pmf.setWaitCursor(false);
+                        // update all open inspect windows
+                        pkg.getProject().updateInspectors();
+                    }
+                });
+            }
+        }.start();
+    } else {
+        if (isVoid)
+            argString += ';';
+        File shell = writeInvocationFile(paramInit, command + argString, isVoid, constype);
+        if (shell != null) {
+            commandString = command + actualArgString;
+            compileInvocationFile(shell);
+        } else {
+            endCompile(new File[0], false);
+        }
+    }
+}

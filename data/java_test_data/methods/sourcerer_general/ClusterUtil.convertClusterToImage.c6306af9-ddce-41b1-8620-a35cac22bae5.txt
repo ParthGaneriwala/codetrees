@@ -1,0 +1,106 @@
+public static Image convertClusterToImage(Loader loader, Cluster cluster, int height, int width, ClusterLayout layouter, boolean layoutNecessary) {
+    DGraphView view;
+    Image image;
+    // the nodes and edges is deemed as 25% of the whole task
+    int weightSetupNodes = 20;
+    int weightSetupEdges = 5;
+    // layout it is 70%
+    int weightLayout = 75;
+    int goalTotal = weightSetupNodes + weightSetupEdges;
+    if (layoutNecessary) {
+        goalTotal += weightLayout;
+    }
+    // keeps track of progress as a percent of the totalGoal
+    double progress = 0;
+    view = generateGraphView(cluster.getGPCluster());
+    for (Iterator in = view.getNodeViewsIterator(); in.hasNext(); ) {
+        if (INTERRUPTED) {
+            if (layouter != null)
+                layouter.resetDoLayout();
+            resetLoading();
+            return null;
+        }
+        NodeView nv = (NodeView) in.next();
+        // Otherwise we give it new generic data
+        String label = nv.getNode().getIdentifier();
+        nv.getLabel().setText(label);
+        nv.setWidth(30);
+        nv.setHeight(30);
+        if (cluster.getSeedNode().intValue() == nv.getRootGraphIndex()) {
+            nv.setShape(NodeView.TRIANGLE);
+        } else {
+            nv.setShape(NodeView.ELLIPSE);
+        }
+        nv.setUnselectedPaint(Color.GRAY);
+        nv.setBorderPaint(Color.BLACK);
+        // First we check if the Cluster already has a node view of this node (posing the more generic condition
+        if (cluster.getDGView() != null && cluster.getDGView().getNodeView(nv.getNode().getRootGraphIndex()) != null) {
+            // If it does, then we take the layout position that was already generated for it
+            nv.setXPosition(cluster.getDGView().getNodeView(nv.getNode().getRootGraphIndex()).getXPosition());
+            nv.setYPosition(cluster.getDGView().getNodeView(nv.getNode().getRootGraphIndex()).getYPosition());
+        } else {
+            // Otherwise, randomize node positions before layout so that they don't all layout in a line
+            // (so they don't fall into a local minimum for the SpringEmbedder)
+            // If the SpringEmbedder implementation changes, this code may need to be removed
+            // size is small for many default drawn graphs, thus +100
+            nv.setXPosition((view.getCanvas().getWidth() + 100) * Math.random());
+            nv.setYPosition((view.getCanvas().getHeight() + 100) * Math.random());
+            if (!layoutNecessary) {
+                goalTotal += weightLayout;
+                progress /= (goalTotal / (goalTotal - weightLayout));
+                layoutNecessary = true;
+            }
+        }
+        if (loader != null) {
+            progress += 100.0 * (1.0 / (double) view.nodeCount()) * ((double) weightSetupNodes / (double) goalTotal);
+            loader.setProgress((int) progress, "Setup: nodes");
+        }
+    }
+    for (Iterator ie = view.getEdgeViewsIterator(); ie.hasNext(); ) {
+        if (INTERRUPTED) {
+            System.err.println("Interrupted: Edge Setup");
+            if (layouter != null)
+                layouter.resetDoLayout();
+            resetLoading();
+            return null;
+        }
+        EdgeView ev = (EdgeView) ie.next();
+        ev.setUnselectedPaint(Color.blue);
+        ev.setTargetEdgeEnd(EdgeView.BLACK_ARROW);
+        ev.setTargetEdgeEndPaint(Color.CYAN);
+        ev.setSourceEdgeEndPaint(Color.CYAN);
+        ev.setStroke(new BasicStroke(5f));
+        if (loader != null) {
+            progress += 100.0 * (1.0 / (double) view.edgeCount()) * ((double) weightSetupEdges / (double) goalTotal);
+            loader.setProgress((int) progress, "Setup: edges");
+        }
+    }
+    if (layoutNecessary) {
+        if (layouter == null) {
+            layouter = new ClusterLayout();
+        }
+        layouter.setGraphView(view);
+        // The doLayout method should return true if the process completes without interruption
+        if (!layouter.doLayout(weightLayout, goalTotal, progress, loader)) {
+            // Otherwise, if layout is not completed, set the interruption to false, and return null, not an image
+            resetLoading();
+            return null;
+        }
+    }
+    view.getCanvas().setSize(width, height);
+    view.fitContent();
+    image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+    final Graphics2D g = (Graphics2D) image.getGraphics();
+    view.getCanvas().paint(g);
+    image = view.getCanvas(DGraphView.Canvas.NETWORK_CANVAS).getImage();
+    double largestSide = view.getCanvas().getWidth();
+    if (view.getCanvas().getHeight() > largestSide) {
+        largestSide = view.getCanvas().getHeight();
+    }
+    if (view.getNodeViewCount() >= 1) {
+        cluster.setDGView(view);
+    }
+    layouter.resetDoLayout();
+    resetLoading();
+    return (image);
+}

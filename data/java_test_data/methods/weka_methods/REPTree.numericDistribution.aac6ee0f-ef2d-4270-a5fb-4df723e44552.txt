@@ -1,0 +1,131 @@
+protected double numericDistribution(double[][] props, double[][][] dists, int att, int[] sortedIndices, double[] weights, double[][] subsetWeights, Instances data, double[] vals) throws Exception {
+    double splitPoint = Double.NaN;
+    Attribute attribute = data.attribute(att);
+    double[][] dist = null;
+    double[] sums = null;
+    double[] sumSquared = null;
+    double[] sumOfWeights = null;
+    double totalSum = 0, totalSumSquared = 0, totalSumOfWeights = 0;
+    int i;
+    if (attribute.isNominal()) {
+        // For nominal attributes
+        sums = new double[attribute.numValues()];
+        sumSquared = new double[attribute.numValues()];
+        sumOfWeights = new double[attribute.numValues()];
+        int attVal;
+        for (i = 0; i < sortedIndices.length; i++) {
+            Instance inst = data.instance(sortedIndices[i]);
+            if (inst.isMissing(att)) {
+                break;
+            }
+            attVal = (int) inst.value(att);
+            sums[attVal] += inst.classValue() * weights[i];
+            sumSquared[attVal] += inst.classValue() * inst.classValue() * weights[i];
+            sumOfWeights[attVal] += weights[i];
+        }
+        totalSum = Utils.sum(sums);
+        totalSumSquared = Utils.sum(sumSquared);
+        totalSumOfWeights = Utils.sum(sumOfWeights);
+    } else {
+        // For numeric attributes
+        sums = new double[2];
+        sumSquared = new double[2];
+        sumOfWeights = new double[2];
+        double[] currSums = new double[2];
+        double[] currSumSquared = new double[2];
+        double[] currSumOfWeights = new double[2];
+        // Move all instances into second subset
+        for (int j = 0; j < sortedIndices.length; j++) {
+            Instance inst = data.instance(sortedIndices[j]);
+            if (inst.isMissing(att)) {
+                break;
+            }
+            currSums[1] += inst.classValue() * weights[j];
+            currSumSquared[1] += inst.classValue() * inst.classValue() * weights[j];
+            currSumOfWeights[1] += weights[j];
+        }
+        totalSum = currSums[1];
+        totalSumSquared = currSumSquared[1];
+        totalSumOfWeights = currSumOfWeights[1];
+        sums[1] = currSums[1];
+        sumSquared[1] = currSumSquared[1];
+        sumOfWeights[1] = currSumOfWeights[1];
+        // Try all possible split points
+        double currSplit = data.instance(sortedIndices[0]).value(att);
+        double currVal, bestVal = Double.MAX_VALUE;
+        for (i = 0; i < sortedIndices.length; i++) {
+            Instance inst = data.instance(sortedIndices[i]);
+            if (inst.isMissing(att)) {
+                break;
+            }
+            if (inst.value(att) > currSplit) {
+                currVal = variance(currSums, currSumSquared, currSumOfWeights);
+                if (currVal < bestVal) {
+                    bestVal = currVal;
+                    splitPoint = (inst.value(att) + currSplit) / 2.0;
+                    // Check for numeric precision problems
+                    if (splitPoint <= currSplit) {
+                        splitPoint = inst.value(att);
+                    }
+                    for (int j = 0; j < 2; j++) {
+                        sums[j] = currSums[j];
+                        sumSquared[j] = currSumSquared[j];
+                        sumOfWeights[j] = currSumOfWeights[j];
+                    }
+                }
+            }
+            currSplit = inst.value(att);
+            double classVal = inst.classValue() * weights[i];
+            double classValSquared = inst.classValue() * classVal;
+            currSums[0] += classVal;
+            currSumSquared[0] += classValSquared;
+            currSumOfWeights[0] += weights[i];
+            currSums[1] -= classVal;
+            currSumSquared[1] -= classValSquared;
+            currSumOfWeights[1] -= weights[i];
+        }
+    }
+    // Compute weights
+    props[att] = new double[sums.length];
+    for (int k = 0; k < props[att].length; k++) {
+        props[att][k] = sumOfWeights[k];
+    }
+    if (!(Utils.sum(props[att]) > 0)) {
+        for (int k = 0; k < props[att].length; k++) {
+            props[att][k] = 1.0 / props[att].length;
+        }
+    } else {
+        Utils.normalize(props[att]);
+    }
+    // Distribute counts for missing values
+    while (i < sortedIndices.length) {
+        Instance inst = data.instance(sortedIndices[i]);
+        for (int j = 0; j < sums.length; j++) {
+            sums[j] += props[att][j] * inst.classValue() * weights[i];
+            sumSquared[j] += props[att][j] * inst.classValue() * inst.classValue() * weights[i];
+            sumOfWeights[j] += props[att][j] * weights[i];
+        }
+        totalSum += inst.classValue() * weights[i];
+        totalSumSquared += inst.classValue() * inst.classValue() * weights[i];
+        totalSumOfWeights += weights[i];
+        i++;
+    }
+    // Compute final distribution
+    dist = new double[sums.length][data.numClasses()];
+    for (int j = 0; j < sums.length; j++) {
+        if (sumOfWeights[j] > 0) {
+            dist[j][0] = sums[j] / sumOfWeights[j];
+        } else {
+            dist[j][0] = totalSum / totalSumOfWeights;
+        }
+    }
+    // Compute variance gain
+    double priorVar = singleVariance(totalSum, totalSumSquared, totalSumOfWeights);
+    double var = variance(sums, sumSquared, sumOfWeights);
+    double gain = priorVar - var;
+    // Return distribution and split point
+    subsetWeights[att] = sumOfWeights;
+    dists[att] = dist;
+    vals[att] = gain;
+    return splitPoint;
+}

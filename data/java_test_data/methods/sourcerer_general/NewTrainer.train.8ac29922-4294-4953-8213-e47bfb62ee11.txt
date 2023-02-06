@@ -1,0 +1,48 @@
+public void train(TrainingContext ctx) throws IOException {
+    final int levelsBetweenSnapshort = 10;
+    while (true) {
+        TrainingContext newCtx = createNewContext(ctx);
+        ctx.setFile(new RandomAccessFile(ctx.getFilename(), "r"));
+        // ctx.getFile().getChannel().position(0);
+        TrainingDataNodeReader reader = new EagerTrainingDataNodeReader(new OnDiskTrainingDataNodeReader(ctx.getFile().getChannel()));
+        ctx.setDataReader(reader);
+        TrainingDataNodeWriter writer = new OnDiskTrainingDataNodeWriter(newCtx.getFile().getChannel());
+        writer = new BufferedTrainingDataNodeWriter(writer);
+        newCtx.setDataWriter(writer);
+        newCtx.getLastNodeId().set(ctx.getLastNodeId().get());
+        // grow the tree by one level
+        System.out.printf("Starting iteration %d, entropies: %s\n", ctx.getIteration(), Arrays.toString(entropies));
+        this.entropyReductions = new double[entropies.length];
+        processActiveNodes(ctx, newCtx);
+        System.out.printf("iteration %d reduced entropies by %s\n", ctx.getIteration(), Arrays.toString(entropyReductions));
+        for (int i = 0; i < entropies.length; ++i) {
+            this.entropies[i] -= entropyReductions[i];
+        }
+        // rearrange the training data
+        ctx.setFile(new RandomAccessFile(ctx.getFilename(), "r"));
+        reader = new EagerTrainingDataNodeReader(new OnDiskTrainingDataNodeReader(ctx.getFile().getChannel()));
+        ctx.setDataReader(reader);
+        prepareNextData(ctx, newCtx);
+        reader.close();
+        writer.close();
+        // discard data from the previous iteration
+        // ctx.getFile().setLength(0);
+        ctx.getFilename().delete();
+        // ctx.getFile().close();
+        activeNodeStorage.removeCollection(ctx.getActiveNodes().getName());
+        newCtx.setDataWriter(null);
+        ctx = newCtx;
+        int newNodes = ctx.getNodeCount();
+        if (newNodes == 0) {
+            break;
+        }
+        if (ctx.getIteration() % levelsBetweenSnapshort == 0) {
+            try {
+                makeSnapshot(ctx);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    }
+    saveTrainedTree(ctx);
+}

@@ -1,0 +1,74 @@
+// **************************************************************************
+// PUBLIC METHODS
+// **************************************************************************
+public NewickTree constructTree(DistanceMatrix inDistanceMatrix) {
+    int nodeIndex = 1;
+    Map<String, PhyloNode> nodeMap = new HashMap<String, PhyloNode>();
+    // Start with a star tree
+    // A
+    // F    |    B
+    // \  |  /
+    // \ | /
+    // \|/
+    // /|\
+    // / | \
+    // /  |  \
+    // E    |    C
+    // D
+    // 
+    PhyloNode centerNode = new PhyloNode();
+    for (String otu : inDistanceMatrix.keySet()) {
+        PhyloNode otuNode = new PhyloNode().setLabel(otu);
+        nodeMap.put(otu, otuNode);
+        centerNode.addEdge(otuNode, null);
+    }
+    DistanceMatrix matrix = inDistanceMatrix.clone();
+    while (matrix.size() > 2) {
+        Map<String, Float> netDivergenceMap = calculateNetDivergenceMap(matrix);
+        DistanceMatrix qMatrix = calculateQMatrix(matrix, netDivergenceMap);
+        Edge<String> shortestEdge = qMatrix.getShortestEdge();
+        String minOTU1 = shortestEdge.getFrom();
+        String minOTU2 = shortestEdge.getTo();
+        float minDistance = matrix.getDistance(minOTU1, minOTU2);
+        String newNodeName = "_" + (nodeIndex++);
+        PhyloNode newNode = new PhyloNode().setLabel(newNodeName);
+        centerNode.addEdge(newNode, null);
+        nodeMap.put(newNodeName, newNode);
+        float distance1 = minDistance / 2 + (netDivergenceMap.get(minOTU1) - netDivergenceMap.get(minOTU2)) / (2 * (matrix.size() - 2));
+        float distance2 = minDistance - distance1;
+        // unaffected. This does not alter the overall topology of the tree (Kuhner and Felsenstein, 1994)."
+        if (distance1 < 0) {
+            distance2 += -distance1;
+            distance1 = 0;
+        }
+        PhyloNode node1 = nodeMap.get(minOTU1);
+        node1.removeEdgeFrom(centerNode);
+        newNode.addEdge(node1, distance1);
+        nodeMap.remove(node1.getLabel());
+        PhyloNode node2 = nodeMap.get(minOTU2);
+        node2.removeEdgeFrom(centerNode);
+        newNode.addEdge(node2, distance2);
+        nodeMap.remove(node2.getLabel());
+        matrix.addKey(newNodeName);
+        for (String key : matrix.keySet()) {
+            if (key.equals(minOTU1) || key.equals(minOTU2) || key.equals(newNodeName))
+                continue;
+            float distance = (matrix.getDistance(key, minOTU1) + matrix.getDistance(key, minOTU2) - minDistance) / 2;
+            matrix.setDistance(newNodeName, key, distance);
+        }
+        matrix.removeKey(minOTU1);
+        matrix.removeKey(minOTU2);
+    }
+    // Now remove the center node and connect the last two nodes.
+    for (PhyloNode node : nodeMap.values()) {
+        node.removeEdgeFrom(centerNode);
+    }
+    Iterator<String> iter = nodeMap.keySet().iterator();
+    String otu1 = iter.next();
+    String otu2 = iter.next();
+    nodeMap.get(otu1).addEdge(nodeMap.get(otu2), matrix.getDistance(otu1, otu2));
+    NewickTree tree = new NewickTree();
+    tree.setRootNode(nodeMap.get(otu1));
+    tree.rootTreeByMidpointMethod();
+    return tree;
+}

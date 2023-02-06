@@ -1,0 +1,67 @@
+public void initVelocityConstraints(final BBTimeStep step) {
+    BBBody b1 = m_bodyA;
+    BBBody b2 = m_bodyB;
+    if (m_enableMotor || m_enableLimit) {
+        // both have fixed rotation.
+        assert (b1.m_invI > 0.0f || b2.m_invI > 0.0f);
+    }
+    // Compute the effective mass matrix.
+    BBVec2 r1 = mul(b1.getTransform().R, sub(m_localAnchor1, b1.getLocalCenter()));
+    BBVec2 r2 = mul(b2.getTransform().R, sub(m_localAnchor2, b2.getLocalCenter()));
+    // J = [-I -r1_skew I r2_skew]
+    // [ 0       -1 0       1]
+    // r_skew = [-ry; rx]
+    // Matlab
+    // K = [ m1+r1y^2*i1+m2+r2y^2*i2,  -r1y*i1*r1x-r2y*i2*r2x,          -r1y*i1-r2y*i2]
+    // [  -r1y*i1*r1x-r2y*i2*r2x, m1+r1x^2*i1+m2+r2x^2*i2,           r1x*i1+r2x*i2]
+    // [          -r1y*i1-r2y*i2,           r1x*i1+r2x*i2,                   i1+i2]
+    float m1 = b1.m_invMass, m2 = b2.m_invMass;
+    float i1 = b1.m_invI, i2 = b2.m_invI;
+    m_mass.col1.x = m1 + m2 + r1.y * r1.y * i1 + r2.y * r2.y * i2;
+    m_mass.col2.x = -r1.y * r1.x * i1 - r2.y * r2.x * i2;
+    m_mass.col3.x = -r1.y * i1 - r2.y * i2;
+    m_mass.col1.y = m_mass.col2.x;
+    m_mass.col2.y = m1 + m2 + r1.x * r1.x * i1 + r2.x * r2.x * i2;
+    m_mass.col3.y = r1.x * i1 + r2.x * i2;
+    m_mass.col1.z = m_mass.col3.x;
+    m_mass.col2.z = m_mass.col3.y;
+    m_mass.col3.z = i1 + i2;
+    m_motorMass = 1.0f / (i1 + i2);
+    if (!m_enableMotor) {
+        m_motorImpulse = 0.0f;
+    }
+    if (m_enableLimit) {
+        float jointAngle = b2.m_sweep.a - b1.m_sweep.a - m_referenceAngle;
+        if (abs(m_upperAngle - m_lowerAngle) < 2.0f * angularSlop) {
+            m_limitState = e_equalLimits;
+        } else if (jointAngle <= m_lowerAngle) {
+            if (m_limitState != e_atLowerLimit) {
+                m_impulse.z = 0.0f;
+            }
+            m_limitState = e_atLowerLimit;
+        } else if (jointAngle >= m_upperAngle) {
+            if (m_limitState != e_atUpperLimit) {
+                m_impulse.z = 0.0f;
+            }
+            m_limitState = e_atUpperLimit;
+        } else {
+            m_limitState = e_inactiveLimit;
+            m_impulse.z = 0.0f;
+        }
+    } else {
+        m_limitState = e_inactiveLimit;
+    }
+    if (step.warmStarting) {
+        // Scale impulses to support a variable time step.
+        m_impulse.mul(step.dtRatio);
+        m_motorImpulse *= step.dtRatio;
+        BBVec2 P = new BBVec2(m_impulse.x, m_impulse.y);
+        b1.m_linearVelocity.sub(mul(m1, P));
+        b1.m_angularVelocity -= i1 * (cross(r1, P) + m_motorImpulse + m_impulse.z);
+        b2.m_linearVelocity.add(mul(m2, P));
+        b2.m_angularVelocity += i2 * (cross(r2, P) + m_motorImpulse + m_impulse.z);
+    } else {
+        m_impulse.setZero();
+        m_motorImpulse = 0.0f;
+    }
+}

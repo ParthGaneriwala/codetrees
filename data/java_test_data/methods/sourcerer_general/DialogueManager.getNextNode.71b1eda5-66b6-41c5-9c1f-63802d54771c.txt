@@ -1,0 +1,150 @@
+private Node getNextNode(String userUtt, String lang) {
+    Logger log = null;
+    if (logging) {
+        log = Logger.getLogger(DialogueManager.class);
+    }
+    Node match = null;
+    // go back to the main root of the topic tree.
+    if (tt.getNodeName(C, sessionID).startsWith("PHRASES.")) {
+        C = tt.getRootNode();
+        if (logging) {
+            log.log(CustomLog.MY_TRACE, sessionID.substring(0, 8) + " DEBUG: [After retrieving topic from PHRASES.*, resetting dialogue state.]");
+        }
+        sdMode = false;
+    }
+    if (tt.getNodeName(C, sessionID).startsWith("bob.99_ERROR_MESSAGES.")) {
+        C = tt.getRootNode();
+        if (logging) {
+            log.log(CustomLog.MY_TRACE, sessionID.substring(0, 8) + " DEBUG: [After retrieving ERROR message topic, resetting dialogue state.]");
+        }
+        sdMode = false;
+    }
+    if (tt.getNodeName(C, sessionID).startsWith("bob.15_HELLOGOODBYE.SALUTATION.")) {
+        C = tt.getRootNode();
+        if (logging) {
+            log.log(CustomLog.MY_TRACE, sessionID.substring(0, 8) + " DEBUG: [After retrieving topic with initial greeting, resetting dialogue state.]");
+        }
+        sdMode = false;
+    }
+    if (sdMode == true) {
+        // move to the subdialogue rule (= the analyzer) that was triggered
+        // by previous user input
+        match = tt.getNodeLinkedNode(C, sessionID);
+    /*
+			 * // Special case: after returning an error message, BoB has
+			 * followed // a link to the root node (bob.bob), and entered
+			 * subdialogue // mode. Here, we have to override SubDialogue mode,
+			 * because the // next search should not be within subdialogues. if
+			 * (tt.getNodeName(match, sessionID).equals("bob.bob")) { sdMode =
+			 * false; C = match; if (logging) { log.log(CustomLog.MY_TRACE,
+			 * sessionID + " DEBUG: [Verlasse (ERROR-) SubDialog]"); } }
+			 */
+    }
+    if (sdMode == true) {
+        // / DISABLE THIS FOR A TEST: to solve Ulli's ISSN issue
+        // might have to follow non-SD links from here, too
+        // /match = followLink(match);
+        Node newnode = null;
+        if ((newnode = tt.searchSD(match, userUtt, lang, sessionID)) != null) {
+            continuousNoPatternFoundErrors = 0;
+            if (logging) {
+                log.log(CustomLog.MY_TRACE, sessionID.substring(0, 8) + " DEBUG: Following matching sub-dialogue Topic: " + tt.getNodeName(newnode, sessionID));
+            }
+            // SD mode setting allowed
+            return followLink(newnode, lang, true);
+        } else {
+            sdMode = false;
+            if (logging) {
+                log.log(CustomLog.MY_TRACE, sessionID.substring(0, 8) + " DEBUG: Leaving sub-dialogue at topic " + tt.getNodeName(match, sessionID));
+            }
+        }
+    }
+    if (sdMode == false) {
+        if ((match = tt.searchLocalSiblings(C, userUtt, lang, sessionID)) != null) {
+            continuousNoPatternFoundErrors = 0;
+            if (logging) {
+                log.log(CustomLog.MY_TRACE, sessionID.substring(0, 8) + " DEBUG: Following matching topic (possibly among 'isLocal=\"true\"' topics): " + tt.getNodeName(match, sessionID));
+            }
+            // SD mode setting allowed
+            return followLink(match, lang, true);
+        }
+    }
+    Vector<Quadruple<String, String, String, String>> originalResponses = getAllPossibleNormalResponses(userUtt, lang);
+    // found
+    if (originalResponses.size() == 0) {
+        if (logging) {
+            log.log(CustomLog.MY_TRACE, sessionID.substring(0, 8) + " DEBUG: No pattern matched! (Not even an error pattern, omg.) ");
+        }
+        return null;
+    }
+    // only "error" pattern matched; keep count of this event
+    if (originalResponses.size() == 1) {
+        continuousNoPatternFoundErrors++;
+        possibleOpacQuery = userUtt;
+        // special rule
+        if (continuousNoPatternFoundErrors > 1) {
+            possibleOpacQuery = null;
+            Node node = tt.getNodeFromTopicID("bob.99_ERROR_MESSAGES.00_NO_PATTERN_FOUND.80_CONTINUED_ERROR", sessionID);
+            if (logging) {
+                log.log(CustomLog.MY_TRACE, sessionID.substring(0, 8) + " DEBUG: Giving proactive help after " + continuousNoPatternFoundErrors + " continuous error messages. Going to: " + tt.getNodeName(node, sessionID));
+            }
+            // SD mode setting allowed
+            return followLink(node, lang, true);
+        }
+        Node node = tt.getNodeFromTopicID(Quadruple.get1(originalResponses.get(0)), sessionID);
+        if (logging) {
+            log.log(CustomLog.MY_TRACE, sessionID.substring(0, 8) + " DEBUG: Following unambiguously matched 'normal' (error) Topic: " + tt.getNodeName(node, sessionID));
+        }
+        // SD mode setting allowed
+        return followLink(node, lang, true);
+    }
+    // unique answer
+    if (originalResponses.size() == 2) {
+        continuousNoPatternFoundErrors = 0;
+        Node node = tt.getNodeFromTopicID(Quadruple.get1(originalResponses.get(0)), sessionID);
+        if (logging) {
+            log.log(CustomLog.MY_TRACE, sessionID.substring(0, 8) + " DEBUG: Following unambiguously matched 'normal' Topic: " + tt.getNodeName(node, sessionID));
+        }
+        // SD mode setting allowed
+        return followLink(node, lang, true);
+    }
+    // Answer ambiguity: Enter the answer reranker for the right language
+    continuousNoPatternFoundErrors = 0;
+    possibleOpacQuery = null;
+    Vector<Quadruple<String, String, String, String>> reranked = null;
+    if (lang.toUpperCase().equals("EN")) {
+        reranked = tt.getQAMB().rerankAnswers(userUtt, originalResponses, "EN");
+    } else if (lang.toUpperCase().equals("DE")) {
+        reranked = tt.getQAMB().rerankAnswers(userUtt, originalResponses, "DE");
+    } else if (lang.toUpperCase().equals("IT")) {
+        reranked = tt.getQAMB().rerankAnswers(userUtt, originalResponses, "IT");
+    }
+    Node topNode = tt.getNodeFromTopicID(Quadruple.get1(reranked.get(reranked.size() - 1)), sessionID);
+    if (logging) {
+        log.log(CustomLog.MY_TRACE, sessionID.substring(0, 8) + " DEBUG: Answer reranker reranked " + reranked.size() + " 'normal' topics, shown below after '#' signs (picked topic: " + tt.getNodeName(topNode, sessionID) + " )");
+        for (int x = reranked.size() - 1; x >= 0; x--) {
+            log.log(CustomLog.MY_TRACE, sessionID.substring(0, 8) + " DEBUG: #" + tt.getNodeName(tt.getNodeFromTopicID(Quadruple.get1(reranked.get(x)), sessionID), sessionID));
+        }
+    }
+    // SD mode setting allowed
+    return followLink(topNode, lang, true);
+/*
+		 * Queue<Node> matches = null; if ((matches =
+		 * tt.searchRecursiveSiblings(C, userUtt, lang, sessionID)) != null) {
+		 * if (logging) { log.log(CustomLog.MY_TRACE, sessionID +
+		 * " DEBUG: Folge passendem 'normalen' Topic: " +
+		 * tt.getNodeName(matches.element(), sessionID)); } // get first element
+		 * from queue return followLink(matches.element(), lang); } Node parent
+		 * = C; Node oldLevel = null;
+		 * 
+		 * // check if root node has been reached, then break while ((parent =
+		 * tt.getNodeParent(parent, sessionID)) != oldLevel) { oldLevel =
+		 * parent; if ((matches = tt.searchRecursiveSiblings(parent, userUtt,
+		 * lang, sessionID)) != null) { if (logging) {
+		 * log.log(CustomLog.MY_TRACE, sessionID +
+		 * " DEBUG: Folge passendem 'normalem' Topic: " +
+		 * tt.getNodeName(matches.element(), sessionID)); } // get first element
+		 * from queue return followLink(matches.element(), lang); } return
+		 * null;}
+		 */
+}

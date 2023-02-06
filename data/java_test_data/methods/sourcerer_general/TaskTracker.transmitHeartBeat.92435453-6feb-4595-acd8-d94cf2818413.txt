@@ -1,0 +1,68 @@
+private HeartbeatResponse transmitHeartBeat(long now) throws IOException {
+    // Send Counters in the status once every COUNTER_UPDATE_INTERVAL
+    boolean sendCounters;
+    if (now > (previousUpdate + COUNTER_UPDATE_INTERVAL)) {
+        sendCounters = true;
+        previousUpdate = now;
+    } else {
+        sendCounters = false;
+    }
+    // 
+    if (status == null) {
+        synchronized (this) {
+            status = new TaskTrackerStatus(taskTrackerName, localHostname, httpPort, cloneAndResetRunningTaskStatuses(sendCounters), failures, maxCurrentMapTasks, maxCurrentReduceTasks);
+        }
+    } else {
+        LOG.info("Resending 'status' to '" + jobTrackAddr.getHostName() + "' with reponseId '" + heartbeatResponseId);
+    }
+    // 
+    // Check if we should ask for a new Task
+    // 
+    boolean askForNewTask;
+    long localMinSpaceStart;
+    synchronized (this) {
+        askForNewTask = (status.countMapTasks() < maxCurrentMapTasks || status.countReduceTasks() < maxCurrentReduceTasks) && acceptNewTasks;
+        localMinSpaceStart = minSpaceStart;
+    }
+    if (askForNewTask) {
+        checkLocalDirs(fConf.getLocalDirs());
+        askForNewTask = enoughFreeSpace(localMinSpaceStart);
+        status.getResourceStatus().setAvailableSpace(getFreeSpace());
+        long freeVirtualMem = findFreeVirtualMemory();
+        LOG.debug("Setting amount of free virtual memory for the new task: " + freeVirtualMem);
+        status.getResourceStatus().setFreeVirtualMemory(freeVirtualMem);
+        status.getResourceStatus().setDefaultVirtualMemoryPerTask(getDefaultMemoryPerTask());
+    }
+    // 
+    // Xmit the heartbeat
+    // 
+    HeartbeatResponse heartbeatResponse = jobClient.heartbeat(status, justStarted, askForNewTask, heartbeatResponseId);
+    // 
+    // The heartbeat got through successfully!
+    // 
+    heartbeatResponseId = heartbeatResponse.getResponseId();
+    synchronized (this) {
+        for (TaskStatus taskStatus : status.getTaskReports()) {
+            if (taskStatus.getRunState() != TaskStatus.State.RUNNING && taskStatus.getRunState() != TaskStatus.State.UNASSIGNED && taskStatus.getRunState() != TaskStatus.State.COMMIT_PENDING) {
+                if (taskStatus.getIsMap()) {
+                    mapTotal--;
+                } else {
+                    reduceTotal--;
+                }
+                try {
+                    myInstrumentation.completeTask(taskStatus.getTaskID());
+                } catch (MetricsException me) {
+                    LOG.warn("Caught: " + StringUtils.stringifyException(me));
+                }
+                runningTasks.remove(taskStatus.getTaskID());
+            }
+        }
+        // be sent once to the JobTracker
+        for (TaskInProgress tip : runningTasks.values()) {
+            tip.getStatus().clearStatus();
+        }
+    }
+    // Force a rebuild of 'status' on the next iteration
+    status = null;
+    return heartbeatResponse;
+}

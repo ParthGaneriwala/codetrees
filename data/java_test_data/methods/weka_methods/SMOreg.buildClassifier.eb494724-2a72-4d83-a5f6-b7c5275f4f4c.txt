@@ -1,0 +1,81 @@
+public void buildClassifier(Instances instances) throws Exception {
+    // can classifier handle the data?
+    getCapabilities().testWithFail(instances);
+    // remove instances with missing class
+    instances = new Instances(instances);
+    instances.deleteWithMissingClass();
+    // Removes all the instances with weight equal to 0.
+    // MUST be done since condition (8) of Keerthi's paper
+    // is made with the assertion Ci > 0 (See equation (3a).
+    Instances data = new Instances(instances, 0);
+    for (int i = 0; i < instances.numInstances(); i++) {
+        if (instances.instance(i).weight() > 0) {
+            data.add(instances.instance(i));
+        }
+    }
+    if (data.numInstances() == 0) {
+        throw new Exception("No training instances left after removing " + "instance with either a weight null or a missing class!");
+    }
+    instances = data;
+    m_onlyNumeric = true;
+    for (int i = 0; i < instances.numAttributes(); i++) {
+        if (i != instances.classIndex()) {
+            if (!instances.attribute(i).isNumeric()) {
+                m_onlyNumeric = false;
+                break;
+            }
+        }
+    }
+    m_Missing = new ReplaceMissingValues();
+    m_Missing.setInputFormat(instances);
+    instances = Filter.useFilter(instances, m_Missing);
+    if (getCapabilities().handles(Capability.NUMERIC_ATTRIBUTES)) {
+        if (!m_onlyNumeric) {
+            m_NominalToBinary = new NominalToBinary();
+            m_NominalToBinary.setInputFormat(instances);
+            instances = Filter.useFilter(instances, m_NominalToBinary);
+        } else {
+            m_NominalToBinary = null;
+        }
+    } else {
+        m_NominalToBinary = null;
+    }
+    // retrieve two different class values used to determine filter transformation
+    double y0 = instances.instance(0).classValue();
+    int index = 1;
+    while (index < instances.numInstances() && instances.instance(index).classValue() == y0) {
+        index++;
+    }
+    if (index == instances.numInstances()) {
+        // we don't want to deal with this, too much hassle
+        throw new Exception("All class values are the same. At least two class values should be different");
+    }
+    double y1 = instances.instance(index).classValue();
+    // apply filters
+    if (m_filterType == FILTER_STANDARDIZE) {
+        m_Filter = new Standardize();
+        ((Standardize) m_Filter).setIgnoreClass(true);
+        m_Filter.setInputFormat(instances);
+        instances = Filter.useFilter(instances, m_Filter);
+    } else if (m_filterType == FILTER_NORMALIZE) {
+        m_Filter = new Normalize();
+        ((Normalize) m_Filter).setIgnoreClass(true);
+        m_Filter.setInputFormat(instances);
+        instances = Filter.useFilter(instances, m_Filter);
+    } else {
+        m_Filter = null;
+    }
+    if (m_Filter != null) {
+        double z0 = instances.instance(0).classValue();
+        double z1 = instances.instance(index).classValue();
+        // no division by zero, since y0 != y1 guaranteed => z0 != z1 ???
+        m_x1 = (y0 - y1) / (z0 - z1);
+        // = y1 - m_x1 * z1
+        m_x0 = (y0 - m_x1 * z0);
+    } else {
+        m_x1 = 1.0;
+        m_x0 = 0.0;
+    }
+    m_optimizer.setSMOReg(this);
+    m_optimizer.buildClassifier(instances);
+}

@@ -1,0 +1,53 @@
+public User validateSession(ServletContext context, HttpServletRequest request, HttpServletResponse response) {
+    User thisUser = (User) request.getSession(false).getAttribute(Constants.SESSION_USER);
+    LOG.debug("Has user session: " + (thisUser != null));
+    if (thisUser == null || !thisUser.isLoggedIn()) {
+        LOG.debug("Checking for cookie...");
+        // Check cookie for session info and generate a logged in user
+        String guid = CookieUtils.getCookieValue(request, Constants.COOKIE_USER_GUID);
+        if (guid == null) {
+            LOG.debug("No cookie found.");
+            return (thisUser == null ? null : thisUser);
+        }
+        LOG.debug("Cookie found with guid: " + guid);
+        // Retrieve prefs to see if user with guid exists
+        ApplicationPrefs prefs = (ApplicationPrefs) context.getAttribute("applicationPrefs");
+        // Connection info
+        ConnectionElement ce = new ConnectionElement();
+        ce.setDriver(prefs.get("SITE.DRIVER"));
+        ce.setUrl(prefs.get("SITE.URL"));
+        ce.setUsername(prefs.get("SITE.USER"));
+        ce.setPassword(prefs.get("SITE.PASSWORD"));
+        ConnectionPool sqlDriver = (ConnectionPool) context.getAttribute("ConnectionPool");
+        Connection db = null;
+        try {
+            db = sqlDriver.getConnection(ce);
+            // Load the user record from the guid
+            thisUser = UserUtils.loadUserFromGuid(db, guid);
+            if (thisUser != null) {
+                // Track the login
+                thisUser.updateLogin(db, request, prefs, null);
+                thisUser.setBrowserType(request.getHeader("USER-AGENT"));
+                // Apply defaults
+                UserUtils.createLoggedInUser(thisUser, db, prefs, context);
+                // Extend the cookie
+                Cookie userCookie = new Cookie(Constants.COOKIE_USER_GUID, UserUtils.generateGuid(thisUser));
+                userCookie.setPath("/");
+                // 14 day cookie
+                userCookie.setMaxAge(14 * 24 * 60 * 60);
+                response.addCookie(userCookie);
+            }
+        } catch (Exception e) {
+            thisUser = null;
+            e.printStackTrace();
+        } finally {
+            if (db != null) {
+                sqlDriver.free(db);
+            }
+        }
+        // Add to session
+        request.getSession().setAttribute(Constants.SESSION_USER, thisUser);
+        request.getSession().setAttribute(Constants.SESSION_CONNECTION_ELEMENT, ce);
+    }
+    return thisUser;
+}

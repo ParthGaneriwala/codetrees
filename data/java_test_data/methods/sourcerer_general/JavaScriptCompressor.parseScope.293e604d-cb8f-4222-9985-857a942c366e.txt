@@ -1,0 +1,98 @@
+private void parseScope(ScriptOrFnScope scope) {
+    String symbol;
+    JavaScriptToken token;
+    JavaScriptIdentifier identifier;
+    int length = tokens.size();
+    enterScope(scope);
+    while (offset < length) {
+        token = consumeToken();
+        switch(token.getType()) {
+            case Token.VAR:
+            case Token.CONST:
+                // If several symbols follow, they are comma separated.
+                for (; ; ) {
+                    token = consumeToken();
+                    assert token.getType() == Token.NAME;
+                    if (mode == BUILDING_SYMBOL_TREE) {
+                        symbol = token.getValue();
+                        if (scope.getIdentifier(symbol) == null) {
+                            scope.declareIdentifier(symbol);
+                        } else {
+                            warn("[WARNING] The variable " + symbol + " has already been declared in the same scope...", true);
+                        }
+                    }
+                    token = getToken(0);
+                    assert token.getType() == Token.SEMI || token.getType() == Token.ASSIGN || token.getType() == Token.COMMA || token.getType() == Token.IN;
+                    if (token.getType() == Token.IN) {
+                        break;
+                    } else {
+                        parseExpression();
+                        token = getToken(-1);
+                        if (token.getType() == Token.SEMI) {
+                            break;
+                        }
+                    }
+                }
+                break;
+            case Token.FUNCTION:
+                parseFunctionDeclaration();
+                break;
+            case Token.LC:
+                braceNesting++;
+                break;
+            case Token.RC:
+                braceNesting--;
+                assert braceNesting >= scope.getBraceNesting();
+                if (braceNesting == scope.getBraceNesting()) {
+                    leaveCurrentScope();
+                    return;
+                }
+                break;
+            case Token.WITH:
+                if (mode == BUILDING_SYMBOL_TREE) {
+                    // Inside a 'with' block, it is impossible to figure out
+                    // statically whether a symbol is a local variable or an
+                    // object member. As a consequence, the only thing we can
+                    // do is turn the obfuscation off for the highest scope
+                    // containing the 'with' block.
+                    protectScopeFromObfuscation(scope);
+                    warn("[WARNING] Using 'with' is not recommended" + (munge ? "(and it reduces the level of compression)" : ""), true);
+                }
+                break;
+            case Token.CATCH:
+                parseCatch();
+                break;
+            case Token.IECC:
+                if (mode == BUILDING_SYMBOL_TREE) {
+                    protectScopeFromObfuscation(scope);
+                    warn("[WARNING] Using JScript conditional comments is not recommended..." + (munge ? "\n[INFO] Using JSCript conditional comments reduces the level of compression!" : ""), true);
+                }
+                break;
+            case Token.NAME:
+                symbol = token.getValue();
+                if (mode == BUILDING_SYMBOL_TREE) {
+                    if (symbol.equals("eval")) {
+                        protectScopeFromObfuscation(scope);
+                        warn("[WARNING] Using 'eval' is not recommended..." + (munge ? "\n[INFO] Using 'eval' reduces the level of compression!" : ""), true);
+                    }
+                } else if (mode == CHECKING_SYMBOL_TREE) {
+                    if ((offset < 2 || getToken(-2).getType() != Token.DOT) && getToken(0).getType() != Token.OBJECTLIT) {
+                        identifier = getIdentifier(symbol, scope);
+                        if (identifier == null) {
+                            if (symbol.length() <= 3 && !builtin.contains(symbol)) {
+                                // Here, we found an undeclared and un-namespaced symbol that is
+                                // 3 characters or less in length. Declare it in the global scope.
+                                // We don't need to declare longer symbols since they won't cause
+                                // any conflict with other munged symbols.
+                                globalScope.declareIdentifier(symbol);
+                                warn("[WARNING] Found an undeclared symbol: " + symbol, true);
+                            }
+                        } else {
+                            identifier.incrementRefcount();
+                        }
+                    }
+                }
+                break;
+        }
+    }
+}

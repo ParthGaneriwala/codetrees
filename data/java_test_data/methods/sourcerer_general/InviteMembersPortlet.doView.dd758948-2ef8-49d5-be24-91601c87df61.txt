@@ -1,0 +1,158 @@
+public void doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    try {
+        String defaultView = ENTER_MEMBERS_FORM;
+        String viewType = request.getParameter(VIEW_TYPE);
+        // Set global preferences
+        request.setAttribute(TITLE, request.getPreferences().getValue(PREF_TITLE, null));
+        Project project = PortalUtils.findProject(request);
+        User user = PortalUtils.getUser(request);
+        request.setAttribute(USER, user);
+        ApplicationPrefs prefs = PortalUtils.getApplicationPrefs(request);
+        boolean canInviteNonMembers = true;
+        if (!("true".equals(prefs.get(ApplicationPrefs.USERS_CAN_INVITE)) || PortalUtils.getUser(request).getAccessInvite() || PortalUtils.getUser(request).getAccessAdmin())) {
+            canInviteNonMembers = false;
+            request.setAttribute(CAN_INVITE_NONMEMBERS, "false");
+        }
+        // Test if the user has access to the project
+        if (!ProjectUtils.hasAccess(project.getId(), user, "project-team-edit")) {
+            request.setAttribute(HAS_PROJECT_ACCESS, "false");
+        } else if (CLOSE.equals(viewType)) {
+            // Cleanup other session attributes
+            request.getPortletSession().removeAttribute(MEMBERS_TO_INVITE + "Error");
+            request.getPortletSession().removeAttribute(MEMBERS_TO_INVITE);
+            defaultView = CLOSE_PAGE;
+        } else if (SAVE_FAILURE.equals(viewType)) {
+        } else if (GET_MATCHES.equals(viewType)) {
+            request.setAttribute(MEMBERS, request.getPortletSession().getAttribute(MEMBERS));
+            request.setAttribute(MEMBERS_PRESENT, request.getPortletSession().getAttribute(MEMBERS_PRESENT));
+            // build request attributes to show what the user has entered.
+            request.setAttribute(HAS_MULTIPLE_MATCHES, request.getPortletSession().getAttribute(HAS_MULTIPLE_MATCHES));
+            if (StringUtils.hasText((String) request.getPortletSession().getAttribute(ACTION_ERROR))) {
+                request.setAttribute(ACTION_ERROR, request.getPortletSession().getAttribute(ACTION_ERROR));
+                LinkedHashMap<String, String> matchUserId = new LinkedHashMap<String, String>();
+                LinkedHashMap<String, String> matchRole = new LinkedHashMap<String, String>();
+                String[] matches = (String[]) request.getPortletSession().getAttribute("matches");
+                String[] accessToTools = (String[]) request.getPortletSession().getAttribute("accessToTools");
+                request.setAttribute("matches", matches);
+                request.setAttribute("accessToTools", accessToTools);
+                if (matches != null) {
+                    for (String chosenId : matches) {
+                        matchUserId.put(chosenId, (String) request.getPortletSession().getAttribute("matchUserId-" + chosenId));
+                        matchRole.put(chosenId, (String) request.getPortletSession().getAttribute("matchedRole-" + chosenId));
+                    }
+                }
+                request.setAttribute("matchUserId", matchUserId);
+                request.setAttribute("matchRole", matchRole);
+                String[] mismatches = (String[]) request.getPortletSession().getAttribute("mismatches");
+                String[] notMatchedAccessToTools = (String[]) request.getPortletSession().getAttribute("notMatchedAccessToTools");
+                LinkedHashMap<String, String> noMatchFirstName = new LinkedHashMap<String, String>();
+                LinkedHashMap<String, String> noMatchLastName = new LinkedHashMap<String, String>();
+                LinkedHashMap<String, String> noMatchEmail = new LinkedHashMap<String, String>();
+                LinkedHashMap<String, String> noMatchRole = new LinkedHashMap<String, String>();
+                request.setAttribute("mismatches", mismatches);
+                request.setAttribute("notMatchedAccessToTools", notMatchedAccessToTools);
+                for (String unmatchedEntry : mismatches) {
+                    // Check if the input is in the form: First Last <email@example.com>
+                    String strEmail = (String) request.getPortletSession().getAttribute("email-" + unmatchedEntry);
+                    String strFirstName = (String) request.getPortletSession().getAttribute("firstName-" + unmatchedEntry);
+                    String strLastName = (String) request.getPortletSession().getAttribute("lastName-" + unmatchedEntry);
+                    if (StringUtils.hasText(strEmail)) {
+                        HashMap<String, String> mapEmail = DimDimUtils.processEmail(strEmail);
+                        strEmail = StringUtils.hasText(mapEmail.get(DimDimUtils.EMAIL)) ? mapEmail.get(DimDimUtils.EMAIL) : strEmail;
+                        strFirstName = StringUtils.hasText(mapEmail.get(DimDimUtils.FIRST_NAME)) ? mapEmail.get(DimDimUtils.FIRST_NAME) : strFirstName;
+                        strLastName = StringUtils.hasText(mapEmail.get(DimDimUtils.LAST_NAME)) ? mapEmail.get(DimDimUtils.LAST_NAME) : strLastName;
+                    }
+                    if (strFirstName != null) {
+                        noMatchFirstName.put(unmatchedEntry, strFirstName);
+                    }
+                    if (strLastName != null) {
+                        noMatchLastName.put(unmatchedEntry, strLastName);
+                    }
+                    if (strEmail != null) {
+                        noMatchEmail.put(unmatchedEntry, strEmail);
+                    }
+                    if (request.getPortletSession().getAttribute("notMatchedRole-" + unmatchedEntry) != null) {
+                        noMatchRole.put(unmatchedEntry, (String) request.getPortletSession().getAttribute("notMatchedRole-" + unmatchedEntry));
+                    }
+                }
+                request.setAttribute("noMatchFirstName", noMatchFirstName);
+                request.setAttribute("noMatchLastName", noMatchLastName);
+                request.setAttribute("noMatchEmail", noMatchEmail);
+                request.setAttribute("noMatchRole", noMatchRole);
+            }
+            // Determine if the access to tools option needs to be shown
+            if (ProjectUtils.hasAccess(project.getId(), user, "project-team-tools") && (StringUtils.hasText(project.getConcursiveCRMUrl()))) {
+                request.setAttribute(SHOW_ACCESS_TO_TOOLS, "true");
+            }
+            // Determine the allowed roles, based on this user
+            TeamMember member = project.getTeam().getTeamMember(user.getId());
+            int userLevel = -1;
+            if (member != null) {
+                userLevel = member.getUserLevel();
+            }
+            // This cachedList can be used
+            LookupList cachedRoleList = CacheUtils.getLookupList("lookup_project_role");
+            // If a maxRole has been defined, use it instead
+            String maxRole = request.getPreferences().getValue(PREF_MAX_ROLE, null);
+            if (maxRole != null) {
+                userLevel = cachedRoleList.getIdFromValue(maxRole);
+            }
+            // Generate the list of roles to display
+            LookupList roleList = new LookupList();
+            int userAccessLevel = cachedRoleList.getLevelFromId(userLevel);
+            for (LookupElement role : cachedRoleList) {
+                if (project.getFeatures().getAllowParticipants() && role.getLevel() == TeamMember.GUEST) {
+                // do not add the guest role as participant is the lowest allowed role for such projects
+                } else {
+                    if (user.getAccessAdmin()) {
+                        roleList.add(role);
+                    } else {
+                        if (role.getLevel() >= userAccessLevel) {
+                            roleList.add(role);
+                        }
+                    }
+                }
+            }
+            request.setAttribute(ROLE_LIST, roleList);
+            request.setAttribute(DEFAULT_ROLE, new Integer(TeamMember.MEMBER));
+            // Cleanup other session attributes
+            request.getPortletSession().removeAttribute(HAS_MULTIPLE_MATCHES);
+            request.getPortletSession().removeAttribute(ACTION_ERROR);
+            defaultView = SELECT_MEMBERS_FORM;
+        } else if (GET_INVITATION_MESSAGE.equals(viewType)) {
+            defaultView = ENTER_MESSAGE_FORM;
+        } else if (SEND_INVITATION.equals(viewType)) {
+            // Cleanup other session attributes
+            request.getPortletSession().removeAttribute(MEMBERS);
+            request.getPortletSession().removeAttribute(MEMBERS_TO_INVITE + "Error");
+            request.getPortletSession().removeAttribute(MEMBERS_TO_INVITE);
+            request.getPortletSession().removeAttribute(MEMBERS_PRESENT);
+            defaultView = INVITATION_SENT_PAGE;
+        } else if (GET_MEMBERS.equals(viewType) || !StringUtils.hasText(viewType)) {
+            Project userProfileProject = user.getProfileProject();
+            TeamMemberList fullTeamMemberList = userProfileProject.getTeam();
+            TeamMemberList teamMemberList = new TeamMemberList();
+            // Remove self
+            for (TeamMember teamMember : fullTeamMemberList) {
+                if (teamMember.getUserId() != PortalUtils.getUser(request).getId()) {
+                    teamMemberList.add(teamMember);
+                }
+            }
+            request.setAttribute(TEAM_MEMBER_LIST, teamMemberList);
+            // the user's values, else reset the form
+            if (StringUtils.hasText(viewType)) {
+                // Set request attributes if any
+                request.setAttribute(MEMBERS_TO_INVITE, request.getPortletSession().getAttribute(MEMBERS_TO_INVITE));
+                request.setAttribute(MEMBERS_TO_INVITE + "Error", request.getPortletSession().getAttribute(MEMBERS_TO_INVITE + "Error"));
+            }
+            // Cleanup other session attributes
+            request.getPortletSession().removeAttribute(MEMBERS_TO_INVITE + "Error");
+        }
+        PortletContext context = getPortletContext();
+        PortletRequestDispatcher requestDispatcher = context.getRequestDispatcher(defaultView);
+        requestDispatcher.include(request, response);
+    } catch (Exception e) {
+        e.printStackTrace();
+        throw new PortletException(e);
+    }
+}

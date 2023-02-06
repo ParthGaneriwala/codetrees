@@ -1,0 +1,109 @@
+public void removeSchemaObject(HsqlName name) {
+    Schema schema = (Schema) schemaMap.get(name.schema.name);
+    SchemaObject object = null;
+    SchemaObjectSet set = null;
+    switch(name.type) {
+        case SchemaObject.SEQUENCE:
+            set = schema.sequenceLookup;
+            object = set.getObject(name.name);
+            break;
+        case SchemaObject.TABLE:
+        case SchemaObject.VIEW:
+            {
+                set = schema.tableLookup;
+                object = set.getObject(name.name);
+                break;
+            }
+        case SchemaObject.COLUMN:
+            {
+                Table table = (Table) getSchemaObject(name.parent);
+                if (table != null) {
+                    object = table.getColumn(table.getColumnIndex(name.name));
+                }
+                break;
+            }
+        case SchemaObject.CHARSET:
+            set = schema.charsetLookup;
+            object = set.getObject(name.name);
+            break;
+        case SchemaObject.COLLATION:
+            set = schema.collationLookup;
+            object = set.getObject(name.name);
+            break;
+        case SchemaObject.PROCEDURE:
+            {
+                set = schema.procedureLookup;
+                RoutineSchema routine = (RoutineSchema) set.getObject(name.name);
+                object = routine;
+                Routine[] specifics = routine.getSpecificRoutines();
+                for (int i = 0; i < specifics.length; i++) {
+                    removeSchemaObject(specifics[i].getSpecificName());
+                }
+                break;
+            }
+        case SchemaObject.FUNCTION:
+            {
+                set = schema.functionLookup;
+                RoutineSchema routine = (RoutineSchema) set.getObject(name.name);
+                object = routine;
+                Routine[] specifics = routine.getSpecificRoutines();
+                for (int i = 0; i < specifics.length; i++) {
+                    removeSchemaObject(specifics[i].getSpecificName());
+                }
+                break;
+            }
+        case SchemaObject.SPECIFIC_ROUTINE:
+            {
+                set = schema.specificRoutineLookup;
+                Routine routine = (Routine) set.getObject(name.name);
+                object = routine;
+                routine.routineSchema.removeSpecificRoutine(routine);
+                if (routine.routineSchema.getSpecificRoutines().length == 0) {
+                    removeSchemaObject(routine.getName());
+                }
+                break;
+            }
+        case SchemaObject.DOMAIN:
+        case SchemaObject.TYPE:
+            set = schema.typeLookup;
+            object = set.getObject(name.name);
+            break;
+        case SchemaObject.INDEX:
+            set = schema.indexLookup;
+            break;
+        case SchemaObject.CONSTRAINT:
+            {
+                set = schema.constraintLookup;
+                if (name.parent.type == SchemaObject.TABLE) {
+                    Table table = (Table) schema.tableList.get(name.parent.name);
+                    object = table.getConstraint(name.name);
+                    table.removeConstraint(name.name);
+                } else if (name.parent.type == SchemaObject.DOMAIN) {
+                    Type type = (Type) schema.typeLookup.getObject(name.parent.name);
+                    object = type.userTypeModifier.getConstraint(name.name);
+                    type.userTypeModifier.removeConstraint(name.name);
+                }
+                break;
+            }
+        case SchemaObject.TRIGGER:
+            {
+                set = schema.triggerLookup;
+                Table table = (Table) schema.tableList.get(name.parent.name);
+                object = table.getTrigger(name.name);
+                if (object != null) {
+                    table.removeTrigger((TriggerDef) object);
+                }
+                break;
+            }
+        default:
+            throw Error.runtimeError(ErrorCode.U_S0500, "SchemaManager");
+    }
+    if (object != null) {
+        database.getGranteeManager().removeDbObject(name);
+        removeReferencingObject(object);
+    }
+    if (set != null) {
+        set.remove(name.name);
+    }
+    removeReferencedObject(name);
+}

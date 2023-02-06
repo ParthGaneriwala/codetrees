@@ -1,0 +1,125 @@
+protected AttributedString parseStyledText(String text, Map<TextAttribute, Font> attrs, String[] bare, boolean style) {
+    // if there are no style commands in the text, skip the complexity
+    if (!style || !text.contains("@=")) {
+        if (bare != null) {
+            bare[0] = text;
+        }
+        return new AttributedString(text, attrs);
+    }
+    // parse the style commands into an array of runs and extract the raw text along the way
+    ArrayList<StyleRun> stack = new ArrayList<StyleRun>();
+    ArrayList<StyleRun> runs = new ArrayList<StyleRun>();
+    StringBuilder raw = new StringBuilder();
+    int rawpos = 0;
+    for (int ii = 0, ll = text.length(); ii < ll; ii++) {
+        char c = text.charAt(ii);
+        if (c == ')') {
+            // end of run
+            if (stack.size() == 0) {
+                // not a problem, this is just a bare parenthesis
+                raw.append(c);
+                rawpos++;
+            } else {
+                StyleRun run = stack.remove(0);
+                run.end = rawpos;
+                runs.add(run);
+            }
+            continue;
+        } else if (c == '@') {
+            // it; we need at least 5: @=X()
+            if (ii >= ll - 5) {
+                raw.append(c);
+                rawpos++;
+                continue;
+            }
+            // anything other than @= is a non-start-sequence
+            if ((c = text.charAt(++ii)) != '=') {
+                // @ ( and ) are escaped as @@ @( and @) so we skip the @
+                if (c != '@' && c != '(' && c != ')') {
+                    raw.append('@');
+                    rawpos++;
+                }
+                raw.append(c);
+                rawpos++;
+                continue;
+            }
+        // otherwise fall through and parse the run
+        } else {
+            // plain old character
+            raw.append(c);
+            rawpos++;
+            continue;
+        }
+        // otherwise this is the start of a style run
+        StyleRun run = new StyleRun();
+        run.start = rawpos;
+        stack.add(0, run);
+        int parenidx = text.indexOf('(', ii);
+        if (parenidx == -1) {
+            log.info("Invalid style specification, missing paren [text=" + text + ", pos=" + ii + "].");
+            continue;
+        }
+        String styles = text.substring(ii + 1, parenidx);
+        ii = parenidx;
+        run.styles = new char[styles.length()];
+        for (int ss = 0, ssl = styles.length(); ss < ssl; ss++) {
+            run.styles[ss] = Character.toLowerCase(styles.charAt(ss));
+            if (run.styles[ss] == '#') {
+                if (ss > ssl - 7) {
+                    log.warning("Invalid color definition [text=" + text + ", color=" + styles.substring(ss) + "].");
+                    ss = ssl;
+                } else {
+                    String hex = styles.substring(ss + 1, ss + 7);
+                    ss += 6;
+                    try {
+                        run.color = new Color(Integer.parseInt(hex, 16));
+                    } catch (Exception e) {
+                        log.warning("Invalid color definition [text=" + text + ", color=#" + hex + "].");
+                    }
+                }
+            }
+        }
+    }
+    String rawtext = raw.toString();
+    if (bare != null) {
+        bare[0] = rawtext;
+    }
+    // now create an attributed string and add our styles
+    AttributedString string = new AttributedString(rawtext, attrs);
+    for (int ii = 0; ii < runs.size(); ii++) {
+        StyleRun run = runs.get(ii);
+        if (run.styles == null) {
+            // ignore runs we failed to parse
+            continue;
+        }
+        for (char runStyle : run.styles) {
+            switch(runStyle) {
+                case '#':
+                    if (run.color != null) {
+                        string.addAttribute(TextAttribute.FOREGROUND, run.color, run.start, run.end);
+                    }
+                    break;
+                case 'i':
+                    string.addAttribute(TextAttribute.POSTURE, TextAttribute.POSTURE_OBLIQUE, run.start, run.end);
+                    break;
+                case 'b':
+                    // setting TextAttribute.WEIGHT doesn't seem to work
+                    string.addAttribute(TextAttribute.FONT, attrs.get(TextAttribute.FONT).deriveFont(Font.BOLD), run.start, run.end);
+                    break;
+                case 's':
+                    string.addAttribute(TextAttribute.STRIKETHROUGH, TextAttribute.STRIKETHROUGH_ON, run.start, run.end);
+                    break;
+                case 'u':
+                    string.addAttribute(TextAttribute.UNDERLINE, TextAttribute.UNDERLINE_ON, run.start, run.end);
+                    break;
+                case // ignore blank spots
+                0:
+                    break;
+                default:
+                    log.info("Invalid style command [text=" + text + ", command=" + runStyle + ", run=" + run + "].");
+                    break;
+            }
+        }
+    }
+    return string;
+}

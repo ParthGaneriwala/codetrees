@@ -1,0 +1,71 @@
+private ControlFlowGraph getControlFlowGraph() {
+    Temp.reset();
+    // List of cfgs
+    Vector<ControlFlowGraph> cfgs = new Vector<ControlFlowGraph>();
+    try {
+        // Get the text from the code text pane
+        String codeText = codeTextPane.getText();
+        CharArrayReader strReader = new CharArrayReader(codeText.toCharArray());
+        String filename = "VisualizationTest.tig";
+        System.out.println("File: " + filename);
+        // Generate name of the output file
+        File inFile = new File(filename);
+        String inFileName = inFile.getName();
+        int periodPos = inFileName.indexOf(".");
+        // for intermediate result
+        String outFileNameInterim = inFileName.substring(0, periodPos) + "_intrm.s";
+        // for final code after register allocation
+        String outFileName = inFileName.substring(0, periodPos) + ".s";
+        File outFile = new File(outFileNameInterim);
+        // Lexical analysis and parsing
+        TigerParser tp = new TigerParser(new Lexer(strReader));
+        Object result = tp.parse().value;
+        // Semantic analysis
+        System.out.println("Completed generating abstract syntax tree");
+        SemanticAnalyzer semantAnalyzer = new SemanticAnalyzer();
+        Vector functionLevels = semantAnalyzer.translateAbstractTree((Absyn) result);
+        ErrorHandler errorHandler = ErrorHandler.getInstance();
+        errorHandler.displayResult();
+        // Intermediate code generation
+        Debug debug = new Debug();
+        if (errorHandler.getNumErrors() != 0)
+            return null;
+        // No errors in semantic analysis; continue with intermediate code generation
+        // for each function
+        Vector intermediateCodeListing = new Vector();
+        Vector finalCodeListing = new Vector();
+        boolean compiledSuccessfully = true;
+        int numFuncs = functionLevels.size();
+        HashMap fNameVsNumRegsUsed = new HashMap();
+        Vector commonData = new Vector();
+        for (int i = 0; i < numFuncs; i++) {
+            Level fLevel = (Level) functionLevels.elementAt(i);
+            String functionName = fLevel.getLevelName().toString();
+            if (fLevel != null) {
+                AssemType body = fLevel.getFunctionBody();
+                if (body != null) {
+                    System.out.println("FUNCTION:");
+                    // debug.printAssem(body);
+                    Linearizer linearizer = processWithLinearizer(debug, body, fLevel.getLevelName());
+                    // Generate assembly code
+                    CodeGenerator codeGenerator = new CodeGenerator();
+                    codeGenerator.generateCode(linearizer.getTrace());
+                    Vector instList = codeGenerator.getInstructionsList();
+                    intermediateCodeListing.addAll(instList);
+                    writeInstructionsToFile(outFile, intermediateCodeListing);
+                    // Create a control flow graph from the instructions created above
+                    ControlFlowGraph flowGraph = new ControlFlowGraph(instList, false);
+                    // After optimization using SSA form
+                    OptimizationContext optimizationContext = new OptimizationContext(flowGraph);
+                    optimizationContext.setSSAMethod();
+                    flowGraph = optimizationContext.getOptimizedFlowGraph();
+                    cfgs.add(flowGraph);
+                }
+            }
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+    // Return the first cfg found
+    return cfgs.elementAt(0);
+}

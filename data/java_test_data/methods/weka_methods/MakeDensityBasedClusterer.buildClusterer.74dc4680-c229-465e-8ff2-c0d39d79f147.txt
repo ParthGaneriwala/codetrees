@@ -1,0 +1,84 @@
+@Override
+public void buildClusterer(Instances data) throws Exception {
+    // can clusterer handle the data?
+    getCapabilities().testWithFail(data);
+    m_replaceMissing = new ReplaceMissingValues();
+    m_replaceMissing.setInputFormat(data);
+    data = weka.filters.Filter.useFilter(data, m_replaceMissing);
+    m_theInstances = new Instances(data, 0);
+    if (m_wrappedClusterer == null) {
+        throw new Exception("No clusterer has been set");
+    }
+    m_wrappedClusterer.buildClusterer(data);
+    m_model = new DiscreteEstimator[m_wrappedClusterer.numberOfClusters()][data.numAttributes()];
+    m_modelNormal = new double[m_wrappedClusterer.numberOfClusters()][data.numAttributes()][2];
+    double[][] weights = new double[m_wrappedClusterer.numberOfClusters()][data.numAttributes()];
+    m_priors = new double[m_wrappedClusterer.numberOfClusters()];
+    for (int i = 0; i < m_wrappedClusterer.numberOfClusters(); i++) {
+        // laplace correction
+        m_priors[i] = 1.0;
+        for (int j = 0; j < data.numAttributes(); j++) {
+            if (data.attribute(j).isNominal()) {
+                m_model[i][j] = new DiscreteEstimator(data.attribute(j).numValues(), true);
+            }
+        }
+    }
+    Instance inst = null;
+    // Compute mean, etc.
+    int[] clusterIndex = new int[data.numInstances()];
+    for (int i = 0; i < data.numInstances(); i++) {
+        inst = data.instance(i);
+        int cluster = m_wrappedClusterer.clusterInstance(inst);
+        m_priors[cluster] += inst.weight();
+        for (int j = 0; j < data.numAttributes(); j++) {
+            if (!inst.isMissing(j)) {
+                if (data.attribute(j).isNominal()) {
+                    m_model[cluster][j].addValue(inst.value(j), inst.weight());
+                } else {
+                    m_modelNormal[cluster][j][0] += inst.weight() * inst.value(j);
+                    weights[cluster][j] += inst.weight();
+                }
+            }
+        }
+        clusterIndex[i] = cluster;
+    }
+    for (int j = 0; j < data.numAttributes(); j++) {
+        if (data.attribute(j).isNumeric()) {
+            for (int i = 0; i < m_wrappedClusterer.numberOfClusters(); i++) {
+                if (weights[i][j] > 0) {
+                    m_modelNormal[i][j][0] /= weights[i][j];
+                }
+            }
+        }
+    }
+    // Compute standard deviations
+    for (int i = 0; i < data.numInstances(); i++) {
+        inst = data.instance(i);
+        for (int j = 0; j < data.numAttributes(); j++) {
+            if (!inst.isMissing(j)) {
+                if (data.attribute(j).isNumeric()) {
+                    double diff = m_modelNormal[clusterIndex[i]][j][0] - inst.value(j);
+                    m_modelNormal[clusterIndex[i]][j][1] += inst.weight() * diff * diff;
+                }
+            }
+        }
+    }
+    for (int j = 0; j < data.numAttributes(); j++) {
+        if (data.attribute(j).isNumeric()) {
+            for (int i = 0; i < m_wrappedClusterer.numberOfClusters(); i++) {
+                if (weights[i][j] > 0) {
+                    m_modelNormal[i][j][1] = Math.sqrt(m_modelNormal[i][j][1] / weights[i][j]);
+                } else if (weights[i][j] <= 0) {
+                    m_modelNormal[i][j][1] = Double.MAX_VALUE;
+                }
+                if (m_modelNormal[i][j][1] <= m_minStdDev) {
+                    m_modelNormal[i][j][1] = data.attributeStats(j).numericStats.stdDev;
+                    if (m_modelNormal[i][j][1] <= m_minStdDev) {
+                        m_modelNormal[i][j][1] = m_minStdDev;
+                    }
+                }
+            }
+        }
+    }
+    Utils.normalize(m_priors);
+}

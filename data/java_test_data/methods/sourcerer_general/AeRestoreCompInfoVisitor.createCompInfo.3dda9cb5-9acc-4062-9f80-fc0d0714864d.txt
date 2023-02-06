@@ -1,0 +1,59 @@
+protected AeCompInfo createCompInfo(Element aElement) throws AeBusinessProcessException {
+    int id = getAttributeInt(aElement, STATE_ID);
+    AeCompInfo compInfo = (AeCompInfo) getObject(id);
+    if (compInfo == null) {
+        // Haven't seen this object id yet. Create the compensation info
+        // object.
+        AeActivityScopeImpl scope = null;
+        // Try to read the location first, then fallback to id if not found
+        String scopeLocation = getAttribute(aElement, STATE_SCOPE_LOCATION);
+        if (AeUtil.notNullOrEmpty(scopeLocation)) {
+            scope = (AeActivityScopeImpl) getImplState().getProcess().findBpelObject(scopeLocation);
+        }
+        if (scope == null) {
+            int scopeLocationId = getAttributeInt(aElement, STATE_SCOPE);
+            scope = (AeActivityScopeImpl) getImplState().getProcess().findBpelObject(scopeLocationId);
+        }
+        if (scope == null) {
+            // TODO (MF) should defer the restore of the scope until the compInfo executes. This requires reworking the restore of the scope snapshot data below.
+            // The scope could be null if it references a previous iteration of
+            // a forEach that is no longer accessible. Attempt to restore this
+            // scope and have it parented by its forEach.
+            scopeLocation = getAttribute(aElement, STATE_SCOPE_LOCATION);
+            scope = restoreScopeInstance(scopeLocation, true);
+        }
+        boolean hasCoordination = getAttributeBoolean(aElement, STATE_HASCOORDINATIONS);
+        if (hasCoordination) {
+            String coordinationId = getAttribute(aElement, STATE_COORDINATION_ID);
+            compInfo = new AeCoordinatorCompInfo(scope, coordinationId);
+        } else {
+            compInfo = new AeCompInfo(scope);
+        }
+        putIdObject(id, compInfo);
+        boolean enabled = getAttributeBoolean(aElement, STATE_ENABLED);
+        compInfo.setEnabled(enabled);
+        if (enabled) {
+            // This element contains the compensation info object's inner data.
+            // Reconstruct the variables, correlation sets, partner links, and enclosed
+            // compensation info objects.
+            Map variables = createCompInfoVariables(aElement, scope);
+            Map correlationSets = createCompInfoCorrelationSets(aElement, scope);
+            Map partnerLinks = createCompInfoPartnerLinks(aElement, scope);
+            AeScopeSnapshot snapshot = new AeScopeSnapshot(variables, correlationSets, partnerLinks);
+            compInfo.setSnapshot(snapshot);
+            // $NON-NLS-1$
+            String xpath = "./" + STATE_COMPINFO;
+            // $NON-NLS-1$
+            List enclosedScopeElements = selectNodes(aElement, xpath, "Error restoring enclosed compensation info");
+            LinkedList enclosedScopes = new LinkedList();
+            for (Iterator i = enclosedScopeElements.iterator(); i.hasNext(); ) {
+                Element element = (Element) i.next();
+                AeCompInfo enclosedScope = createCompInfo(element);
+                enclosedScope.setParent(compInfo);
+                enclosedScopes.addLast(enclosedScope);
+            }
+            compInfo.setEnclosedScopes(enclosedScopes);
+        }
+    }
+    return compInfo;
+}

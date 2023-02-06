@@ -1,0 +1,96 @@
+private void secureAuth(Buffer packet, int packLength, String user, String password, String database, boolean writeClientParams) throws SQLException {
+    // Passwords can be 16 chars long
+    if (packet == null) {
+        packet = new Buffer(packLength);
+    }
+    if (writeClientParams) {
+        if (this.use41Extensions) {
+            if (versionMeetsMinimum(4, 1, 1)) {
+                packet.writeLong(this.clientParam);
+                packet.writeLong(this.maxThreeBytes);
+                // charset, JDBC will connect as 'latin1',
+                // and use 'SET NAMES' to change to the desired
+                // charset after the connection is established.
+                packet.writeByte((byte) 8);
+                // Set of bytes reserved for future use.
+                packet.writeBytesNoNull(new byte[23]);
+            } else {
+                packet.writeLong(this.clientParam);
+                packet.writeLong(this.maxThreeBytes);
+            }
+        } else {
+            packet.writeInt((int) this.clientParam);
+            packet.writeLongInt(this.maxThreeBytes);
+        }
+    }
+    // User/Password data
+    packet.writeString(user, CODE_PAGE_1252, this.connection);
+    if (password.length() != 0) {
+        /* Prepare false scramble  */
+        packet.writeString(FALSE_SCRAMBLE, CODE_PAGE_1252, this.connection);
+    } else {
+        /* For empty password*/
+        // $NON-NLS-1$
+        packet.writeString("", CODE_PAGE_1252, this.connection);
+    }
+    if (this.useConnectWithDb) {
+        packet.writeString(database, CODE_PAGE_1252, this.connection);
+    }
+    send(packet, packet.getPosition());
+    // 
+    if (password.length() > 0) {
+        Buffer b = readPacket();
+        b.setPosition(0);
+        byte[] replyAsBytes = b.getByteBuffer();
+        if ((replyAsBytes.length == 25) && (replyAsBytes[0] != 0)) {
+            // Old passwords will have '*' at the first byte of hash */
+            if (replyAsBytes[0] != '*') {
+                try {
+                    /* Build full password hash as it is required to decode scramble */
+                    byte[] buff = Security.passwordHashStage1(password);
+                    /* Store copy as we'll need it later */
+                    byte[] passwordHash = new byte[buff.length];
+                    System.arraycopy(buff, 0, passwordHash, 0, buff.length);
+                    /* Finally hash complete password using hash we got from server */
+                    passwordHash = Security.passwordHashStage2(passwordHash, replyAsBytes);
+                    byte[] packetDataAfterSalt = new byte[replyAsBytes.length - 5];
+                    System.arraycopy(replyAsBytes, 4, packetDataAfterSalt, 0, replyAsBytes.length - 5);
+                    byte[] mysqlScrambleBuff = new byte[20];
+                    /* Decypt and store scramble 4 = hash for stage2 */
+                    Security.passwordCrypt(packetDataAfterSalt, mysqlScrambleBuff, passwordHash, 20);
+                    /* Encode scramble with password. Recycle buffer */
+                    Security.passwordCrypt(mysqlScrambleBuff, buff, buff, 20);
+                    Buffer packet2 = new Buffer(25);
+                    packet2.writeBytesNoNull(buff);
+                    this.packetSequence++;
+                    send(packet2, 24);
+                } catch (NoSuchAlgorithmException nse) {
+                    throw SQLError.createSQLException(// $NON-NLS-1$
+                    Messages.getString("MysqlIO.91") + // $NON-NLS-1$
+                    Messages.getString("MysqlIO.92"), SQLError.SQL_STATE_GENERAL_ERROR, getExceptionInterceptor());
+                }
+            } else {
+                try {
+                    /* Create password to decode scramble */
+                    byte[] passwordHash = Security.createKeyFromOldPassword(password);
+                    /* Decypt and store scramble 4 = hash for stage2 */
+                    byte[] netReadPos4 = new byte[replyAsBytes.length - 5];
+                    System.arraycopy(replyAsBytes, 4, netReadPos4, 0, replyAsBytes.length - 5);
+                    byte[] mysqlScrambleBuff = new byte[20];
+                    /* Decypt and store scramble 4 = hash for stage2 */
+                    Security.passwordCrypt(netReadPos4, mysqlScrambleBuff, passwordHash, 20);
+                    /* Finally scramble decoded scramble with password */
+                    String scrambledPassword = Util.scramble(new String(mysqlScrambleBuff), password);
+                    Buffer packet2 = new Buffer(packLength);
+                    packet2.writeString(scrambledPassword, CODE_PAGE_1252, this.connection);
+                    this.packetSequence++;
+                    send(packet2, 24);
+                } catch (NoSuchAlgorithmException nse) {
+                    throw SQLError.createSQLException(// $NON-NLS-1$
+                    Messages.getString("MysqlIO.93") + // $NON-NLS-1$
+                    Messages.getString("MysqlIO.94"), SQLError.SQL_STATE_GENERAL_ERROR, getExceptionInterceptor());
+                }
+            }
+        }
+    }
+}

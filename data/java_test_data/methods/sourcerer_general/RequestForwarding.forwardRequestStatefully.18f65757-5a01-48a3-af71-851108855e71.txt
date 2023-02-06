@@ -1,0 +1,77 @@
+/**
+ * Forward the request statefully.
+ *
+ * @param sipProvider --
+ * sip provider to forward request.
+ * @param clonedRequest --
+ * cloned request to forward.
+ * @param originalRequest --
+ * incoming request
+ * @param serverTransaction --
+ * server transaction used to fwd the request.
+ */
+private void forwardRequestStatefully(SipProvider sipProvider, Request clonedRequest, Request originalRequest, ServerTransaction serverTransaction) {
+    MessageFactory messageFactory = proxy.getMessageFactory();
+    if (logger.isDebugEnabled()) {
+        logger.debug("serverTransaction =  " + serverTransaction);
+        if (serverTransaction != null)
+            logger.debug("dialog =  " + serverTransaction.getDialog());
+    }
+    try {
+        /*
+			 * A stateful proxy MUST create a new client transaction for this
+			 * request as described in Section 17.1 and instructs the
+			 * transaction to send the request using the address, port and
+			 * transport determined in step 7
+			 */
+        if (serverTransaction == null && !clonedRequest.getMethod().equals(Request.MESSAGE)) {
+            // client transaction.
+            if (logger.isDebugEnabled())
+                logger.debug("RequestForwarding, forwardRequestStatefully()," + " the cloned request does not have a server transaction," + " so we drop the request!");
+            return;
+        }
+        if (originalRequest.getMethod().equals(Request.CANCEL)) {
+            // 487 Request Terminated to reply:
+            Response response = messageFactory.createResponse(Response.REQUEST_TERMINATED, originalRequest);
+            CSeqHeader cSeqHeader = (CSeqHeader) response.getHeader(CSeqHeader.NAME);
+            cSeqHeader.setMethod("INVITE");
+            serverTransaction.sendResponse(response);
+            if (logger.isDebugEnabled())
+                logger.debug("Proxy, processRequest(), 487 Request Terminated" + " replied to the CANCEL:\n" + response.toString());
+        }
+        if (logger.isDebugEnabled())
+            logger.debug("RequestForwarding, forwardRequestStatefully()," + " the dialog state is null, so we have to" + " forward the request using" + " a new clientTransaction");
+        ClientTransaction clientTransaction = sipProvider.getNewClientTransaction(clonedRequest);
+        clientTransaction.sendRequest();
+        if (logger.isDebugEnabled())
+            logger.debug("RequestForwarding, forwardRequestStatefully()," + ", cloned request forwarded statefully:\n " + clonedRequest);
+        TransactionsMapping transactionsMapping = (TransactionsMapping) serverTransaction.getApplicationData();
+        if (transactionsMapping != null)
+            transactionsMapping.addMapping(serverTransaction, clientTransaction);
+        else {
+            transactionsMapping = new TransactionsMapping();
+            transactionsMapping.addMapping(serverTransaction, clientTransaction);
+            serverTransaction.setApplicationData(transactionsMapping);
+            clientTransaction.setApplicationData(transactionsMapping);
+        }
+    } catch (Exception ex) {
+        try {
+            if (logger.isDebugEnabled()) {
+                logger.debug("RequestForwarding, forwardRequestStatefully(), " + " internal error, " + "exception raised:", ex);
+                ex.printStackTrace();
+                System.exit(0);
+            }
+            // This is an internal error:
+            // Let's return a 500 SERVER_INTERNAL_ERROR
+            Response response = messageFactory.createResponse(Response.SERVER_INTERNAL_ERROR, originalRequest);
+            if (serverTransaction != null)
+                serverTransaction.sendResponse(response);
+            else
+                sipProvider.sendResponse(response);
+            if (logger.isDebugEnabled())
+                logger.debug("RequestForwarding, forwardRequestStatefully(), " + " 500 SERVER_INTERNAL_ERROR replied:\n" + response.toString());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}

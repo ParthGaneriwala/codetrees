@@ -1,0 +1,53 @@
+public SearchResult parse(InputStream in, final ProducerSink<Line> out, final Page page) throws IOException {
+    final Parser parser = new Parser();
+    // if anything fails, stop the search
+    parser.setExceptionHandler(new ExceptionHandler() {
+
+        public void handle(Exception e) {
+            if (e instanceof RuntimeException) {
+                throw (RuntimeException) e;
+            } else {
+                throw new RuntimeException(e);
+            }
+        }
+    });
+    final XMLTagPath feedTag = new XMLTagPath("feed");
+    parser.addProcessor(feedTag.child("id"), Processors.setterMethod(SearchResult.class, "id", Converters.trimAndIntern()));
+    parser.addProcessor(feedTag.child("updated"), Processors.setterMethod(SearchResult.class, "updated", Converters.date(updatedDateFormat)));
+    parser.addProcessor(feedTag.child("title"), Processors.setterMethod(SearchResult.class, "title", Converters.trimAndIntern()));
+    parser.addProcessor(feedTag.child("generator"), Processors.setterMethod(SearchResult.class, "generator", Converters.trimAndIntern()));
+    parser.addProcessor(feedTag.child("opensearch:totalResults"), Processors.setterMethod(SearchResult.class, "totalResults", Converters.integer()));
+    parser.addProcessor(feedTag.child("opensearch:startIndex"), new StartIndexProcessor(page));
+    parser.addProcessor(feedTag.child("author").child("name"), Processors.setterMethod(SearchResult.class, "authorName", Converters.trimAndIntern()));
+    parser.addProcessor(feedTag.child("author").child("uri"), Processors.setterMethod(SearchResult.class, "authorUri", UriConverter.INSTANCE));
+    final XMLTagPath entryTag = feedTag.child("entry");
+    parser.addProcessor(entryTag.start(), Processors.createNewObject(CodeFile.class));
+    parser.addProcessor(entryTag.child("id"), Processors.setterMethod(CodeFile.class, "id", Converters.trimAndIntern()));
+    parser.addProcessor(entryTag.child("updated"), Processors.setterMethod(CodeFile.class, "updated", Converters.date(updatedDateFormat)));
+    parser.addProcessor(entryTag.child("author").child("name"), new ExtraDataProcessor<FileOrigin>(FileOrigin.class, "authorName", Converters.trimAndIntern()));
+    parser.addProcessor(entryTag.child("author").child("uri"), new ExtraDataProcessor<FileOrigin>(FileOrigin.class, "authorUri", UriConverter.INSTANCE));
+    parser.addProcessor(entryTag.child("title"), new ExtraDataProcessor<FileOrigin>(FileOrigin.class, "title", Converters.trimAndIntern()));
+    parser.addProcessor(entryTag.child("gcs:package").attribute("name"), Processors.setterMethod(CodeFile.class, "contentRoot", ContentRootConverter.INSTANCE));
+    parser.addProcessor(entryTag.child("gcs:file").attribute("name"), Processors.setterMethod(CodeFile.class, "path", PathConverter.INSTANCE));
+    parser.addProcessor(entryTag.end(), new PopProcessor<SearchResult, CodeFile>() {
+
+        public void process(SearchResult searchResult, CodeFile codeFile) {
+            codeFile.setSearchProvider(searchProviderBackend);
+        }
+    });
+    parser.addProcessor(entryTag.child("rights"), new ExtraDataProcessor<FileOrigin>(FileOrigin.class, "rights", Converters.trimAndIntern()));
+    final XMLTagPath matchTag = entryTag.child("gcs:match");
+    parser.addProcessor(matchTag.start(), Processors.createNewObject(Line.class));
+    parser.addProcessor(matchTag.attribute("lineNumber"), Processors.setterMethod(Line.class, "lineNumber", OneBasedInteger.INSTANCE));
+    parser.addProcessor(matchTag.body(), Processors.setterMethod(Line.class, "lineValue", LineValueConverter.INSTANCE));
+    parser.addProcessor(matchTag.end(), new PopProcessor<CodeFile, Line>() {
+
+        public void process(CodeFile codeFile, Line line) {
+            line.setCodeFile(codeFile);
+            out.produced(line);
+        }
+    });
+    SearchResult searchResult = new SearchResult();
+    parser.parse(in, searchResult);
+    return searchResult;
+}

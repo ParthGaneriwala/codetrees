@@ -1,0 +1,43 @@
+public GenericBean processAction(ActionRequest request, ActionResponse response) throws Exception {
+    // Will find the specified project in preferences first
+    Project selectedProject = findProject(request);
+    if (selectedProject == null) {
+        throw new PortletException("Selected Project is null a project was not specified in the preferences or the specified project was not found");
+    }
+    // Check the user's permissions
+    User user = getUser(request);
+    if (!user.isLoggedIn()) {
+        throw new PortletException("User needs to be logged in");
+    }
+    Connection db = PortalUtils.useConnection(request);
+    String ticketCategory = request.getPreferences().getValue(PREF_TICKET_CATEGORY, null);
+    int ticketCategoryId = -1;
+    if (StringUtils.hasText(ticketCategory)) {
+        TicketCategoryList ticketCategoryList = new TicketCategoryList();
+        ticketCategoryList.setCatLevel(0);
+        ticketCategoryList.setProjectId(selectedProject.getId());
+        ticketCategoryList.setEnabledState(Constants.TRUE);
+        ticketCategoryList.buildList(db);
+        ticketCategoryId = ticketCategoryList.getIdFromValue(ticketCategory);
+    }
+    ReportAsInappropriateBean reportAsInappropriateBean = (ReportAsInappropriateBean) PortalUtils.getFormBean(request, ReportAsInappropriateBean.class);
+    reportAsInappropriateBean.setLinkModuleId(ModuleUtils.getLinkModuleIdFromModuleName(reportAsInappropriateBean.getLinkModule()));
+    Ticket ticket = new Ticket();
+    if (reportAsInappropriateBean.populateTicketFromBean(ticket)) {
+        ticket.setProjectId(selectedProject.getId());
+        ticket.setContactId(user.getId());
+        ticket.setEnteredBy(user.getId());
+        ticket.setModifiedBy(user.getId());
+        ticket.setCatCode(ticketCategoryId);
+        if (ticket.insert(db)) {
+            // Insert inappropriate rating if the object being reported IS NOT a profile
+            if (!reportAsInappropriateBean.getLinkModule().equals(ModuleUtils.MODULENAME_PROFILE)) {
+                Rating.save(db, user.getId(), reportAsInappropriateBean.getLinkProjectId(), reportAsInappropriateBean.getLinkItemId(), String.valueOf(Rating.INAPPROPRIATE_COMMENT), ModuleUtils.getTableFromModuleName(reportAsInappropriateBean.getLinkModule()), ModuleUtils.getPrimaryKeyFromModuleName(reportAsInappropriateBean.getLinkModule()), Constants.TRUE);
+            // PortalUtils.processInsertHook(request, reportAsInappropriateBean);
+            }
+        }
+    }
+    String ctx = request.getContextPath();
+    response.sendRedirect(ctx + "/close_panel_refresh.jsp");
+    return null;
+}

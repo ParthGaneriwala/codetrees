@@ -1,0 +1,49 @@
+public void moveTopic(Topic fromTopic, TopicVersion fromVersion, String destination, Object transactionObject) throws Exception {
+    TransactionStatus status = DatabaseConnection.startTransaction();
+    try {
+        Connection conn = DatabaseConnection.getConnection();
+        if (!this.canMoveTopic(fromTopic, destination)) {
+            throw new WikiException(new WikiMessage("move.exception.destinationexists", destination));
+        }
+        Topic toTopic = this.lookupTopic(fromTopic.getVirtualWiki(), destination, false, conn);
+        boolean detinationExistsFlag = (toTopic != null && toTopic.getDeleteDate() == null);
+        if (detinationExistsFlag) {
+            // if the target topic is a redirect to the source topic then the
+            // target must first be deleted.
+            this.deleteTopic(toTopic, null, false, conn);
+        }
+        // first rename the source topic with the new destination name
+        String fromTopicName = fromTopic.getName();
+        fromTopic.setName(destination);
+        ParserOutput fromParserOutput = ParserUtil.parserOutput(fromTopic.getTopicContent(), fromTopic.getVirtualWiki(), fromTopic.getName());
+        writeTopic(fromTopic, fromVersion, fromParserOutput.getCategories(), fromParserOutput.getLinks(), true, conn);
+        // rename.
+        if (detinationExistsFlag) {
+            // target topic was deleted, so rename and undelete
+            toTopic.setName(fromTopicName);
+            writeTopic(toTopic, null, null, null, false, conn);
+            this.undeleteTopic(toTopic, null, false, conn);
+        } else {
+            // create a new topic that redirects to the destination
+            toTopic = fromTopic;
+            toTopic.setTopicId(-1);
+            toTopic.setName(fromTopicName);
+        }
+        String content = ParserUtil.parserRedirectContent(destination);
+        toTopic.setRedirectTo(destination);
+        toTopic.setTopicType(Topic.TYPE_REDIRECT);
+        toTopic.setTopicContent(content);
+        TopicVersion toVersion = fromVersion;
+        toVersion.setTopicVersionId(-1);
+        toVersion.setVersionContent(content);
+        ParserOutput toParserOutput = ParserUtil.parserOutput(toTopic.getTopicContent(), toTopic.getVirtualWiki(), toTopic.getName());
+        writeTopic(toTopic, toVersion, toParserOutput.getCategories(), toParserOutput.getLinks(), true, conn);
+    } catch (Exception e) {
+        DatabaseConnection.rollbackOnException(status, e);
+        throw e;
+    } catch (Error err) {
+        DatabaseConnection.rollbackOnException(status, err);
+        throw err;
+    }
+    DatabaseConnection.commit(status);
+}

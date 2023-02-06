@@ -1,0 +1,96 @@
+private void upload(HttpServletRequest request, ModelAndView next, WikiPageInfo pageInfo) throws Exception {
+    // FIXME - this method is a mess and needs to be split up.
+    File file = new File(Environment.getValue(Environment.PROP_FILE_DIR_FULL_PATH));
+    if (!file.exists()) {
+        throw new WikiException(new WikiMessage("upload.error.nodirectory"));
+    }
+    Iterator iterator = ServletUtil.processMultipartRequest(request, Environment.getValue(Environment.PROP_FILE_DIR_FULL_PATH), Environment.getLongValue(Environment.PROP_FILE_MAX_FILE_SIZE));
+    String fileName = null;
+    String url = null;
+    String contentType = null;
+    long fileSize = 0;
+    String contents = null;
+    boolean isImage = true;
+    while (iterator.hasNext()) {
+        FileItem item = (FileItem) iterator.next();
+        String fieldName = item.getFieldName();
+        if (item.isFormField()) {
+            if (fieldName.equals("description")) {
+                // FIXME - these should be parsed
+                contents = item.getString("UTF-8");
+            }
+        } else {
+            // file name can have encoding issues, so manually convert
+            fileName = item.getName();
+            if (fileName == null) {
+                throw new WikiException(new WikiMessage("upload.error.filename"));
+            }
+            fileName = CreateOfficeVisioServlet.sanitizeFilename(fileName);
+            String extension = FilenameUtils.getExtension(fileName);
+            if (!isFileTypeAllowed(extension)) {
+                throw new WikiException(new WikiMessage("upload.error.filetype", extension));
+            }
+            url = CreateOfficeVisioServlet.buildUniqueFileName(fileName);
+            String subdirectory = CreateOfficeVisioServlet.buildFileSubdirectory();
+            fileSize = item.getSize();
+            File directory = new File(Environment.getValue(Environment.PROP_FILE_DIR_FULL_PATH), subdirectory);
+            if (!directory.exists() && !directory.mkdirs()) {
+                throw new WikiException(new WikiMessage("upload.error.directorycreate", directory.getAbsolutePath()));
+            }
+            contentType = item.getContentType();
+            url = subdirectory + "/" + url;
+            File uploadedFile = new File(Environment.getValue(Environment.PROP_FILE_DIR_FULL_PATH), url);
+            item.write(uploadedFile);
+            isImage = ImageUtil.isImage(uploadedFile);
+        }
+    }
+    String virtualWiki = WikiUtil.getVirtualWikiFromURI(request);
+    String topicName = NamespaceHandler.NAMESPACE_IMAGE + NamespaceHandler.NAMESPACE_SEPARATOR + Utilities.decodeFromURL(fileName, true);
+    if (this.handleSpam(request, next, pageInfo, topicName, contents)) {
+        // FIXME - the uploaded content should be deleted
+        this.view(request, next, pageInfo);
+        return;
+    }
+    Topic topic = WikiBase.getDataHandler().lookupTopic(virtualWiki, topicName, false, null);
+    if (topic == null) {
+        topic = new Topic();
+        topic.setVirtualWiki(virtualWiki);
+        topic.setName(topicName);
+        topic.setTopicContent(contents);
+    }
+    if (isImage) {
+        topic.setTopicType(Topic.TYPE_IMAGE);
+    } else {
+        topic.setTopicType(Topic.TYPE_FILE);
+    }
+    WikiFileVersion wikiFileVersion = new WikiFileVersion();
+    wikiFileVersion.setUploadComment(contents);
+    wikiFileVersion.setAuthorIpAddress(ServletUtil.getIpAddress(request));
+    WikiUser user = ServletUtil.currentUser();
+    Integer authorId = null;
+    if (user.getUserId() > 0) {
+        authorId = new Integer(user.getUserId());
+    }
+    wikiFileVersion.setAuthorId(authorId);
+    TopicVersion topicVersion = new TopicVersion(user, ServletUtil.getIpAddress(request), contents, topic.getTopicContent());
+    if (fileName == null) {
+        throw new WikiException(new WikiMessage("upload.error.filenotfound"));
+    }
+    WikiFile wikiFile = WikiBase.getDataHandler().lookupWikiFile(virtualWiki, topicName);
+    if (wikiFile == null) {
+        wikiFile = new WikiFile();
+        wikiFile.setVirtualWiki(virtualWiki);
+    }
+    wikiFile.setFileName(fileName);
+    wikiFile.setUrl(url);
+    wikiFileVersion.setUrl(url);
+    wikiFileVersion.setMimeType(contentType);
+    wikiFile.setMimeType(contentType);
+    wikiFileVersion.setFileSize(fileSize);
+    wikiFile.setFileSize(fileSize);
+    ParserOutput parserOutput = ParserUtil.parserOutput(topic.getTopicContent(), virtualWiki, topicName);
+    WikiBase.getDataHandler().writeTopic(topic, topicVersion, parserOutput.getCategories(), parserOutput.getLinks(), true, null);
+    wikiFile.setTopicId(topic.getTopicId());
+    WikiBase.getDataHandler().writeFile(wikiFile, wikiFileVersion, null);
+    ServletUtil.redirect(next, virtualWiki, topicName);
+}

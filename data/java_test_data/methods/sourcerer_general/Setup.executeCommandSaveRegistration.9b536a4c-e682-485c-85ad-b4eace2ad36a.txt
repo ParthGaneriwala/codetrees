@@ -1,0 +1,52 @@
+public synchronized String executeCommandSaveRegistration(ActionContext context) {
+    ApplicationPrefs prefs = getApplicationPrefs(context);
+    if (SetupUtils.isConfigured(prefs)) {
+        return "AlreadySetupOK";
+    }
+    if (SetupUtils.isServicesConfigured(prefs)) {
+        return "SaveRegistrationOK";
+    }
+    // Populate the bean
+    SetupRegistrationBean bean = (SetupRegistrationBean) context.getFormBean();
+    // Validate the form
+    if (!bean.isValid()) {
+        LOG.warn("Registration bean did not validate");
+        processErrors(context, bean.getErrors());
+        return "SaveRegistrationERROR";
+    }
+    // Set system properties
+    bean.setOs(System.getProperty("os.name") + " " + System.getProperty("os.arch") + " " + System.getProperty("os.version"));
+    bean.setJava(System.getProperty("java.version"));
+    bean.setWebserver(context.getServletContext().getServerInfo());
+    // Set key for exchanging info
+    Key key = PrivateString.generateKey();
+    bean.setKey(PrivateString.encodeHex(key));
+    bean.setCode(PrivateString.encrypt(key, ApplicationVersion.TITLE + " " + ApplicationVersion.VERSION));
+    // Try to use the license client
+    boolean success = false;
+    try {
+        // Retrieve the services license
+        Class clientClass = Class.forName("com.concursive.connect.plugins.services.Client");
+        Object registrationClient = ObjectUtils.constructObject(clientClass);
+        success = ObjectUtils.invokeMethod(registrationClient, "processRegistration", bean);
+        if (success) {
+            prefs.add(ApplicationPrefs.CONCURSIVE_SERVICES_ID, bean.getId());
+            prefs.add(ApplicationPrefs.CONCURSIVE_SERVICES_KEY, bean.getKey());
+            prefs.add(ApplicationPrefs.CONCURSIVE_SERVICES_SERVER, bean.getUrl());
+        }
+    } catch (ClassNotFoundException e) {
+        context.getRequest().setAttribute("actionError", "A registration component is missing");
+        LOG.error("registration error", e);
+        return "SaveRegistrationERROR";
+    } catch (Exception e) {
+        context.getRequest().setAttribute("actionError", "A connection error occurred: " + e.getMessage());
+        LOG.error("registration error", e);
+        return "SaveRegistrationERROR";
+    }
+    // Not sure why this value didn't get set
+    if (!success || !StringUtils.hasText(bean.getId())) {
+        context.getRequest().setAttribute("actionError", "An unspecified error occurred... try again?");
+        return "SaveRegistrationERROR";
+    }
+    return "SaveRegistrationOK";
+}

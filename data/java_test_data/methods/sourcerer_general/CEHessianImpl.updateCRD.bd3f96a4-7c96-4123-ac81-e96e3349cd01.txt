@@ -1,0 +1,81 @@
+public Result updateCRD(CRD crd, int costtype, int gl) throws Exception {
+    log.debug("Begin updateCRD");
+    Result result = new Result(Action.NO_ACTION);
+    Subcontract sub = crd.getSub();
+    Code code = crd.getCode();
+    // There is a subcontract on this CRD
+    CRD old = crd.getOld();
+    if (sub != null) {
+        // Look in accounting database
+        sub = null;
+        if (old != null) {
+            sub = getSubcontract(old.getSub());
+            if (log.isDebugEnabled())
+                log.debug("updateCRD: found old subcontract? " + sub != null);
+        }
+        if (sub == null) {
+            sub = getSubcontract(crd.getSub());
+            if (log.isDebugEnabled())
+                log.debug("updateCRD: Didn't find old subcontract, current sub found: " + sub != null);
+        }
+        if (sub != null) {
+            sub.setAmount(crd.getContract());
+            sub.setDate(crd.getDate());
+            sub.setText(crd.getText());
+            if (crd.getTitle() != null)
+                sub.setDescription(crd.getTitle());
+            result = updateSubcontractDetail(sub, crd.getOld() != null ? getRfcnum(crd.getOld()) : "XXX", getRfcnum(crd), costtype, crd.getSubCANum() == 0 ? null : Integer.toString(crd.getSubCANum()), crd.getCrNum(), crd.isApproved());
+            if (log.isDebugEnabled())
+                log.debug("updateCA: " + result + " " + result.getMessage());
+        } else
+            result = new Result(Action.NO_SUBCONTRACT);
+    }
+    // This a part of a real CR
+    if (crd.getCrNum() != null) {
+        ResultSet rs = cdb.dbQuery("select * from jcchangeorder where jobnum = '" + code.getJobNum() + "' and ordernum = '" + crd.getCrNum() + "'");
+        if (rs.first()) {
+            // Start with owner contract amount
+            ResultSet t = getJobChange(crd, JC_DETAIL_CO_TYPE);
+            boolean create = false;
+            if (!t.first()) {
+                t.moveToInsertRow();
+                t.updateInt("type", JC_DETAIL_CO_TYPE);
+                create = true;
+            }
+            if (!create && crd.getOwner() == 0)
+                t.deleteRow();
+            else {
+                updateJobChange(t, code, crd, rs.getString("des"), gl, crd.getOwner());
+                if (create)
+                    t.insertRow();
+                else
+                    t.updateRow();
+            }
+            t.getStatement().close();
+            // Budget
+            t = getJobChange(crd, JC_DETAIL_CHANGE_OFFSET + costtype);
+            create = false;
+            if (!t.first()) {
+                t.moveToInsertRow();
+                t.updateInt("type", JC_DETAIL_CHANGE_OFFSET + costtype);
+                create = true;
+            }
+            if (!create && crd.getBudget() == 0)
+                t.deleteRow();
+            else {
+                updateJobChange(t, code, crd, rs.getString("des"), gl, crd.getBudget());
+                if (create)
+                    t.insertRow();
+                else
+                    t.updateRow();
+            }
+            t.getStatement().close();
+            if (result.getAction().equals(Action.NO_ACTION))
+                result = new Result(Action.UPDATED);
+        } else
+            result = new Result(Action.NOT_FOUND, "Could not find change request in Computer Ease");
+        rs.getStatement().close();
+        cdb.disconnect();
+    }
+    return result;
+}

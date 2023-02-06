@@ -1,0 +1,103 @@
+@Override
+public void buildClassifier(Instances instances) throws Exception {
+    // can classifier handle the data?
+    getCapabilities().testWithFail(instances);
+    // remove instances with missing class
+    instances = new Instances(instances);
+    instances.deleteWithMissingClass();
+    m_Random = instances.getRandomNumberGenerator(m_Seed);
+    m_Total = RuleStats.numAllConditions(instances);
+    if (m_Debug) {
+        System.err.println("Number of all possible conditions = " + m_Total);
+    }
+    Instances data = null;
+    m_Filter = new ClassOrder();
+    ((ClassOrder) m_Filter).setSeed(m_Random.nextInt());
+    ((ClassOrder) m_Filter).setClassOrder(ClassOrder.FREQ_ASCEND);
+    m_Filter.setInputFormat(instances);
+    data = Filter.useFilter(instances, m_Filter);
+    if (data == null) {
+        throw new Exception(" Unable to randomize the class orders.");
+    }
+    m_Class = data.classAttribute();
+    m_Ruleset = new ArrayList<Rule>();
+    m_RulesetStats = new ArrayList<RuleStats>();
+    m_Distributions = new ArrayList<double[]>();
+    // Sort by classes frequency
+    double[] orderedClasses = ((ClassOrder) m_Filter).getClassCounts();
+    if (m_Debug) {
+        System.err.println("Sorted classes:");
+        for (int x = 0; x < m_Class.numValues(); x++) {
+            System.err.println(x + ": " + m_Class.value(x) + " has " + orderedClasses[x] + " instances.");
+        }
+    }
+    // Iterate from less prevalent class to more frequent one
+    oneClass: for (int y = 0; y < data.numClasses() - 1; y++) {
+        // For each
+        // class
+        double classIndex = y;
+        if (m_Debug) {
+            int ci = (int) classIndex;
+            System.err.println("\n\nClass " + m_Class.value(ci) + "(" + ci + "): " + orderedClasses[y] + "instances\n" + "=====================================\n");
+        }
+        if (Utils.eq(orderedClasses[y], 0.0)) {
+            continue oneClass;
+        }
+        // The expected FP/err is the proportion of the class
+        double all = 0;
+        for (int i = y; i < orderedClasses.length; i++) {
+            all += orderedClasses[i];
+        }
+        double expFPRate = orderedClasses[y] / all;
+        double classYWeights = 0, totalWeights = 0;
+        for (int j = 0; j < data.numInstances(); j++) {
+            Instance datum = data.instance(j);
+            totalWeights += datum.weight();
+            if ((int) datum.classValue() == y) {
+                classYWeights += datum.weight();
+            }
+        }
+        // DL of default rule, no theory DL, only data DL
+        double defDL;
+        if (classYWeights > 0) {
+            defDL = RuleStats.dataDL(expFPRate, 0.0, totalWeights, 0.0, classYWeights);
+        } else {
+            // Subsumed by previous rules
+            continue oneClass;
+        }
+        if (Double.isNaN(defDL) || Double.isInfinite(defDL)) {
+            throw new Exception("Should never happen: " + "defDL NaN or infinite!");
+        }
+        if (m_Debug) {
+            System.err.println("The default DL = " + defDL);
+        }
+        data = rulesetForOneClass(expFPRate, data, classIndex, defDL);
+    }
+    // Remove redundant numeric tests from the rules
+    for (Rule rule : m_Ruleset) {
+        ((RipperRule) rule).cleanUp(data);
+    }
+    // Set the default rule
+    RipperRule defRule = new RipperRule();
+    defRule.setConsequent(data.numClasses() - 1);
+    m_Ruleset.add(defRule);
+    RuleStats defRuleStat = new RuleStats();
+    defRuleStat.setData(data);
+    defRuleStat.setNumAllConds(m_Total);
+    defRuleStat.addAndUpdate(defRule);
+    m_RulesetStats.add(defRuleStat);
+    for (int z = 0; z < m_RulesetStats.size(); z++) {
+        RuleStats oneClass = m_RulesetStats.get(z);
+        for (int xyz = 0; xyz < oneClass.getRulesetSize(); xyz++) {
+            double[] classDist = oneClass.getDistributions(xyz);
+            Utils.normalize(classDist);
+            if (classDist != null) {
+                m_Distributions.add(((ClassOrder) m_Filter).distributionsByOriginalIndex(classDist));
+            }
+        }
+    }
+    // free up memory
+    for (int i = 0; i < m_RulesetStats.size(); i++) {
+        (m_RulesetStats.get(i)).cleanUp();
+    }
+}

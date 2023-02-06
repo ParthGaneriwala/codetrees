@@ -1,0 +1,79 @@
+public void execute(JobExecutionContext context) throws JobExecutionException {
+    SchedulerContext schedulerContext = null;
+    Connection db = null;
+    try {
+        schedulerContext = context.getScheduler().getContext();
+        db = SchedulerUtils.getConnection(schedulerContext);
+        ApplicationPrefs prefs = (ApplicationPrefs) schedulerContext.get("ApplicationPrefs");
+        ServletContext servletContext = (ServletContext) schedulerContext.get("ServletContext");
+        LOG.debug("EmailUpdatesJob triggered...");
+        while (true) {
+            // Retrieve retrieve the next item from the email_updates_queue that is scheduled for now.
+            EmailUpdatesQueueList queueList = new EmailUpdatesQueueList();
+            queueList.setScheduledOnly(true);
+            queueList.setMax(1);
+            queueList.buildList(db);
+            if (queueList.size() == 0) {
+                LOG.debug("No more scheduled emails to be processed...");
+                break;
+            } else {
+                EmailUpdatesQueue queue = (EmailUpdatesQueue) queueList.get(0);
+                // Lock that record by issuing a successful update which updates the status = 1 to status = 2.
+                if (EmailUpdatesQueue.lockQueue(queue, db)) {
+                    LOG.debug("Processing scheduled email queue...");
+                    // User who needs to be sent an email
+                    User user = UserUtils.loadUser(queue.getEnteredBy());
+                    // Determine the date range to query the activity stream data
+                    Timestamp min = queue.getProcessed();
+                    Timestamp max = new Timestamp(System.currentTimeMillis());
+                    if (min == null) {
+                        // set the min value to be queue's entered date to restrict picking up all the records in the system
+                        min = queue.getEntered();
+                    }
+                    Configuration configuration = ApplicationPrefs.getFreemarkerConfiguration(servletContext);
+                    // Determine the message to be sent
+                    String message = EmailUpdatesUtils.getEmailHTMLMessage(db, prefs, configuration, queue, min, max);
+                    if (message != null) {
+                        // Use the user's locale to format the date
+                        SimpleDateFormat formatter = (SimpleDateFormat) SimpleDateFormat.getDateInstance(DateFormat.SHORT, user.getLocale());
+                        formatter.applyPattern(DateUtils.get4DigitYearDateFormat(formatter.toLocalizedPattern()));
+                        String date = formatter.format(max);
+                        String subject = "";
+                        if (queue.getScheduleOften()) {
+                            subject = "Activity Updates for " + date + " - Recent updates";
+                        } else if (queue.getScheduleDaily()) {
+                            subject = "Activity Updates for " + date + " - Daily update";
+                        } else if (queue.getScheduleWeekly()) {
+                            subject = "Activity Updates for " + date + " - Weekly update";
+                        } else if (queue.getScheduleMonthly()) {
+                            subject = "Activity Updates for " + date + " - Monthly update";
+                        }
+                        // Try to send the email
+                        LOG.debug("Sending email...");
+                        SMTPMessage email = SMTPMessageFactory.createSMTPMessageInstance(prefs.getPrefs());
+                        email.setFrom(prefs.get("EMAILADDRESS"));
+                        email.addReplyTo(prefs.get("EMAILADDRESS"));
+                        email.addTo(user.getEmail());
+                        email.setSubject(subject);
+                        email.setType("text/html");
+                        email.setBody(message);
+                        email.send();
+                    } else {
+                        LOG.debug("No activities to report. Skipping email.");
+                    }
+                    // Determine the next schedule date and save the schedule date and status=1
+                    LOG.debug("Calculating next run date...");
+                    queue.calculateNextRunDate(db);
+                    // Set the max date to be the queue's processed date
+                    LOG.debug("Updating process date...");
+                    queue.updateProcessedDate(db, max);
+                }
+            }
+        }
+    } catch (Exception e) {
+        e.printStackTrace(System.out);
+        throw new JobExecutionException(e.getMessage());
+    } finally {
+        SchedulerUtils.freeConnection(schedulerContext, db);
+    }
+}

@@ -1,0 +1,185 @@
+public void write(DataOutputStream dataOut, RowOutputInterface rowOut) throws IOException, HsqlException {
+    rowOut.reset();
+    rowOut.writeByte(mode);
+    int startPos = rowOut.size();
+    rowOut.writeSize(0);
+    switch(mode) {
+        case ResultConstants.GETSESSIONATTR:
+            rowOut.writeByte(statementReturnType);
+            break;
+        case ResultConstants.DISCONNECT:
+        case ResultConstants.RESETSESSION:
+        case ResultConstants.STARTTRAN:
+            break;
+        case ResultConstants.PREPARE:
+            rowOut.writeByte(statementReturnType);
+            rowOut.writeString(mainString);
+            rowOut.writeByte(rsProperties);
+            rowOut.writeByte(generateKeys);
+            if (generateKeys == ResultConstants.RETURN_GENERATED_KEYS_COL_NAMES || generateKeys == ResultConstants.RETURN_GENERATED_KEYS_COL_INDEXES) {
+                generatedMetaData.write(rowOut);
+            }
+            break;
+        case ResultConstants.FREESTMT:
+            rowOut.writeLong(statementID);
+            break;
+        case ResultConstants.CLOSE_RESULT:
+            rowOut.writeLong(id);
+            break;
+        case ResultConstants.EXECDIRECT:
+            rowOut.writeInt(updateCount);
+            rowOut.writeInt(fetchSize);
+            rowOut.writeByte(statementReturnType);
+            rowOut.writeString(mainString);
+            rowOut.writeByte(rsProperties);
+            rowOut.writeShort(queryTimeout);
+            rowOut.writeByte(generateKeys);
+            if (generateKeys == ResultConstants.RETURN_GENERATED_KEYS_COL_NAMES || generateKeys == ResultConstants.RETURN_GENERATED_KEYS_COL_INDEXES) {
+                generatedMetaData.write(rowOut);
+            }
+            break;
+        case ResultConstants.CONNECT:
+            rowOut.writeString(databaseName);
+            rowOut.writeString(mainString);
+            rowOut.writeString(subString);
+            rowOut.writeString(zoneString);
+            rowOut.writeInt(updateCount);
+            break;
+        case ResultConstants.ERROR:
+        case ResultConstants.WARNING:
+            rowOut.writeString(mainString);
+            rowOut.writeString(subString);
+            rowOut.writeInt(errorCode);
+            break;
+        case ResultConstants.CONNECTACKNOWLEDGE:
+            rowOut.writeInt(databaseID);
+            rowOut.writeLong(sessionID);
+            rowOut.writeString(mainString);
+            break;
+        case ResultConstants.UPDATECOUNT:
+            rowOut.writeInt(updateCount);
+            break;
+        case ResultConstants.ENDTRAN:
+            {
+                int type = getActionType();
+                // endtran type
+                rowOut.writeInt(type);
+                switch(type) {
+                    case ResultConstants.TX_SAVEPOINT_NAME_RELEASE:
+                    case ResultConstants.TX_SAVEPOINT_NAME_ROLLBACK:
+                        // savepoint name
+                        rowOut.writeString(mainString);
+                        break;
+                    case ResultConstants.TX_COMMIT:
+                    case ResultConstants.TX_ROLLBACK:
+                    case ResultConstants.TX_COMMIT_AND_CHAIN:
+                    case ResultConstants.TX_ROLLBACK_AND_CHAIN:
+                        break;
+                    default:
+                        throw Error.runtimeError(ErrorCode.U_S0500, "Result");
+                }
+                break;
+            }
+        case ResultConstants.PREPARE_ACK:
+            rowOut.writeByte(statementReturnType);
+            rowOut.writeLong(statementID);
+            rowOut.writeByte(rsProperties);
+            metaData.write(rowOut);
+            parameterMetaData.write(rowOut);
+            break;
+        case ResultConstants.CALL_RESPONSE:
+            rowOut.writeInt(updateCount);
+            rowOut.writeInt(fetchSize);
+            rowOut.writeLong(statementID);
+            rowOut.writeByte(rsProperties);
+            metaData.write(rowOut);
+            writeSimple(rowOut, metaData, (Object[]) valueData);
+            break;
+        case ResultConstants.EXECUTE:
+            rowOut.writeInt(updateCount);
+            rowOut.writeInt(fetchSize);
+            rowOut.writeLong(statementID);
+            rowOut.writeByte(rsProperties);
+            rowOut.writeShort(queryTimeout);
+            writeSimple(rowOut, metaData, (Object[]) valueData);
+            break;
+        case ResultConstants.UPDATE_RESULT:
+            rowOut.writeLong(id);
+            rowOut.writeInt(getActionType());
+            metaData.write(rowOut);
+            writeSimple(rowOut, metaData, (Object[]) valueData);
+            break;
+        case ResultConstants.BATCHEXECRESPONSE:
+        case ResultConstants.BATCHEXECUTE:
+        case ResultConstants.BATCHEXECDIRECT:
+        case ResultConstants.SETSESSIONATTR:
+            {
+                rowOut.writeInt(updateCount);
+                rowOut.writeInt(fetchSize);
+                rowOut.writeLong(statementID);
+                rowOut.writeShort(queryTimeout);
+                metaData.write(rowOut);
+                navigator.writeSimple(rowOut, metaData);
+                break;
+            }
+        case ResultConstants.PARAM_METADATA:
+            {
+                metaData.write(rowOut);
+                navigator.write(rowOut, metaData);
+                break;
+            }
+        case ResultConstants.SETCONNECTATTR:
+            {
+                int type = getConnectionAttrType();
+                // attr type / updateCount
+                rowOut.writeInt(type);
+                switch(type) {
+                    case ResultConstants.SQL_ATTR_SAVEPOINT_NAME:
+                        // savepoint name
+                        rowOut.writeString(mainString);
+                        break;
+                    // default: // throw, but case never happens
+                    default:
+                        throw Error.runtimeError(ErrorCode.U_S0500, "Result");
+                }
+                break;
+            }
+        case ResultConstants.REQUESTDATA:
+            {
+                rowOut.writeLong(id);
+                rowOut.writeInt(updateCount);
+                rowOut.writeInt(fetchSize);
+                break;
+            }
+        case ResultConstants.DATAROWS:
+            metaData.write(rowOut);
+            navigator.write(rowOut, metaData);
+            break;
+        case ResultConstants.DATAHEAD:
+        case ResultConstants.DATA:
+            rowOut.writeLong(id);
+            rowOut.writeInt(updateCount);
+            rowOut.writeInt(fetchSize);
+            rowOut.writeByte(rsProperties);
+            metaData.write(rowOut);
+            navigator.write(rowOut, metaData);
+            break;
+        default:
+            throw Error.runtimeError(ErrorCode.U_S0500, "Result");
+    }
+    rowOut.writeIntData(rowOut.size() - startPos, startPos);
+    dataOut.write(rowOut.getOutputStream().getBuffer(), 0, rowOut.size());
+    int count = getLobCount();
+    Result current = this;
+    for (int i = 0; i < count; i++) {
+        ResultLob lob = current.lobResults;
+        lob.writeBody(dataOut);
+        current = current.lobResults;
+    }
+    if (chainedResult == null) {
+        dataOut.writeByte(ResultConstants.NONE);
+    } else {
+        chainedResult.write(dataOut, rowOut);
+    }
+    dataOut.flush();
+}

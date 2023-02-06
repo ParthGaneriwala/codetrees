@@ -1,0 +1,93 @@
+private int receivePacket() throws IOException {
+    int payloadLen = readNextPacket();
+    if (payloadLen <= 0) {
+        return payloadLen;
+    }
+    buf.mark();
+    // read the header
+    // packet length
+    buf.getInt();
+    // get offset of packet in block
+    offsetInBlock = buf.getLong();
+    // get seqno
+    long seqno = buf.getLong();
+    boolean lastPacketInBlock = (buf.get() != 0);
+    int endOfHeader = buf.position();
+    buf.reset();
+    if (LOG.isDebugEnabled()) {
+        LOG.debug("Receiving one packet for block " + block + " of length " + payloadLen + " seqno " + seqno + " offsetInBlock " + offsetInBlock + " lastPacketInBlock " + lastPacketInBlock);
+    }
+    setBlockPosition(offsetInBlock);
+    // First write the packet to the mirror:
+    if (mirrorOut != null) {
+        try {
+            mirrorOut.write(buf.array(), buf.position(), buf.remaining());
+            mirrorOut.flush();
+        } catch (IOException e) {
+            handleMirrorOutError(e);
+        }
+    }
+    buf.position(endOfHeader);
+    int len = buf.getInt();
+    if (len < 0) {
+        throw new IOException("Got wrong length during writeBlock(" + block + ") from " + inAddr + " at offset " + offsetInBlock + ": " + len);
+    }
+    if (len == 0) {
+        LOG.debug("Receiving empty packet for block " + block);
+    } else {
+        offsetInBlock += len;
+        int checksumLen = ((len + bytesPerChecksum - 1) / bytesPerChecksum) * checksumSize;
+        if (buf.remaining() != (checksumLen + len)) {
+            throw new IOException("Data remaining in packet does not match " + "sum of checksumLen and dataLen");
+        }
+        int checksumOff = buf.position();
+        int dataOff = checksumOff + checksumLen;
+        byte[] pktBuf = buf.array();
+        // move to the end of the data.
+        buf.position(buf.limit());
+        /* skip verifying checksum iff this is not the last one in the 
+       * pipeline and clientName is non-null. i.e. Checksum is verified
+       * on all the datanodes when the data is being written by a 
+       * datanode rather than a client. Whe client is writing the data, 
+       * protocol includes acks and only the last datanode needs to verify 
+       * checksum.
+       */
+        if (mirrorOut == null || clientName.length() == 0) {
+            verifyChunks(pktBuf, dataOff, len, pktBuf, checksumOff);
+        }
+        try {
+            if (!finalized) {
+                // finally write to the disk :
+                out.write(pktBuf, dataOff, len);
+                // chunk in the packet. Calculate new crc for this chunk.
+                if (partialCrc != null) {
+                    if (len > bytesPerChecksum) {
+                        throw new IOException("Got wrong length during writeBlock(" + block + ") from " + inAddr + " " + "A packet can have only one partial chunk." + " len = " + len + " bytesPerChecksum " + bytesPerChecksum);
+                    }
+                    partialCrc.update(pktBuf, dataOff, len);
+                    byte[] buf = FSOutputSummer.convertToByteStream(partialCrc, checksumSize);
+                    checksumOut.write(buf);
+                    LOG.debug("Writing out partial crc for data len " + len);
+                    partialCrc = null;
+                } else {
+                    checksumOut.write(pktBuf, checksumOff, checksumLen);
+                }
+                datanode.myMetrics.bytesWritten.inc(len);
+            }
+        } catch (IOException iex) {
+            datanode.checkDiskError(iex);
+            throw iex;
+        }
+    }
+    // / flush entire packet before sending ack
+    flush();
+    // put in queue for pending acks
+    if (responder != null) {
+        ((PacketResponder) responder.getRunnable()).enqueue(seqno, lastPacketInBlock);
+    }
+    if (throttler != null) {
+        // throttle I/O
+        throttler.throttle(payloadLen);
+    }
+    return payloadLen;
+}

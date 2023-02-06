@@ -1,0 +1,55 @@
+public IAeEndpointReference getMyRoleEndpoint(IAeProcessDeployment aProcessDeployment, AePartnerLinkDef aPartnerLink, QName aProcessName, String aConversationId) throws AeBusinessProcessException {
+    // Find the service definition for this partner link
+    IAeServiceDeploymentInfo service = aProcessDeployment.getServiceInfo(aPartnerLink.getLocationPath());
+    if (service == null) {
+        // no myrole on partner link, so no implicit replyTo
+        return null;
+    }
+    AeEndpointReference myRoleRef = new AeEndpointReference();
+    String url = service.getServiceName();
+    myRoleRef.setAddress(url);
+    AeBPELExtendedWSDLDef cachedDef = AeWSDLDefHelper.getWSDLDefinitionForPLT(aProcessDeployment, aPartnerLink.getPartnerLinkTypeName());
+    if (cachedDef != null) {
+        QName serviceName = new QName(cachedDef.getTargetNamespace(), service.getServiceName());
+        myRoleRef.setServiceName(serviceName);
+        QName portType = aPartnerLink.getMyRolePortType();
+        myRoleRef.setPortType(portType);
+        Service wsdlService = (Service) cachedDef.getServices().get(serviceName);
+        if (wsdlService != null) {
+            Map ports = wsdlService.getPorts();
+            for (Iterator it = ports.values().iterator(); it.hasNext(); ) {
+                Port port = (Port) it.next();
+                if (port.getBinding().getPortType().getQName().equals(portType)) {
+                    myRoleRef.setServicePort(port.getName());
+                    break;
+                }
+            }
+        }
+    }
+    List policies = service.getPolicies();
+    if (!AeUtil.isNullOrEmpty(policies)) {
+        try {
+            for (Iterator it = policies.iterator(); it.hasNext(); ) {
+                myRoleRef.addPolicyElement((Element) it.next());
+            }
+            // create a correlation header
+            if (aConversationId != null) {
+                // get the correlationId property from the mapper
+                Map props = AeEngineFactory.getPolicyMapper().getCallProperties(policies);
+                QName correlationProperty = (QName) props.get(IAePolicyConstants.TAG_ASSERT_MANAGED_CORRELATION);
+                if (correlationProperty != null) {
+                    myRoleRef.addProperty(correlationProperty, aConversationId);
+                    // create a header element for the conversation id
+                    QName headerName = IAePolicyConstants.CONVERSATION_ID_HEADER;
+                    Document doc = AeXmlUtil.newDocument();
+                    Element convHeader = doc.createElementNS(headerName.getNamespaceURI(), headerName.getLocalPart());
+                    convHeader.appendChild(doc.createTextNode(aConversationId));
+                    myRoleRef.addReferenceProperty(convHeader);
+                }
+            }
+        } catch (AeException ae) {
+            throw new AeBusinessProcessException(ae.getLocalizedMessage(), ae);
+        }
+    }
+    return myRoleRef;
+}

@@ -1,0 +1,92 @@
+protected void renderProperties(org.zkoss.zk.ui.sys.ContentRenderer renderer) throws java.io.IOException {
+    String codebase = super.getCodebase();
+    if (codebase == null) {
+        super.setCodebase("APPLET");
+        codebase = "APPLET";
+    } else {
+        super.setCodebase(codebase + "/APPLET");
+        codebase += "/APPLET";
+    }
+    super.renderProperties(renderer);
+    String localPath = new File(super.getPage().getRequestPath()).getParent();
+    String localRoot = Executions.getCurrent().getDesktop().getWebApp().getRealPath(localPath) + File.separator + codebase;
+    try {
+        VM executingVM = VM.lookupVM();
+        if (executingVM != null) {
+            // String localRoot = executingVM.getLocalRoot();
+            // File root = new File( localRoot );
+            File appletDir = new File(localRoot);
+            DirectoryResources resources = ClassFinder.buildSource(new File(localRoot).getParentFile(), "APPLET");
+            if (resources.haveCompiledFilesChanged(appletDir.lastModified()) || DEBUG_MODE) {
+                deleteDirectory(appletDir);
+                appletDir.mkdir();
+                List<File> classes = resources.getClasses();
+                List<File> libraries = resources.getLibraries();
+                ClassPool pool = new ClassPool();
+                pool.appendSystemPath();
+                WebApp webapp = Executions.getCurrent().getDesktop().getWebApp();
+                pool.appendClassPath(webapp.getRealPath("/WEB-INF/classes/"));
+                addProxies(pool, appletDir.getAbsolutePath());
+                HashSet<String> classSet = new HashSet<String>();
+                List<CtClass> studentCtClass = new ArrayList<CtClass>();
+                for (File libraryFile : libraries) {
+                    try {
+                        JarFile jar = new JarFile(libraryFile);
+                        Enumeration<JarEntry> enumer = jar.entries();
+                        while (enumer.hasMoreElements()) {
+                            JarEntry entry = enumer.nextElement();
+                            if (!entry.isDirectory() && entry.getName().endsWith(".class")) {
+                                InputStream classInput = jar.getInputStream(entry);
+                                CtClass clazz = pool.makeClass(classInput);
+                                studentCtClass.add(clazz);
+                                classInput.close();
+                            }
+                        }
+                    } catch (IOException e) {
+                        log.error("Error reading a jar file for an applet", e);
+                    }
+                }
+                for (File classFile : classes) {
+                    FileInputStream input = new FileInputStream(classFile);
+                    CtClass clazz = pool.makeClass(input);
+                    studentCtClass.add(clazz);
+                    classSet.add(clazz.getName());
+                    input.close();
+                }
+                CtClass superClazz = pool.get(java.applet.Applet.class.getName());
+                for (CtClass clazz : studentCtClass) {
+                    if (clazz.subclassOf(superClazz)) {
+                        CtMethod initMethod = null;
+                        try {
+                            initMethod = clazz.getMethod("init", "()V");
+                        } catch (NotFoundException e) {
+                        // Do Nothing leave it as null
+                        }
+                        // implementation.
+                        if (initMethod == null || !initMethod.getDeclaringClass().equals(clazz)) {
+                            initMethod = CtMethod.make("public void init(){super.init();}", clazz);
+                            clazz.addMethod(initMethod);
+                        }
+                        initMethod.insertBefore(AppletVM.class.getName() + ".init(this);");
+                        CtMethod resultCatcher = CtMethod.make("public void notifyResult( String reqId, String[] response ){" + AppletVM.class.getName() + ".gotResponse( reqId, new " + CloudResult.class.getName() + "( response ) );}", clazz);
+                        clazz.addMethod(resultCatcher);
+                        CtMethod errorCatcher = CtMethod.make("public void notifyError( String reqId, String[] response){" + "Class exType;" + "try{exType = Class.forName( response[0] );}" + "catch ( Exception e ){exType = Throwable.class;}" + AppletVM.class.getName() + ".gotResponse( reqId, new " + CloudResult.class.getName() + "( exType, response[1] ) );}", clazz);
+                        clazz.addMethod(errorCatcher);
+                    }
+                    addWriteMethod(clazz, classSet);
+                    addReadMethod(clazz, classSet);
+                    clazz.instrument(new AppletExpressionEditor(pool));
+                    clazz.writeFile(appletDir.getAbsolutePath());
+                }
+                String actualLocation = Executions.getCurrent().getDesktop().getWebApp().getRealPath("/WEB-INF/classes/");
+                FileUtils.copyDirectory(new File(actualLocation, "cloudspace/ui/applet"), new File(appletDir, "cloudspace/ui/applet"));
+                FileUtils.copyDirectory(new File(actualLocation, "cloudspace/util"), new File(appletDir, "cloudspace/util"));
+                File from = new File(Executions.getCurrent().getDesktop().getWebApp().getRealPath("/WEB-INF/appletlib"));
+                File to = new File(appletDir.getAbsolutePath());
+                FileUtils.copyDirectory(from, to);
+            }
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+}

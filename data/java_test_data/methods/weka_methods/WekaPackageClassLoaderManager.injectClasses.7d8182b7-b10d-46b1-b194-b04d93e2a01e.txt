@@ -1,0 +1,76 @@
+protected static void injectClasses(InputStream jarStream, List<String> classJarPaths, List<String> classes, boolean injectToRootClassLoader) throws Exception {
+    String debugS = System.getProperty("weka.core.classloader.debug", "false");
+    boolean debug = debugS.equalsIgnoreCase("true");
+    boolean processAllClasses = classes == null || classJarPaths == null;
+    if (processAllClasses) {
+        classes = new ArrayList<>();
+        classJarPaths = new ArrayList<>();
+    }
+    List<byte[]> preloadClassByteCode = new ArrayList<>();
+    ZipInputStream zi = new ZipInputStream(jarStream);
+    ZipEntry zipEntry = null;
+    while ((zipEntry = zi.getNextEntry()) != null) {
+        if (!zipEntry.isDirectory() && zipEntry.getName().endsWith(".class")) {
+            String zipPart = zipEntry.getName().replace("\\", "/");
+            if (classJarPaths.contains(zipPart) || processAllClasses) {
+                preloadClassByteCode.add(getByteCode(zi, false));
+                // move to next entry in zip
+                zi.closeEntry();
+                if (processAllClasses) {
+                    classes.add(zipEntry.getName().replace(".class", "").replace("\\", "/").replace("/", "."));
+                }
+            }
+        }
+    }
+    zi.close();
+    List<byte[]> okBytes = new ArrayList<>();
+    List<String> okClasses = new ArrayList<>();
+    for (int i = 0; i < classes.size(); i++) {
+        if (!classExists(classes.get(i))) {
+            okClasses.add(classes.get(i));
+            okBytes.add(preloadClassByteCode.get(i));
+        }
+    }
+    preloadClassByteCode = okBytes;
+    classes = okClasses;
+    if (preloadClassByteCode.size() > 0) {
+        ClassLoader rootClassloader = injectToRootClassLoader ? getRootClassLoader() : getWekaLevelClassloader();
+        Class<?> classLoader = Class.forName("java.lang.ClassLoader");
+        Method defineClass = classLoader.getDeclaredMethod("defineClass", String.class, byte[].class, int.class, int.class, ProtectionDomain.class);
+        ProtectionDomain pd = System.class.getProtectionDomain();
+        // ClassLoader.defineClass is a protected method, so we have to make it
+        // accessible
+        defineClass.setAccessible(true);
+        List<byte[]> failedToInject = new ArrayList<>();
+        List<String> classesF = new ArrayList<>();
+        boolean cont = true;
+        int numLeft = classes.size();
+        try {
+            do {
+                if (debug) {
+                    System.out.println("[WekaPackageClassLoaderManager] Injecting classes " + "into the " + (injectToRootClassLoader ? "root classloader..." : "weka-level classloader..."));
+                }
+                for (int i = 0; i < classes.size(); i++) {
+                    if (debug) {
+                        System.out.println("** Injecting " + classes.get(i));
+                    }
+                    byte[] b = preloadClassByteCode.get(i);
+                    try {
+                        defineClass.invoke(rootClassloader, classes.get(i), b, 0, b.length, pd);
+                    } catch (Exception ex) {
+                        failedToInject.add(b);
+                        classesF.add(classes.get(i));
+                    }
+                }
+                cont = failedToInject.size() < numLeft;
+                preloadClassByteCode = failedToInject;
+                classes = classesF;
+                numLeft = failedToInject.size();
+                failedToInject = new ArrayList<>();
+                classesF = new ArrayList<>();
+            } while (classes.size() > 0 && cont);
+        } finally {
+            defineClass.setAccessible(false);
+        }
+    }
+}

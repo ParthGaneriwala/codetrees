@@ -1,0 +1,78 @@
+public ActionForward save(ActionMapping mapping, ActionForm form, HttpServletRequest request, HttpServletResponse response) throws Exception {
+    if (log.isDebugEnabled()) {
+        log.debug("Entering 'save' method");
+    }
+    ActionMessages errors = form.validate(mapping, request);
+    if (!errors.isEmpty()) {
+        saveErrors(request, errors);
+        return mapping.findForward("failure");
+    }
+    // Extract attributes and parameters we will need
+    ActionMessages messages = new ActionMessages();
+    EPCDynamicValueForm epcDynamicValueForm = (EPCDynamicValueForm) form;
+    String epcDynamicId = epcDynamicValueForm.getEpcDynamicId();
+    String epcDynamicValueName = epcDynamicValueForm.getEpcDynamicValue();
+    String epcDynamicValueId = epcDynamicValueForm.getEpcDynamicValueId();
+    EPCDynamicManager epcDynamicMgr = (EPCDynamicManager) getBean("epcDynamicManager");
+    EPCDynamic epcDynamic = epcDynamicMgr.getEpcDynamic(Long.parseLong(epcDynamicId));
+    int seekFrom = epcDynamic.getEpcDynamicSeekFrom();
+    int seekTo = epcDynamic.getEpcDynamicSeekTo();
+    int valueLength = epcDynamicValueForm.getEpcDynamicValue().length();
+    if (valueLength != (seekTo - seekFrom)) {
+        errors.add(ActionMessages.GLOBAL_MESSAGE, new ActionMessage("errors.epc.length3", (seekTo - seekFrom)));
+        saveErrors(request, errors);
+        updateFormBean(mapping, request, epcDynamicValueForm);
+        return mapping.findForward("failure");
+    }
+    Iterator epcDynamicValuesIte = epcDynamic.getEpcDynamicValues().iterator();
+    while (epcDynamicValuesIte.hasNext()) {
+        EPCDynamicValue epcDynamicVa = (EPCDynamicValue) epcDynamicValuesIte.next();
+        String name = epcDynamicVa.getEpcDynamicValue();
+        String id = epcDynamicVa.getEpcDynamicValueId().toString();
+        if (epcDynamicValueName.equals(name) && !id.equals(epcDynamicValueId)) {
+            errors.add(ActionMessages.GLOBAL_MESSAGE, new ActionMessage("errors.existing.dynamicEpcValue", epcDynamicValueForm.getEpcDynamicValue()));
+            saveErrors(request, errors);
+            updateFormBean(mapping, request, epcDynamicValueForm);
+            return mapping.findForward("failure");
+        }
+    }
+    EPCDynamicValueManager epcDynamicValueMgr = (EPCDynamicValueManager) getBean("epcDynamicValueManager");
+    EPCDynamicValue epcDynamicValue = null;
+    if (epcDynamicValueId == null || epcDynamicValueId.trim().equals("")) {
+        epcDynamicValue = new EPCDynamicValue();
+    } else {
+        epcDynamicValue = epcDynamicValueMgr.getEpcDynamicValue(Long.parseLong(epcDynamicValueId));
+    }
+    // Exceptions are caught by ActionExceptionHandler
+    // all we need to persist is the parent object
+    BeanUtils.copyProperties(epcDynamicValue, epcDynamicValueForm);
+    String epcName = epcDynamicValueForm.getEpcName();
+    EPCManager epcMgr = (EPCManager) getBean("epcManager");
+    EPCCustomManager epcCustomMgr = (EPCCustomManager) getBean("epcCustomManager");
+    EPCStandardManager epcStandardMgr = (EPCStandardManager) getBean("epcStandardManager");
+    EPC epc = epcMgr.getEpc(epcName);
+    String epcType = epc.getEpcType();
+    if ("Custom".equals(epcType)) {
+        epcDynamicValue.setEpcCustom(epcCustomMgr.getEpcCustom(epc));
+    } else {
+        if ("Standard".equals(epcType)) {
+            epcDynamicValue.setEpcStandard(epcStandardMgr.getEpcStandard(epc));
+        }
+    }
+    epcDynamicValue.initAudit(this.getLoginUser());
+    try {
+        epcDynamicValueMgr.saveEpcDynamicValue(epcDynamicValue);
+    } catch (Exception e) {
+        log.warn(e.getMessage());
+        errors.add(ActionMessages.GLOBAL_MESSAGE, new ActionMessage("errors.epc.save", e.getMessage()));
+        saveErrors(request, errors);
+        BeanUtils.copyProperties(epcDynamicValueForm, convert(epcDynamicValue));
+        updateFormBean(mapping, request, epcDynamicValueForm);
+        return mapping.findForward("failure");
+    }
+    messages.add(ActionMessages.GLOBAL_MESSAGE, new ActionMessage("epcStructure.added", epcDynamicValue.getEpcDynamicValue()));
+    saveMessages(request.getSession(), messages);
+    String url = mapping.findForward("success").getPath();
+    ActionForward forward = new ActionForward(url + "?method=edit&epcDynamicId=" + epcDynamicValue.getEpcDynamicId(), true);
+    return forward;
+}

@@ -1,0 +1,59 @@
+@Override
+public void action(Message request, Message response) {
+    String userId = (String) request.get(MSG.REQUEST.USER_ID);
+    String tableName = (String) request.get(MSG.REQUEST.TABLE_NAME);
+    MasterSectionDAO section = null;
+    // MasterSectionDAO 와 연결하고,
+    try {
+        section = new MasterSectionDAO(dataDir, userId, tableName);
+        // 해당 <유저이름, 테이블이름>의 조합이 이미 존재하는지 확인한다.
+        if (section.isExist())
+            response.setFailed("already exist: " + tableName);
+        else
+            response.setSuccessed();
+    } catch (ContrabaseDatastoreException e) {
+        e.printStackTrace();
+        response.setFailed(e.getMessage());
+    }
+    // 해당 테이블 이름이 존재하지 않는다는 의미임.
+    if (response.isSuccessed()) {
+        // 모든 리포지토리에 실제로 테이블을 만들어준다.
+        // Master 의 메타 테이블에 기록하고,
+        // 개략적인 키 범위
+        int size = manager.getSize();
+        int interval = RANGE.length() / size;
+        for (Entry<RepositoryEntry> rep : new Enumerator<RepositoryEntry>(manager.values())) {
+            // range 에서 순서대로 적정 간격(interval)마다, endKey 를 지정한다.
+            int index = rep.getIndex() + 1;
+            String rid = rep.getValue().getRid();
+            // endKey 를 지정한다.
+            String endKey = "";
+            if (rep.getIndex() < size - 1)
+                endKey = String.valueOf(RANGE.charAt(index * interval));
+            else
+                // 마지막 항목은 물결로 한다!!
+                endKey = "~";
+            // 실제로 만들라고 보낸다.
+            try {
+                Message res = sendCreateMessageToRepository(userId, tableName, rep.getValue());
+                if (res.isFailed())
+                    throw new RuntimeException("-_-?");
+            } catch (ContrabaseNetworkException e) {
+                e.printStackTrace();
+            }
+            // 메타 테이블에 기록한다.
+            section.addInfo(rid, endKey);
+            // 해당 tablet 정보를 0개로 초기화 한다.
+            TabletEntries tablets = manager.getRepositoryEntry(rid).getTabletEntries();
+            tablets.put(new TabletEntry(userId, tableName, 0));
+        }
+    // end of for
+    }
+    // 연결을 닫아준다.
+    try {
+        if (section != null)
+            section.close();
+    } catch (ContrabaseDatastoreException e) {
+        e.printStackTrace();
+    }
+}

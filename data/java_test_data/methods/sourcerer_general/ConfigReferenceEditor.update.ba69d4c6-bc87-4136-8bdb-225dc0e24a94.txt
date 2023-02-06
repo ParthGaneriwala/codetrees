@@ -1,0 +1,98 @@
+protected void update(ConfigReference value, boolean transfer) {
+    // make sure we're not listening to anything
+    if (_listenee != null) {
+        _listenee.removeListener(this);
+        _listenee = null;
+    }
+    // update the button states
+    boolean enable = (value != null);
+    if (_edit != null) {
+        _edit.setEnabled(enable);
+    }
+    if (_clear != null) {
+        _clear.setEnabled(enable);
+    }
+    if (!enable) {
+        _config.setText(_msgs.get("m.none"));
+        _arguments.removeAll();
+        return;
+    }
+    String name = value.getName();
+    _config.setText(name.substring(name.lastIndexOf('/') + 1));
+    // resolve the configuration reference
+    @SuppressWarnings("unchecked") Class<ManagedConfig> clazz = (Class<ManagedConfig>) _property.getArgumentType(ConfigReference.class);
+    ManagedConfig config = _ctx.getConfigManager().getConfig(clazz, name);
+    if (!(config instanceof ParameterizedConfig)) {
+        _arguments.removeAll();
+        value.getArguments().clear();
+        if (config == null) {
+            _config.setForeground(Color.red);
+        }
+        return;
+    }
+    _config.setForeground(_content.getForeground());
+    // store the existing editors mapped by name in case we want to reuse their values
+    int ocount = _arguments.getComponentCount();
+    HashMap<String, PropertyEditor> oeditors = new HashMap<String, PropertyEditor>();
+    if (transfer) {
+        for (int ii = 0; ii < ocount; ii++) {
+            PropertyEditor editor = (PropertyEditor) _arguments.getComponent(ii);
+            oeditors.put(editor.getProperty().getName(), editor);
+        }
+    }
+    // scan through the parameters
+    int idx = 0;
+    Object nargs = value.getArguments();
+    ParameterizedConfig pconfig = (ParameterizedConfig) config;
+    for (Parameter parameter : pconfig.parameters) {
+        Property property = parameter.getArgumentProperty(pconfig);
+        if (property == null) {
+            continue;
+        }
+        PropertyEditor editor = null;
+        if (idx < ocount) {
+            // see if we can copy the argument to the new set and reuse the editor
+            PropertyEditor oeditor = (PropertyEditor) _arguments.getComponent(idx);
+            if (oeditor.getProperty().equals(property)) {
+                if (transfer) {
+                    property.set(nargs, property.get(oeditor.getObject()));
+                }
+                editor = oeditor;
+            } else {
+                _arguments.remove(idx);
+            }
+        }
+        if (editor == null) {
+            editor = PropertyEditor.createEditor(_ctx, property, _lineage);
+            editor.addChangeListener(this);
+            _arguments.add(editor, idx);
+            // see if we can reuse the value from the previous editor
+            PropertyEditor oeditor = oeditors.get(parameter.name);
+            if (oeditor != null) {
+                Property oproperty = oeditor.getProperty();
+                if (property.getGenericType().equals(oproperty.getGenericType())) {
+                    Object ovalue = oproperty.get(oeditor.getObject());
+                    if (property.isLegalValue(ovalue)) {
+                        property.set(nargs, ovalue);
+                    }
+                }
+            }
+        }
+        editor.setObject(nargs);
+        idx++;
+    }
+    // remove the remaining editors
+    while (ocount > idx) {
+        _arguments.remove(--ocount);
+    }
+    // we may need to refresh the panel
+    SwingUtil.refresh(_arguments);
+    // clear out any arguments that don't correspond to parameters
+    for (Iterator<String> it = value.getArguments().keySet().iterator(); it.hasNext(); ) {
+        if (pconfig.getParameter(it.next()) == null) {
+            it.remove();
+        }
+    }
+    // listen for parameter changes
+    (_listenee = pconfig).addListener(this);
+}

@@ -1,0 +1,129 @@
+private void initialize(GenerationData genData) throws IOException {
+    final long overtMask = Experiment.getInstance().getTupleDescription().getOvertFactorsMask();
+    final NgramCounts ngramCounts = genData.ngramCounts;
+    if (dumpNgramCounts) {
+        PrintWriter ngramOut = new PrintWriter(new File("dump-" + lm.getId() + "-counts"));
+        genData.dumpNgramCounts(ngramOut);
+        ngramOut.close();
+        System.err.println("finished printing ngram counts");
+    }
+    int level = 0;
+    File inputFile = genData.file;
+    File outputFile;
+    while (true) {
+        FileInputStream input = new FileInputStream(inputFile);
+        TrainingDataNodeReader reader = new OnDiskTrainingDataNodeReader(input.getChannel());
+        outputFile = new File(dataDir, makeFilename(lm.getOrder(), level + 1));
+        RandomAccessFile output = new RandomAccessFile(outputFile, "rw");
+        TrainingDataNodeWriter writer = new OnDiskTrainingDataNodeWriter(output.getChannel());
+        int nrNodes = 0;
+        while (true) {
+            ReadableTrainingDataNode dataNode = reader.getNext();
+            if (dataNode == null)
+                break;
+            int nodeId = dataNode.getNodeId();
+            Long2IntMap counts = new Long2IntMap();
+            final BinaryTree<HistoryTreePayload> oldLeaf = genData.nodes[nodeId];
+            if (oldLeaf == null) {
+                System.err.printf("node %d is null!\n", nodeId);
+                throw new Error("whoops!");
+            }
+            if (oldLeaf.isLeaf()) {
+                if (oldLeaf.getPayload().isBackoff) {
+                    dataNode.skipData();
+                    continue;
+                }
+                // compute and add the counts
+                Distribution[] distributions = new Distribution[lm.getOrder() - 1];
+                for (byte order = 2; order <= lm.getOrder(); ++order) {
+                    Distribution dist = distStorage.get(new DistributionID(order, genData.clusterLists[nodeId].jointClusters[order - 2]));
+                    if (dist == null) {
+                        dist = Distribution.emptyDistribution();
+                    }
+                    distributions[order - 2] = dist;
+                }
+                while (dataNode.getData(0).hasNext()) {
+                    TrainingDataBlock block = dataNode.getData(0).next();
+                    for (ContextFuturesPair pair : block) {
+                        long[] context = new long[lm.getOrder() - 1];
+                        for (int i = 0; i < context.length; ++i) {
+                            context[i] = pair.getContext().data[i] & overtMask;
+                        }
+                        for (int i = 0; i < context.length; ++i) {
+                            long[] ngramContext = Arrays.copyOfRange(context, context.length - i - 1, context.length);
+                            Trie trie = ngramCounts.findTrie(ngramContext);
+                            assert (trie != null);
+                            Smoother smoother = smoothers[i];
+                            Distribution dist = distributions[i];
+                            for (TupleCountPair tc : pair.getFutures()) {
+                                Trie subTrie = trie.getSubtrie(tc.tuple);
+                                int ngramCount = subTrie.count;
+                                double d = 1.0 - smoother.getProb(ngramCount) * smoother.getTotalCount() / ngramCount;
+                                // apply the discount scale (debug)
+                                d *= genData.discountScale;
+                                dist.getDistribution().addAndGet(tc.tuple, tc.count * (1 - d));
+                                dist.setBackoff(dist.getBackoff() + (d * tc.count));
+                                dist.setTotalCount(dist.getTotalCount() + tc.count);
+                            }
+                        }
+                    }
+                }
+                for (byte order = 2; order <= lm.getOrder(); ++order) {
+                    if (distributions[order - 2].getTotalCount() > 0) {
+                        distStorage.put(new DistributionID(order, genData.clusterLists[nodeId].jointClusters[order - 2]), distributions[order - 2]);
+                    }
+                }
+            } else {
+                // split the data
+                BinaryTree<HistoryTreePayload> left = oldLeaf.getLeft();
+                BinaryTree<HistoryTreePayload> right = oldLeaf.getRight();
+                int leftNodeId = left.getPayload().clusterid;
+                int rightNodeId = right.getPayload().clusterid;
+                Question question = oldLeaf.getPayload().question;
+                for (int order = 2; order < lm.getOrder() - 1; ++order) {
+                    if (1 - question.getTimeOffset() <= order) {
+                        // split the order
+                        int leftClusterId = ++genData.nrBackoffClusters[order - 2];
+                        int rightClusterId = ++genData.nrBackoffClusters[order - 2];
+                        genData.clusterLists[leftNodeId].jointClusters[order - 2] = leftClusterId;
+                        genData.clusterLists[rightNodeId].jointClusters[order - 2] = rightClusterId;
+                    }
+                }
+                WritableTrainingDataNode leftDataNode = writer.createNode(leftNodeId, 1);
+                WritableTrainingDataNode rightDataNode = writer.createNode(rightNodeId, 1);
+                writer.add(leftDataNode);
+                writer.add(rightDataNode);
+                TrainingDataUtil.splitData(dataNode.getData(0), oldLeaf.getPayload().question, rightDataNode.getData(0), leftDataNode.getData(0), counts);
+                nrNodes += 2;
+            }
+        }
+        inputFile.delete();
+        input.close();
+        output.close();
+        ++level;
+        inputFile = outputFile;
+        if (nrNodes == 0) {
+            inputFile.delete();
+            break;
+        }
+    }
+    // normalize the distributions
+    StoredIterator<Map.Entry<DistributionID, Distribution>> iterator = ((StoredSortedEntrySet<DistributionID, Distribution>) distStorage.entrySet()).storedIterator();
+    while (iterator.hasNext()) {
+        Map.Entry<DistributionID, Distribution> entry = iterator.next();
+        Distribution dist = entry.getValue();
+        double revTotalCount = 1.0 / dist.getTotalCount();
+        dist.setBackoff(dist.getBackoff() * revTotalCount);
+        double totalProb = 0;
+        for (Long2DoubleMap.Iterator it = dist.getDistribution().iterator(); it.hasNext(); ) {
+            Long2DoubleMap.Entry e = it.next();
+            double prob = e.getValue() * revTotalCount;
+            e.setValue(prob);
+            totalProb += prob;
+        }
+        assert (ProbMath.approxEqual(totalProb + dist.getBackoff(), 1.0));
+        entry.setValue(dist);
+    // iterator.set(entry);
+    }
+    iterator.close();
+}

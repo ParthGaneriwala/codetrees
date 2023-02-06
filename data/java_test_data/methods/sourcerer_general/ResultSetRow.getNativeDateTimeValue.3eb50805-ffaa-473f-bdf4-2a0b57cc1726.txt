@@ -1,0 +1,109 @@
+protected Object getNativeDateTimeValue(int columnIndex, byte[] bits, int offset, int length, Calendar targetCalendar, int jdbcType, int mysqlType, TimeZone tz, boolean rollForward, MySQLConnection conn, ResultSetImpl rs) throws SQLException {
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    int hour = 0;
+    int minute = 0;
+    int seconds = 0;
+    int nanos = 0;
+    if (bits == null) {
+        return null;
+    }
+    Calendar sessionCalendar = conn.getUseJDBCCompliantTimezoneShift() ? conn.getUtcCalendar() : rs.getCalendarInstanceForSessionOrNew();
+    boolean populatedFromDateTimeValue = false;
+    switch(mysqlType) {
+        case MysqlDefs.FIELD_TYPE_DATETIME:
+        case MysqlDefs.FIELD_TYPE_TIMESTAMP:
+            populatedFromDateTimeValue = true;
+            if (length != 0) {
+                year = (bits[offset + 0] & 0xff) | ((bits[offset + 1] & 0xff) << 8);
+                month = bits[offset + 2];
+                day = bits[offset + 3];
+                if (length > 4) {
+                    hour = bits[offset + 4];
+                    minute = bits[offset + 5];
+                    seconds = bits[offset + 6];
+                }
+                if (length > 7) {
+                    // MySQL uses microseconds
+                    nanos = ((bits[offset + 7] & 0xff) | ((bits[offset + 8] & 0xff) << 8) | ((bits[offset + 9] & 0xff) << 16) | ((bits[offset + 10] & 0xff) << 24)) * 1000;
+                }
+            }
+            break;
+        case MysqlDefs.FIELD_TYPE_DATE:
+            populatedFromDateTimeValue = true;
+            if (bits.length != 0) {
+                year = (bits[offset + 0] & 0xff) | ((bits[offset + 1] & 0xff) << 8);
+                month = bits[offset + 2];
+                day = bits[offset + 3];
+            }
+            break;
+        case MysqlDefs.FIELD_TYPE_TIME:
+            populatedFromDateTimeValue = true;
+            if (bits.length != 0) {
+                // bits[0] // skip tm->neg
+                // binaryData.readLong(); // skip daysPart
+                hour = bits[offset + 5];
+                minute = bits[offset + 6];
+                seconds = bits[offset + 7];
+            }
+            year = 1970;
+            month = 1;
+            day = 1;
+            break;
+        default:
+            populatedFromDateTimeValue = false;
+    }
+    switch(jdbcType) {
+        case Types.TIME:
+            if (populatedFromDateTimeValue) {
+                if (!rs.useLegacyDatetimeCode) {
+                    return TimeUtil.fastTimeCreate(hour, minute, seconds, targetCalendar, this.exceptionInterceptor);
+                }
+                Time time = TimeUtil.fastTimeCreate(rs.getCalendarInstanceForSessionOrNew(), hour, minute, seconds, this.exceptionInterceptor);
+                Time adjustedTime = TimeUtil.changeTimezone(conn, sessionCalendar, targetCalendar, time, conn.getServerTimezoneTZ(), tz, rollForward);
+                return adjustedTime;
+            }
+            return rs.getNativeTimeViaParseConversion(columnIndex + 1, targetCalendar, tz, rollForward);
+        case Types.DATE:
+            if (populatedFromDateTimeValue) {
+                if ((year == 0) && (month == 0) && (day == 0)) {
+                    if (ConnectionPropertiesImpl.ZERO_DATETIME_BEHAVIOR_CONVERT_TO_NULL.equals(conn.getZeroDateTimeBehavior())) {
+                        return null;
+                    } else if (ConnectionPropertiesImpl.ZERO_DATETIME_BEHAVIOR_EXCEPTION.equals(conn.getZeroDateTimeBehavior())) {
+                        throw new SQLException("Value '0000-00-00' can not be represented as java.sql.Date", SQLError.SQL_STATE_ILLEGAL_ARGUMENT);
+                    }
+                    year = 1;
+                    month = 1;
+                    day = 1;
+                }
+                if (!rs.useLegacyDatetimeCode) {
+                    return TimeUtil.fastDateCreate(year, month, day, targetCalendar);
+                }
+                return rs.fastDateCreate(rs.getCalendarInstanceForSessionOrNew(), year, month, day);
+            }
+            return rs.getNativeDateViaParseConversion(columnIndex + 1);
+        case Types.TIMESTAMP:
+            if (populatedFromDateTimeValue) {
+                if ((year == 0) && (month == 0) && (day == 0)) {
+                    if (ConnectionPropertiesImpl.ZERO_DATETIME_BEHAVIOR_CONVERT_TO_NULL.equals(conn.getZeroDateTimeBehavior())) {
+                        return null;
+                    } else if (ConnectionPropertiesImpl.ZERO_DATETIME_BEHAVIOR_EXCEPTION.equals(conn.getZeroDateTimeBehavior())) {
+                        throw new SQLException("Value '0000-00-00' can not be represented as java.sql.Timestamp", SQLError.SQL_STATE_ILLEGAL_ARGUMENT);
+                    }
+                    year = 1;
+                    month = 1;
+                    day = 1;
+                }
+                if (!rs.useLegacyDatetimeCode) {
+                    return TimeUtil.fastTimestampCreate(tz, year, month, day, hour, minute, seconds, nanos);
+                }
+                Timestamp ts = rs.fastTimestampCreate(rs.getCalendarInstanceForSessionOrNew(), year, month, day, hour, minute, seconds, nanos);
+                Timestamp adjustedTs = TimeUtil.changeTimezone(conn, sessionCalendar, targetCalendar, ts, conn.getServerTimezoneTZ(), tz, rollForward);
+                return adjustedTs;
+            }
+            return rs.getNativeTimestampViaParseConversion(columnIndex + 1, targetCalendar, tz, rollForward);
+        default:
+            throw new SQLException("Internal error - conversion method doesn't support this type", SQLError.SQL_STATE_GENERAL_ERROR);
+    }
+}

@@ -1,0 +1,77 @@
+private void processBaseClassCall(NodeTraversal t, Node n) {
+    // Two things must hold for every goog.base call:
+    // 1) We must be calling it on "this".
+    // 2) We must be calling it on a prototype method of the same name as
+    // the one we're in, OR we must be calling it from a constructor.
+    // If both of those things are true, then we can rewrite:
+    // <pre>
+    // function Foo() {
+    // goog.base(this);
+    // }
+    // goog.inherits(Foo, BaseFoo);
+    // Foo.prototype.bar = function() {
+    // goog.base(this, 'bar', 1);
+    // };
+    // </pre>
+    // as the easy-to-optimize:
+    // <pre>
+    // function Foo() {
+    // BaseFoo.call(this);
+    // }
+    // goog.inherits(Foo, BaseFoo);
+    // Foo.prototype.bar = function() {
+    // Foo.superClass_.bar.call(this, 1);
+    // };
+    // 
+    // Most of the logic here is just to make sure the AST's
+    // structure is what we expect it to be.
+    Node callee = n.getFirstChild();
+    Node thisArg = callee.getNext();
+    if (thisArg == null || thisArg.getType() != Token.THIS) {
+        reportBadBaseClassUse(t, n, "First argument must be 'this'.");
+        return;
+    }
+    Node enclosingFnNameNode = getEnclosingDeclNameNode(t);
+    if (enclosingFnNameNode == null) {
+        reportBadBaseClassUse(t, n, "Could not find enclosing method.");
+        return;
+    }
+    String enclosingQname = enclosingFnNameNode.getQualifiedName();
+    if (enclosingQname.indexOf(".prototype.") == -1) {
+        // Handle constructors.
+        Node enclosingParent = enclosingFnNameNode.getParent();
+        Node maybeInheritsExpr = (enclosingParent.getType() == Token.ASSIGN ? enclosingParent.getParent() : enclosingParent).getNext();
+        Node baseClassNode = null;
+        if (maybeInheritsExpr != null && maybeInheritsExpr.getType() == Token.EXPR_RESULT && maybeInheritsExpr.getFirstChild().getType() == Token.CALL) {
+            Node callNode = maybeInheritsExpr.getFirstChild();
+            if ("goog.inherits".equals(callNode.getFirstChild().getQualifiedName()) && callNode.getLastChild().isQualifiedName()) {
+                baseClassNode = callNode.getLastChild();
+            }
+        }
+        if (baseClassNode == null) {
+            reportBadBaseClassUse(t, n, "Could not find goog.inherits for base class");
+            return;
+        }
+        // We're good to go.
+        n.replaceChild(callee, NodeUtil.newQualifiedNameNode(compiler.getCodingConvention(), String.format("%s.call", baseClassNode.getQualifiedName()), callee, "goog.base"));
+        compiler.reportCodeChange();
+    } else {
+        // Handle methods.
+        Node methodNameNode = thisArg.getNext();
+        if (methodNameNode == null || methodNameNode.getType() != Token.STRING) {
+            reportBadBaseClassUse(t, n, "Second argument must name a method.");
+            return;
+        }
+        String methodName = methodNameNode.getString();
+        String ending = ".prototype." + methodName;
+        if (enclosingQname == null || !enclosingQname.endsWith(ending)) {
+            reportBadBaseClassUse(t, n, "Enclosing method does not match " + methodName);
+            return;
+        }
+        // We're good to go.
+        Node className = enclosingFnNameNode.getFirstChild().getFirstChild();
+        n.replaceChild(callee, NodeUtil.newQualifiedNameNode(compiler.getCodingConvention(), String.format("%s.superClass_.%s.call", className.getQualifiedName(), methodName), callee, "goog.base"));
+        n.removeChild(methodNameNode);
+        compiler.reportCodeChange();
+    }
+}

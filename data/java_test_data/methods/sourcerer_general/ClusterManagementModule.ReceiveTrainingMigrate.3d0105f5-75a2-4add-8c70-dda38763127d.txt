@@ -1,0 +1,76 @@
+// -------------------------------------------------------------------------------------------------
+public synchronized void ReceiveTrainingMigrate(Integer MachineID, Integer TaskID, String TraineeName, ClusterMessage_TrainingMigrate ReceivedMSG) {
+    // Machines at PRE_TRAINING should ignore this.
+    if (LocalMachineEntry.getMachineState() == MachineState.PRE_TRAINING)
+        return;
+    SA.AddLogEntry("CMM", "Info - Received an \"Training Migrate Task\" message from MachineID=" + MachineID + " for TaskID=" + TaskID);
+    // check that the MachineID is valid
+    if (!MachineDB.containsKey(MachineID)) {
+        SA.AddLogEntry("CMM", "Error - MachineID=" + MachineID + " does not exist in the Machine Database.");
+        SA.UnrecoverableClusterError();
+        return;
+    }
+    if ((LocalMachineEntry.getMachineState() == MachineState.ACTIVE) || (LocalMachineEntry.getMachineState() == MachineState.POST_TRAINING)) {
+        // check that the TaskID is valid
+        if (!TaskDB.containsKey(TaskID)) {
+            SA.AddLogEntry("CMM", "Error - TaskID=" + TaskID + " does not exist in the TaskDatabase.");
+            SA.UnrecoverableClusterError();
+            return;
+        }
+        TaskEntry MigratingTask = TaskDB.get(TaskID);
+        // check that the Task is of TRAINING type
+        if (MigratingTask.getContext().getType() != TaskType.TRAINING) {
+            SA.AddLogEntry("CMM", "Error - Task " + TaskID + " is not of TRAINING type.");
+            SA.UnrecoverableClusterError();
+            return;
+        }
+        // check that the Trainee Name is consistent with the Task Context
+        if (!((TrainingContext) MigratingTask.getContext()).getTraineeName().equals(TraineeName)) {
+            SA.AddLogEntry("CMM", "Error - The Trainee name " + TraineeName + "in the message is not consistent with the Task Database entry of: " + ((TrainingContext) MigratingTask.getContext()).getTraineeName());
+        }
+        // Assign the Task the new Machine
+        MigratingTask.putAssignedServerID(MachineID);
+        // Increase the task count of the receiving Machine
+        MachineDB.get(MachineID).incTaskCount();
+        SA.AddLogEntry("CMM", "Info - Moved Training Task " + TaskID + " to the ownership of Machine " + MachineID);
+        // If Machine is in ACTIVE state, and message originated from this Machine
+        if (MachineID.equals(MachineDBLocalID)) {
+            LocalMachineEntry.incTaskCount();
+            // This machine should start mentoring the trainee.
+            SA.AddLogEntry("CMM", "Info - Training Task " + TaskID + " is being transfered to this Machine.");
+            TreeMap<Integer, TaskEntry> SnapshotTaskDB = null;
+            try {
+                // Create a snapshot database from the point the prev Mentor stopped
+                SnapshotTaskDB = CreateSnapshotTaskDB(((TrainingContext) TaskDB.get(TaskID).getContext()).getLastTrainedTaskID());
+            } catch (CloneNotSupportedException e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+                SA.AddLogEntry("CMM", "Error - Failed to create a Snapshot Task database.");
+                SA.UnrecoverableClusterError();
+                return;
+            }
+            // note: ToBeMentored queue is bypassed, as there is no need to wait for an
+            // additional message (not like in a new Training session)
+            // Create a new Mentor and add it to the Mentor List
+            MentorList.addLast(new Mentor(this, TaskID, TraineeName, SnapshotTaskDB, InteractiveTrainingMode));
+            SA.AddLogEntry("CMM", "Info - This Machine is the new Mentor of the Trainee " + TraineeName);
+            return;
+        }
+    }
+    // if this Machine is in TRAINING and the message is addressed to it
+    if (LocalMachineEntry.getMachineState() == MachineState.TRAINING) {
+        // if the message is addressed to the local machine
+        if (TraineeName.equals(LocalMachineEntry.getClusterMachineName())) {
+            // Switch Mentors
+            SA.AddLogEntry("CMM", "Info - Training Task " + TaskID + " is the Training session of this Machine. Switching Mentors.");
+            // Process the accumulated Tasks in the Task queue up to the max learned TaskID
+            ProcessTaskQueue(TaskDB.lastKey());
+            SA.AddLogEntry("CMM", "Info - Migration of the Training session to Mentor with MachineID " + MachineID + " is complete.");
+            return;
+        } else // if not addressed to the local machine
+        {
+            // put the message in the TaskQueue
+            StoreMessageWhileTraining(ReceivedMSG);
+        }
+    }
+}

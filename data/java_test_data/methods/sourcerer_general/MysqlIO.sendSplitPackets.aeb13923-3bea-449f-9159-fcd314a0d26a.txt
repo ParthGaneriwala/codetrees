@@ -1,0 +1,72 @@
+private final void sendSplitPackets(Buffer packet) throws SQLException {
+    try {
+        // 
+        // Big packets are handled by splitting them in packets of MAX_THREE_BYTES
+        // length. The last packet is always a packet that is < MAX_THREE_BYTES.
+        // (The last packet may even have a length of 0)
+        // 
+        // 
+        // NB: Guarded by execSQL. If the driver changes architecture, this
+        // will need to be synchronized in some other way
+        // 
+        Buffer headerPacket = (this.splitBufRef == null) ? null : (Buffer) (this.splitBufRef.get());
+        // 
+        if (headerPacket == null) {
+            headerPacket = new Buffer((this.maxThreeBytes + HEADER_LENGTH));
+            this.splitBufRef = new SoftReference(headerPacket);
+        }
+        int len = packet.getPosition();
+        int splitSize = this.maxThreeBytes;
+        int originalPacketPos = HEADER_LENGTH;
+        byte[] origPacketBytes = packet.getByteBuffer();
+        byte[] headerPacketBytes = headerPacket.getByteBuffer();
+        while (len >= this.maxThreeBytes) {
+            this.packetSequence++;
+            headerPacket.setPosition(0);
+            headerPacket.writeLongInt(splitSize);
+            headerPacket.writeByte(this.packetSequence);
+            System.arraycopy(origPacketBytes, originalPacketPos, headerPacketBytes, 4, splitSize);
+            int packetLen = splitSize + HEADER_LENGTH;
+            // 
+            if (!this.useCompression) {
+                this.mysqlOutput.write(headerPacketBytes, 0, splitSize + HEADER_LENGTH);
+                this.mysqlOutput.flush();
+            } else {
+                Buffer packetToSend;
+                headerPacket.setPosition(0);
+                packetToSend = compressPacket(headerPacket, HEADER_LENGTH, splitSize, HEADER_LENGTH);
+                packetLen = packetToSend.getPosition();
+                this.mysqlOutput.write(packetToSend.getByteBuffer(), 0, packetLen);
+                this.mysqlOutput.flush();
+            }
+            originalPacketPos += splitSize;
+            len -= splitSize;
+        }
+        // 
+        // Write last packet
+        // 
+        headerPacket.clear();
+        headerPacket.setPosition(0);
+        headerPacket.writeLongInt(len - HEADER_LENGTH);
+        this.packetSequence++;
+        headerPacket.writeByte(this.packetSequence);
+        if (len != 0) {
+            System.arraycopy(origPacketBytes, originalPacketPos, headerPacketBytes, 4, len - HEADER_LENGTH);
+        }
+        int packetLen = len - HEADER_LENGTH;
+        // 
+        if (!this.useCompression) {
+            this.mysqlOutput.write(headerPacket.getByteBuffer(), 0, len);
+            this.mysqlOutput.flush();
+        } else {
+            Buffer packetToSend;
+            headerPacket.setPosition(0);
+            packetToSend = compressPacket(headerPacket, HEADER_LENGTH, packetLen, HEADER_LENGTH);
+            packetLen = packetToSend.getPosition();
+            this.mysqlOutput.write(packetToSend.getByteBuffer(), 0, packetLen);
+            this.mysqlOutput.flush();
+        }
+    } catch (IOException ioEx) {
+        throw SQLError.createCommunicationsException(this.connection, this.lastPacketSentTimeMs, this.lastPacketReceivedTimeMs, ioEx, getExceptionInterceptor());
+    }
+}

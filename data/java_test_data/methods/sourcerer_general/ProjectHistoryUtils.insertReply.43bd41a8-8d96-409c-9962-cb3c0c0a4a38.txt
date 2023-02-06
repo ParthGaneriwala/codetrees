@@ -1,0 +1,41 @@
+public static synchronized void insertReply(Connection db, ProjectHistory parentProjectHistory, ProjectHistoryReplyBean reply, User user) throws SQLException {
+    // Construct a project history based on the parent project history and the reply bean
+    ProjectHistory projectHistory = new ProjectHistory();
+    projectHistory.setEnteredBy(user.getId());
+    projectHistory.setProjectId(parentProjectHistory.getProjectId());
+    projectHistory.setEventType(ProjectHistoryList.ADD_ACTIVITY_ENTRY_EVENT);
+    if (ProjectHistoryList.SITE_CHATTER_OBJECT.equals(parentProjectHistory.getLinkObject())) {
+        // Maintain the site-chatter value
+        projectHistory.setLinkObject(ProjectHistoryList.SITE_CHATTER_OBJECT);
+    } else {
+        // Default to a user-entry value
+        projectHistory.setLinkObject(ProjectHistoryList.ACTIVITY_ENTRY_OBJECT);
+    }
+    projectHistory.setLinkItemId(user.getId());
+    // @todo move to application.xml
+    projectHistory.setDescription(WikiLink.generateLink(user.getProfileProject()) + (parentProjectHistory.getProjectId() != user.getProfileProject().getId() ? " @" + WikiLink.generateLink(parentProjectHistory.getProject()) : "") + (user.getId() != parentProjectHistory.getEnteredBy() ? " in reply to " + WikiLink.generateLink(UserUtils.loadUser(parentProjectHistory.getEnteredBy()).getProfileProject()) : "") + ": " + WikiUtils.addWikiLinks(reply.getDescription()));
+    projectHistory.setParentId(parentProjectHistory.getId());
+    if (parentProjectHistory.getTopId() > -1) {
+        projectHistory.setTopId(parentProjectHistory.getTopId());
+    } else {
+        projectHistory.setTopId(parentProjectHistory.getId());
+    }
+    projectHistory.setPosition(ProjectHistoryUtils.findNextPosition(db, projectHistory.getTopId()));
+    projectHistory.setThreadPosition(ProjectHistoryUtils.findNextThreadPosition(db, parentProjectHistory));
+    projectHistory.setIndent(parentProjectHistory.getIndent() + 1);
+    projectHistory.setRelativeEnteredby(parentProjectHistory.getEnteredBy());
+    projectHistory.setLineage(parentProjectHistory.getLineage() + parentProjectHistory.getId() + "/");
+    // Reply transaction
+    try {
+        db.setAutoCommit(false);
+        projectHistory.updateThreadPosition(db);
+        projectHistory.updateChildCount(db);
+        projectHistory.insert(db);
+        projectHistory.updateRelativeDate(db);
+        db.commit();
+    } catch (Exception e) {
+        db.rollback();
+    } finally {
+        db.setAutoCommit(true);
+    }
+}

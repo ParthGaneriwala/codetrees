@@ -1,0 +1,75 @@
+@SuppressWarnings("unchecked")
+private RawKeyValueIterator createKVIterator(JobConf job, FileSystem fs, Reporter reporter) throws IOException {
+    // merge config params
+    Class<K> keyClass = (Class<K>) job.getMapOutputKeyClass();
+    Class<V> valueClass = (Class<V>) job.getMapOutputValueClass();
+    boolean keepInputs = job.getKeepFailedTaskFiles();
+    final Path tmpDir = new Path(getTaskID().toString());
+    final RawComparator<K> comparator = (RawComparator<K>) job.getOutputKeyComparator();
+    // segments required to vacate memory
+    List<Segment<K, V>> memDiskSegments = new ArrayList<Segment<K, V>>();
+    long inMemToDiskBytes = 0;
+    if (mapOutputsFilesInMemory.size() > 0) {
+        TaskID mapId = mapOutputsFilesInMemory.get(0).mapId;
+        inMemToDiskBytes = createInMemorySegments(memDiskSegments, maxInMemReduce);
+        final int numMemDiskSegments = memDiskSegments.size();
+        if (numMemDiskSegments > 0 && ioSortFactor > mapOutputFilesOnDisk.size()) {
+            // must spill to disk, but can't retain in-mem for intermediate merge
+            final Path outputPath = mapOutputFile.getInputFileForWrite(mapId, reduceTask.getTaskID(), inMemToDiskBytes);
+            final RawKeyValueIterator rIter = Merger.merge(job, fs, keyClass, valueClass, memDiskSegments, numMemDiskSegments, tmpDir, comparator, reporter);
+            final Writer writer = new Writer(job, fs, outputPath, keyClass, valueClass, codec);
+            try {
+                Merger.writeFile(rIter, writer, reporter);
+                addToMapOutputFilesOnDisk(fs.getFileStatus(outputPath));
+            } catch (Exception e) {
+                if (null != outputPath) {
+                    fs.delete(outputPath, true);
+                }
+                throw new IOException("Final merge failed", e);
+            } finally {
+                if (null != writer) {
+                    writer.close();
+                }
+            }
+            LOG.info("Merged " + numMemDiskSegments + " segments, " + inMemToDiskBytes + " bytes to disk to satisfy " + "reduce memory limit");
+            inMemToDiskBytes = 0;
+            memDiskSegments.clear();
+        } else if (inMemToDiskBytes != 0) {
+            LOG.info("Keeping " + numMemDiskSegments + " segments, " + inMemToDiskBytes + " bytes in memory for " + "intermediate, on-disk merge");
+        }
+    }
+    // segments on disk
+    List<Segment<K, V>> diskSegments = new ArrayList<Segment<K, V>>();
+    long onDiskBytes = inMemToDiskBytes;
+    Path[] onDisk = getMapFiles(fs, false);
+    for (Path file : onDisk) {
+        onDiskBytes += fs.getFileStatus(file).getLen();
+        diskSegments.add(new Segment<K, V>(job, fs, file, codec, keepInputs));
+    }
+    LOG.info("Merging " + onDisk.length + " files, " + onDiskBytes + " bytes from disk");
+    Collections.sort(diskSegments, new Comparator<Segment<K, V>>() {
+
+        public int compare(Segment<K, V> o1, Segment<K, V> o2) {
+            if (o1.getLength() == o2.getLength()) {
+                return 0;
+            }
+            return o1.getLength() < o2.getLength() ? -1 : 1;
+        }
+    });
+    // build final list of segments from merged backed by disk + in-mem
+    List<Segment<K, V>> finalSegments = new ArrayList<Segment<K, V>>();
+    long inMemBytes = createInMemorySegments(finalSegments, 0);
+    LOG.info("Merging " + finalSegments.size() + " segments, " + inMemBytes + " bytes from memory into reduce");
+    if (0 != onDiskBytes) {
+        final int numInMemSegments = memDiskSegments.size();
+        diskSegments.addAll(0, memDiskSegments);
+        memDiskSegments.clear();
+        RawKeyValueIterator diskMerge = Merger.merge(job, fs, keyClass, valueClass, diskSegments, ioSortFactor, numInMemSegments, tmpDir, comparator, reporter, false);
+        diskSegments.clear();
+        if (0 == finalSegments.size()) {
+            return diskMerge;
+        }
+        finalSegments.add(new Segment<K, V>(new RawKVIteratorReader(diskMerge, onDiskBytes), true));
+    }
+    return Merger.merge(job, fs, keyClass, valueClass, finalSegments, finalSegments.size(), tmpDir, comparator, reporter);
+}

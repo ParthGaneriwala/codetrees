@@ -1,0 +1,95 @@
+synchronized boolean canRead(Session session, int mode) {
+    long threshold;
+    int actionType = ACTION_NONE;
+    if (type == ACTION_DELETE_FINAL) {
+        return false;
+    }
+    if (type == ACTION_NONE) {
+        return true;
+    }
+    RowActionBase action = this;
+    if (session == null) {
+        threshold = Long.MAX_VALUE;
+    } else {
+        switch(session.isolationLevel) {
+            case SessionInterface.TX_READ_UNCOMMITTED:
+                threshold = Long.MAX_VALUE;
+                break;
+            case SessionInterface.TX_READ_COMMITTED:
+                threshold = session.actionTimestamp;
+                break;
+            case SessionInterface.TX_REPEATABLE_READ:
+            case SessionInterface.TX_SERIALIZABLE:
+            default:
+                threshold = session.transactionTimestamp;
+                break;
+        }
+    }
+    do {
+        if (action.type == ACTION_REF) {
+            action = action.next;
+            continue;
+        }
+        if (action.rolledback) {
+            if (action.type == ACTION_INSERT) {
+                actionType = ACTION_DELETE;
+            }
+            action = action.next;
+            continue;
+        }
+        if (session == action.session) {
+            if (action.type == ACTION_DELETE) {
+                actionType = action.type;
+            } else if (action.type == ACTION_INSERT) {
+                actionType = action.type;
+            }
+            action = action.next;
+            continue;
+        } else if (action.commitTimestamp == 0) {
+            if (action.type == ACTION_NONE) {
+                throw Error.runtimeError(ErrorCode.U_S0500, "RowAction");
+            } else if (action.type == ACTION_INSERT) {
+                if (mode == TransactionManager.ACTION_READ) {
+                    actionType = action.ACTION_DELETE;
+                } else if (mode == TransactionManager.ACTION_DUP) {
+                    if (action.changeColumnMap == null) {
+                        actionType = ACTION_INSERT;
+                    } else {
+                        actionType = ACTION_DELETE;
+                    }
+                } else if (mode == TransactionManager.ACTION_REF) {
+                    actionType = ACTION_DELETE;
+                }
+                break;
+            } else if (action.type == ACTION_DELETE) {
+                if (mode == TransactionManager.ACTION_DUP) {
+                // 
+                } else if (mode == TransactionManager.ACTION_REF) {
+                    actionType = ACTION_DELETE;
+                }
+            }
+            action = action.next;
+            continue;
+        } else if (action.commitTimestamp < threshold) {
+            if (action.type == ACTION_DELETE) {
+                if (actionType == ACTION_INSERT) {
+                    actionType = action.type;
+                } else {
+                    actionType = action.type;
+                }
+            } else if (action.type == ACTION_INSERT) {
+                actionType = action.type;
+            }
+        } else {
+            if (action.type == ACTION_INSERT) {
+                actionType = ACTION_DELETE;
+            }
+        }
+        action = action.next;
+        continue;
+    } while (action != null);
+    if (actionType == ACTION_NONE || actionType == ACTION_INSERT) {
+        return true;
+    }
+    return false;
+}

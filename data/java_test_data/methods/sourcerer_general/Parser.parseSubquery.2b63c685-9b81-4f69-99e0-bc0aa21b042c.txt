@@ -1,0 +1,49 @@
+SubQuery parseSubquery(int brackets, HsqlName[] colNames, boolean resolveAll, int predicateType) throws HsqlException {
+    SubQuery sq;
+    sq = new SubQuery();
+    subQueryLevel++;
+    boolean canHaveOrder = predicateType == Expression.VIEW || predicateType == Expression.SELECT;
+    boolean canHaveLimit = predicateType == Expression.SELECT || predicateType == Expression.VIEW || predicateType == Expression.QUERY;
+    boolean limitWithOrder = predicateType == Expression.IN || predicateType == Expression.ALL || predicateType == Expression.ANY;
+    Select s = parseSelect(brackets, canHaveOrder, canHaveLimit, limitWithOrder, true);
+    sq.level = subQueryLevel;
+    subQueryLevel--;
+    boolean isResolved = s.resolveAll(session, resolveAll);
+    sq.select = s;
+    sq.isResolved = isResolved;
+    // it's not a problem that this table has not a unique name
+    HsqlName sqtablename = database.nameManager.newHsqlName("SYSTEM_SUBQUERY", false);
+    sqtablename.schema = database.schemaManager.SYSTEM_SCHEMA_HSQLNAME;
+    Table table = new Table(database, sqtablename, Table.SYSTEM_SUBQUERY);
+    if (colNames != null) {
+        if (colNames.length != s.iResultLen) {
+            throw Trace.error(Trace.COLUMN_COUNT_DOES_NOT_MATCH);
+        }
+        for (int i = 0; i < s.iResultLen; i++) {
+            HsqlName name = colNames[i];
+            s.exprColumns[i].setAlias(name.name, name.isNameQuoted);
+        }
+    } else {
+        for (int i = 0; i < s.iResultLen; i++) {
+            String colname = s.exprColumns[i].getAlias();
+            if (colname == null || colname.length() == 0) {
+                // fredt - this does not guarantee the uniqueness of column
+                // names but addColumns() will throw if names are not unique.
+                colname = "COL_" + String.valueOf(i + 1);
+                s.exprColumns[i].setAlias(colname, false);
+            }
+        }
+    }
+    table.addColumns(s);
+    boolean uniqueValues = predicateType == Expression.EXISTS || predicateType == Expression.IN || predicateType == Expression.ALL || predicateType == Expression.ANY;
+    int[] pcol = null;
+    if (uniqueValues) {
+        pcol = new int[s.iResultLen];
+        ArrayUtil.fillSequence(pcol);
+    }
+    table.createPrimaryKey(pcol);
+    sq.table = table;
+    sq.uniqueRows = uniqueValues;
+    subQueryList.add(sq);
+    return sq;
+}

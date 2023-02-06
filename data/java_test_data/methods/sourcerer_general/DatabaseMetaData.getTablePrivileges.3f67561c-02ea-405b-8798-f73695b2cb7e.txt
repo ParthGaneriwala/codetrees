@@ -1,0 +1,104 @@
+public java.sql.ResultSet getTablePrivileges(String catalog, String schemaPattern, String tableNamePattern) throws SQLException {
+    if (tableNamePattern == null) {
+        if (this.conn.getNullNamePatternMatchesAll()) {
+            tableNamePattern = "%";
+        } else {
+            throw SQLError.createSQLException("Table name pattern can not be NULL or empty.", SQLError.SQL_STATE_ILLEGAL_ARGUMENT, getExceptionInterceptor());
+        }
+    }
+    Field[] fields = new Field[7];
+    fields[0] = new Field("", "TABLE_CAT", Types.CHAR, 64);
+    fields[1] = new Field("", "TABLE_SCHEM", Types.CHAR, 1);
+    fields[2] = new Field("", "TABLE_NAME", Types.CHAR, 64);
+    fields[3] = new Field("", "GRANTOR", Types.CHAR, 77);
+    fields[4] = new Field("", "GRANTEE", Types.CHAR, 77);
+    fields[5] = new Field("", "PRIVILEGE", Types.CHAR, 64);
+    fields[6] = new Field("", "IS_GRANTABLE", Types.CHAR, 3);
+    StringBuffer grantQuery = new StringBuffer("SELECT host,db,table_name,grantor,user,table_priv from mysql.tables_priv ");
+    grantQuery.append(" WHERE ");
+    if ((catalog != null) && (catalog.length() != 0)) {
+        grantQuery.append(" db='");
+        grantQuery.append(catalog);
+        grantQuery.append("' AND ");
+    }
+    grantQuery.append("table_name like '");
+    grantQuery.append(tableNamePattern);
+    grantQuery.append("'");
+    ResultSet results = null;
+    ArrayList grantRows = new ArrayList();
+    Statement stmt = null;
+    try {
+        stmt = this.conn.createStatement();
+        stmt.setEscapeProcessing(false);
+        results = stmt.executeQuery(grantQuery.toString());
+        while (results.next()) {
+            String host = results.getString(1);
+            String db = results.getString(2);
+            String table = results.getString(3);
+            String grantor = results.getString(4);
+            String user = results.getString(5);
+            if ((user == null) || (user.length() == 0)) {
+                user = "%";
+            }
+            StringBuffer fullUser = new StringBuffer(user);
+            if ((host != null) && this.conn.getUseHostsInPrivileges()) {
+                fullUser.append("@");
+                fullUser.append(host);
+            }
+            String allPrivileges = results.getString(6);
+            if (allPrivileges != null) {
+                allPrivileges = allPrivileges.toUpperCase(Locale.ENGLISH);
+                StringTokenizer st = new StringTokenizer(allPrivileges, ",");
+                while (st.hasMoreTokens()) {
+                    String privilege = st.nextToken().trim();
+                    // Loop through every column in the table
+                    java.sql.ResultSet columnResults = null;
+                    try {
+                        columnResults = getColumns(catalog, schemaPattern, table, "%");
+                        while (columnResults.next()) {
+                            byte[][] tuple = new byte[8][];
+                            tuple[0] = s2b(db);
+                            tuple[1] = null;
+                            tuple[2] = s2b(table);
+                            if (grantor != null) {
+                                tuple[3] = s2b(grantor);
+                            } else {
+                                tuple[3] = null;
+                            }
+                            tuple[4] = s2b(fullUser.toString());
+                            tuple[5] = s2b(privilege);
+                            tuple[6] = null;
+                            grantRows.add(new ByteArrayRow(tuple, getExceptionInterceptor()));
+                        }
+                    } finally {
+                        if (columnResults != null) {
+                            try {
+                                columnResults.close();
+                            } catch (Exception ex) {
+                                ;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } finally {
+        if (results != null) {
+            try {
+                results.close();
+            } catch (Exception ex) {
+                ;
+            }
+            results = null;
+        }
+        if (stmt != null) {
+            try {
+                stmt.close();
+            } catch (Exception ex) {
+                ;
+            }
+            stmt = null;
+        }
+    }
+    return buildResultSet(fields, grantRows);
+}

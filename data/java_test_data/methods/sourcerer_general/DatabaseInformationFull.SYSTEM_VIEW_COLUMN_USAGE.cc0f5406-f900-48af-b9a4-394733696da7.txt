@@ -1,0 +1,102 @@
+Table SYSTEM_VIEW_COLUMN_USAGE() throws HsqlException {
+    Table t = sysTables[SYSTEM_VIEW_COLUMN_USAGE];
+    if (t == null) {
+        t = createBlankTable(sysTableHsqlNames[SYSTEM_VIEW_COLUMN_USAGE]);
+        addColumn(t, "VIEW_CATALOG", Types.VARCHAR);
+        addColumn(t, "VIEW_SCHEMA", Types.VARCHAR);
+        // not null
+        addColumn(t, "VIEW_NAME", Types.VARCHAR, true);
+        addColumn(t, "TABLE_CATALOG", Types.VARCHAR);
+        addColumn(t, "TABLE_SCHEMA", Types.VARCHAR);
+        // not null
+        addColumn(t, "TABLE_NAME", Types.VARCHAR, true);
+        // not null
+        addColumn(t, "COLUMN_NAME", Types.VARCHAR, true);
+        // false PK, as VIEW_CATALOG, VIEW_SCHEMA, TABLE_CATALOG, and/or
+        // TABLE_SCHEMA may be NULL
+        t.createPrimaryKey(null, new int[] { 0, 1, 2, 3, 4, 5, 6 }, false);
+        return t;
+    }
+    // Calculated column values
+    String viewCatalog;
+    String viewSchema;
+    String viewName;
+    // Intermediate holders
+    Iterator tables;
+    View view;
+    Table table;
+    Object[] row;
+    SubQuery[] subqueries;
+    Select select;
+    Expression expression;
+    TableFilter tableFilter;
+    Table columnTable;
+    Result result;
+    Object[] resultRow;
+    Iterator iterator;
+    Expression.Collector collector;
+    // Column number mappings
+    final int iv_cat = 0;
+    final int iv_schem = 1;
+    final int iv_name = 2;
+    final int it_cat = 3;
+    final int it_schem = 4;
+    final int it_name = 5;
+    final int it_cname = 6;
+    // Initialization
+    tables = database.schemaManager.allTablesIterator();
+    collector = new Expression.Collector();
+    result = new Result(ResultConstants.DATA, 4);
+    result.metaData.colTypes[0] = result.metaData.colTypes[1] = result.metaData.colTypes[2] = result.metaData.colTypes[3] = Types.VARCHAR;
+    // Do it.
+    while (tables.hasNext()) {
+        collector.clear();
+        result.setRows(null);
+        table = (Table) tables.next();
+        if (table.isView() && isAccessibleTable(table)) {
+        // fall through
+        } else {
+            continue;
+        }
+        viewCatalog = ns.getCatalogName(table);
+        viewSchema = table.getSchemaName();
+        viewName = table.getName().name;
+        view = (View) table;
+        subqueries = view.viewSubqueries;
+        collector.addAll(view.viewSelect, Expression.COLUMN);
+        for (int i = 0; i < subqueries.length; i++) {
+            collector.addAll(subqueries[i].select, Expression.COLUMN);
+        }
+        iterator = collector.iterator();
+        while (iterator.hasNext()) {
+            expression = (Expression) iterator.next();
+            tableFilter = expression.getFilter();
+            columnTable = tableFilter.getTable();
+            if (columnTable.getTableType() == Table.SYSTEM_SUBQUERY || !isAccessibleTable(columnTable)) {
+                continue;
+            }
+            result.add(new Object[] { ns.getCatalogName(columnTable), columnTable.getSchemaName(), columnTable.getName().name, expression.getColumnName() });
+        }
+        /*
+            result.removeDuplicates(
+                database.sessionManager.getSysSession(
+                    database.schemaManager.INFORMATION_SCHEMA));
+*/
+        result.removeDuplicates(session);
+        iterator = result.iterator();
+        while (iterator.hasNext()) {
+            row = t.getEmptyRowData();
+            resultRow = (Object[]) iterator.next();
+            row[iv_cat] = viewCatalog;
+            row[iv_schem] = viewSchema;
+            row[iv_name] = viewName;
+            row[it_cat] = resultRow[0];
+            row[it_schem] = resultRow[1];
+            row[it_name] = resultRow[2];
+            row[it_cname] = resultRow[3];
+            t.insertSys(row);
+        }
+    }
+    t.setDataReadOnly(true);
+    return t;
+}

@@ -1,0 +1,71 @@
+public boolean execute(ComponentContext context) {
+    Project previousProject = (Project) context.getPreviousObject();
+    Project thisProject = (Project) context.getThisObject();
+    // Determine if this should be geocoded
+    boolean doGeocode = false;
+    // Project is being updated
+    if (context.isUpdate()) {
+        // Not previously geocoded and has address fields
+        if (!previousProject.isGeoCoded() && !thisProject.isGeoCoded() && ((StringUtils.hasText(thisProject.getCity()) && StringUtils.hasText(thisProject.getState())) || StringUtils.hasText(thisProject.getPostalCode()))) {
+            doGeocode = true;
+        }
+        // Previously geocoded but address or location has changed
+        if (previousProject.isGeoCoded() && (!previousProject.getLocation().equals(thisProject.getLocation()) || !previousProject.getAddress().equals(thisProject.getAddress()))) {
+            doGeocode = true;
+        }
+    }
+    // Project is being inserted
+    if (context.isInsert()) {
+        // Project is being inserted
+        if (!thisProject.isGeoCoded() && ((StringUtils.hasText(thisProject.getCity()) && StringUtils.hasText(thisProject.getState())) || StringUtils.hasText(thisProject.getPostalCode()))) {
+            doGeocode = true;
+        }
+    }
+    if (!doGeocode) {
+        return false;
+    }
+    boolean doUpdate = false;
+    USAddressGeocoder geo = new USAddressGeocoder();
+    // Use Google if available
+    if (context.getApplicationPrefs().containsKey(ApplicationPrefs.GOOGLE_MAPS_API_KEY)) {
+        geo.setApi(USAddressGeocoder.GOOGLE);
+        geo.setApiKey(context.getApplicationPrefs().get(ApplicationPrefs.GOOGLE_MAPS_API_KEY));
+    }
+    if (StringUtils.hasText(thisProject.getAddress())) {
+        geo.setAddress(thisProject.getAddress());
+    }
+    if (StringUtils.hasText(thisProject.getCity())) {
+        geo.setCity(thisProject.getCity());
+    }
+    if (StringUtils.hasText(thisProject.getState())) {
+        geo.setState(thisProject.getState());
+    }
+    if (StringUtils.hasText(thisProject.getCountry())) {
+        geo.setCountry(thisProject.getCountry());
+    }
+    if (StringUtils.hasText(thisProject.getPostalCode())) {
+        geo.setZip(thisProject.getPostalCode());
+    }
+    boolean result = geo.geocode();
+    if (result) {
+        thisProject.setLatitude(geo.getLatitude());
+        thisProject.setLongitude(geo.getLongitude());
+        doUpdate = true;
+    } else {
+        LOG.warn(geo.getWarning());
+    }
+    if (!doUpdate) {
+        return false;
+    }
+    // Update the listing
+    Connection db = null;
+    try {
+        db = getConnection(context);
+        thisProject.updateGeocode(db);
+    } catch (Exception e) {
+        LOG.error("Could not update geocode", e);
+    } finally {
+        freeConnection(context, db);
+    }
+    return true;
+}

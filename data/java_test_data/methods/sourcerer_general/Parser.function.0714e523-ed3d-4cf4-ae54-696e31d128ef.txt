@@ -1,0 +1,97 @@
+private FunctionNode function(int type) throws IOException {
+    int syntheticType = type;
+    // line number where source starts
+    int baseLineno = ts.lineno;
+    // start of "function" kwd
+    int functionSourceStart = ts.tokenBeg;
+    Name name = null;
+    AstNode memberExprNode = null;
+    if (matchToken(Token.NAME)) {
+        name = createNameNode(true, Token.NAME);
+        if (inUseStrictDirective) {
+            String id = name.getIdentifier();
+            if ("eval".equals(id) || "arguments".equals(id)) {
+                reportError("msg.bad.id.strict", id);
+            }
+        }
+        if (!matchToken(Token.LP)) {
+            if (compilerEnv.isAllowMemberExprAsFunctionName()) {
+                AstNode memberExprHead = name;
+                name = null;
+                memberExprNode = memberExprTail(false, memberExprHead);
+            }
+            mustMatchToken(Token.LP, "msg.no.paren.parms");
+        }
+    } else if (matchToken(Token.LP)) {
+    // Anonymous function:  leave name as null
+    } else {
+        if (compilerEnv.isAllowMemberExprAsFunctionName()) {
+            // Note that memberExpr can not start with '(' like
+            // in function (1+2).toString(), because 'function (' already
+            // processed as anonymous function
+            memberExprNode = memberExpr(false);
+        }
+        mustMatchToken(Token.LP, "msg.no.paren.parms");
+    }
+    int lpPos = currentToken == Token.LP ? ts.tokenBeg : -1;
+    if (memberExprNode != null) {
+        syntheticType = FunctionNode.FUNCTION_EXPRESSION;
+    }
+    if (syntheticType != FunctionNode.FUNCTION_EXPRESSION && name != null && name.length() > 0) {
+        // Function statements define a symbol in the enclosing scope
+        defineSymbol(Token.FUNCTION, name.getIdentifier());
+    }
+    FunctionNode fnNode = new FunctionNode(functionSourceStart, name);
+    fnNode.setFunctionType(type);
+    if (lpPos != -1)
+        fnNode.setLp(lpPos - functionSourceStart);
+    if (insideFunction() || nestingOfWith > 0) {
+        // 1. Nested functions are not affected by the dynamic scope flag
+        // as dynamic scope is already a parent of their scope.
+        // 2. Functions defined under the with statement also immune to
+        // this setup, in which case dynamic scope is ignored in favor
+        // of the with object.
+        fnNode.setIgnoreDynamicScope();
+    }
+    fnNode.setJsDocNode(getAndResetJsDoc());
+    PerFunctionVariables savedVars = new PerFunctionVariables(fnNode);
+    try {
+        parseFunctionParams(fnNode);
+        fnNode.setBody(parseFunctionBody());
+        fnNode.setEncodedSourceBounds(functionSourceStart, ts.tokenEnd);
+        fnNode.setLength(ts.tokenEnd - functionSourceStart);
+        if (compilerEnv.isStrictMode() && !fnNode.getBody().hasConsistentReturnUsage()) {
+            String msg = (name != null && name.length() > 0) ? "msg.no.return.value" : "msg.anon.no.return.value";
+            addStrictWarning(msg, name.getIdentifier());
+        }
+        // function, and only if not hidden by a parameter name
+        if (syntheticType == FunctionNode.FUNCTION_EXPRESSION && name != null && name.length() > 0 && currentScope.getSymbol(name.getIdentifier()) == null) {
+            defineSymbol(Token.FUNCTION, name.getIdentifier());
+        }
+    } finally {
+        savedVars.restore();
+    }
+    if (memberExprNode != null) {
+        // TODO(stevey): fix missing functionality
+        Kit.codeBug();
+        // rewrite later
+        fnNode.setMemberExprNode(memberExprNode);
+    /* old code:
+            if (memberExprNode != null) {
+                pn = nf.createAssignment(Token.ASSIGN, memberExprNode, pn);
+                if (functionType != FunctionNode.FUNCTION_EXPRESSION) {
+                    // XXX check JScript behavior: should it be createExprStatement?
+                    pn = nf.createExprStatementNoReturn(pn, baseLineno);
+                }
+            }
+            */
+    }
+    fnNode.setSourceName(sourceURI);
+    fnNode.setBaseLineno(baseLineno);
+    fnNode.setEndLineno(ts.lineno);
+    // at the function boundary when checking for redeclarations.
+    if (compilerEnv.isIdeMode()) {
+        fnNode.setParentScope(currentScope);
+    }
+    return fnNode;
+}

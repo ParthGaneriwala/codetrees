@@ -1,0 +1,122 @@
+public double evaluateSubset(BitSet subset, Instances holdOut) throws Exception {
+    int i, j;
+    double evalMetric = 0;
+    int numAttributes = 0;
+    Instances trainCopy = null;
+    Instances testCopy = null;
+    String[] cOpts = null;
+    Evaluation evaluation = null;
+    if (m_ClassifierTemplate instanceof OptionHandler) {
+        cOpts = ((OptionHandler) m_ClassifierTemplate).getOptions();
+    }
+    Classifier classifier = AbstractClassifier.forName(m_ClassifierTemplate.getClass().getName(), cOpts);
+    if (m_trainingInstances.equalHeaders(holdOut) == false) {
+        throw new Exception("evaluateSubset : Incompatable instance types.\n" + m_trainingInstances.equalHeadersMsg(holdOut));
+    }
+    Remove delTransform = new Remove();
+    delTransform.setInvertSelection(true);
+    // copy the training instances
+    trainCopy = new Instances(m_trainingInstances);
+    testCopy = new Instances(holdOut);
+    // count attributes set in the BitSet
+    for (i = 0; i < m_numAttribs; i++) {
+        if (subset.get(i)) {
+            numAttributes++;
+        }
+    }
+    // set up an array of attribute indexes for the filter (+1 for the class)
+    int[] featArray = new int[numAttributes + 1];
+    for (i = 0, j = 0; i < m_numAttribs; i++) {
+        if (subset.get(i)) {
+            featArray[j++] = i;
+        }
+    }
+    featArray[j] = m_classIndex;
+    delTransform.setAttributeIndicesArray(featArray);
+    delTransform.setInputFormat(trainCopy);
+    trainCopy = Filter.useFilter(trainCopy, delTransform);
+    testCopy = Filter.useFilter(testCopy, delTransform);
+    // build the classifier
+    classifier.buildClassifier(trainCopy);
+    evaluation = new Evaluation(trainCopy);
+    evaluation.evaluateModel(classifier, testCopy);
+    String metricName = null;
+    String statName = null;
+    AbstractEvaluationMetric pluginMetric = null;
+    switch(m_evaluationMeasure.getID()) {
+        case EVAL_DEFAULT:
+            evalMetric = evaluation.errorRate();
+            break;
+        case EVAL_ACCURACY:
+            evalMetric = evaluation.errorRate();
+            break;
+        case EVAL_RMSE:
+            evalMetric = evaluation.rootMeanSquaredError();
+            break;
+        case EVAL_MAE:
+            evalMetric = evaluation.meanAbsoluteError();
+            break;
+        case EVAL_FMEASURE:
+            if (m_IRClassVal < 0) {
+                evalMetric = evaluation.weightedFMeasure();
+            } else {
+                evalMetric = evaluation.fMeasure(m_IRClassVal);
+            }
+            break;
+        case EVAL_AUC:
+            if (m_IRClassVal < 0) {
+                evalMetric = evaluation.weightedAreaUnderROC();
+            } else {
+                evalMetric = evaluation.areaUnderROC(m_IRClassVal);
+            }
+            break;
+        case EVAL_AUPRC:
+            if (m_IRClassVal < 0) {
+                evalMetric = evaluation.weightedAreaUnderPRC();
+            } else {
+                evalMetric = evaluation.areaUnderPRC(m_IRClassVal);
+            }
+        case EVAL_CORRELATION:
+            evalMetric = evaluation.correlationCoefficient();
+            break;
+        default:
+            if (m_evaluationMeasure.getID() >= EVAL_PLUGIN) {
+                metricName = ((WrapperSubsetEval.PluginTag) m_evaluationMeasure).getMetricName();
+                statName = ((WrapperSubsetEval.PluginTag) m_evaluationMeasure).getStatisticName();
+                statName = ((WrapperSubsetEval.PluginTag) m_evaluationMeasure).getStatisticName();
+                pluginMetric = evaluation.getPluginMetric(metricName);
+                if (pluginMetric == null) {
+                    throw new Exception("Metric  " + metricName + " does not seem to be " + "available");
+                }
+            }
+            if (pluginMetric instanceof InformationRetrievalEvaluationMetric) {
+                if (m_IRClassVal < 0) {
+                    evalMetric = ((InformationRetrievalEvaluationMetric) pluginMetric).getClassWeightedAverageStatistic(statName);
+                } else {
+                    evalMetric = ((InformationRetrievalEvaluationMetric) pluginMetric).getStatistic(statName, m_IRClassVal);
+                }
+            } else {
+                evalMetric = pluginMetric.getStatistic(statName);
+            }
+            break;
+    }
+    switch(m_evaluationMeasure.getID()) {
+        case EVAL_DEFAULT:
+        case EVAL_ACCURACY:
+        case EVAL_RMSE:
+        case EVAL_MAE:
+            if (m_trainingInstances.classAttribute().isNominal() && (m_evaluationMeasure.getID() == EVAL_DEFAULT || m_evaluationMeasure.getID() == EVAL_ACCURACY)) {
+                evalMetric = 1 - evalMetric;
+            } else {
+                // maximize
+                evalMetric = -evalMetric;
+            }
+            break;
+        default:
+            if (pluginMetric != null && !pluginMetric.statisticIsMaximisable(statName)) {
+                // maximize
+                evalMetric = -evalMetric;
+            }
+    }
+    return evalMetric;
+}

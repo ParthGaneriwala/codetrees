@@ -1,0 +1,121 @@
+private void atualizar(ItemConteudo itemConteudo) throws Exception {
+    Usuario usuario = getUsuarioLogado();
+    getItemConteudoDaoTemp().apagar(itemConteudo);
+    boolean possuiErros = false;
+    {
+        // Tratamento do request
+        HttpServletRequest request = getRequest();
+        long nu_conteudo = Long.parseLong(request.getParameter("conteudo.nuConteudo"));
+        br.org.acessobrasil.portal.modelo.Conteudo conteudo = getItemConteudoFacade().buscarConteudo(nu_conteudo);
+        if (!SecurityManager.podeAlterarItemConteudo(usuario, itemConteudo)) {
+            usuario.addActionError("Voc&eacute; n&atilde;o possui autoriza&ccedil;&atilde;o para alterar este conte&uacute;do.");
+            return;
+        }
+        itemConteudo.setAlteradoNuUsuario(usuario.getNuUsuario());
+        itemConteudo.setDtAlteracao(new Date());
+        itemConteudo.setNuConteudo(nu_conteudo);
+        itemConteudo.setNoTitulo(request.getParameter("no_titulo"));
+        String erro = "";
+        try {
+            if (conteudo.getTipoConteudo().getPossuiPreco() == 1) {
+                // verifica se o item deve conter o preco
+                if (request.getParameter("preco") == null) {
+                    erro = "O campo pre&ccedil;o &eacute; obrigat&oacute;rio";
+                    throw new Exception(erro);
+                } else {
+                    erro = "Digite corretamente o pre&ccedil;o";
+                    itemConteudo.setPreco(Double.parseDouble(request.getParameter("preco")));
+                }
+            }
+            erro = "Digite corretamente a data de publica&ccedil;&atilde;o.";
+            itemConteudo.setDtParaPublicacao(Conversor.converteDDMMYYYY(request.getParameter("dt_para_publicacao")));
+            erro = "Digite corretamente a data para retirada do ar.";
+            itemConteudo.setDtParaRetirada(Conversor.converteDDMMYYYY(request.getParameter("dt_para_retirada")));
+        } catch (NumberFormatException e) {
+            usuario.addActionError(erro);
+            possuiErros = true;
+        } catch (Exception e) {
+            usuario.addActionError(erro);
+            possuiErros = true;
+        }
+        for (br.org.acessobrasil.portal.modelo.InformacaoTipoConteudo info : conteudo.getTipoConteudo().getListInformacaoTipoConteudo()) {
+            erro = "Preencha corretamente o campo '" + info.getNoInformacao() + "'.";
+            try {
+                long nu_informacao_tipo_conteudo = info.getNuInformacaoTipoConteudo();
+                String campoNome = "info" + nu_informacao_tipo_conteudo;
+                String valor = request.getParameter(campoNome);
+                if (valor == null && !info.getCoAtivo()) {
+                    // desabilitado e com valor null
+                    continue;
+                }
+                // est� habilitado ou o valor n�o � null
+                boolean existe = false;
+                for (ConteudoFormatado conteudoFormatado : itemConteudo.getListConteudoFormatado()) {
+                    if (conteudoFormatado.getNuInformacaoTipoConteudo() == nu_informacao_tipo_conteudo) {
+                        if (info.getFormato() == null) {
+                            logger.error("info.getFormato() == null id = " + info.getNuFormato());
+                        }
+                        if (info.getFormato().getClassName().equals("java.sql.Date")) {
+                            String val = Conversor.converteDDMMYYYY(valor).toString();
+                            conteudoFormatado.setDeConteudo(val);
+                        } else {
+                            if (valor.equals(info.getDeDicaPreenchimento()))
+                                valor = "";
+                            conteudoFormatado.setDeConteudo(valor);
+                        }
+                        existe = true;
+                    }
+                }
+                if (!existe) {
+                    ConteudoFormatado conteudoFormatado = new ConteudoFormatado();
+                    if (info.getFormato().getClassName().equals("java.sql.Date")) {
+                        String val = Conversor.converteDDMMYYYY(request.getParameter(campoNome)).toString();
+                        conteudoFormatado.setDeConteudo(val);
+                    } else {
+                        conteudoFormatado.setDeConteudo(request.getParameter(campoNome));
+                    }
+                    conteudoFormatado.setNuInformacaoTipoConteudo(nu_informacao_tipo_conteudo);
+                    conteudoFormatado.setNuItemConteudo(itemConteudo.getNuItemConteudo());
+                    conteudoFormatado.setNuConteudoFormatado(0L);
+                    ArrayList<ConteudoFormatado> arrConteudoFormatado = (ArrayList<ConteudoFormatado>) itemConteudo.getListConteudoFormatado();
+                    arrConteudoFormatado.add(conteudoFormatado);
+                }
+            } catch (Exception e) {
+                usuario.addActionError(erro);
+                logger.error("Erro com um campo ", e);
+                possuiErros = true;
+            }
+        }
+    }
+    if (!possuiErros) {
+        getItemConteudoFacade().atualizar(usuario, itemConteudo);
+    }
+    setUsuarioLogado(usuario);
+    /*
+		boolean ok = avaliarAcessibilidade(itemConteudo); 
+		if(!ok){
+			itemConteudo.setStSituacao('a');
+		}
+		if(!possuiErros){
+			if(itemConteudo.getStSituacao()=='a' && ok){
+				//se nao possui erros e a situacao estava errada, volta para rascunho
+				itemConteudo.setStSituacao('r');
+			}
+			itemConteudoDao.update(itemConteudo);
+			addActionMessage("Atualizado com sucesso!");
+			Gerenciador.limparCache();
+			String msg="Item de Conte�do Editado com sucesso. ['"+itemConteudo.getNoTitulo()+"',id = "+itemConteudo.getNuItemConteudo()+"].";
+			logDao.addLog(usuario,msg);
+		}
+		*/
+    // gerar o formulario de edicao
+    String formulario;
+    if (getUsuarioLogado().isModoDesenvolvimento()) {
+        formulario = FormularioItemConteudo.gerarFormularioHtml(itemConteudo, "editarItemConteudo.action", true);
+    } else {
+        formulario = FormularioItemConteudo.gerarFormularioHtml(itemConteudo, "editarItemConteudo.action", false);
+    }
+    formulario += gerarHtmlRelatorio(itemConteudo);
+    setFormEditar(formulario);
+    setItemConteudo(itemConteudo);
+}

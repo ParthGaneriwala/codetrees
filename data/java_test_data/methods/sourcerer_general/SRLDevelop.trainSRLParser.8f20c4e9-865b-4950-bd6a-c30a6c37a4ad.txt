@@ -1,0 +1,67 @@
+private double trainSRLParser(byte flag, String[] outputFile, JarArchiveOutputStream zout) throws Exception {
+    AbstractSRLParser labeler = null;
+    AbstractDecoder[] decoder = null;
+    PrintStream[] fout = null;
+    if (flag == SRLParser.FLAG_TRAIN_LEXICON) {
+        System.out.println("\n* Save lexica");
+        labeler = new SRLParser(flag, s_featureXml);
+    } else if (flag == SRLParser.FLAG_TRAIN_INSTANCE) {
+        System.out.println("\n* Print training instances");
+        System.out.println("- loading lexica");
+        labeler = new SRLParser(flag, t_xml, s_lexiconFiles);
+    } else if (flag == SRLParser.FLAG_PREDICT) {
+        System.out.println("\n* Predict");
+        decoder = new AbstractDecoder[m_model.length];
+        for (int i = 0; i < decoder.length; i++) decoder[i] = new OneVsAllDecoder((OneVsAllModel) m_model[i]);
+        fout = new PrintStream[outputFile.length];
+        for (int i = 0; i < fout.length; i++) fout[i] = IOUtil.createPrintFileStream(outputFile[i]);
+        labeler = new SRLParser(SRLParser.FLAG_PREDICT, t_xml, t_map, decoder);
+    } else if (flag == SRLParser.FLAG_TRAIN_BOOST) {
+        System.out.println("\n* Train boost");
+        decoder = new AbstractDecoder[m_model.length];
+        for (int i = 0; i < decoder.length; i++) decoder[i] = new OneVsAllDecoder((OneVsAllModel) m_model[i]);
+        labeler = new SRLParser(flag, t_xml, t_map, decoder);
+    }
+    String inputFile;
+    boolean isTrain;
+    if (flag == SRLParser.FLAG_PREDICT) {
+        inputFile = s_devFile;
+        isTrain = true;
+    } else {
+        inputFile = s_trainFile;
+        isTrain = true;
+    }
+    AbstractReader<DepNode, DepTree> reader = new SRLReader(inputFile, isTrain);
+    DepTree tree;
+    int n;
+    labeler.setLanguage(s_language);
+    reader.setLanguage(s_language);
+    for (n = 0; (tree = reader.nextTree()) != null; n++) {
+        labeler.parse(tree);
+        if (flag == SRLParser.FLAG_PREDICT)
+            fout[0].println(tree + "\n");
+        if (n % 1000 == 0)
+            System.out.printf("\r- parsing: %dK", n / 1000);
+    }
+    System.out.println("\r- parsing: " + n);
+    if (flag == SRLParser.FLAG_TRAIN_LEXICON) {
+        System.out.println("- saving");
+        labeler.saveTags(s_lexiconFiles);
+        t_xml = labeler.getSRLFtrXml();
+    } else if (flag == SRLParser.FLAG_TRAIN_INSTANCE) {
+        t_map = labeler.getSRLFtrMap();
+        a_yx = labeler.a_trans;
+    } else if (flag == SRLParser.FLAG_PREDICT) {
+        for (int i = 0; i < fout.length; i++) fout[i].close();
+        String[] args = { "-g", s_devFile, "-s", outputFile[0] };
+        String log = "\n* Development accuracy\n";
+        System.out.print(log);
+        SRLEvaluate eval = new SRLEvaluate(args);
+        s_build.append(log);
+        s_build.append("- F1: " + eval.getF1() + "\n");
+        return eval.getF1();
+    } else if (flag == SRLParser.FLAG_TRAIN_BOOST) {
+        a_yx = labeler.a_trans;
+    }
+    return 0;
+}

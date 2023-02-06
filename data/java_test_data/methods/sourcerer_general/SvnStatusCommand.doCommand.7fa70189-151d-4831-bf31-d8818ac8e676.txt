@@ -1,0 +1,102 @@
+protected TeamworkCommandResult doCommand() {
+    SVNClientInterface client = getClient();
+    File projectPath = getRepository().getProjectPath().getAbsoluteFile();
+    try {
+        Status[] status = client.status(projectPath.getAbsolutePath(), true, true, true);
+        /*
+             * Subversion is a bit stupid. If a directory has been removed from
+             * the repository, status of files within still shows as "up to date".
+             * We'll fix that. We need to cache status entries until we get the
+             * status for the parent directory.
+             */
+        // The set of directories for which we have status
+        Set<File> completed = new HashSet<File>();
+        // A map (File->Set<TeamStatusInfo>) from directories for which
+        // we don't yet have status, to the status of files within
+        Map<File, Set<TeamStatusInfo>> unreported = new HashMap<File, Set<TeamStatusInfo>>();
+        for (int i = 0; i < status.length; i++) {
+            File file = new File(status[i].getPath());
+            int textStat = status[i].getTextStatus();
+            // All I've seen so far is "added", "deleted", "non-svn" (none).
+            int reposStat = status[i].getRepositoryTextStatus();
+            // the repository revision doesn't seem to be valid for
+            // status "normal", or "repository: deleted".
+            // it is valid for "repository: added".
+            long reposRev = status[i].getReposLastCmtRevisionNumber();
+            if (reposRev > currentRevision) {
+                currentRevision = reposRev;
+            }
+            TeamStatusInfo rinfo = null;
+            if (textStat == StatusKind.missing || textStat == StatusKind.deleted) {
+                rinfo = new TeamStatusInfo(file, "" + status[i].getLastChangedRevisionNumber(), "", TeamStatusInfo.STATUS_DELETED);
+            } else if (textStat == StatusKind.unversioned) {
+                if (filter.accept(file)) {
+                    if (reposStat != StatusKind.added) {
+                        rinfo = new TeamStatusInfo(file, "", "", TeamStatusInfo.STATUS_NEEDSADD);
+                    } else {
+                        // conflict: added locally and in repository
+                        rinfo = new TeamStatusInfo(file, "", "" + status[i].getReposLastCmtRevisionNumber(), TeamStatusInfo.STATUS_CONFLICT_ADD);
+                    }
+                    if (file.isDirectory()) {
+                        statLocalDir(file);
+                    }
+                }
+            } else if (textStat == StatusKind.normal) {
+                if (filter.accept(file)) {
+                    String rev = "" + status[i].getLastChangedRevisionNumber();
+                    if (reposStat == StatusKind.deleted) {
+                        rinfo = new TeamStatusInfo(file, rev, "", TeamStatusInfo.STATUS_REMOVED);
+                    } else if (reposStat == StatusKind.modified) {
+                        rinfo = new TeamStatusInfo(file, rev, "" + status[i].getReposLastCmtRevisionNumber(), TeamStatusInfo.STATUS_NEEDSUPDATE);
+                    } else {
+                        rinfo = new TeamStatusInfo(file, rev, rev, TeamStatusInfo.STATUS_UPTODATE);
+                    }
+                }
+            } else if (textStat == StatusKind.modified) {
+                if (filter.accept(file)) {
+                    String rev = "" + status[i].getLastChangedRevisionNumber();
+                    if (reposStat == StatusKind.deleted) {
+                        rinfo = new TeamStatusInfo(file, rev, "", TeamStatusInfo.STATUS_CONFLICT_LMRD);
+                    } else if (reposStat == StatusKind.modified) {
+                        rinfo = new TeamStatusInfo(file, rev, "", TeamStatusInfo.STATUS_NEEDSMERGE);
+                    } else {
+                        rinfo = new TeamStatusInfo(file, rev, rev, TeamStatusInfo.STATUS_NEEDSCOMMIT);
+                    }
+                }
+            } else if (textStat == StatusKind.none) {
+                if (reposStat == StatusKind.added) {
+                    rinfo = new TeamStatusInfo(file, "", "" + reposRev, TeamStatusInfo.STATUS_NEEDSCHECKOUT);
+                }
+            } else if (textStat == StatusKind.added) {
+                // shouldn't normally happen unless something went wrong
+                // or someone has done "svn add" from command line etc.
+                rinfo = new TeamStatusInfo(file, "", "", TeamStatusInfo.STATUS_NEEDSCOMMIT);
+            }
+            if (rinfo != null) {
+                if (!file.exists()) {
+                    listener.gotStatus(rinfo);
+                } else if (completed.contains(file.getParentFile()) || file.equals(projectPath)) {
+                    complete(completed, unreported, rinfo);
+                } else {
+                    // The status of the parent directory hasn't been reported
+                    // yet. If the parent has been removed, the status we have
+                    // now is incorrect; we need to cache the result into the
+                    // parent status is reported.
+                    Set<TeamStatusInfo> s = unreported.get(file.getParentFile());
+                    if (s == null) {
+                        s = new HashSet<TeamStatusInfo>();
+                    }
+                    s.add(rinfo);
+                    unreported.put(file.getParentFile(), s);
+                }
+            }
+        }
+        listener.statusComplete(new SvnStatusHandle(getRepository(), currentRevision));
+        return new TeamworkCommandResult();
+    } catch (ClientException ce) {
+        if (!isCancelled()) {
+            return new TeamworkCommandError(ce.getMessage(), ce.getLocalizedMessage());
+        }
+    }
+    return new TeamworkCommandAborted();
+}

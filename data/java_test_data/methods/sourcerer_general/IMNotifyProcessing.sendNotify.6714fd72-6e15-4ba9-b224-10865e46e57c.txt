@@ -1,0 +1,75 @@
+public void sendNotify(Response okSent, String body, Dialog dialog) {
+    try {
+        // We send the NOTIFY!!!
+        // we create the Request-URI: the one of the proxy
+        HeaderFactory headerFactory = imUA.getHeaderFactory();
+        AddressFactory addressFactory = imUA.getAddressFactory();
+        MessageFactory messageFactory = imUA.getMessageFactory();
+        SipProvider sipProvider = imUA.getSipProvider();
+        String imProtocol = imUA.getIMProtocol();
+        String proxyAddress = imUA.getProxyAddress();
+        int proxyPort = imUA.getProxyPort();
+        SipURI requestURI = null;
+        /**
+         * ����requesturi�����ݴ���������ĵ�ַ
+         */
+        if (proxyAddress != null) {
+            requestURI = addressFactory.createSipURI(null, proxyAddress);
+            requestURI.setPort(proxyPort);
+            requestURI.setTransportParam(imProtocol);
+        } else {
+            DebugIM.println("DEBUG, IMNotifyProcessing, sendNotify(), request-uri is null");
+            return;
+        }
+        Address localAddress = dialog.getLocalParty();
+        Address remoteAddress = dialog.getRemoteParty();
+        FromHeader fromHeader = headerFactory.createFromHeader(localAddress, dialog.getLocalTag());
+        ToHeader toHeader = headerFactory.createToHeader(remoteAddress, dialog.getRemoteTag());
+        int cseq = dialog.getLocalSequenceNumber();
+        CSeqHeader cseqHeader = headerFactory.createCSeqHeader(cseq, Request.NOTIFY);
+        CallIdHeader callIdHeader = dialog.getCallId();
+        // Via header
+        String branchId = Utils.generateBranchId();
+        ViaHeader viaHeader = headerFactory.createViaHeader(imUA.getIMAddress(), imUA.getIMPort(), imProtocol, branchId);
+        Vector viaList = new Vector();
+        viaList.addElement(viaHeader);
+        // MaxForwards header:
+        MaxForwardsHeader maxForwardsHeader = headerFactory.createMaxForwardsHeader(70);
+        Request request = null;
+        ClientTransaction clientTransaction = null;
+        if (body == null) {
+            request = messageFactory.createRequest(requestURI, Request.NOTIFY, callIdHeader, cseqHeader, fromHeader, toHeader, viaList, maxForwardsHeader);
+        } else {
+            body = body + "\r\n";
+            // Content-Type:
+            ContentTypeHeader contentTypeHeader = headerFactory.createContentTypeHeader("application", "xpidf+xml");
+            request = messageFactory.createRequest(requestURI, "NOTIFY", callIdHeader, cseqHeader, fromHeader, toHeader, viaList, maxForwardsHeader, contentTypeHeader, body);
+        }
+        // WE have to add a new Header: "Subscription-State"
+        // Modified by Henrik Leion
+        DebugIM.println("DEBUG, IMNotifyProcessing, sendNotify(), We add the Subscription-State" + " header to the request");
+        String subscriptionState;
+        if (body == null)
+            subscriptionState = "terminated";
+        else
+            subscriptionState = "active";
+        Header header = headerFactory.createHeader("Subscription-State", subscriptionState);
+        request.setHeader(header);
+        // WE have to add a new Header: "Event"
+        header = headerFactory.createHeader("Event", "presence");
+        request.setHeader(header);
+        // ProxyAuthorization header if not null:
+        ProxyAuthorizationHeader proxyAuthHeader = imUA.getProxyAuthorizationHeader();
+        if (proxyAuthHeader != null)
+            request.setHeader(proxyAuthHeader);
+        clientTransaction = sipProvider.getNewClientTransaction(request);
+        dialog.sendRequest(clientTransaction);
+        DebugIM.println("DEBUG, IMNotifyProcessing, sendNotify()," + " NOTIFY sent:\n" + request);
+        // SubscriptionStateHeader=terminated) the dialog should be deleted
+        if (body == null) {
+            dialog.delete();
+        }
+    } catch (Exception ex) {
+        ex.printStackTrace();
+    }
+}

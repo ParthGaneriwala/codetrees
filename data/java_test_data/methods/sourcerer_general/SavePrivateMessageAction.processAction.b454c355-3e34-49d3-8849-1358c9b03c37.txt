@@ -1,0 +1,70 @@
+public GenericBean processAction(ActionRequest request, ActionResponse response) throws Exception {
+    // Determine the project container to use
+    Project project = findProject(request);
+    if (project == null) {
+        throw new Exception("Project is null");
+    }
+    // Check the user's permissions
+    User user = getUser(request);
+    if (!user.isLoggedIn()) {
+        throw new PortletException("User needs to be logged in");
+    }
+    // Determine the database connection to use
+    Connection db = useConnection(request);
+    // Track replies to previous messages
+    PrivateMessage inboxPrivateMessage = null;
+    // Populate all values from the request
+    PrivateMessage privateMessage = (PrivateMessage) PortalUtils.getFormBean(request, PrivateMessage.class);
+    if (privateMessage.getLinkModuleId() != Constants.PROJECT_MESSAGES_FILES) {
+        privateMessage.setProjectId(project.getId());
+        int linkProjectId = getLinkProjectId(db, privateMessage.getLinkItemId(), privateMessage.getLinkModuleId());
+        if (linkProjectId == -1) {
+            linkProjectId = project.getId();
+        }
+        privateMessage.setLinkProjectId(linkProjectId);
+    } else {
+        // reply to a message from the inbox, so the project id needs to be the profile of user who sent the message
+        inboxPrivateMessage = new PrivateMessage(db, privateMessage.getLinkItemId());
+        int profileProjectIdOfEnteredByUser = UserUtils.loadUser(inboxPrivateMessage.getEnteredBy()).getProfileProjectId();
+        privateMessage.setProjectId(profileProjectIdOfEnteredByUser);
+        privateMessage.setParentId(inboxPrivateMessage.getId());
+        // update the last reply date of the message
+        inboxPrivateMessage.setLastReplyDate(new Timestamp(System.currentTimeMillis()));
+    }
+    privateMessage.setEnteredBy(user.getId());
+    // Validate the form
+    if (!StringUtils.hasText(privateMessage.getBody())) {
+        privateMessage.getErrors().put("bodyError", "Message body is required");
+        return privateMessage;
+    }
+    // Check for captcha if this is a direct message (not a reply)
+    if ("true".equals(PortalUtils.getApplicationPrefs(request).get(ApplicationPrefs.USERS_CAN_REGISTER)) && privateMessage.getLinkModuleId() != Constants.PROJECT_MESSAGES_FILES && privateMessage.getProjectId() > -1) {
+        if (privateMessage.getProject().getProfile() && !TeamMemberList.isOnTeam(db, privateMessage.getProjectId(), user.getId())) {
+            LOG.debug("Verifying the captcha...");
+            String captcha = request.getParameter("captcha");
+            PortletSession session = request.getPortletSession();
+            Captcha captchaValue = (Captcha) session.getAttribute(Captcha.NAME);
+            session.removeAttribute(Captcha.NAME);
+            if (captchaValue == null || captcha == null || !captchaValue.isCorrect(captcha)) {
+                privateMessage.getErrors().put("captchaError", "Text did not match image");
+                return privateMessage;
+            }
+        }
+    } else {
+        LOG.debug("Captcha not required");
+    }
+    // Insert the private message
+    boolean inserted = privateMessage.insert(db);
+    if (inserted) {
+        // Update the message replied to
+        if (inboxPrivateMessage != null && inboxPrivateMessage.getId() != -1) {
+            inboxPrivateMessage.update(db);
+        }
+        // Send email notice
+        PortalUtils.processInsertHook(request, privateMessage);
+    }
+    // Close the panel, everything went well
+    String ctx = request.getContextPath();
+    response.sendRedirect(ctx + "/close_panel_refresh.jsp");
+    return null;
+}

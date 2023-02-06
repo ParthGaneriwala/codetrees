@@ -1,0 +1,74 @@
+public void buildList(Connection db) throws SQLException {
+    PreparedStatement pst = null;
+    ResultSet rs = null;
+    int items = -1;
+    StringBuffer sqlSelect = new StringBuffer();
+    StringBuffer sqlCount = new StringBuffer();
+    StringBuffer sqlFilter = new StringBuffer();
+    StringBuffer sqlOrder = new StringBuffer();
+    // Build a base SQL statement for counting records
+    sqlCount.append("SELECT COUNT(*) AS recordcount " + "FROM task t " + "WHERE t.task_id > -1 ");
+    createFilter(sqlFilter);
+    if (pagedListInfo != null) {
+        // Get the total number of records matching filter
+        pst = db.prepareStatement(sqlCount.toString() + sqlFilter.toString());
+        items = prepareFilter(pst);
+        rs = pst.executeQuery();
+        if (rs.next()) {
+            int maxRecords = rs.getInt("recordcount");
+            pagedListInfo.setMaxRecords(maxRecords);
+        }
+        rs.close();
+        pst.close();
+        // Determine the offset, based on the filter, for the first record to show
+        if (!pagedListInfo.getCurrentLetter().equals("")) {
+            pst = db.prepareStatement(sqlCount.toString() + sqlFilter.toString() + "AND t.priority > ? ");
+            items = prepareFilter(pst);
+            pst.setString(++items, pagedListInfo.getCurrentLetter().toLowerCase());
+            rs = pst.executeQuery();
+            if (rs.next()) {
+                int offsetCount = rs.getInt("recordcount");
+                pagedListInfo.setCurrentOffset(offsetCount);
+            }
+            rs.close();
+            pst.close();
+        }
+        // Determine column to sort by
+        pagedListInfo.setDefaultSort("t.priority,lower(description)", null);
+        pagedListInfo.appendSqlTail(db, sqlOrder);
+    } else {
+        sqlOrder.append("ORDER BY t.priority, lower(description) ");
+    }
+    // Build a base SQL statement for returning records
+    if (pagedListInfo != null) {
+        pagedListInfo.appendSqlSelectHead(db, sqlSelect);
+    } else {
+        sqlSelect.append("SELECT ");
+    }
+    sqlSelect.append("t.task_id, t.entered, t.enteredby, t.priority, t.description, " + "t.duedate, t.notes, t.sharing, t.complete, t.estimatedloe, " + "t.estimatedloetype, t.owner, t.completedate, t.modified, " + "t.modifiedby, t.category_id, rating_count, rating_value, rating_avg, " + "functional_area, status, business_value, complexity, target_release, target_sprint, loe_remaining, " + "assigned_priority, link_module_id, link_item_id " + "FROM task t " + "WHERE t.task_id > -1 ");
+    pst = db.prepareStatement(sqlSelect.toString() + sqlFilter.toString() + sqlOrder.toString());
+    items = prepareFilter(pst);
+    rs = pst.executeQuery();
+    if (pagedListInfo != null) {
+        pagedListInfo.doManualOffset(db, rs);
+    }
+    int count = 0;
+    while (rs.next()) {
+        if (pagedListInfo != null && pagedListInfo.getItemsPerPage() > 0 && DatabaseUtils.getType(db) == DatabaseUtils.MSSQL && count >= pagedListInfo.getItemsPerPage()) {
+            break;
+        }
+        ++count;
+        Task thisTask = new Task(rs);
+        this.add(thisTask);
+    }
+    rs.close();
+    pst.close();
+    Iterator i = this.iterator();
+    while (i.hasNext()) {
+        Task thisTask = (Task) i.next();
+        thisTask.buildResources(db);
+    /* if (thisTask.getType() != Task.GENERAL) {
+        thisTask.buildLinkDetails(db);
+      } */
+    }
+}

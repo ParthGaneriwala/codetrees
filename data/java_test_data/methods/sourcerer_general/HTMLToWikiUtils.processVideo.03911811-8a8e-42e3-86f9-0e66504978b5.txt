@@ -1,0 +1,103 @@
+public static void processVideo(StringBuffer sb, Node n, Element element, String appendToCRLF, String contextPath) {
+    // Determine if a thumbnail
+    boolean thumbnail = false;
+    if ("120".equals(element.getAttribute("width"))) {
+        thumbnail = true;
+    }
+    // Object (w/out embed)
+    if (element.hasAttribute("value")) {
+        // <object width="400" height="300" value="http://vimeo.com/moogaloop.swf?clip_id=11513988&amp;server=vimeo.com&amp;show_title=1&amp;show_byline=1&amp;show_portrait=0&amp;color=&amp;fullscreen=1">
+        String video = element.getAttribute("value");
+        if (video.contains("http://www.vimeo.com/") || video.contains("http://vimeo.com/")) {
+            video = video.substring(video.indexOf("/", video.indexOf("http://") + 7) + 1);
+            if (video.contains("#")) {
+                video = video.substring(0, video.indexOf("#"));
+            }
+            if (video.contains("&")) {
+                video = video.substring(0, video.indexOf("&"));
+            }
+            video = "http://www.vimeo.com/" + video.substring(video.indexOf("clip_id") + 8);
+        }
+        // Write out the markup
+        try {
+            URL url = new URL(video);
+            sb.append("[[Video:" + video + (thumbnail ? "|thumb" : "") + "]]");
+        } catch (Exception e) {
+            LOG.error("Could not create URL", e);
+        }
+    } else if (element.hasAttribute("data")) {
+        // <object width="425" height="344" type="application/x-shockwave-flash" data="http://www.youtube.com/v/CreiaYbjda4"></object>
+        String video = element.getAttribute("data");
+        // <object type="application/x-shockwave-flash" height="300" width="400" id="live_embed_player_flash" data="http://www.justin.tv/widgets/live_embed_player.swf?channel=redspades" bgcolor="#000000"><param name="allowFullScreen" value="true" /><param name="allowScriptAccess" value="always" /><param name="allowNetworking" value="all" /><param name="movie" value="http://www.justin.tv/widgets/live_embed_player.swf" /><param name="flashvars" value="channel=redspades&auto_play=false&start_volume=25" /></object><a href="http://www.justin.tv/redspades#r=TRp3S20~&s=em" class="trk" style="padding:2px 0px 4px; display:block; width:345px; font-weight:normal; font-size:10px; text-decoration:underline; text-align:center;">Watch live video from RedSpades Live! Show on Justin.tv</a>
+        if (video.contains("http://www.justin.tv/")) {
+            video = "http://www.justin.tv/" + video.substring(video.indexOf("channel=") + 8);
+            if (video.contains("#")) {
+                video = video.substring(0, video.indexOf("#"));
+            }
+        }
+        // Write out the markup
+        try {
+            URL url = new URL(video);
+            sb.append("[[Video:" + video + (thumbnail ? "|thumb" : "") + "]]");
+        } catch (Exception e) {
+            LOG.error("Could not create URL", e);
+        }
+    } else {
+        // Parse the object parameters
+        // <object width=\"425\" height=\"344\">\n
+        // <param name=\"movie\" value=\"" + video + "\"></param>\n" +
+        // <param name=\"wmode\" value=\"transparent\"></param>\n" +
+        // <embed src=\"" + video + "\" type=\"application/x-shockwave-flash\" wmode=\"transparent\" width=\"425\" height=\"350\"></embed>\n" +
+        // </object>
+        NodeList objectNodes = element.getChildNodes();
+        boolean foundQikVideo = false;
+        boolean handleException = false;
+        for (int i = 0; i < objectNodes.getLength(); i++) {
+            // For each object, parse the params
+            Node node = objectNodes.item(i);
+            if (node.getNodeType() == Node.ELEMENT_NODE && "param".equals(((Element) node).getTagName())) {
+                if ("movie".equals(((Element) node).getAttribute("name"))) {
+                    String video = ((Element) node).getAttribute("value");
+                    // Ustream
+                    if (video.contains("ustream.tv/")) {
+                        handleException = true;
+                        String ustreamLink = XMLUtils.toString(n);
+                        ustreamLink = StringUtils.replace(ustreamLink, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>", "");
+                        ustreamLink = StringUtils.replace(ustreamLink, "\r", "");
+                        ustreamLink = StringUtils.replace(ustreamLink, "\n", "");
+                        ustreamLink = StringUtils.replace(ustreamLink, "&#13;", "");
+                        sb.append("[[Video:" + ustreamLink + "]]");
+                    }
+                    // Qik.com
+                    if (video.contains("qik.com")) {
+                        foundQikVideo = true;
+                        handleException = true;
+                    }
+                    // Livestream.com
+                    if (video.indexOf("livestream.com") > -1) {
+                        // "<param name=\"movie\" value=\"http://cdn.livestream.com/grid/LSPlayer.swf?channel=" + channel + "&amp;autoPlay=true\"></param>" +
+                        String channel = video.substring(video.indexOf("channel=") + 8, video.indexOf("&"));
+                        video = "http://www.livestream.com/" + channel;
+                    }
+                    // otherwise assume Youtube/Google
+                    if (!handleException) {
+                        // Write out the markup
+                        try {
+                            URL url = new URL(video);
+                            sb.append("[[Video:" + video + (thumbnail ? "|thumb" : "") + "]]");
+                        } catch (Exception e) {
+                            LOG.error("Could not create URL", e);
+                        }
+                    }
+                } else if ("FlashVars".equals(((Element) node).getAttribute("name"))) {
+                    String value = ((Element) node).getAttribute("value");
+                    // Qik.com
+                    if (foundQikVideo && value.contains("username=")) {
+                        String username = value.substring(value.indexOf("username=") + 9);
+                        sb.append("[[Video:" + "http://qik.com/" + username + (thumbnail ? "|thumb" : "") + "]]");
+                    }
+                }
+            }
+        }
+    }
+}

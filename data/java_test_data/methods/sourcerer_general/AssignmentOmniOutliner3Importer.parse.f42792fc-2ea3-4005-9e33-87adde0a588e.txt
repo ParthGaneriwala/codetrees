@@ -1,0 +1,107 @@
+public static boolean parse(byte[] buffer, Requirement requirement, Connection db) throws SQLException {
+    if (System.getProperty("DEBUG") != null) {
+        System.out.println("AssignmentOmniOutliner3Importer-> parseOmniOutliner3");
+    }
+    try {
+        db.setAutoCommit(false);
+        // stream the XML Outline from the uploaded byte array, ignore the DTD
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        DocumentBuilder builder = factory.newDocumentBuilder();
+        builder.setEntityResolver(new EntityResolver() {
+
+            public InputSource resolveEntity(String publicId, String systemId) throws SAXException, java.io.IOException {
+                return new InputSource(new ByteArrayInputStream("<?xml version='1.0' encoding='utf-8' ?>".getBytes()));
+            }
+        });
+        Document document = null;
+        try {
+            // try to read as compressed format
+            document = builder.parse(new GZIPInputStream(new ByteArrayInputStream(buffer)));
+        } catch (Exception nrf) {
+            // try to read without compression
+            document = builder.parse(new ByteArrayInputStream(buffer));
+        }
+        if (document == null) {
+            throw new Exception("Invalid oo3 FILE FORMAT");
+        }
+        short itemPosition = -1;
+        short priorityPosition = -1;
+        short assignedToPosition = -1;
+        short effortPosition = -1;
+        short startPosition = -1;
+        short endPosition = -1;
+        short folderPosition = -1;
+        short percentPosition = -1;
+        // Parse the columns
+        ArrayList columnList = new ArrayList();
+        Element columnElement = XMLUtils.getFirstChild(document, "columns");
+        XMLUtils.getAllChildren(columnElement, columnList);
+        if (System.getProperty("DEBUG") != null) {
+            System.out.println("AssignmentOmniOutliner3Importer-> Columns: " + columnList.size());
+        }
+        Iterator columnIterator = columnList.iterator();
+        short position = -1;
+        boolean foundOutline = false;
+        while (columnIterator.hasNext()) {
+            Element columnNode = (Element) columnIterator.next();
+            if ("yes".equals(columnNode.getAttribute("is-note-column"))) {
+                continue;
+            }
+            ++position;
+            Element column1 = XMLUtils.getFirstChild(columnNode, "title");
+            Element column2 = XMLUtils.getFirstChild(column1, "text");
+            Element column3 = XMLUtils.getFirstChild(column2, "p");
+            Element column4 = XMLUtils.getFirstChild(column3, "run");
+            Element column = XMLUtils.getFirstChild(column4, "lit");
+            String columnName = XMLUtils.getNodeText(column);
+            if (System.getProperty("DEBUG") != null) {
+                System.out.println("AssignmentOmniOutliner3Importer-> Column name: " + columnName);
+            }
+            if ("yes".equals(columnNode.getAttribute("is-outline-column"))) {
+                foundOutline = true;
+            }
+            if ("topic".equalsIgnoreCase(columnName)) {
+                itemPosition = position;
+            } else if ("priority".equalsIgnoreCase(columnName)) {
+                priorityPosition = position;
+            } else if ("lead".equalsIgnoreCase(columnName)) {
+                assignedToPosition = position;
+            } else if ("assigned to".equalsIgnoreCase(columnName)) {
+                assignedToPosition = position;
+            } else if ("effort".equalsIgnoreCase(columnName)) {
+                effortPosition = position;
+            } else if ("start".equalsIgnoreCase(columnName)) {
+                startPosition = position;
+            } else if ("end".equalsIgnoreCase(columnName)) {
+                endPosition = position;
+            } else if ("folder?".equalsIgnoreCase(columnName)) {
+                folderPosition = position;
+            } else if ("percent".equalsIgnoreCase(columnName)) {
+                percentPosition = position;
+            }
+        }
+        // Process the outline
+        if (foundOutline) {
+            ArrayList itemList = new ArrayList();
+            Element rootElement = XMLUtils.getFirstChild(document, "root");
+            XMLUtils.getAllChildren(rootElement, "item", itemList);
+            if (System.getProperty("DEBUG") != null) {
+                System.out.println("AssignmentOmniOutliner3Importer-> Top-Level Outline Record Items: " + itemList.size());
+            }
+            // Go through the items, for each item see if it has children, with items, etc.
+            Iterator itemIterator = itemList.iterator();
+            while (itemIterator.hasNext()) {
+                Element itemElement = (Element) itemIterator.next();
+                parseItemElement3(itemElement, db, 0, requirement.getProjectId(), requirement.getId(), requirement.getEnteredBy(), requirement.getModifiedBy(), itemPosition, priorityPosition, assignedToPosition, effortPosition, startPosition, endPosition, folderPosition, percentPosition);
+            }
+        }
+        db.commit();
+    } catch (Exception e) {
+        db.rollback();
+        e.printStackTrace(System.out);
+        return false;
+    } finally {
+        db.setAutoCommit(true);
+    }
+    return true;
+}

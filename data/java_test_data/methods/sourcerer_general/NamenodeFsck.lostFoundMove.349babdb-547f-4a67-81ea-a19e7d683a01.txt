@@ -1,0 +1,61 @@
+private void lostFoundMove(FileStatus file, LocatedBlocks blocks) throws IOException {
+    DFSClient dfs = new DFSClient(conf);
+    if (!lfInited) {
+        lostFoundInit(dfs);
+    }
+    if (!lfInitedOk) {
+        return;
+    }
+    String target = lostFound + file.getPath();
+    String errmsg = "Failed to move " + file.getPath() + " to /lost+found";
+    try {
+        PermissionStatus ps = new PermissionStatus(file.getOwner(), file.getGroup(), file.getPermission());
+        if (!nn.namesystem.dir.mkdirs(target, ps, false, FSNamesystem.now())) {
+            LOG.warn(errmsg);
+            return;
+        }
+        // create chains
+        int chain = 0;
+        OutputStream fos = null;
+        for (LocatedBlock lBlk : blocks.getLocatedBlocks()) {
+            LocatedBlock lblock = lBlk;
+            DatanodeInfo[] locs = lblock.getLocations();
+            if (locs == null || locs.length == 0) {
+                if (fos != null) {
+                    fos.flush();
+                    fos.close();
+                    fos = null;
+                }
+                continue;
+            }
+            if (fos == null) {
+                fos = dfs.create(target + "/" + chain, true);
+                if (fos != null)
+                    chain++;
+                else {
+                    LOG.warn(errmsg + ": could not store chain " + chain);
+                    // return;
+                    continue;
+                }
+            }
+            // copy the block. It's a pity it's not abstracted from DFSInputStream ...
+            try {
+                copyBlock(dfs, lblock, fos);
+            } catch (Exception e) {
+                e.printStackTrace();
+                // something went wrong copying this block...
+                LOG.warn(" - could not copy block " + lblock.getBlock() + " to " + target);
+                fos.flush();
+                fos.close();
+                fos = null;
+            }
+        }
+        if (fos != null)
+            fos.close();
+        LOG.warn("\n - moved corrupted file " + file.getPath() + " to /lost+found");
+        dfs.delete(file.getPath().toString(), true);
+    } catch (Exception e) {
+        e.printStackTrace();
+        LOG.warn(errmsg + ": " + e.getMessage());
+    }
+}

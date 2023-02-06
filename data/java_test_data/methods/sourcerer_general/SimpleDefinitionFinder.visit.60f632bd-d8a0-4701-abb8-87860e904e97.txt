@@ -1,0 +1,73 @@
+@Override
+public void visit(NodeTraversal traversal, Node node, Node parent) {
+    // purposes only which are not reachable from anywhere.
+    if (inExterns && NodeUtil.isName(node) && parent.getType() == Token.LP) {
+        return;
+    }
+    Definition def = DefinitionsRemover.getDefinition(node, inExterns);
+    if (def != null) {
+        String name = getSimplifiedName(def.getLValue());
+        if (name != null) {
+            Node rValue = def.getRValue();
+            if ((rValue != null) && !NodeUtil.isImmutableValue(rValue) && !NodeUtil.isFunction(rValue)) {
+                // Unhandled complex expression
+                Definition unknownDef = new UnknownDefinition(def.getLValue(), inExterns);
+                def = unknownDef;
+            }
+            // illegal to have untyped stubs in the externs definitions.
+            if (inExterns) {
+                // We need special handling of untyped externs stubs here:
+                // the stub should be dropped if the name is provided elsewhere.
+                List<Definition> stubsToRemove = Lists.newArrayList();
+                String qualifiedName = node.getQualifiedName();
+                // literal key.
+                if (qualifiedName != null) {
+                    for (Definition prevDef : nameDefinitionMultimap.get(name)) {
+                        if (prevDef instanceof ExternalNameOnlyDefinition && !jsdocContainsDeclarations(node)) {
+                            String prevName = prevDef.getLValue().getQualifiedName();
+                            if (qualifiedName.equals(prevName)) {
+                                // Drop this stub, there is a real definition.
+                                stubsToRemove.add(prevDef);
+                            }
+                        }
+                    }
+                    for (Definition prevDef : stubsToRemove) {
+                        nameDefinitionMultimap.remove(name, prevDef);
+                    }
+                }
+            }
+            nameDefinitionMultimap.put(name, def);
+            definitionSiteMap.put(node, new DefinitionSite(node, def, traversal.getModule(), traversal.inGlobalScope(), inExterns));
+        }
+    }
+    if (inExterns && (parent != null) && NodeUtil.isExpressionNode(parent)) {
+        String name = getSimplifiedName(node);
+        if (name != null) {
+            // TODO(johnlenz) : remove this code if it becomes illegal to have
+            // stubs in the externs definitions.
+            // We need special handling of untyped externs stubs here:
+            // the stub should be dropped if the name is provided elsewhere.
+            // We can't just drop the stub now as it needs to be used as the
+            // externs definition if no other definition is provided.
+            boolean dropStub = false;
+            if (!jsdocContainsDeclarations(node)) {
+                String qualifiedName = node.getQualifiedName();
+                if (qualifiedName != null) {
+                    for (Definition prevDef : nameDefinitionMultimap.get(name)) {
+                        String prevName = prevDef.getLValue().getQualifiedName();
+                        if (qualifiedName.equals(prevName)) {
+                            dropStub = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!dropStub) {
+                // Incomplete definition
+                Definition definition = new ExternalNameOnlyDefinition(node);
+                nameDefinitionMultimap.put(name, definition);
+                definitionSiteMap.put(node, new DefinitionSite(node, definition, traversal.getModule(), traversal.inGlobalScope(), inExterns));
+            }
+        }
+    }
+}

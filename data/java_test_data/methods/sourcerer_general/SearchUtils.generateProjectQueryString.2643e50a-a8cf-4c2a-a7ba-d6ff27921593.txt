@@ -1,0 +1,66 @@
+public static String generateProjectQueryString(SearchBean search, int userId, int instanceId, String projectList) {
+    LOG.info("Search Query: " + search.getQuery() + " (" + search.getLocation() + ")");
+    // The search portal is being used
+    String locationTerm = search.getParsedLocation();
+    // but boost the zip code
+    if (StringUtils.hasText(locationTerm)) {
+        if (StringUtils.isNumber(locationTerm) && locationTerm.length() == 5) {
+            LocationBean location = LocationUtils.findLocationByZipCode(locationTerm);
+            if (location != null) {
+                locationTerm = "\"" + locationTerm + "\"^30 OR (\"" + location.getCity() + "\"^29 AND " + location.getState() + "^28)";
+            }
+        } else {
+            locationTerm = "\"" + locationTerm + "\"^30";
+        }
+    }
+    // Optimize the terms
+    StringBuffer titleValues = new StringBuffer();
+    StringBuffer keywordValues = new StringBuffer();
+    StringBuffer termValues = new StringBuffer();
+    // Find the phrase as-is in quotes for exactness, in the title
+    titleValues.append("\"").append(search.getParsedQuery()).append("\"^25");
+    // Find matches in the keywords
+    keywordValues.append("\"").append(search.getParsedQuery()).append("\"^24");
+    // Exact description match
+    termValues.append("\"").append(search.getParsedQuery()).append("\"^16");
+    // Find the words in the phrase
+    ArrayList<String> terms = search.getTerms();
+    int titleCount = 23;
+    int keywordCount = 19;
+    int count = 15;
+    for (String term : terms) {
+        if (titleValues.length() > 0) {
+            titleValues.append(" OR ");
+        }
+        if (keywordValues.length() > 0) {
+            keywordValues.append(" OR ");
+        }
+        if (termValues.length() > 0) {
+            termValues.append(" OR ");
+        }
+        if (count < 5) {
+            count = 5;
+        }
+        titleValues.append(term).append("^").append(titleCount);
+        --titleCount;
+        keywordValues.append(term).append("^").append(count);
+        --keywordCount;
+        termValues.append(term).append("^").append(count);
+        --count;
+    }
+    // Find wildcards for the words in the phrase
+    count = 4;
+    for (String term : terms) {
+        if (termValues.length() > 0) {
+            termValues.append(" OR ");
+        }
+        if (count < 1) {
+            count = 1;
+        }
+        termValues.append(term).append("*").append("^").append(count);
+        --count;
+    }
+    String thisQuery = "(approved:1) " + (instanceId > -1 ? "AND (instanceId:" + instanceId + ") " : "") + "AND (" + "(guests:1) " + (userId > 0 ? "OR (participants:1) " : "") + (StringUtils.hasText(projectList) ? "OR " + "(projectId:(" + projectList + ")) " : "") + ") " + "AND (closed:0) " + "AND (website:0) " + (search.getProjectId() > -1 ? "AND (projectId:" + search.getProjectId() + ") " : "") + (StringUtils.hasText(search.getQuery()) ? "AND (title:(" + titleValues.toString() + ") OR (keywords:(" + keywordValues.toString() + ")) OR (" + termValues.toString() + ")) " : "") + (StringUtils.hasText(locationTerm) ? "AND (location:(" + locationTerm + ")) " : "");
+    LOG.debug("Built Query: " + thisQuery);
+    return thisQuery;
+}

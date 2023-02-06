@@ -1,0 +1,168 @@
+public static int packbits(byte[] inb, byte[] outb) throws ArrayStoreException, ArrayIndexOutOfBoundsException {
+    // length of replicate run data in rub[]
+    int runbLen;
+    // index into replicate run buffer
+    int runI;
+    // length of current replicate run
+    int repLen;
+    // compressor state
+    int state;
+    // input buffer index
+    int i;
+    // output buffer index
+    int o;
+    // count of literals so far covered
+    int runcount;
+    if (runb == null || runb.length != inb.length)
+        runb = new byte[inb.length];
+    runbLen = getAllRuns(inb);
+    runcount = 0;
+    state = INITIAL;
+    i = 0;
+    o = 0;
+    for (runI = 0; runI < runbLen; ++runI) {
+        repLen = runb[runI] + 1;
+        // P.rt("repLen " + repLen + " input " + i);
+        switch(state) {
+            case INITIAL:
+                while (// encode replicates > 128
+                repLen > 128) {
+                    outb[o++] = (byte) (-(128 - 1));
+                    outb[o++] = inb[i];
+                    i += 128;
+                    repLen -= 128;
+                }
+                if (repLen == 1) {
+                    state = LITERAL;
+                    runcount = 1;
+                } else if (repLen == 2) {
+                    state = UNDECIDED;
+                    runcount = 2;
+                } else // repLen >= 3 and repLen < 128
+                {
+                    // state = INITIAL
+                    outb[o++] = (byte) (-(repLen - 1));
+                    outb[o++] = inb[i];
+                    // advance to byte after replicate in input
+                    i += repLen;
+                }
+                break;
+            case LITERAL:
+                if (repLen < 3) {
+                    // state = LITERAL
+                    runcount += repLen;
+                } else {
+                    state = INITIAL;
+                    // check for LITERAL runcount > 128, dice up as required
+                    while (runcount > 128) {
+                        // encode literal
+                        outb[o++] = (byte) (128 - 1);
+                        System.arraycopy(inb, i, outb, o, 128);
+                        i += 128;
+                        o += 128;
+                        runcount -= 128;
+                    }
+                    // encode literal
+                    outb[o++] = (byte) (runcount - 1);
+                    System.arraycopy(inb, i, outb, o, runcount);
+                    i += runcount;
+                    o += runcount;
+                    // check for repLen > 128, dice up into 128 chunks.
+                    while (// encode replicates > 128
+                    repLen > 128) {
+                        outb[o++] = (byte) (-(128 - 1));
+                        outb[o++] = inb[i];
+                        i += 128;
+                        repLen -= 128;
+                    }
+                    // damn if repLen == 1 or 2 then need to handle as in INITIAL
+                    if (repLen == 1) {
+                        state = LITERAL;
+                        runcount = 1;
+                    } else if (repLen == 2) {
+                        state = UNDECIDED;
+                        runcount = 2;
+                    } else // repLen >= 3 and repLen < 128
+                    {
+                        // encode replicate
+                        outb[o++] = (byte) (-(repLen - 1));
+                        outb[o++] = inb[i];
+                        i += repLen;
+                    }
+                }
+                break;
+            case UNDECIDED:
+                if (repLen == 1) {
+                    state = LITERAL;
+                    ++runcount;
+                } else if (repLen == 2) {
+                    // state = UNDECIDED;
+                    runcount += 2;
+                } else // repLen > 2
+                {
+                    state = INITIAL;
+                    // runs then output the > 2 length replicate run.
+                    for (; runcount > 0; runcount -= 2) {
+                        outb[o++] = (byte) (-(2 - 1));
+                        outb[o++] = inb[i];
+                        // skip over replicate run just output
+                        i += 2;
+                    }
+                    // check for repLen > 128, dice up into 128 chunks.
+                    while (// encode replicates > 128
+                    repLen > 128) {
+                        outb[o++] = (byte) (-(128 - 1));
+                        outb[o++] = inb[i];
+                        i += 128;
+                        repLen -= 128;
+                    }
+                    // damn if repLen == 1 or 2 then need to handle as in INITIAL
+                    if (repLen == 1) {
+                        state = LITERAL;
+                        runcount = 1;
+                    } else if (repLen == 2) {
+                        state = UNDECIDED;
+                        runcount = 2;
+                    } else // repLen >= 3 and repLen < 128
+                    {
+                        // now output the > 2 length replicate run
+                        outb[o++] = (byte) (-(repLen - 1));
+                        outb[o++] = inb[i];
+                        // skip over replicate run just output
+                        i += repLen;
+                    }
+                }
+                break;
+        }
+    }
+    // finalise states
+    switch(state) {
+        case LITERAL:
+            while (runcount > 128) {
+                // encode literal
+                outb[o++] = (byte) (128 - 1);
+                System.arraycopy(inb, i, outb, o, 128);
+                i += 128;
+                o += 128;
+                runcount -= 128;
+            }
+            if (runcount > 0) {
+                // encode literal
+                outb[o++] = (byte) (runcount - 1);
+                System.arraycopy(inb, i, outb, o, runcount);
+                i += runcount;
+                o += runcount;
+            }
+            break;
+        case UNDECIDED:
+            // to finish.
+            for (; runcount > 0; runcount -= 2) {
+                outb[o++] = (byte) (-(2 - 1));
+                outb[o++] = inb[i];
+                // skip over replicate run just output
+                i += 2;
+            }
+            break;
+    }
+    return o;
+}

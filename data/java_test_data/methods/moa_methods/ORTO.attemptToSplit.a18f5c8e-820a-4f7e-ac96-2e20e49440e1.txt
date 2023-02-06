@@ -1,0 +1,100 @@
+// endregion --- Object instantiation methods
+// region --- Processing methods
+protected void attemptToSplit(LeafNode node, Node parent, int parentIndex) {
+    // Initialize the split criterion
+    SplitCriterion splitCriterion = (SplitCriterion) getPreparedClassOption(splitCriterionOption);
+    // Using this criterion, find the best split per attribute and rank the results
+    AttributeSplitSuggestion[] bestSplitSuggestions = node.getBestSplitSuggestions(splitCriterion);
+    List<AttributeSplitSuggestion> acceptedSplits = new LinkedList<AttributeSplitSuggestion>();
+    Arrays.sort(bestSplitSuggestions);
+    // Declare a variable to determine the number of splits to be performed
+    int numSplits = 0;
+    // If only one split was returned, use it (this generally shouldn't happen)
+    if (bestSplitSuggestions.length == 1) {
+        numSplits = 1;
+        acceptedSplits.add(bestSplitSuggestions[0]);
+    } else if (bestSplitSuggestions.length > 1) {
+        // Otherwise, consider which of the splits proposed may be worth trying
+        // Determine the Hoeffding bound value, used to select how many instances should be used to make a test decision
+        // to feel reasonably confident that the test chosen by this sample is the same as what would be chosen using infinite examples
+        double hoeffdingBound = computeHoeffdingBound(1, splitConfidenceOption.getValue(), node.examplesSeen);
+        // Determine the top two ranked splitting suggestions
+        AttributeSplitSuggestion bestSuggestion = bestSplitSuggestions[bestSplitSuggestions.length - 1];
+        AttributeSplitSuggestion secondBestSuggestion = bestSplitSuggestions[bestSplitSuggestions.length - 2];
+        // competing attributes are equally good, and the split will be made on the one with the higher SDR value.
+        if (secondBestSuggestion.merit / bestSuggestion.merit < 1 - hoeffdingBound) {
+            numSplits = 1;
+            acceptedSplits.add(bestSuggestion);
+        } else if (numTrees < maxTreesOption.getValue() && node.getLevel() <= maxOptionLevelOption.getValue()) {
+            for (AttributeSplitSuggestion suggestion : bestSplitSuggestions) {
+                if (suggestion.merit / bestSuggestion.merit >= 1 - hoeffdingBound) {
+                    numSplits++;
+                    acceptedSplits.add(suggestion);
+                }
+            }
+        } else if (hoeffdingBound < tieThresholdOption.getValue()) {
+            numSplits = 1;
+            acceptedSplits.add(bestSplitSuggestions[0]);
+        } else {
+            // If the splitting criterion was not met, initiate pruning of the E-BST structures in each attribute observer
+            for (int i = 0; i < node.attributeObservers.size(); i++) {
+                AttributeClassObserver obs = node.attributeObservers.get(i);
+                if (obs != null) {
+                    ((FIMTDDNumericAttributeClassObserver) obs).removeBadSplits(splitCriterion, secondBestSuggestion.merit / bestSuggestion.merit, bestSuggestion.merit, hoeffdingBound);
+                }
+            }
+        }
+    }
+    // make two new branches leading to (empty) leaves
+    if (numSplits > 0) {
+        double optionFactor = numSplits * Math.pow(optionDecayFactorOption.getValue(), (double) node.getLevel());
+        if (numSplits == 1 || optionFactor < 2.0 || maxTreesOption.getValue() - numTrees <= 1) {
+            AttributeSplitSuggestion splitDecision = acceptedSplits.get(0);
+            SplitNode newSplit = newSplitNode(splitDecision.splitTest);
+            for (int i = 0; i < splitDecision.numSplits(); i++) {
+                LeafNode newChild = newLeafNode();
+                newChild.setParent(newSplit);
+                newSplit.setChild(i, newChild);
+            }
+            leafNodeCount--;
+            innerNodeCount++;
+            leafNodeCount += splitDecision.numSplits();
+            if (parent == null) {
+                treeRoot = newSplit;
+            } else {
+                parent.setChild(parent.getChildIndex(node), newSplit);
+                newSplit.setParent(parent);
+            }
+        } else {
+            OptionNode optionNode = newOptionNode();
+            leafNodeCount--;
+            int j = 0;
+            for (AttributeSplitSuggestion splitDecision : acceptedSplits) {
+                if (j > optionFactor || maxTreesOption.getValue() - numTrees <= 0) {
+                    break;
+                }
+                SplitNode newSplit = newSplitNode(splitDecision.splitTest);
+                for (int i = 0; i < splitDecision.numSplits(); i++) {
+                    LeafNode newChild = newLeafNode();
+                    newChild.setParent(newSplit);
+                    newSplit.setChild(i, newChild);
+                }
+                leafNodeCount += splitDecision.numSplits();
+                innerNodeCount++;
+                numTrees++;
+                newSplit.setParent(optionNode);
+                optionNode.setChild(j, newSplit);
+                j++;
+            }
+            innerNodeCount++;
+            optionNodeCount++;
+            if (parent == null) {
+                treeRoot = optionNode;
+            } else {
+                parent.setChild(parent.getChildIndex(node), optionNode);
+                optionNode.setParent(parent);
+            }
+            optionNode.resetFF();
+        }
+    }
+}

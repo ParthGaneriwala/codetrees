@@ -1,0 +1,57 @@
+boolean loadFSImage() throws IOException {
+    // Now check all curFiles and see which is the newest
+    long latestNameCheckpointTime = Long.MIN_VALUE;
+    long latestEditsCheckpointTime = Long.MIN_VALUE;
+    StorageDirectory latestNameSD = null;
+    StorageDirectory latestEditsSD = null;
+    boolean needToSave = false;
+    isUpgradeFinalized = true;
+    for (Iterator<StorageDirectory> it = dirIterator(); it.hasNext(); ) {
+        StorageDirectory sd = it.next();
+        if (!sd.getVersionFile().exists()) {
+            needToSave |= true;
+            // some of them might have just been formatted
+            continue;
+        }
+        if (sd.getStorageDirType().isOfType(NameNodeDirType.IMAGE))
+            assert getImageFile(sd, NameNodeFile.IMAGE).exists() : "Image file must exist.";
+        if (sd.getStorageDirType().isOfType(NameNodeDirType.EDITS))
+            assert getImageFile(sd, NameNodeFile.EDITS).exists() : "Edits file must exist.";
+        checkpointTime = readCheckpointTime(sd);
+        if ((checkpointTime != Long.MIN_VALUE) && ((checkpointTime != latestNameCheckpointTime) || (checkpointTime != latestEditsCheckpointTime))) {
+            // Force saving of new image if checkpoint time
+            // is not same in all of the storage directories.
+            needToSave |= true;
+        }
+        if (sd.getStorageDirType().isOfType(NameNodeDirType.IMAGE) && (latestNameCheckpointTime < checkpointTime)) {
+            latestNameCheckpointTime = checkpointTime;
+            latestNameSD = sd;
+        }
+        if (sd.getStorageDirType().isOfType(NameNodeDirType.EDITS) && (latestEditsCheckpointTime < checkpointTime)) {
+            latestEditsCheckpointTime = checkpointTime;
+            latestEditsSD = sd;
+        }
+        if (checkpointTime <= 0L)
+            needToSave |= true;
+        // set finalized flag
+        isUpgradeFinalized = isUpgradeFinalized && !sd.getPreviousDir().exists();
+    }
+    assert latestNameSD != null : "Latest image storage directory was " + "not determined.";
+    assert latestEditsSD != null : "Latest edits storage directory was " + "not determined.";
+    // Make sure we are loading image and edits from same checkpoint
+    if (latestNameCheckpointTime != latestEditsCheckpointTime)
+        throw new IOException("Inconsitent storage detected, " + "name and edits storage do not match");
+    // Recover from previous interrrupted checkpoint if any
+    needToSave |= recoverInterruptedCheckpoint(latestNameSD, latestEditsSD);
+    long startTime = FSNamesystem.now();
+    long imageSize = getImageFile(latestNameSD, NameNodeFile.IMAGE).length();
+    // 
+    // Load in bits
+    // 
+    latestNameSD.read();
+    needToSave |= loadFSImage(getImageFile(latestNameSD, NameNodeFile.IMAGE));
+    LOG.info("Image file of size " + imageSize + " loaded in " + (FSNamesystem.now() - startTime) / 1000 + " seconds.");
+    // Load latest edits
+    needToSave |= (loadFSEdits(latestEditsSD) > 0);
+    return needToSave;
+}

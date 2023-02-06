@@ -1,0 +1,97 @@
+@SuppressWarnings("unchecked")
+public static void computeMetrics() {
+    System.out.println("Beginning of computeMetrics");
+    // Session session = HibernateUtil.getSession();
+    EntityManager gem = HibernateUtil.getEntityManager();
+    List stocks = CommodityHelper.getAllStocksNeedingIndicators(gem);
+    List<DailyQuoteHistory> history;
+    Commodity commodity;
+    Commodity newCommodity;
+    // Iterator iter = stocks.iterator();
+    EntityManager em;
+    while (stocks.size() > 0) {
+        long start = System.currentTimeMillis();
+        em = HibernateUtil.getEntityManager();
+        EntityTransaction tx = em.getTransaction();
+        commodity = (Commodity) stocks.get(0);
+        newCommodity = em.find(Commodity.class, commodity.getCommodityId());
+        stocks.remove(0);
+        // TODO: Need to make this more clear.  Does it take last load date into account?
+        Date lastIndicatorUpdate = newCommodity.getLastIndicatorUpdate();
+        if (lastIndicatorUpdate == null) {
+            Calendar cal = Calendar.getInstance();
+            cal.set(2000, 1, 1);
+            lastIndicatorUpdate = cal.getTime();
+        } else {
+            lastIndicatorUpdate = DateUtils.getPastDate(new Long(250), lastIndicatorUpdate);
+        }
+        // Get history for the past 400 days to get all of the needed averages.
+        String sql = "from DailyQuoteHistory hist where hist.commodity.commodityId = :commodityId and hist.date > :oldestDate and" + " hist.commodity.disabled = 'N' order by hist.date";
+        history = em.createQuery(sql).setParameter("commodityId", newCommodity.getCommodityId()).setParameter("oldestDate", lastIndicatorUpdate).getResultList();
+        // history = session.createSQLQuery(sql)
+        // .addEntity("hist",DailyQuoteHistory.class)
+        // .setLong("commodityId",newCommodity.getCommodityId())
+        // .setDate("oldestDate", lastIndicatorUpdate).list();
+        System.out.println("Calculating: " + newCommodity.getSymbol());
+        // MemoryUsage mu = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
+        // System.out.println(mu.getUsed() + ":" + mu.getMax());
+        updateMovingAverage(200, history);
+        updateMovingAverage(100, history);
+        updateMovingAverage(50, history);
+        updateMovingAverage(26, history);
+        updateMovingAverage(21, history);
+        updateMovingAverage(20, history);
+        updateMovingAverage(12, history);
+        updateMovingAverage(10, history);
+        updateMovingAverage(9, history);
+        updateMovingAverage(6, history);
+        updateMovingAverage(5, history);
+        expMovingAverages(6, history);
+        expMovingAverages(12, history);
+        expMovingAverages(26, history);
+        rSI(7, history);
+        rSI(14, history);
+        rSI(21, history);
+        rateOfChange(10, history);
+        rateOfChange(20, history);
+        rateOfChange(30, history);
+        bollingerBands(10, history);
+        bollingerBands(20, history);
+        DailyQuoteHistory quote;
+        DailyQuoteHistory nextQuote;
+        for (int i = 0; i < (history.size() - 1); i++) {
+            quote = history.get(i);
+            nextQuote = history.get(i + 1);
+            PivotPoint pp = getPivotPoint(quote.getHigh().doubleValue(), quote.getLow().doubleValue(), quote.getClose().doubleValue());
+            nextQuote.setPivotPoint(pp.getPivotPoint());
+            nextQuote.setResistanceOne(pp.getResistanceLevel1());
+            nextQuote.setResistanceTwo(pp.getResistanceLevel2());
+            nextQuote.setResistanceThree(pp.getResistanceLevel3());
+            nextQuote.setSupportOne(pp.getSupportLevel1());
+            nextQuote.setSupportTwo(pp.getSupportLevel2());
+            nextQuote.setSupportThree(pp.getSupportLevel3());
+            // em.persist(nextQuote);
+            // session.save(nextQuote);
+            pp = null;
+            quote = null;
+            nextQuote = null;
+        }
+        tx.begin();
+        for (int i = 0; i < (history.size() - 1); i++) {
+            quote = history.get(i);
+            em.persist(quote);
+        }
+        // updateMACD(history,session);
+        // TODO: Figure out what is causing the null pointer error in MACD.
+        newCommodity.setLastIndicatorUpdate(new Date());
+        em.persist(newCommodity);
+        em.flush();
+        tx.commit();
+        em.clear();
+        long end = System.currentTimeMillis();
+        System.out.println("Time Taken: " + (end - start));
+    // session.save(commodity);
+    // session.getTransaction().commit();
+    }
+    stocks = null;
+}

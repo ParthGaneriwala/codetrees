@@ -1,0 +1,115 @@
+public boolean process(TransactionItem transactionItem, Connection db) throws Exception {
+    try {
+        // Request parameters and objects
+        Object object = transactionItem.getObject();
+        ApplicationPrefs prefs = transactionItem.getPacketContext().getApplicationPrefs();
+        ActionContext actionContext = transactionItem.getPacketContext().getActionContext();
+        Key key = (Key) actionContext.getServletContext().getAttribute("TEAM.KEY");
+        // Prepare the response, a list of contactEmailAddress with a status will be returned
+        transactionItem.getRecordList().setName("contactEmailAddress");
+        // Process the incoming projectMessage object
+        if (object != null && object instanceof ProjectMessage) {
+            // Extract the ProjectMessage Bean and save it..
+            ProjectMessage projectMessage = (ProjectMessage) transactionItem.getObject();
+            // Retrieve the specified profile
+            Project project = ProjectUtils.loadProject(projectMessage.getProfileUniqueId());
+            projectMessage.setProjectId(project.getId());
+            projectMessage.setEnteredBy(project.getOwner());
+            projectMessage.insert(db);
+            // Insert ProjectMessageRecipient records
+            ContactList contacts = projectMessage.getContacts();
+            for (Contact contact : contacts) {
+                int contactId = ContactList.getIdByEmailAddress(db, contact.getEmail1());
+                if (contactId == -1) {
+                    // contact not found. save the contact record as owned by the project's owner
+                    contact.setOwner(project.getOwner());
+                    contact.setEnteredBy(project.getOwner());
+                    contact.setModifiedBy(project.getOwner());
+                    contact.insert(db);
+                } else {
+                    contact = new Contact(db, contactId);
+                    if (contact.getOwner() != project.getOwner()) {
+                        // The contact is not owned by the project owner. Add the contact to a contact share pool
+                        contact.addToShare(db, contact.getOwner(), project.getOwner(), true);
+                    }
+                }
+                ProjectMessageRecipient recipient = new ProjectMessageRecipient();
+                recipient.setMessageId(projectMessage.getId());
+                recipient.setContactId(contact.getId());
+                recipient.setStatusId(ProjectMessageRecipient.STATUS_INVITING);
+                recipient.setStatus(ProjectMessageRecipient.INVITING);
+                recipient.setEnteredBy(project.getOwner());
+                recipient.insert(db);
+                String data = URLEncoder.encode(PrivateString.encrypt(key, "id=" + recipient.getId() + ",pid=" + project.getId()), "UTF-8");
+                /*
+          ${invite.name}
+          ${project.name}
+          ${project.description}
+          ${project.ownerName}
+          ${project.profileLink}
+          ${project.unsubscribeLink}
+          ${project.customText}
+          ${link.info}
+           */
+                Template inviteBody = new Template(projectMessage.getBody());
+                inviteBody.addParseElement("${invite.name}", ContactUtils.getNameFirstLast(contact.getFirstName(), contact.getLastName()));
+                inviteBody.addParseElement("${project.name}", project.getTitle());
+                inviteBody.addParseElement("${project.description}", project.getShortDescription());
+                inviteBody.addParseElement("${project.ownerName}", ((User) CacheUtils.getObjectValue(Constants.SYSTEM_USER_CACHE, project.getOwner())).getNameFirstLastInitial());
+                inviteBody.addParseElement("${project.profileLink}", RequestUtils.getServerUrl(actionContext.getRequest()) + "/show/" + project.getUniqueId());
+                // TODO: Define the following link..
+                // inviteBody.addParseElement("${project.unsubscribeLink}", YYY);
+                inviteBody.addParseElement("\r\n", "");
+                inviteBody.addParseElement("\r", "");
+                inviteBody.addParseElement("\n", "");
+                // inviteBody.addParseElement("${link.info}", RequestUtils.getServerUrl(applicationPrefs, actionContext.getRequest()));
+                // inviteBody.addParseElement("${link.accept}", RequestUtils.getServerUrl(applicationPrefs, actionContext.getRequest()) + "/LoginAccept.do?data=" + data);
+                // inviteBody.addParseElement("${link.reject}", RequestUtils.getServerUrl(applicationPrefs, actionContext.getRequest()) + "/LoginReject.do?data=" + data);
+                // Prepare the invitation
+                SMTPMessage message = SMTPMessageFactory.createSMTPMessageInstance(prefs.getPrefs());
+                message.setFrom(prefs.get("EMAILADDRESS"));
+                // message.addReplyTo(applicationPrefs.get()contact.getEmail(), getUser(context).getNameFirstLast());
+                message.setTo(contact.getEmail1());
+                message.setSubject(projectMessage.getSubject());
+                // Populate the message template
+                Configuration configuration = ApplicationPrefs.getFreemarkerConfiguration(actionContext.getServletContext());
+                freemarker.template.Template template = configuration.getTemplate("project_profile_invites_email-html.ftl");
+                Map bodyMappings = new HashMap();
+                bodyMappings.put("body", inviteBody.getParsedText());
+                // Parse and send
+                StringWriter inviteBodyTextWriter = new StringWriter();
+                template.process(bodyMappings, inviteBodyTextWriter);
+                message.setBody(inviteBodyTextWriter.toString());
+                message.setType("text/html");
+                // Send the invitations
+                int result = message.send();
+                if (result == 0) {
+                    // Record that message was delivered
+                    recipient.setStatusId(ProjectMessageRecipient.STATUS_PENDING);
+                    recipient.setStatus(ProjectMessageRecipient.PENDING);
+                    // Flag that the recipient received the message
+                    Record record = new Record("processed");
+                    record.put("email", contact.getEmail1());
+                    record.put("type", 1);
+                    transactionItem.getRecordList().add(record);
+                } else {
+                    // Record that message was not delivered
+                    recipient.setStatusId(ProjectMessageRecipient.STATUS_MAILERROR);
+                    recipient.setStatus(ProjectMessageRecipient.MAILERROR);
+                    // Flag that the recipient DID NOT receive the message
+                    Record record = new Record("processed");
+                    record.put("email", contact.getEmail1());
+                    record.put("type", -1);
+                    transactionItem.getRecordList().add(record);
+                    LOG.warn("MAIL ERROR: " + message.getErrorMsg());
+                }
+                recipient.update(db);
+            }
+            return true;
+        }
+    } catch (Exception e) {
+        LOG.error("process error", e);
+        throw new Exception(e.getMessage());
+    }
+    return false;
+}

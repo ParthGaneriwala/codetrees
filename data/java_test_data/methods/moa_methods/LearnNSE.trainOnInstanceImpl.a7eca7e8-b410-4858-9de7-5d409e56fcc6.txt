@@ -1,0 +1,126 @@
+@Override
+public void trainOnInstanceImpl(Instance inst) {
+    this.index++;
+    // Store instance in the buffer
+    if (this.buffer == null) {
+        this.buffer = new Instances(inst.dataset());
+    }
+    this.buffer.add(inst);
+    if (this.index % this.periodOption.getValue() == 0) {
+        this.index = 0;
+        double mt = this.buffer.numInstances();
+        Classifier classifier = ((Classifier) getPreparedClassOption(this.baseLearnerOption));
+        classifier.resetLearning();
+        if (this.ensemble.size() > 0) {
+            double et = 0;
+            // Reading all data chunk instances
+            for (int i = 0; i < mt; i++) {
+                // Compute error of the existing ensemble on new data
+                boolean vote = this.correctlyClassifies(this.buffer.instance(i));
+                if (!vote) {
+                    et += 1.0 / mt;
+                }
+            }
+            // Normalizing error
+            double weightSum = 0.0;
+            // Reading all data chunk instances
+            for (int i = 0; i < mt; i++) {
+                Instance instance = this.buffer.instance(i);
+                // Updating instance weights
+                boolean vote = this.correctlyClassifies(instance);
+                double error = (1.0 / mt) * (vote ? et : 1.0);
+                instance.setWeight(error);
+                weightSum += error;
+            }
+            // Reading all data chunk instances
+            for (int i = 0; i < mt; i++) {
+                Instance instance = this.buffer.instance(i);
+                // Normalize weights
+                instance.setWeight(instance.weight() / weightSum);
+                // Call base classifier
+                Instance trainingInstance = (Instance) instance.copy();
+                trainingInstance.setWeight(1);
+                classifier.trainOnInstance(trainingInstance);
+            }
+        } else {
+            // First run! Iterating through all instances in the data chunk
+            for (int i = 0; i < mt; i++) {
+                Instance instance = this.buffer.instance(i);
+                // Initialize weights
+                instance.setWeight(1.0 / mt);
+                // Call base classifier
+                Instance trainingInstance = (Instance) instance.copy();
+                trainingInstance.setWeight(1);
+                classifier.trainOnInstance(trainingInstance);
+            }
+        }
+        this.ensemble.add(classifier);
+        this.bkts.add(new ArrayList());
+        this.wkts.add(new ArrayList());
+        this.ensembleWeights.clear();
+        int t = this.ensemble.size();
+        double maxError = Double.NEGATIVE_INFINITY;
+        int errorIndex = Integer.MIN_VALUE;
+        // Evaluate all existing classifiers on new data set
+        for (int k = 1; k <= t; k++) {
+            double ekt = 0;
+            // Reading all data chunk instances
+            for (int i = 0; i < mt; i++) {
+                Instance instance = this.buffer.instance(i);
+                if (!this.ensemble.get(k - 1).correctlyClassifies(instance)) {
+                    // Ensemble incorrectly classifies this instance
+                    ekt += instance.weight();
+                }
+            }
+            if (k == t && ekt > 0.5) {
+                // Generate a new classifier
+                Classifier c = (Classifier) getPreparedClassOption(this.baseLearnerOption);
+                c.resetLearning();
+                this.ensemble.set(k - 1, c);
+            } else if (ekt > 0.5) {
+                // Remove voting power of this classifier
+                ekt = 0.5;
+            }
+            // of error-based pruning
+            if (ekt > maxError) {
+                maxError = ekt;
+                errorIndex = k;
+            }
+            // Normalizing errors
+            double bkt = ekt / (1.0 - ekt);
+            // Retrieving normalized errors for this classifier
+            ArrayList<Double> nbkt = this.bkts.get(k - 1);
+            nbkt.add(bkt);
+            // Compute the weighted average of all normalized errors for kth
+            // classifier h_k
+            double wkt = 1.0 / (1.0 + Math.exp(-this.slope * (t - k - this.crossingPoint)));
+            List<Double> weights = this.wkts.get(k - 1);
+            double sum = 0;
+            for (Double weight : weights) {
+                sum += weight;
+            }
+            weights.add(wkt / (sum + wkt));
+            double sbkt = 0.0;
+            for (int j = 0; j < weights.size(); j++) {
+                sbkt += weights.get(j) * nbkt.get(j);
+            }
+            // Calculate classifier voting weights
+            this.ensembleWeights.add(Math.log(1.0 / sbkt));
+        }
+        // Ensemble pruning strategy
+        if (pruning == 1 && t > ensembleSize) {
+            // Age-based
+            this.ensemble.remove(0);
+            this.ensembleWeights.remove(0);
+            this.bkts.remove(0);
+            this.wkts.remove(0);
+        } else if (pruning == 2 && t > ensembleSize) {
+            // Error-based
+            this.ensemble.remove(errorIndex - 1);
+            this.ensembleWeights.remove(errorIndex - 1);
+            this.bkts.remove(errorIndex - 1);
+            this.wkts.remove(errorIndex - 1);
+        }
+        this.buffer = new Instances(this.getModelContext());
+    }
+}

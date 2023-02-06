@@ -1,0 +1,73 @@
+protected synchronized void processStreaming(Data data) throws WekaException {
+    if (isStopRequested()) {
+        return;
+    }
+    if (getStepManager().isStreamFinished(data)) {
+        if (data.getSourceStep().getStepManager() == m_firstInput) {
+            m_firstFinished = true;
+            getStepManager().logBasic("Finished receiving from " + m_firstInput.getName());
+        } else if (data.getSourceStep().getStepManager() == m_secondInput) {
+            m_secondFinished = true;
+            getStepManager().logBasic("Finished receiving from " + m_secondInput.getName());
+        }
+        if (m_firstFinished && m_secondFinished) {
+            clearBuffers();
+            m_streamingData.clearPayload();
+            getStepManager().throughputFinished(m_streamingData);
+        }
+        return;
+    }
+    Instance inst = data.getPrimaryPayload();
+    StepManager source = data.getSourceStep().getStepManager();
+    if (m_headerOne == null || m_headerTwo == null) {
+        if (m_headerOne == null && source == m_firstInput) {
+            m_headerOne = new Instances(inst.dataset(), 0);
+            getStepManager().logBasic("Initializing buffer for " + m_firstInput.getName());
+            m_stringAttIndexesOne = new HashMap<String, Integer>();
+            for (int i = 0; i < m_headerOne.numAttributes(); i++) {
+                if (m_headerOne.attribute(i).isString()) {
+                    m_stringAttIndexesOne.put(m_headerOne.attribute(i).name(), i);
+                }
+            }
+        }
+        if (m_headerTwo == null && source == m_secondInput) {
+            m_headerTwo = new Instances(inst.dataset(), 0);
+            getStepManager().logBasic("Initializing buffer for " + m_secondInput.getName());
+            m_stringAttIndexesTwo = new HashMap<String, Integer>();
+            for (int i = 0; i < m_headerTwo.numAttributes(); i++) {
+                if (m_headerTwo.attribute(i).isString()) {
+                    m_stringAttIndexesTwo.put(m_headerTwo.attribute(i).name(), i);
+                }
+            }
+        }
+        if (m_mergedHeader == null) {
+            // can we determine the header?
+            if (m_headerOne != null && m_headerTwo != null && m_keySpec != null && m_keySpec.length() > 0) {
+                // construct merged header & check validity of indexes
+                generateMergedHeader();
+            }
+        }
+    }
+    if (source == m_firstInput) {
+        addToFirstBuffer(inst);
+    } else {
+        addToSecondBuffer(inst);
+    }
+    if (source == m_firstInput && m_secondBuffer.size() <= 100 && m_secondIsWaiting) {
+        m_secondIsWaiting = false;
+        notifyAll();
+    } else if (source == m_secondInput && m_secondBuffer.size() <= 100 && m_firstIsWaiting) {
+        m_firstIsWaiting = false;
+        notifyAll();
+    }
+    if (isStopRequested()) {
+        return;
+    }
+    Instance outputI = processBuffers();
+    if (outputI != null) {
+        getStepManager().throughputUpdateStart();
+        m_streamingData.setPayloadElement(StepManager.CON_INSTANCE, outputI);
+        getStepManager().outputData(m_streamingData);
+        getStepManager().throughputUpdateEnd();
+    }
+}

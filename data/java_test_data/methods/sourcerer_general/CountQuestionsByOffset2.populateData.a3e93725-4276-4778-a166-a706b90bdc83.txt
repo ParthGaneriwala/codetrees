@@ -1,0 +1,74 @@
+private int populateData(final TrainingDataNodeReader[] readers, final TrainingDataNodeWriter[] writers) throws IOException {
+    int nrNodes = 0;
+    JobManager manager = JobManager.getInstance();
+    JobGroup group = manager.createJobGroup("full data split");
+    while (true) {
+        final ReadableTrainingDataNode[] dataNodes = new ReadableTrainingDataNode[readers.length];
+        for (byte dataId = 0; dataId < readers.length; ++dataId) {
+            dataNodes[dataId] = readers[dataId].getNext();
+        }
+        if (dataNodes[0] == null)
+            return nrNodes;
+        int nodeId = dataNodes[0].getNodeId();
+        for (byte dataId = 1; dataId < readers.length; ++dataId) {
+            assert (dataNodes[dataId].getNodeId() == nodeId);
+        }
+        final BinaryTree<HistoryTreePayload> oldLeaf = nodes[nodeId];
+        long totalNodeCount = 0;
+        if (oldLeaf.isLeaf()) {
+            for (byte dataId = 0; dataId < readers.length; ++dataId) {
+                dataNodes[dataId].skipData();
+            }
+            continue;
+        }
+        final Long2IntMap[] countsByData = new Long2IntMap[readers.length];
+        for (byte d = 0; d < countsByData.length; ++d) {
+            countsByData[d] = new Long2IntMap();
+        }
+        for (byte dataId = 0; dataId < readers.length; ++dataId) {
+            final byte myDataId = dataId;
+            Runnable run = new Runnable() {
+
+                @Override
+                public void run() {
+                    try {
+                        TrainingDataNodeWriter writer = writers[myDataId];
+                        BinaryTree<HistoryTreePayload> left = oldLeaf.getLeft();
+                        BinaryTree<HistoryTreePayload> right = oldLeaf.getRight();
+                        int leftNodeId = left.getPayload().clusterid;
+                        int rightNodeId = right.getPayload().clusterid;
+                        WritableTrainingDataNode leftDataNode = writer.createNode(leftNodeId, 1);
+                        WritableTrainingDataNode rightDataNode = writer.createNode(rightNodeId, 1);
+                        writer.add(leftDataNode);
+                        writer.add(rightDataNode);
+                        TrainingDataUtil.splitData(dataNodes[myDataId].getData(0), oldLeaf.getPayload().question, rightDataNode.getData(0), leftDataNode.getData(0), countsByData[myDataId]);
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+            };
+            Job job = new Job(run, "q");
+            manager.addJob(group, job);
+        }
+        group.join();
+        // sum up all counts
+        for (byte d = 1; d < countsByData.length; ++d) {
+            totalNodeCount += countsByData[d].sumValues();
+        }
+        if (totalNodeCount == 0)
+            continue;
+        if (oldLeaf.getParent() == null) {
+            totalCount = totalNodeCount;
+        }
+        int rank = (int) Math.round(ProbMath.log2(totalCount / totalNodeCount));
+        Question question = oldLeaf.getPayload().question;
+        ArrayList<int[]> questionCountsByRank = question.isAboutHidden() ? hiddenQuestionCountsByRank : overtQuestionCountsByRank;
+        byte offset = question.getTimeOffset();
+        offset = (byte) -(offset + 1);
+        while (questionCountsByRank.size() <= rank) {
+            questionCountsByRank.add(new int[MAX_OFFSET]);
+        }
+        questionCountsByRank.get(rank)[offset] += 1;
+        ++nrNodes;
+    }
+}

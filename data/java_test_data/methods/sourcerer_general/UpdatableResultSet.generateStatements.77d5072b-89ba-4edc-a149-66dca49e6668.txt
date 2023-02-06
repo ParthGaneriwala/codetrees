@@ -1,0 +1,151 @@
+protected synchronized void generateStatements() throws SQLException {
+    if (!this.isUpdatable) {
+        this.doingUpdates = false;
+        this.onInsertRow = false;
+        throw new NotUpdatable(this.notUpdatableReason);
+    }
+    String quotedId = getQuotedIdChar();
+    Map tableNamesSoFar = null;
+    if (this.connection.lowerCaseTableNames()) {
+        tableNamesSoFar = new TreeMap(String.CASE_INSENSITIVE_ORDER);
+        this.databasesUsedToTablesUsed = new TreeMap(String.CASE_INSENSITIVE_ORDER);
+    } else {
+        tableNamesSoFar = new TreeMap();
+        this.databasesUsedToTablesUsed = new TreeMap();
+    }
+    this.primaryKeyIndicies = new ArrayList();
+    StringBuffer fieldValues = new StringBuffer();
+    StringBuffer keyValues = new StringBuffer();
+    StringBuffer columnNames = new StringBuffer();
+    StringBuffer insertPlaceHolders = new StringBuffer();
+    StringBuffer allTablesBuf = new StringBuffer();
+    Map columnIndicesToTable = new HashMap();
+    boolean firstTime = true;
+    boolean keysFirstTime = true;
+    String equalsStr = this.connection.versionMeetsMinimum(3, 23, 0) ? "<=>" : "=";
+    for (int i = 0; i < this.fields.length; i++) {
+        StringBuffer tableNameBuffer = new StringBuffer();
+        Map updColumnNameToIndex = null;
+        // FIXME: What about no table?
+        if (this.fields[i].getOriginalTableName() != null) {
+            String databaseName = this.fields[i].getDatabaseName();
+            if ((databaseName != null) && (databaseName.length() > 0)) {
+                tableNameBuffer.append(quotedId);
+                tableNameBuffer.append(databaseName);
+                tableNameBuffer.append(quotedId);
+                tableNameBuffer.append('.');
+            }
+            String tableOnlyName = this.fields[i].getOriginalTableName();
+            tableNameBuffer.append(quotedId);
+            tableNameBuffer.append(tableOnlyName);
+            tableNameBuffer.append(quotedId);
+            String fqTableName = tableNameBuffer.toString();
+            if (!tableNamesSoFar.containsKey(fqTableName)) {
+                if (!tableNamesSoFar.isEmpty()) {
+                    allTablesBuf.append(',');
+                }
+                allTablesBuf.append(fqTableName);
+                tableNamesSoFar.put(fqTableName, fqTableName);
+            }
+            columnIndicesToTable.put(new Integer(i), fqTableName);
+            updColumnNameToIndex = getColumnsToIndexMapForTableAndDB(databaseName, tableOnlyName);
+        } else {
+            String tableOnlyName = this.fields[i].getTableName();
+            if (tableOnlyName != null) {
+                tableNameBuffer.append(quotedId);
+                tableNameBuffer.append(tableOnlyName);
+                tableNameBuffer.append(quotedId);
+                String fqTableName = tableNameBuffer.toString();
+                if (!tableNamesSoFar.containsKey(fqTableName)) {
+                    if (!tableNamesSoFar.isEmpty()) {
+                        allTablesBuf.append(',');
+                    }
+                    allTablesBuf.append(fqTableName);
+                    tableNamesSoFar.put(fqTableName, fqTableName);
+                }
+                columnIndicesToTable.put(new Integer(i), fqTableName);
+                updColumnNameToIndex = getColumnsToIndexMapForTableAndDB(this.catalog, tableOnlyName);
+            }
+        }
+        String originalColumnName = this.fields[i].getOriginalName();
+        String columnName = null;
+        if (this.connection.getIO().hasLongColumnInfo() && (originalColumnName != null) && (originalColumnName.length() > 0)) {
+            columnName = originalColumnName;
+        } else {
+            columnName = this.fields[i].getName();
+        }
+        if (updColumnNameToIndex != null && columnName != null) {
+            updColumnNameToIndex.put(columnName, new Integer(i));
+        }
+        String originalTableName = this.fields[i].getOriginalTableName();
+        String tableName = null;
+        if (this.connection.getIO().hasLongColumnInfo() && (originalTableName != null) && (originalTableName.length() > 0)) {
+            tableName = originalTableName;
+        } else {
+            tableName = this.fields[i].getTableName();
+        }
+        StringBuffer fqcnBuf = new StringBuffer();
+        String databaseName = this.fields[i].getDatabaseName();
+        if (databaseName != null && databaseName.length() > 0) {
+            fqcnBuf.append(quotedId);
+            fqcnBuf.append(databaseName);
+            fqcnBuf.append(quotedId);
+            fqcnBuf.append('.');
+        }
+        fqcnBuf.append(quotedId);
+        fqcnBuf.append(tableName);
+        fqcnBuf.append(quotedId);
+        fqcnBuf.append('.');
+        fqcnBuf.append(quotedId);
+        fqcnBuf.append(columnName);
+        fqcnBuf.append(quotedId);
+        String qualifiedColumnName = fqcnBuf.toString();
+        if (this.fields[i].isPrimaryKey()) {
+            this.primaryKeyIndicies.add(Constants.integerValueOf(i));
+            if (!keysFirstTime) {
+                // $NON-NLS-1$
+                keyValues.append(" AND ");
+            } else {
+                keysFirstTime = false;
+            }
+            keyValues.append(qualifiedColumnName);
+            keyValues.append(equalsStr);
+            // $NON-NLS-1$
+            keyValues.append("?");
+        }
+        if (firstTime) {
+            firstTime = false;
+            // $NON-NLS-1$
+            fieldValues.append("SET ");
+        } else {
+            // $NON-NLS-1$
+            fieldValues.append(",");
+            // $NON-NLS-1$
+            columnNames.append(",");
+            // $NON-NLS-1$
+            insertPlaceHolders.append(",");
+        }
+        // $NON-NLS-1$
+        insertPlaceHolders.append("?");
+        columnNames.append(qualifiedColumnName);
+        fieldValues.append(qualifiedColumnName);
+        // $NON-NLS-1$
+        fieldValues.append("=?");
+    }
+    this.qualifiedAndQuotedTableName = allTablesBuf.toString();
+    this.updateSQL = // $NON-NLS-1$ //$NON-NLS-2$
+    "UPDATE " + this.qualifiedAndQuotedTableName + " " + // $NON-NLS-1$ //$NON-NLS-2$
+    fieldValues.toString() + " WHERE " + // $NON-NLS-1$
+    keyValues.toString();
+    this.insertSQL = // $NON-NLS-1$
+    "INSERT INTO " + this.qualifiedAndQuotedTableName + " (" + // $NON-NLS-1$ //$NON-NLS-2$
+    columnNames.toString() + ") VALUES (" + insertPlaceHolders.toString() + // $NON-NLS-1$ //$NON-NLS-2$
+    ")";
+    this.refreshSQL = // $NON-NLS-1$ //$NON-NLS-2$
+    "SELECT " + columnNames.toString() + " FROM " + // $NON-NLS-1$ //$NON-NLS-2$
+    this.qualifiedAndQuotedTableName + " WHERE " + // $NON-NLS-1$
+    keyValues.toString();
+    this.deleteSQL = // $NON-NLS-1$
+    "DELETE FROM " + this.qualifiedAndQuotedTableName + // $NON-NLS-1$ //$NON-NLS-2$
+    " WHERE " + keyValues.toString();
+}

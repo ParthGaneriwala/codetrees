@@ -1,0 +1,91 @@
+public void trackMembers(final Client joiner, final String channelName, Object data, final String messageId) {
+    final DBOperator dbOperator = new DBOperator();
+    if (data instanceof Object[]) {
+        return;
+    } else if (data instanceof Map) {
+        Map<String, Object> map = (Map<String, Object>) data;
+        if (Boolean.TRUE.equals(map.get("join"))) {
+            final String userName = (String) map.get("user");
+            if (!_oort.isOort(joiner)) {
+                if (dbOperator.isUserOnline(userName)) {
+                    // 如果用户已登录了，则强迫上个登录的下线
+                    Message sysMessage = new Message();
+                    sysMessage.setChat(userName + "已在其他地方登陆，请重新登陆！");
+                    sysMessage.setUser("系统信息");
+                    sysMessage.setScope("denied");
+                    sysMessage.setTime(getSystemTime());
+                    _seti.sendMessage(userName, channelName, sysMessage);
+                }
+                Log.info("&&&&&&&&&&&&&&&&&&&seti is associating joiner!  " + userName);
+                _seti.associate(userName, joiner);
+                dbOperator.updateUserStat(userName, joiner.getId(), channelName, true);
+            }
+            final ArrayList<User> members = dbOperator.getUsers(channelName, false);
+            /**
+             * 添加监听下线者
+             */
+            joiner.addListener(new RemoveListener() {
+
+                public void removed(String clientId, boolean timeout) {
+                    Log.info("remove begin after timeout " + clientId + ". current id is " + dbOperator.getClientIdByUser(userName));
+                    if (timeout) {
+                        if (clientId != null && clientId.equals(dbOperator.getClientIdByUser(userName))) {
+                            if (!_oort.isOort(joiner)) {
+                                Log.info("client " + clientId + "is leaving since time out!");
+                                _seti.disassociate(userName);
+                            }
+                            Log.info("user " + userName + "is leaving!");
+                            dbOperator.removeUserByClientId(clientId);
+                            final ArrayList<User> members = dbOperator.getUsers(channelName, false);
+                            Log.info("members: " + members);
+                            // Broadcast the members to all existing members
+                            Channel channel = getBayeux().getChannel(channelName, false);
+                            if (channel != null) {
+                                channel.publish(getClient(), members, messageId);
+                            }
+                        }
+                    }
+                }
+            });
+            /**
+             * 添加监听加入者的信息
+             */
+            joiner.addListener(new MessageListener() {
+
+                public void deliver(Client fromClient, Client toClient, org.cometd.Message msg) {
+                    Log.info("Client " + toClient.getId() + " received " + msg);
+                }
+            });
+            Log.info("Members: " + members);
+            // Broadcast the members to all existing members
+            getBayeux().getChannel(channelName, false).publish(getClient(), members, messageId);
+            ArrayList<User> groups = dbOperator.getGroupsByUser(userName);
+            joiner.deliver(getClient(), channelName, groups, messageId);
+            // 发送离线消息
+            ArrayList<Message> messages = dbOperator.getAllUnreadMessage(userName, null, 0);
+            Iterator<Message> it = messages.iterator();
+            while (it.hasNext()) {
+                Message msg = it.next();
+                joiner.deliver(getClient(), channelName, msg, messageId);
+            }
+        } else if (Boolean.TRUE.equals(map.get("leave"))) {
+            String userName = (String) map.get("user");
+            String clientId = dbOperator.getClientIdByUser(userName);
+            if (!_oort.isOort(joiner)) {
+                _seti.disassociate(userName);
+            }
+            // 如果当前在线用户的clientId与请求的相等，则下线当前 否则保留
+            if (joiner != null && joiner.getId().equals(clientId)) {
+                Log.info("user " + userName + "is leaving!");
+                dbOperator.removeUserByClientId(clientId);
+                final ArrayList<User> members = dbOperator.getUsers(channelName, false);
+                Log.info("members: " + members);
+                // Broadcast the members to all existing members
+                Channel channel = getBayeux().getChannel(channelName, false);
+                if (channel != null) {
+                    channel.publish(getClient(), members, messageId);
+                }
+            }
+        }
+    }
+}

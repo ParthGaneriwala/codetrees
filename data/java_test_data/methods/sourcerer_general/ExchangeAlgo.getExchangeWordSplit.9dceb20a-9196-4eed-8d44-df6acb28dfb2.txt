@@ -1,0 +1,151 @@
+public static Pair<HashSet<Integer>, HashSet<Integer>> getExchangeWordSplit(Set<Integer> set, HashMap<Integer, Long2IntMap> eventsByWord, Set<Integer> exchangeHints) {
+    final int MAX_ITERATIONS = 100 * set.size();
+    if (set.size() <= 2) {
+        Iterator<Integer> i = set.iterator();
+        HashSet<Integer> set1 = new HashSet<Integer>(1);
+        set1.add(i.next());
+        HashSet<Integer> set2 = new HashSet<Integer>(1);
+        if (i.hasNext()) {
+            set2.add(i.next());
+        }
+        return new Pair<HashSet<Integer>, HashSet<Integer>>(set1, set2);
+    }
+    Queue<Integer> queue1 = new LinkedList<Integer>();
+    Queue<Integer> queue2 = new LinkedList<Integer>();
+    Long2IntMap set1stats = new Long2IntMap();
+    Long2IntMap set2stats = new Long2IntMap();
+    ArrayList<Integer> words1 = new ArrayList<Integer>(set.size() / 2);
+    ArrayList<Integer> words2 = new ArrayList<Integer>(set.size() / 2);
+    if (exchangeHints != null) {
+        for (Integer word : set) {
+            Long2IntMap map = eventsByWord.get(word);
+            if (exchangeHints.contains(word)) {
+                addWordToSet(set1stats, map);
+                words1.add(word);
+            } else {
+                addWordToSet(set2stats, map);
+                words2.add(word);
+            }
+        }
+    } else {
+    // System.err.println("Exchange: no hint provided");
+    }
+    if (words1.size() == 0 || words2.size() == 0) {
+        words1.clear();
+        words2.clear();
+        for (Iterator<Integer> i = set.iterator(); i.hasNext(); ) {
+            Integer word = i.next();
+            words1.add(word);
+            addWordToSet(set1stats, eventsByWord.get(word));
+            if (!i.hasNext())
+                break;
+            word = i.next();
+            words2.add(word);
+            addWordToSet(set2stats, eventsByWord.get(word));
+        }
+    } else {
+    // System.err.printf("Exchange: taking hint %d/%d\n", words1.size(), words2.size());
+    }
+    final boolean RANDOMIZE_ORDER = false;
+    if (RANDOMIZE_ORDER) {
+        // randomize word order
+        RandomizedQueue<Integer> q1 = new RandomizedQueue<Integer>(words1);
+        q1.drainTo(queue1);
+        words1 = null;
+        RandomizedQueue<Integer> q2 = new RandomizedQueue<Integer>(words2);
+        q2.drainTo(queue2);
+        words2 = null;
+    } else {
+        queue1.addAll(words1);
+        queue2.addAll(words2);
+        words1 = null;
+        words2 = null;
+    }
+    HashSet<Integer> set1 = new HashSet<Integer>(queue1);
+    HashSet<Integer> set2 = new HashSet<Integer>(queue2);
+    long set1TotalCount = set1stats.sumValues();
+    long set2TotalCount = set2stats.sumValues();
+    /*
+		double likelihood1 = computeSetLikelihood(set1stats);
+		double likelihood2 = computeSetLikelihood(set2stats);
+		
+		System.err.printf("Initial Likelihoods: %e (%d) %e (%d)\n", likelihood1, set1TotalCount,
+					likelihood2, set2TotalCount);
+		*/
+    // double bestLikelihood = computeSetLikelihood(set1stats) + computeSetLikelihood(set2stats);
+    int totalIterations = 0;
+    boolean set1updated = false;
+    boolean set2updated = false;
+    while (true) {
+        ++totalIterations;
+        if (totalIterations >= MAX_ITERATIONS) {
+            /*
+				System.err.printf("STOPPING the Exchange Algorithm at iteration %d! total: %d words, set1: %d, set2: %d, queue1: %d, queue2: %d\n", 
+						totalIterations, set.size(), set1.size(), set2.size(), queue1.size(), queue2.size());
+				*/
+            break;
+        }
+        boolean done = true;
+        if (queue1.size() > 0) {
+            Integer word = queue1.poll();
+            if (set1.size() == 1) {
+                // don't try to remove the last word
+                continue;
+            }
+            Long2IntMap wordCounts = eventsByWord.get(word);
+            long wordTotalCount = wordCounts.sumValues();
+            double llDiff = computeLikelihoodDifferenceIfMoved(set1stats, set1TotalCount, set2stats, set2TotalCount, wordCounts, wordTotalCount);
+            if (llDiff > 0) {
+                // accept the move
+                // bestLikelihood = likelihood;
+                set1.remove(word);
+                set2.add(word);
+                set1updated = true;
+                set2updated = true;
+                set1TotalCount -= wordTotalCount;
+                set2TotalCount += wordTotalCount;
+                addWordToSet(set2stats, wordCounts);
+                substractWordFromSet(set1stats, wordCounts);
+            } else {
+            // reject the move
+            }
+            done = false;
+        } else if (set1updated) {
+            queue1.addAll(set1);
+            set1updated = false;
+            done = false;
+        }
+        if (queue2.size() > 0) {
+            Integer word = queue2.poll();
+            if (set2.size() == 1) {
+                // don't try to remove the last word
+                continue;
+            }
+            Long2IntMap wordCounts = eventsByWord.get(word);
+            long wordTotalCount = wordCounts.sumValues();
+            double llDiff = computeLikelihoodDifferenceIfMoved(set2stats, set2TotalCount, set1stats, set1TotalCount, wordCounts, wordTotalCount);
+            if (llDiff > 0) {
+                // accept the move
+                // bestLikelihood = likelihood;
+                set2.remove(word);
+                set1.add(word);
+                set1updated = true;
+                set2updated = true;
+                set1TotalCount += wordTotalCount;
+                set2TotalCount -= wordTotalCount;
+                addWordToSet(set1stats, wordCounts);
+                substractWordFromSet(set2stats, wordCounts);
+            } else {
+            // reject the move
+            }
+            done = false;
+        } else if (set2updated) {
+            queue2.addAll(set2);
+            set2updated = false;
+            done = false;
+        }
+        if (done)
+            break;
+    }
+    return new Pair<HashSet<Integer>, HashSet<Integer>>(set1, set2);
+}

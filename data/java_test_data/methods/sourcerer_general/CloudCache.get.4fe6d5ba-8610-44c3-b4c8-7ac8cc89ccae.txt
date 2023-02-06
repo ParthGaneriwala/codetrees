@@ -1,0 +1,75 @@
+public Object get(String key) throws Exception {
+    String url = baseUrl(key);
+    System.out.println("GETTING FROM: " + url);
+    StringBuffer sb = new StringBuffer(url);
+    GetMethod method = new GetMethod(sb.toString());
+    String op = "GET";
+    addHeaders(method, op);
+    printHeaders(method);
+    try {
+        int status = httpClient.executeMethod(method);
+        System.out.println("get status = " + status);
+        statistics.gets.incrementAndGet();
+        if (status == HttpStatus.SC_NOT_FOUND) {
+            // fine, not in cache, return null
+            return null;
+        } else if (status != HttpStatus.SC_OK) {
+            throw new CloudCacheException("Bad response from server. Status code: " + status);
+        }
+        statistics.hits.incrementAndGet();
+        long length = method.getResponseContentLength();
+        if (length < 512) {
+            String asString = method.getResponseBodyAsString();
+            System.out.println("RESPONSE: " + asString);
+        }
+        // Parse out the class and expiry times.
+        BufferedInputStream reader = new BufferedInputStream((method.getResponseBodyAsStream()));
+        int slash = '/';
+        int c;
+        String className = null;
+        Long expiryTime = null;
+        StringWriter writer = new StringWriter();
+        int position = 0;
+        while ((c = reader.read()) != -1) {
+            position++;
+            if (c == slash) {
+                if (className == null) {
+                    className = writer.toString();
+                    writer = new StringWriter();
+                } else {
+                    expiryTime = new Long(writer.toString());
+                    break;
+                }
+            } else {
+                writer.write(c);
+            }
+        }
+        if (expiryTime > 0 && expiryTime < System.currentTimeMillis()) {
+            return null;
+        }
+        // byte[] in = new byte[(int)length - position];
+        // int received = reader.read(in, position, (int)length);
+        // byte[] decodedBytes = Base64.decodeBase64(in);
+        StringWriter buff = new StringWriter((int) length);
+        while ((c = reader.read()) != -1) {
+            buff.write(c);
+        }
+        String xml = StringEscapeUtils.unescapeJava(buff.toString());
+        // System.out.println("className = " + className);
+        // System.out.println("BUFF=" + xml);
+        // JAXBContext context = JAXBContext.newInstance(String.class);
+        // Unmarshaller unmarshaller = context.createUnmarshaller();
+        // Object o = unmarshaller.unmarshal(new StringReader(xml));
+        Object o = marshaller.unmarshal(className, xml);
+        if (o instanceof JAXBElement) {
+            JAXBElement je = (JAXBElement) o;
+            return je.getValue();
+        }
+        /*Object o = marshaller.unmarshal(s3Object.getDataInputStream(), s3Object);
+          s3Object.closeDataInputStream();
+          return (Serializable) o;*/
+        return o;
+    } finally {
+        method.releaseConnection();
+    }
+}

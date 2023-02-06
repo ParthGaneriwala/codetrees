@@ -1,0 +1,82 @@
+@Override
+public synchronized void acceptDataSet(DataSetEvent e) {
+    m_busy = true;
+    if (m_completed == null) {
+        // new batch of batches
+        m_completed = new HashMap<Object, Instances>();
+        m_tempBatchFiles = new HashMap<Object, File>();
+    }
+    // who is this that's sent us data?
+    Object source = e.getSource();
+    if (m_completed.containsKey(source)) {
+        // Can't accept more than one data set from a particular source
+        if (m_log != null && !e.isStructureOnly()) {
+            String msg = statusMessagePrefix() + "Resetting appender.";
+            m_log.statusMessage(msg);
+            m_log.logMessage("[Appender] " + msg + " New batch for an incoming connection " + "detected before " + "all incoming connections have sent data!");
+        }
+        m_completed = new HashMap<Object, Instances>();
+        m_tempBatchFiles = new HashMap<Object, File>();
+    }
+    Instances header = new Instances(e.getDataSet(), 0);
+    m_completed.put(source, header);
+    // write these instances (serialized) to a tmp file.
+    try {
+        File tmpF = File.createTempFile("weka", SerializedInstancesLoader.FILE_EXTENSION);
+        tmpF.deleteOnExit();
+        ObjectOutputStream oos = new ObjectOutputStream(new BufferedOutputStream(new FileOutputStream(tmpF)));
+        oos.writeObject(e.getDataSet());
+        oos.flush();
+        oos.close();
+        m_tempBatchFiles.put(source, tmpF);
+    } catch (IOException e1) {
+        stop();
+        e1.printStackTrace();
+        String msg = statusMessagePrefix() + "ERROR: unable to save batch instances to temp file";
+        if (m_log != null) {
+            m_log.statusMessage(msg);
+            m_log.logMessage("[Appender] " + e1.getMessage());
+        }
+        m_busy = false;
+        return;
+    }
+    // fact...
+    if (m_completed.size() == m_listenees.size()) {
+        // sets
+        try {
+            Instances output = makeOutputHeader();
+            if (m_log != null) {
+                String msg = statusMessagePrefix() + "Making output header";
+                m_log.statusMessage(msg);
+                m_log.logMessage("[Appender] " + msg);
+            }
+            for (File f : m_tempBatchFiles.values()) {
+                ObjectInputStream ois = new ObjectInputStream(new BufferedInputStream(new FileInputStream(f)));
+                Instances temp = (Instances) ois.readObject();
+                ois.close();
+                // copy each instance over
+                for (int i = 0; i < temp.numInstances(); i++) {
+                    Instance converted = makeOutputInstance(output, temp.instance(i));
+                    output.add(converted);
+                }
+            }
+            DataSetEvent d = new DataSetEvent(this, output);
+            notifyDataListeners(d);
+        } catch (Exception ex) {
+            stop();
+            ex.printStackTrace();
+            String msg = statusMessagePrefix() + "ERROR: unable to output appended data set";
+            if (m_log != null) {
+                m_log.statusMessage(msg);
+                m_log.logMessage("[Appender] " + ex.getMessage());
+            }
+        }
+        // finished
+        m_completed = null;
+        m_tempBatchFiles = null;
+        if (m_log != null) {
+            m_log.statusMessage(statusMessagePrefix() + "Finished");
+        }
+    }
+    m_busy = false;
+}

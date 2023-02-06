@@ -1,0 +1,44 @@
+public void testReclaimCapacityInSteps() throws Exception {
+    // set up some queues
+    String[] qs = { "default", "q2" };
+    taskTrackerManager.addQueues(qs);
+    resConf = new FakeResourceManagerConf();
+    ArrayList<FakeQueueInfo> queues = new ArrayList<FakeQueueInfo>();
+    queues.add(new FakeQueueInfo("default", 50.0f, 1000000, true, 25));
+    queues.add(new FakeQueueInfo("q2", 50.0f, 1000000, true, 25));
+    resConf.setFakeQueues(queues);
+    scheduler.setResourceManagerConf(resConf);
+    scheduler.start();
+    // set up a situation where q2 is under capacity, and default is
+    // at/over capacity
+    FakeJobInProgress j1 = submitJobAndInit(JobStatus.PREP, 10, 10, null, "u1");
+    checkAssignment("tt1", "attempt_test_0001_m_000001_0 on tt1");
+    checkAssignment("tt1", "attempt_test_0001_m_000002_0 on tt1");
+    checkAssignment("tt2", "attempt_test_0001_m_000003_0 on tt2");
+    checkAssignment("tt2", "attempt_test_0001_m_000004_0 on tt2");
+    // now submit a job to q2
+    FakeJobInProgress j2 = submitJobAndInit(JobStatus.PREP, 1, 1, "q2", "u1");
+    // update our structures
+    scheduler.updateQSIInfo();
+    // get scheduler to notice that q2 needs to reclaim
+    scheduler.reclaimCapacity();
+    // our queue reclaim time is 1000s, heartbeat interval is 5 sec, so
+    // we start reclaiming when 15 secs are left.
+    clock.advance(400000);
+    // submit another job to q2 which causes more capacity to be reclaimed
+    j2 = submitJobAndInit(JobStatus.PREP, 10, 10, "q2", "u2");
+    // update our structures
+    scheduler.updateQSIInfo();
+    clock.advance(200000);
+    scheduler.reclaimCapacity();
+    // one task from j1 will be killed
+    assertEquals(j1.runningMapTasks, 3);
+    clock.advance(300000);
+    scheduler.reclaimCapacity();
+    // timer for 2nd job hasn't fired, so nothing killed
+    assertEquals(j1.runningMapTasks, 3);
+    clock.advance(400000);
+    scheduler.reclaimCapacity();
+    // one task from j1 will be killed
+    assertEquals(j1.runningMapTasks, 2);
+}

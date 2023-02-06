@@ -1,0 +1,159 @@
+// ----------------------------------------------------------------------------
+private boolean _handleServerPacket(Packet srvPkt) {
+    /* check header */
+    if (srvPkt.getPacketHeader() != Packet.HEADER_BASIC) {
+        // unsupported header
+        Payload p = new Payload();
+        p.writeULong(ClientErrors.ERROR_PACKET_HEADER, 2);
+        p.writeULong(srvPkt.getPacketType(), 2);
+        this.queueError(p);
+        // continue communication
+        return true;
+    }
+    /* handle packet */
+    // payload is data soure
+    Payload payload = srvPkt.getPayload(true);
+    switch(srvPkt.getPacketType()) {
+        case Packet.PKT_SERVER_EOB_DONE:
+            {
+                // End of transmission, query response
+                // Arguments: none
+                // relinquish speak-freely permission
+                this.speakFreely = false;
+                if (!this._sendAllPackets(TRANSPORT_DUPLEX, this.speakBrief)) {
+                    // write error
+                    return false;
+                }
+                this.speakBrief = false;
+                return true;
+            }
+        case Packet.PKT_SERVER_EOB_SPEAK_FREELY:
+            {
+                // End of transmission, speak freely
+                // Arguments: none
+                // 'speak-freely' permission granted
+                this.speakFreely = true;
+                // we will be sending data shortly (in the outer loop)
+                return true;
+            }
+        case Packet.PKT_SERVER_ACK:
+            {
+                // Acknowledge [optional sequence]
+                // Arguments: sequence[optional]
+                long sequence = payload.readULong(4, Packet.SEQUENCE_ALL);
+                // remove sent/acknowledged events from queue up to specified sequence #
+                int delCount = this.getEventQueue().deleteToSequence(sequence);
+                if (delCount <= 0) {
+                    Payload p = new Payload();
+                    p.writeULong(ClientErrors.ERROR_PACKET_ACK, 2);
+                    p.writeULong(srvPkt.getPacketType(), 2);
+                    this.queueError(p);
+                } else {
+                    // add to total events sent/ack'ed
+                    this.totalEventsSent += delCount;
+                }
+                // set all events to 'unsent'
+                this.getEventQueue().resetSent();
+                return true;
+            }
+        case Packet.PKT_SERVER_GET_PROPERTY:
+            {
+                // Arguments: propertyKey
+                while (payload.getAvail() >= 2) {
+                    int propKey = (int) payload.readULong(2, 0L);
+                    if (propKey > 0) {
+                        // queue property value packet
+                        try {
+                            Payload p = Props.getPayload(propKey);
+                            Packet propPkt = Packet.createClientPacket(Packet.PKT_CLIENT_PROPERTY_VALUE, p);
+                            this.queuePacket(propPkt);
+                        } catch (ClientErrorException ce) {
+                            int clientError = ce.getClientError();
+                            Payload p = new Payload();
+                            p.writeULong(clientError, 2);
+                            p.writeULong(propKey, 2);
+                            this.queueError(p);
+                        }
+                    } else {
+                        // no property specified
+                        Payload p = new Payload();
+                        p.writeULong(ClientErrors.ERROR_PACKET_PAYLOAD, 2);
+                        p.writeULong(srvPkt.getPacketType(), 2);
+                        this.queueError(p);
+                    }
+                }
+                return true;
+            }
+        case Packet.PKT_SERVER_SET_PROPERTY:
+            {
+                // Set property
+                // Arguments: propertyKey, propertyValue[optional]
+                int propKey = (int) payload.readULong(2, 0L);
+                if (propKey > 0) {
+                    // set property value
+                    try {
+                        // this could be a command
+                        Props.setPayload(propKey, payload);
+                    } catch (ClientErrorException ce) {
+                        int clientError = ce.getClientError();
+                        int commandError = ce.getCommandError();
+                        Payload p = new Payload();
+                        p.writeULong(clientError, 2);
+                        p.writeULong(propKey, 2);
+                        if (commandError > 0) {
+                            p.writeULong(commandError, 2);
+                        }
+                        this.queueError(p);
+                    }
+                } else {
+                    // no property specified
+                    Payload p = new Payload();
+                    p.writeULong(ClientErrors.ERROR_PACKET_PAYLOAD, 2);
+                    p.writeULong(srvPkt.getPacketType(), 2);
+                    this.queueError(p);
+                }
+                return true;
+            }
+        case Packet.PKT_SERVER_FILE_UPLOAD:
+            {
+                // this already sends error/ack packets
+                return true;
+            }
+        case Packet.PKT_SERVER_ERROR:
+            {
+                // NAK/Error codes
+                // Arguments: errorCode, packetHeader, packetType, extraData
+                int errCode = (int) payload.readULong(2, 0L);
+                int pktHdrType = (int) payload.readULong(2, 0L);
+                // remaining data in payload is for error diagnostics
+                if (errCode > 0) {
+                    boolean ok = this._handleErrorCode(errCode, pktHdrType, payload);
+                    if (!ok) {
+                        // critical error determined by error code
+                        return false;
+                    }
+                } else {
+                    // no error specified
+                    Payload p = new Payload();
+                    p.writeULong(ClientErrors.ERROR_PACKET_PAYLOAD, 2);
+                    p.writeULong(srvPkt.getPacketType(), 2);
+                    this.queueError(p);
+                }
+                return true;
+            }
+        case Packet.PKT_SERVER_EOT:
+            {
+                // server is closing the connection
+                return false;
+            }
+        default:
+            {
+                // unsupported type
+                Payload p = new Payload();
+                p.writeULong(ClientErrors.ERROR_PACKET_TYPE, 2);
+                p.writeULong(srvPkt.getPacketType(), 2);
+                this.queueError(p);
+                return true;
+            }
+    }
+}

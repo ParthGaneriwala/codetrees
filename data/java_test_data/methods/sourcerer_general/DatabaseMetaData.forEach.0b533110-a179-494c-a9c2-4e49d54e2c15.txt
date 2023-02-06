@@ -1,0 +1,95 @@
+void forEach(Object catalogStr) throws SQLException {
+    String db = catalogStr.toString();
+    boolean fromSelect = false;
+    ResultSet proceduresRs = null;
+    boolean needsClientFiltering = true;
+    java.sql.PreparedStatement proceduresStmt = conn.clientPrepareStatement("SELECT name, type, comment FROM mysql.proc WHERE name like ? and db <=> ? ORDER BY name");
+    try {
+        // 
+        // Try using system tables first, as this is a little
+        // bit more efficient....
+        // 
+        boolean hasTypeColumn = false;
+        if (db != null) {
+            if (conn.lowerCaseTableNames()) {
+                db = db.toLowerCase();
+            }
+            proceduresStmt.setString(2, db);
+        } else {
+            proceduresStmt.setNull(2, Types.VARCHAR);
+        }
+        int nameIndex = 1;
+        if (proceduresStmt.getMaxRows() != 0) {
+            proceduresStmt.setMaxRows(0);
+        }
+        proceduresStmt.setString(1, procNamePattern);
+        try {
+            proceduresRs = proceduresStmt.executeQuery();
+            fromSelect = true;
+            needsClientFiltering = false;
+            hasTypeColumn = true;
+        } catch (SQLException sqlEx) {
+            // 
+            // Okay, system tables aren't accessible, so use
+            // 'SHOW
+            // ....'....
+            // 
+            proceduresStmt.close();
+            fromSelect = false;
+            if (conn.versionMeetsMinimum(5, 0, 1)) {
+                nameIndex = 2;
+            } else {
+                nameIndex = 1;
+            }
+            proceduresStmt = conn.clientPrepareStatement("SHOW PROCEDURE STATUS LIKE ?");
+            if (proceduresStmt.getMaxRows() != 0) {
+                proceduresStmt.setMaxRows(0);
+            }
+            proceduresStmt.setString(1, procNamePattern);
+            proceduresRs = proceduresStmt.executeQuery();
+        }
+        if (returnProcedures) {
+            convertToJdbcProcedureList(fromSelect, db, proceduresRs, needsClientFiltering, db, procedureRowsOrderedByName, nameIndex);
+        }
+        if (!hasTypeColumn) {
+            // need to go after functions too...
+            if (proceduresStmt != null) {
+                proceduresStmt.close();
+            }
+            proceduresStmt = conn.clientPrepareStatement("SHOW FUNCTION STATUS LIKE ?");
+            if (proceduresStmt.getMaxRows() != 0) {
+                proceduresStmt.setMaxRows(0);
+            }
+            proceduresStmt.setString(1, procNamePattern);
+            proceduresRs = proceduresStmt.executeQuery();
+        }
+        // Should be here, not in IF block!
+        if (returnFunctions) {
+            convertToJdbcFunctionList(db, proceduresRs, needsClientFiltering, db, procedureRowsOrderedByName, nameIndex, fields);
+        }
+        // Now, sort them
+        Iterator proceduresIter = procedureRowsOrderedByName.values().iterator();
+        while (proceduresIter.hasNext()) {
+            procedureRows.add(proceduresIter.next());
+        }
+    } finally {
+        SQLException rethrowSqlEx = null;
+        if (proceduresRs != null) {
+            try {
+                proceduresRs.close();
+            } catch (SQLException sqlEx) {
+                rethrowSqlEx = sqlEx;
+            }
+        }
+        if (proceduresStmt != null) {
+            try {
+                proceduresStmt.close();
+            } catch (SQLException sqlEx) {
+                rethrowSqlEx = sqlEx;
+            }
+        }
+        if (rethrowSqlEx != null) {
+            throw rethrowSqlEx;
+        }
+    }
+}

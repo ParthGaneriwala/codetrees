@@ -1,0 +1,82 @@
+private static SubString interpretDollar(Context cx, RegExpImpl res, String da, int dp, int[] skip) {
+    char dc;
+    int num, tmp;
+    if (da.charAt(dp) != '$')
+        Kit.codeBug();
+    /* Allow a real backslash (literal "\\") to escape "$1" etc. */
+    int version = cx.getLanguageVersion();
+    if (version != Context.VERSION_DEFAULT && version <= Context.VERSION_1_4) {
+        if (dp > 0 && da.charAt(dp - 1) == '\\')
+            return null;
+    }
+    int daL = da.length();
+    if (dp + 1 >= daL)
+        return null;
+    /* Interpret all Perl match-induced dollar variables. */
+    dc = da.charAt(dp + 1);
+    if (NativeRegExp.isDigit(dc)) {
+        int cp;
+        if (version != Context.VERSION_DEFAULT && version <= Context.VERSION_1_4) {
+            if (dc == '0')
+                return null;
+            /* Check for overflow to avoid gobbling arbitrary decimal digits. */
+            num = 0;
+            cp = dp;
+            while (++cp < daL && NativeRegExp.isDigit(dc = da.charAt(cp))) {
+                tmp = 10 * num + (dc - '0');
+                if (tmp < num)
+                    break;
+                num = tmp;
+            }
+        } else {
+            /* ECMA 3, 1-9 or 01-99 */
+            int parenCount = (res.parens == null) ? 0 : res.parens.length;
+            num = dc - '0';
+            if (num > parenCount)
+                return null;
+            cp = dp + 2;
+            if ((dp + 2) < daL) {
+                dc = da.charAt(dp + 2);
+                if (NativeRegExp.isDigit(dc)) {
+                    tmp = 10 * num + (dc - '0');
+                    if (tmp <= parenCount) {
+                        cp++;
+                        num = tmp;
+                    }
+                }
+            }
+            if (num == 0)
+                return null;
+        /* $0 or $00 is not valid */
+        }
+        /* Adjust num from 1 $n-origin to 0 array-index-origin. */
+        num--;
+        skip[0] = cp - dp;
+        return res.getParenSubString(num);
+    }
+    skip[0] = 2;
+    switch(dc) {
+        case '$':
+            return new SubString("$");
+        case '&':
+            return res.lastMatch;
+        case '+':
+            return res.lastParen;
+        case '`':
+            if (version == Context.VERSION_1_2) {
+                /*
+                 * JS1.2 imitated the Perl4 bug where left context at each step
+                 * in an iterative use of a global regexp started from last match,
+                 * not from the start of the target string.  But Perl4 does start
+                 * $` at the beginning of the target string when it is used in a
+                 * substitution, so we emulate that special case here.
+                 */
+                res.leftContext.index = 0;
+                res.leftContext.length = res.lastMatch.index;
+            }
+            return res.leftContext;
+        case '\'':
+            return res.rightContext;
+    }
+    return null;
+}

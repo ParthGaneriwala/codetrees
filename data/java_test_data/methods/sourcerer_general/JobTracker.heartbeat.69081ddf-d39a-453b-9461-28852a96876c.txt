@@ -1,0 +1,83 @@
+public synchronized HeartbeatResponse heartbeat(TaskTrackerStatus status, boolean initialContact, boolean acceptNewTasks, short responseId) throws IOException {
+    LOG.debug("Got heartbeat from: " + status.getTrackerName() + " (initialContact: " + initialContact + " acceptNewTasks: " + acceptNewTasks + ")" + " with responseId: " + responseId);
+    // Make sure heartbeat is from a tasktracker allowed by the jobtracker.
+    if (!acceptTaskTracker(status)) {
+        throw new DisallowedTaskTrackerException(status);
+    }
+    // First check if the last heartbeat response got through
+    String trackerName = status.getTrackerName();
+    HeartbeatResponse prevHeartbeatResponse = trackerToHeartbeatResponseMap.get(trackerName);
+    boolean addRestartInfo = false;
+    if (initialContact != true) {
+        // tasktracker to re-initialize itself.
+        if (prevHeartbeatResponse == null) {
+            // started JobTracker
+            if (hasRestarted()) {
+                addRestartInfo = true;
+            } else {
+                // Jobtracker might have restarted but no recovery is needed
+                LOG.warn("Serious problem, cannot find record of 'previous' " + "heartbeat for '" + trackerName + "'; reinitializing the tasktracker");
+                return new HeartbeatResponse(responseId, new TaskTrackerAction[] { new ReinitTrackerAction() });
+            }
+        } else {
+            // {@link TaskTracker} go forward.
+            if (prevHeartbeatResponse.getResponseId() != responseId) {
+                LOG.info("Ignoring 'duplicate' heartbeat from '" + trackerName + "'; resending the previous 'lost' response");
+                return prevHeartbeatResponse;
+            }
+        }
+    }
+    // Process this heartbeat
+    short newResponseId = (short) (responseId + 1);
+    if (!processHeartbeat(status, initialContact)) {
+        if (prevHeartbeatResponse != null) {
+            trackerToHeartbeatResponseMap.remove(trackerName);
+        }
+        return new HeartbeatResponse(newResponseId, new TaskTrackerAction[] { new ReinitTrackerAction() });
+    }
+    // Initialize the response to be sent for the heartbeat
+    HeartbeatResponse response = new HeartbeatResponse(newResponseId, null);
+    List<TaskTrackerAction> actions = new ArrayList<TaskTrackerAction>();
+    // Check for new tasks to be executed on the tasktracker
+    if (acceptNewTasks) {
+        TaskTrackerStatus taskTrackerStatus = getTaskTracker(trackerName);
+        if (taskTrackerStatus == null) {
+            LOG.warn("Unknown task tracker polling; ignoring: " + trackerName);
+        } else {
+            List<Task> tasks = getSetupAndCleanupTasks(taskTrackerStatus);
+            if (tasks == null) {
+                tasks = taskScheduler.assignTasks(taskTrackerStatus);
+            }
+            if (tasks != null) {
+                for (Task task : tasks) {
+                    expireLaunchingTasks.addNewTask(task.getTaskID());
+                    LOG.debug(trackerName + " -> LaunchTask: " + task.getTaskID());
+                    actions.add(new LaunchTaskAction(task));
+                }
+            }
+        }
+    }
+    // Check for tasks to be killed
+    List<TaskTrackerAction> killTasksList = getTasksToKill(trackerName);
+    if (killTasksList != null) {
+        actions.addAll(killTasksList);
+    }
+    // Check for tasks whose outputs can be saved
+    List<TaskTrackerAction> commitTasksList = getTasksToSave(status);
+    if (commitTasksList != null) {
+        actions.addAll(commitTasksList);
+    }
+    // calculate next heartbeat interval and put in heartbeat response
+    int nextInterval = getNextHeartbeatInterval();
+    response.setHeartbeatInterval(nextInterval);
+    response.setActions(actions.toArray(new TaskTrackerAction[actions.size()]));
+    // check if the restart info is req
+    if (addRestartInfo) {
+        response.setLastKnownIndices(lastSeenEventMapOnRestart);
+    }
+    // Update the trackerToHeartbeatResponseMap
+    trackerToHeartbeatResponseMap.put(trackerName, response);
+    // Done processing the hearbeat, now remove 'marked' tasks
+    removeMarkedTasks(trackerName);
+    return response;
+}

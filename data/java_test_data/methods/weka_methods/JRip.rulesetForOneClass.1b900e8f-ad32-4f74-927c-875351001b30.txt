@@ -1,0 +1,338 @@
+protected Instances rulesetForOneClass(double expFPRate, Instances data, double classIndex, double defDL) throws Exception {
+    Instances newData = data, growData, pruneData;
+    boolean stop = false;
+    ArrayList<Rule> ruleset = new ArrayList<Rule>();
+    double dl = defDL, minDL = defDL;
+    RuleStats rstats = null;
+    double[] rst;
+    // Check whether data have positive examples
+    // No longer used
+    boolean defHasPositive = true;
+    boolean hasPositive = defHasPositive;
+    /**
+     * ******************* Building stage **********************
+     */
+    if (m_Debug) {
+        System.err.println("\n*** Building stage ***");
+    }
+    while ((!stop) && hasPositive) {
+        // Generate new rules until
+        // stopping criteria met
+        RipperRule oneRule;
+        if (m_UsePruning) {
+            /* Split data into Grow and Prune */
+            // We should have stratified the data, but ripper seems
+            // to have a bug that makes it not to do so. In order
+            // to simulate it more precisely, we do the same thing.
+            // newData.randomize(m_Random);
+            newData = RuleStats.stratify(newData, m_Folds, m_Random);
+            Instances[] part = RuleStats.partition(newData, m_Folds);
+            growData = part[0];
+            pruneData = part[1];
+            // growData=newData.trainCV(m_Folds, m_Folds-1);
+            // pruneData=newData.testCV(m_Folds, m_Folds-1);
+            oneRule = new RipperRule();
+            // Must set first
+            oneRule.setConsequent(classIndex);
+            if (m_Debug) {
+                System.err.println("\nGrowing a rule ...");
+            }
+            // Build the rule
+            oneRule.grow(growData);
+            if (m_Debug) {
+                System.err.println("One rule found before pruning:" + oneRule.toString(m_Class));
+            }
+            if (m_Debug) {
+                System.err.println("\nPruning the rule ...");
+            }
+            // Prune the rule
+            oneRule.prune(pruneData, false);
+            if (m_Debug) {
+                System.err.println("One rule found after pruning:" + oneRule.toString(m_Class));
+            }
+        } else {
+            oneRule = new RipperRule();
+            // Must set first
+            oneRule.setConsequent(classIndex);
+            if (m_Debug) {
+                System.err.println("\nNo pruning: growing a rule ...");
+            }
+            // Build the rule
+            oneRule.grow(newData);
+            if (m_Debug) {
+                System.err.println("No pruning: one rule found:\n" + oneRule.toString(m_Class));
+            }
+        }
+        // Compute the DL of this ruleset
+        if (rstats == null) {
+            // First rule
+            rstats = new RuleStats();
+            rstats.setNumAllConds(m_Total);
+            rstats.setData(newData);
+        }
+        rstats.addAndUpdate(oneRule);
+        // Index of last rule
+        int last = rstats.getRuleset().size() - 1;
+        dl += rstats.relativeDL(last, expFPRate, m_CheckErr);
+        if (Double.isNaN(dl) || Double.isInfinite(dl)) {
+            throw new Exception("Should never happen: dl in " + "building stage NaN or infinite!");
+        }
+        if (m_Debug) {
+            System.err.println("Before optimization(" + last + "): the dl = " + dl + " | best: " + minDL);
+        }
+        if (dl < minDL) {
+            // The best dl so far
+            minDL = dl;
+        }
+        rst = rstats.getSimpleStats(last);
+        if (m_Debug) {
+            System.err.println("The rule covers: " + rst[0] + " | pos = " + rst[2] + " | neg = " + rst[4] + "\nThe rule doesn't cover: " + rst[1] + " | pos = " + rst[5]);
+        }
+        stop = checkStop(rst, minDL, dl);
+        if (!stop) {
+            // Accepted
+            ruleset.add(oneRule);
+            // Data not covered
+            newData = rstats.getFiltered(last)[1];
+            // Positives remaining?
+            hasPositive = Utils.gr(rst[5], 0.0);
+            if (m_Debug) {
+                System.err.println("One rule added: has positive? " + hasPositive);
+            }
+        } else {
+            if (m_Debug) {
+                System.err.println("Quit rule");
+            }
+            // Remove last to be re-used
+            rstats.removeLast();
+        }
+    }
+    // while !stop
+    /**
+     * ***************** Optimization stage ******************
+     */
+    RuleStats finalRulesetStat = null;
+    if (m_UsePruning) {
+        for (int z = 0; z < m_Optimizations; z++) {
+            if (m_Debug) {
+                System.err.println("\n*** Optimization: run #" + z + " ***");
+            }
+            newData = data;
+            finalRulesetStat = new RuleStats();
+            finalRulesetStat.setData(newData);
+            finalRulesetStat.setNumAllConds(m_Total);
+            int position = 0;
+            stop = false;
+            boolean isResidual = false;
+            hasPositive = defHasPositive;
+            dl = minDL = defDL;
+            oneRule: while (!stop && hasPositive) {
+                // Cover residual positive
+                isResidual = (position >= ruleset.size());
+                // examples
+                // Re-do shuffling and stratification
+                // newData.randomize(m_Random);
+                newData = RuleStats.stratify(newData, m_Folds, m_Random);
+                Instances[] part = RuleStats.partition(newData, m_Folds);
+                growData = part[0];
+                pruneData = part[1];
+                // growData=newData.trainCV(m_Folds, m_Folds-1);
+                // pruneData=newData.testCV(m_Folds, m_Folds-1);
+                RipperRule finalRule;
+                if (m_Debug) {
+                    System.err.println("\nRule #" + position + "| isResidual?" + isResidual + "| data size: " + newData.sumOfWeights());
+                }
+                if (isResidual) {
+                    RipperRule newRule = new RipperRule();
+                    newRule.setConsequent(classIndex);
+                    if (m_Debug) {
+                        System.err.println("\nGrowing and pruning" + " a new rule ...");
+                    }
+                    newRule.grow(growData);
+                    newRule.prune(pruneData, false);
+                    finalRule = newRule;
+                    if (m_Debug) {
+                        System.err.println("\nNew rule found: " + newRule.toString(m_Class));
+                    }
+                } else {
+                    RipperRule oldRule = (RipperRule) ruleset.get(position);
+                    boolean covers = false;
+                    // Test coverage of the next old rule
+                    for (int i = 0; i < newData.numInstances(); i++) {
+                        if (oldRule.covers(newData.instance(i))) {
+                            covers = true;
+                            break;
+                        }
+                    }
+                    if (!covers) {
+                        // Null coverage, no variants can be generated
+                        finalRulesetStat.addAndUpdate(oldRule);
+                        position++;
+                        continue oneRule;
+                    }
+                    // 2 variants
+                    if (m_Debug) {
+                        System.err.println("\nGrowing and pruning" + " Replace ...");
+                    }
+                    RipperRule replace = new RipperRule();
+                    replace.setConsequent(classIndex);
+                    replace.grow(growData);
+                    // Remove the pruning data covered by the following
+                    // rules, then simply compute the error rate of the
+                    // current rule to prune it. According to Ripper,
+                    // it's equivalent to computing the error of the
+                    // whole ruleset -- is it true?
+                    pruneData = RuleStats.rmCoveredBySuccessives(pruneData, ruleset, position);
+                    replace.prune(pruneData, true);
+                    if (m_Debug) {
+                        System.err.println("\nGrowing and pruning" + " Revision ...");
+                    }
+                    RipperRule revision = (RipperRule) oldRule.copy();
+                    // For revision, first rm the data covered by the old rule
+                    Instances newGrowData = new Instances(growData, 0);
+                    for (int b = 0; b < growData.numInstances(); b++) {
+                        Instance inst = growData.instance(b);
+                        if (revision.covers(inst)) {
+                            newGrowData.add(inst);
+                        }
+                    }
+                    revision.grow(newGrowData);
+                    revision.prune(pruneData, true);
+                    double[][] prevRuleStats = new double[position][6];
+                    for (int c = 0; c < position; c++) {
+                        prevRuleStats[c] = finalRulesetStat.getSimpleStats(c);
+                    }
+                    // Now compare the relative DL of variants
+                    ArrayList<Rule> tempRules = new ArrayList<Rule>(ruleset.size());
+                    for (Rule r : ruleset) {
+                        tempRules.add((Rule) r.copy());
+                    }
+                    tempRules.set(position, replace);
+                    RuleStats repStat = new RuleStats(data, tempRules);
+                    repStat.setNumAllConds(m_Total);
+                    repStat.countData(position, newData, prevRuleStats);
+                    // repStat.countData();
+                    rst = repStat.getSimpleStats(position);
+                    if (m_Debug) {
+                        System.err.println("Replace rule covers: " + rst[0] + " | pos = " + rst[2] + " | neg = " + rst[4] + "\nThe rule doesn't cover: " + rst[1] + " | pos = " + rst[5]);
+                    }
+                    double repDL = repStat.relativeDL(position, expFPRate, m_CheckErr);
+                    if (m_Debug) {
+                        System.err.println("\nReplace: " + replace.toString(m_Class) + " |dl = " + repDL);
+                    }
+                    if (Double.isNaN(repDL) || Double.isInfinite(repDL)) {
+                        throw new Exception("Should never happen: repDL" + "in optmz. stage NaN or " + "infinite!");
+                    }
+                    tempRules.set(position, revision);
+                    RuleStats revStat = new RuleStats(data, tempRules);
+                    revStat.setNumAllConds(m_Total);
+                    revStat.countData(position, newData, prevRuleStats);
+                    // revStat.countData();
+                    double revDL = revStat.relativeDL(position, expFPRate, m_CheckErr);
+                    if (m_Debug) {
+                        System.err.println("Revision: " + revision.toString(m_Class) + " |dl = " + revDL);
+                    }
+                    if (Double.isNaN(revDL) || Double.isInfinite(revDL)) {
+                        throw new Exception("Should never happen: revDL" + "in optmz. stage NaN or " + "infinite!");
+                    }
+                    rstats = new RuleStats(data, ruleset);
+                    rstats.setNumAllConds(m_Total);
+                    rstats.countData(position, newData, prevRuleStats);
+                    // rstats.countData();
+                    double oldDL = rstats.relativeDL(position, expFPRate, m_CheckErr);
+                    if (Double.isNaN(oldDL) || Double.isInfinite(oldDL)) {
+                        throw new Exception("Should never happen: oldDL" + "in optmz. stage NaN or " + "infinite!");
+                    }
+                    if (m_Debug) {
+                        System.err.println("Old rule: " + oldRule.toString(m_Class) + " |dl = " + oldDL);
+                    }
+                    if (m_Debug) {
+                        System.err.println("\nrepDL: " + repDL + "\nrevDL: " + revDL + "\noldDL: " + oldDL);
+                    }
+                    if ((oldDL <= revDL) && (oldDL <= repDL)) {
+                        // Old the best
+                        finalRule = oldRule;
+                    } else if (revDL <= repDL) {
+                        // Revision the best
+                        finalRule = revision;
+                    } else {
+                        // Replace the best
+                        finalRule = replace;
+                    }
+                }
+                finalRulesetStat.addAndUpdate(finalRule);
+                rst = finalRulesetStat.getSimpleStats(position);
+                if (isResidual) {
+                    dl += finalRulesetStat.relativeDL(position, expFPRate, m_CheckErr);
+                    if (m_Debug) {
+                        System.err.println("After optimization: the dl" + "=" + dl + " | best: " + minDL);
+                    }
+                    if (dl < minDL) {
+                        // The best dl so far
+                        minDL = dl;
+                    }
+                    stop = checkStop(rst, minDL, dl);
+                    if (!stop) {
+                        // Accepted
+                        ruleset.add(finalRule);
+                    } else {
+                        // Remove last to be re-used
+                        finalRulesetStat.removeLast();
+                        position--;
+                    }
+                } else {
+                    // Accepted
+                    ruleset.set(position, finalRule);
+                }
+                if (m_Debug) {
+                    System.err.println("The rule covers: " + rst[0] + " | pos = " + rst[2] + " | neg = " + rst[4] + "\nThe rule doesn't cover: " + rst[1] + " | pos = " + rst[5]);
+                    System.err.println("\nRuleset so far: ");
+                    for (int x = 0; x < ruleset.size(); x++) {
+                        System.err.println(x + ": " + ((RipperRule) ruleset.get(x)).toString(m_Class));
+                    }
+                    System.err.println();
+                }
+                // Data not covered
+                if (finalRulesetStat.getRulesetSize() > 0) {
+                    newData = finalRulesetStat.getFiltered(position)[1];
+                }
+                // Positives remaining?
+                hasPositive = Utils.gr(rst[5], 0.0);
+                position++;
+            }
+            if (ruleset.size() > (position + 1)) {
+                // Hasn't gone through yet
+                for (int k = position + 1; k < ruleset.size(); k++) {
+                    finalRulesetStat.addAndUpdate(ruleset.get(k));
+                }
+            }
+            if (m_Debug) {
+                System.err.println("\nDeleting rules to decrease" + " DL of the whole ruleset ...");
+            }
+            finalRulesetStat.reduceDL(expFPRate, m_CheckErr);
+            if (m_Debug) {
+                int del = ruleset.size() - finalRulesetStat.getRulesetSize();
+                System.err.println(del + " rules are deleted" + " after DL reduction procedure");
+            }
+            ruleset = finalRulesetStat.getRuleset();
+            rstats = finalRulesetStat;
+        }
+    // For each run of optimization
+    }
+    // Concatenate the ruleset for this class to the whole ruleset
+    if (m_Debug) {
+        System.err.println("\nFinal ruleset: ");
+        for (int x = 0; x < ruleset.size(); x++) {
+            System.err.println(x + ": " + ((RipperRule) ruleset.get(x)).toString(m_Class));
+        }
+        System.err.println();
+    }
+    m_Ruleset.addAll(ruleset);
+    m_RulesetStats.add(rstats);
+    if (ruleset.size() > 0) {
+        // Data not
+        return rstats.getFiltered(ruleset.size() - 1)[1];
+    } else {
+        return data;
+    }
+}

@@ -1,0 +1,42 @@
+private void _persist(Node srcNode, String prefix, String localName, EntityContext dstCtx) throws RepositoryException {
+    ObjectMapper mapper = dstCtx.mapper;
+    // 
+    localName = domain.encodeName(srcNode, localName, NameKind.OBJECT);
+    // 
+    String name = qualify(prefix, localName);
+    // 
+    NameConflictResolution onDuplicate = NameConflictResolution.FAIL;
+    NodeType parentNodeType = srcNode.getPrimaryNodeType();
+    ObjectMapper parentTypeMapper = domain.getTypeMapper(parentNodeType.getName());
+    if (parentTypeMapper != null) {
+        onDuplicate = parentTypeMapper.getOnDuplicate();
+    }
+    // Check insertion capability
+    // julien : that should likely instead use JCR failure for better performance
+    Node previousNode = sessionWrapper.getNode(srcNode, name);
+    if (previousNode != null) {
+        log.trace("Found existing child with same name {}", name);
+        if (onDuplicate == NameConflictResolution.FAIL) {
+            String msg = "Attempt to insert context " + dstCtx + " as an existing child with name " + name + " child of node " + srcNode.getPath();
+            log.error(msg);
+            throw new DuplicateNameException(msg);
+        } else {
+            log.trace("About to remove same name {} child with id {}", previousNode.getPath(), previousNode.getName());
+            remove(previousNode);
+        }
+    }
+    // 
+    String primaryNodeTypeName = mapper.getNodeTypeName();
+    log.trace("Setting context {} for insertion", dstCtx);
+    log.trace("Adding node for context {} and node type {} as child of node {}", dstCtx, primaryNodeTypeName, srcNode.getPath());
+    // 
+    Node dstNode = sessionWrapper.addNode(srcNode, name, primaryNodeTypeName, Collections.<String>emptyList());
+    // If the node is not referenceable, make it so
+    if (!domain.nodeInfoManager.isReferenceable(dstNode)) {
+        dstNode.addMixin("mix:referenceable");
+    }
+    // 
+    nodeAdded(dstNode, dstCtx);
+    // 
+    log.trace("Added context {} for path {}", dstCtx, dstCtx.getId(), dstNode.getPath());
+}

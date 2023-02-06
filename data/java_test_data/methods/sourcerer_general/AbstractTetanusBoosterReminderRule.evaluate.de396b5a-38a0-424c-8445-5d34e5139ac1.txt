@@ -1,0 +1,60 @@
+protected Result evaluate(final LogicContext context, final Integer patientId, final Map<String, Object> parameters) throws LogicException {
+    TetanusBoosterReminderCacheInstance cacheInstance = TetanusBoosterReminderCacheInstance.getInstance();
+    Patient patient = Context.getPatientService().getPatient(patientId);
+    if (!OpenmrsUtil.nullSafeEquals(cacheInstance.getPatient(), patient)) {
+        parameters.put(EvaluableConstants.ENCOUNTER_FETCH_SIZE, 1);
+        EncounterWithRestrictionRule encounterWithRestrictionRule = new EncounterWithStringRestrictionRule();
+        Result encounterResults = encounterWithRestrictionRule.eval(context, patientId, parameters);
+        if (CollectionUtils.isNotEmpty(encounterResults)) {
+            Result latestResult = encounterResults.latest();
+            if (log.isDebugEnabled())
+                log.debug("Patient: " + patient + ", latest encounter id: " + latestResult);
+            ObsWithRestrictionRule obsWithRestrictionRule = new ObsWithStringRestrictionRule();
+            parameters.put(EvaluableConstants.OBS_ENCOUNTER, Arrays.asList(latestResult.getResultObject()));
+            parameters.put(EvaluableConstants.OBS_FETCH_SIZE, 1);
+            parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.TETANUS_BOOSTER_COMPLETED));
+            parameters.put(EvaluableConstants.OBS_VALUE_CODED, Arrays.asList(EvaluableNameConstants.YES));
+            Result tetanusBoosterCompletedResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+            if (CollectionUtils.isEmpty(tetanusBoosterCompletedResults)) {
+                parameters.put(EvaluableConstants.OBS_VALUE_CODED, Arrays.asList(EvaluableNameConstants.TETANUS_BOOSTER));
+                parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.RECIEVED_ANTENATAL_CARE_SERVICE_THIS_VISIT));
+                Result tetanusBoosterReceivedResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+                parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.DID_NOT_RECIEVE_ANTENATAL_CARE_SERVICE_THIS_VISIT));
+                Result noTetanusBoosterReceivedResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+                parameters.remove(EvaluableConstants.OBS_VALUE_CODED);
+                if (CollectionUtils.isEmpty(tetanusBoosterReceivedResults) && CollectionUtils.isEmpty(noTetanusBoosterReceivedResults)) {
+                    cacheInstance.addReminderCache(RECORD_TETANUS_BOOSTER_REMINDER, Boolean.TRUE);
+                } else {
+                    parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.TETANUS_BOOSTER_DETAILED));
+                    Result tetanusBoosterDetailedResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+                    // default is display reminder until we find quantity
+                    if (CollectionUtils.isNotEmpty(tetanusBoosterDetailedResults)) {
+                        Concept quantityConcept = CacheUtils.getConcept(EvaluableNameConstants.QUANTITY);
+                        Result tetanusBoosterDetailedResult = tetanusBoosterDetailedResults.latest();
+                        Obs tetanusBoosterDetailedObs = (Obs) tetanusBoosterDetailedResult.getResultObject();
+                        Set<Obs> tetanusBoosterDetailedMembers = tetanusBoosterDetailedObs.getGroupMembers();
+                        for (Obs tetanusBoosterDetailedMember : tetanusBoosterDetailedMembers) {
+                            Concept tetanusBoosterDetailedMemberConcept = tetanusBoosterDetailedMember.getConcept();
+                            if (OpenmrsUtil.nullSafeEquals(tetanusBoosterDetailedMemberConcept, quantityConcept)) {
+                                if (tetanusBoosterDetailedMember.getValueNumeric() == null)
+                                    cacheInstance.addReminderCache(FIRST_TETANUS_BOOSTER_REMINDER, Boolean.TRUE);
+                                else if (tetanusBoosterDetailedMember.getValueNumeric() == 1) {
+                                    Calendar lastMonth = Calendar.getInstance();
+                                    lastMonth.add(Calendar.MONTH, -1);
+                                    if (tetanusBoosterDetailedMember.getObsDatetime().before(lastMonth.getTime()))
+                                        cacheInstance.addReminderCache(SECOND_TETANUS_BOOSTER_REMINDER, Boolean.TRUE);
+                                } else if (tetanusBoosterDetailedMember.getValueNumeric() == 2) {
+                                    Calendar sixMonths = Calendar.getInstance();
+                                    sixMonths.add(Calendar.MONTH, -6);
+                                    if (tetanusBoosterDetailedMember.getObsDatetime().before(sixMonths.getTime()))
+                                        cacheInstance.addReminderCache(OTHER_TETANUS_BOOSTER_REMINDER, Boolean.TRUE);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return processCachedReminder(String.valueOf(parameters.get(ReminderParameters.DISPLAYED_REMINDER_TEXT)));
+}

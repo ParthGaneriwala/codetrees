@@ -1,0 +1,156 @@
+// this method is not accessible. It will load all the information
+// contained in the .cgt file passed in as the fileName parameter.
+// It will then store this information in the relevant tables
+private boolean loadTables(String fileName) throws ParserException {
+    SimpleDatabase sdb = new SimpleDatabase();
+    boolean success = true;
+    Integer nA;
+    int n;
+    Boolean bA;
+    boolean bAccept;
+    pVariables.add("Name", "", "");
+    pVariables.add("Version", "", "");
+    pVariables.add("Author", "", "");
+    pVariables.add("About", "", "");
+    pVariables.add("Case Sensitive", "", "");
+    pVariables.add("Start Symbol", "", "");
+    sdb.setFileType(fileHeader);
+    if (sdb.openFile(fileName)) {
+        while (!sdb.done()) {
+            success = sdb.getNextRecord();
+            if (!success) {
+                break;
+            }
+            Object next = sdb.retrieveNext();
+            // should be byte
+            Integer byte1 = (Integer) next;
+            int caseSelect = byte1.intValue();
+            switch(caseSelect) {
+                case // Name, Version, Author, About, Case-Sensitive
+                recordIdParameters:
+                    pVariables.setValue("Name", (String) sdb.retrieveNext());
+                    pVariables.setValue("Version", (String) sdb.retrieveNext());
+                    pVariables.setValue("Author", (String) sdb.retrieveNext());
+                    pVariables.setValue("About", (String) sdb.retrieveNext());
+                    Boolean caseS = (Boolean) sdb.retrieveNext();
+                    pVariables.setValue("Case Sensitive", "" + caseS.booleanValue());
+                    Integer startS = (Integer) sdb.retrieveNext();
+                    pVariables.setValue("Start Symbol", "" + startS.intValue());
+                    break;
+                case // Symbol, CharacterSet, Rule, DFA, LALR
+                recordIdTableCounts:
+                    Integer tabCount = (Integer) sdb.retrieveNext();
+                    pSymbolTable.reDim(tabCount.intValue());
+                    tabCount = (Integer) sdb.retrieveNext();
+                    pCharacterSetTable.setSize(tabCount.intValue());
+                    tabCount = (Integer) sdb.retrieveNext();
+                    pRuleTable.setSize(tabCount.intValue());
+                    tabCount = (Integer) sdb.retrieveNext();
+                    pDFA.setSize(tabCount.intValue());
+                    tabCount = (Integer) sdb.retrieveNext();
+                    pActionTable.setSize(tabCount.intValue());
+                    break;
+                case // DFA, LALR
+                recordIdInitial:
+                    int[] retrieved = sdb.retrieve(2);
+                    initialDFAState = retrieved[0];
+                    initialLALRState = retrieved[1];
+                    break;
+                case // #, Name, Kind
+                recordIdSymbols:
+                    Symbol readSymbol = new Symbol();
+                    nA = (Integer) sdb.retrieveNext();
+                    n = nA.intValue();
+                    readSymbol.setName((String) sdb.retrieveNext());
+                    nA = (Integer) sdb.retrieveNext();
+                    readSymbol.setKind(nA.intValue());
+                    // empty
+                    sdb.retrieveNext();
+                    readSymbol.setTableIndex(n);
+                    pSymbolTable.setMember(n, readSymbol);
+                    break;
+                case // #, Characters
+                recordIdCharSets:
+                    nA = (Integer) sdb.retrieveNext();
+                    n = nA.intValue();
+                    String sA = (String) sdb.retrieveNext();
+                    pCharacterSetTable.setElementAt(sA, n);
+                    break;
+                case // #, ID#, Reserved, (Symbol#,  ...)
+                recordIdRules:
+                    Rule readRule = new Rule();
+                    nA = (Integer) sdb.retrieveNext();
+                    n = nA.intValue();
+                    readRule.setTableIndex(n);
+                    nA = (Integer) sdb.retrieveNext();
+                    readRule.setRuleNonTerminal(pSymbolTable.getMember(nA.intValue()));
+                    // reserved
+                    sdb.retrieveNext();
+                    while (!sdb.retrieveDone()) {
+                        nA = (Integer) sdb.retrieveNext();
+                        readRule.addItem(pSymbolTable.getMember(nA.intValue()));
+                    }
+                    pRuleTable.setElementAt(readRule, n);
+                    break;
+                case // #, Accept?, Accept#, Reserved (Edge chars, Target#, Reserved)...
+                recordIdDFAStates:
+                    FAState readDFA = new FAState();
+                    nA = (Integer) sdb.retrieveNext();
+                    n = nA.intValue();
+                    bA = (Boolean) sdb.retrieveNext();
+                    bAccept = bA.booleanValue();
+                    if (bAccept) {
+                        nA = (Integer) sdb.retrieveNext();
+                        readDFA.acceptSymbol = nA.intValue();
+                    } else {
+                        readDFA.acceptSymbol = -1;
+                        // discard value
+                        sdb.retrieveNext();
+                    }
+                    // reserved
+                    sdb.retrieveNext();
+                    while (!sdb.retrieveDone()) {
+                        Integer aChars = (Integer) sdb.retrieveNext();
+                        nA = (Integer) sdb.retrieveNext();
+                        readDFA.addEdge("" + aChars.intValue(), nA.intValue());
+                        // reserved
+                        sdb.retrieveNext();
+                    }
+                    pDFA.setElementAt(readDFA, n);
+                    break;
+                case // #, Reserved (Symbol#, Action, Target#, Reserved)...
+                recordIdLRTables:
+                    LRActionTable readLALR = new LRActionTable();
+                    nA = (Integer) sdb.retrieveNext();
+                    n = nA.intValue();
+                    // reserved
+                    sdb.retrieveNext();
+                    Integer action, target;
+                    while (!sdb.retrieveDone()) {
+                        nA = (Integer) sdb.retrieveNext();
+                        action = (Integer) sdb.retrieveNext();
+                        target = (Integer) sdb.retrieveNext();
+                        readLALR.addItem(pSymbolTable.getMember(nA.intValue()), action.intValue(), target.intValue());
+                        // reserved
+                        sdb.retrieveNext();
+                    }
+                    pActionTable.setElementAt(readLALR, n);
+                    break;
+                default:
+                    // RecordIDComment
+                    success = false;
+            }
+        }
+        // ====== Setup internal variables to reflect the loaded data
+        // Reassign the numeric value to its name
+        pVariables.setValue("Start Symbol", pSymbolTable.getMember(Integer.parseInt(pVariables.getValue("Start Symbol"))).getName());
+        if (pVariables.getValue("Case Sensitive").equals("true"))
+            pIgnoreCase = false;
+        else
+            pIgnoreCase = true;
+        sdb.closeFile();
+        return success;
+    } else {
+        return false;
+    }
+}

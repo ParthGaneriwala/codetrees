@@ -1,0 +1,55 @@
+public PostmarkResponse sendMessage(PostmarkMessage message) throws PostmarkException {
+    HttpClient httpClient = new DefaultHttpClient();
+    PostmarkResponse theResponse = new PostmarkResponse();
+    try {
+        // Create post request to Postmark API endpoint
+        HttpPost method = new HttpPost("http://api.postmarkapp.com/email");
+        // Add standard headers required by Postmark
+        method.addHeader("Accept", "application/json");
+        method.addHeader("Content-Type", "application/json; charset=utf-8");
+        method.addHeader("X-Postmark-Server-Token", serverToken);
+        method.addHeader("User-Agent", "Postmark-Java");
+        // Validate and clean the message
+        message.validate();
+        message.clean();
+        // Convert the message into JSON content
+        Gson gson = gsonBuilder.create();
+        String messageContents = gson.toJson(message);
+        logger.info("Message contents: " + messageContents);
+        // Add JSON as payload to post request
+        StringEntity payload = new StringEntity(messageContents);
+        method.setEntity(payload);
+        ResponseHandler<String> responseHandler = new BasicResponseHandler();
+        try {
+            String response = httpClient.execute(method, responseHandler);
+            logger.info("Message response: " + response);
+            theResponse = gsonBuilder.create().fromJson(response, PostmarkResponse.class);
+            theResponse.status = PostmarkStatus.SUCCESS;
+        } catch (HttpResponseException hre) {
+            switch(hre.getStatusCode()) {
+                case 401:
+                case 422:
+                    logger.log(Level.SEVERE, "There was a problem with the email: " + hre.getMessage());
+                    theResponse.setMessage(hre.getMessage());
+                    theResponse.status = PostmarkStatus.USERERROR;
+                    throw new PostmarkException(hre.getMessage(), theResponse);
+                case 500:
+                    logger.log(Level.SEVERE, "There has been an error sending your email: " + hre.getMessage());
+                    theResponse.setMessage(hre.getMessage());
+                    theResponse.status = PostmarkStatus.SERVERERROR;
+                    throw new PostmarkException(hre.getMessage(), theResponse);
+                default:
+                    logger.log(Level.SEVERE, "There has been an unknow error sending your email: " + hre.getMessage());
+                    theResponse.status = PostmarkStatus.UNKNOWN;
+                    theResponse.setMessage(hre.getMessage());
+                    throw new PostmarkException(hre.getMessage(), theResponse);
+            }
+        }
+    } catch (Exception e) {
+        logger.log(Level.SEVERE, "There has been an error sending your email: " + e.getMessage());
+        throw new PostmarkException(e);
+    } finally {
+        httpClient.getConnectionManager().shutdown();
+    }
+    return theResponse;
+}

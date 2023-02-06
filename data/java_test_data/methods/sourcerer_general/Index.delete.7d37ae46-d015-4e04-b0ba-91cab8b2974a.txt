@@ -1,0 +1,149 @@
+void delete(Session session, Node x) throws HsqlException {
+    if (x == null) {
+        return;
+    }
+    for (IndexRowIterator it = updatableIterators.next; it != updatableIterators; it = it.next) {
+        it.updateForDelete(x);
+    }
+    Node n;
+    if (x.getLeft() == null) {
+        n = x.getRight();
+    } else if (x.getRight() == null) {
+        n = x.getLeft();
+    } else {
+        Node d = x;
+        x = x.getLeft();
+        /*
+            // todo: this can be improved
+
+            while (x.getRight() != null) {
+                if (Trace.STOP) {
+                    Trace.stop();
+                }
+
+                x = x.getRight();
+            }
+*/
+        for (Node temp = x; (temp = temp.getRight()) != null; ) {
+            x = temp;
+        }
+        // x will be replaced with n later
+        n = x.getLeft();
+        // swap d and x
+        int b = x.getBalance();
+        x = x.getUpdatedNode();
+        x.setBalance(d.getBalance());
+        d = d.getUpdatedNode();
+        d.setBalance(b);
+        // set x.parent
+        Node xp = x.getParent();
+        Node dp = d.getParent();
+        x = x.getUpdatedNode();
+        if (d.isRoot()) {
+            setRoot(session, x);
+        }
+        x.setParent(dp);
+        if (dp != null) {
+            dp = dp.getUpdatedNode();
+            if (dp.isRight(d)) {
+                dp.setRight(x);
+            } else {
+                dp.setLeft(x);
+            }
+        }
+        // relink d.parent, x.left, x.right
+        d = d.getUpdatedNode();
+        if (d.equals(xp)) {
+            d.setParent(x);
+            if (d.isLeft(x)) {
+                x = x.getUpdatedNode();
+                x.setLeft(d);
+                Node dr = d.getRight();
+                x = x.getUpdatedNode();
+                x.setRight(dr);
+            } else {
+                x.setRight(d);
+                Node dl = d.getLeft();
+                x = x.getUpdatedNode();
+                x.setLeft(dl);
+            }
+        } else {
+            d.setParent(xp);
+            xp = xp.getUpdatedNode();
+            xp.setRight(d);
+            Node dl = d.getLeft();
+            Node dr = d.getRight();
+            x = x.getUpdatedNode();
+            x.setLeft(dl);
+            x.setRight(dr);
+        }
+        x.getRight().setParent(x);
+        x.getLeft().setParent(x);
+        // set d.left, d.right
+        d = d.getUpdatedNode();
+        d.setLeft(n);
+        if (n != null) {
+            n = n.getUpdatedNode();
+            n.setParent(d);
+        }
+        d = d.getUpdatedNode();
+        d.setRight(null);
+        x = d;
+    }
+    boolean isleft = x.isFromLeft();
+    replace(session, x, n);
+    n = x.getParent();
+    x = x.getUpdatedNode();
+    x.delete();
+    while (n != null) {
+        x = n;
+        int sign = isleft ? 1 : -1;
+        x = x.getUpdatedNode();
+        switch(x.getBalance() * sign) {
+            case -1:
+                x.setBalance(0);
+                break;
+            case 0:
+                x.setBalance(sign);
+                return;
+            case 1:
+                Node r = child(x, !isleft);
+                int b = r.getBalance();
+                if (b * sign >= 0) {
+                    replace(session, x, r);
+                    set(x, !isleft, child(r, isleft));
+                    set(r, isleft, x);
+                    if (b == 0) {
+                        x = x.getUpdatedNode();
+                        x.setBalance(sign);
+                        r = r.getUpdatedNode();
+                        r.setBalance(-sign);
+                        return;
+                    }
+                    x = x.getUpdatedNode();
+                    x.setBalance(0);
+                    r = r.getUpdatedNode();
+                    r.setBalance(0);
+                    x = r;
+                } else {
+                    Node l = child(r, isleft);
+                    replace(session, x, l);
+                    l = l.getUpdatedNode();
+                    b = l.getBalance();
+                    set(r, isleft, child(l, !isleft));
+                    set(l, !isleft, r);
+                    set(x, !isleft, child(l, isleft));
+                    set(l, isleft, x);
+                    x = x.getUpdatedNode();
+                    x.setBalance((b == sign) ? -sign : 0);
+                    r = r.getUpdatedNode();
+                    r.setBalance((b == -sign) ? sign : 0);
+                    l = l.getUpdatedNode();
+                    l.setBalance(0);
+                    x = l;
+                }
+        }
+        isleft = x.isFromLeft();
+        n = x.getParent();
+    }
+}

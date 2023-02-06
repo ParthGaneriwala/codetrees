@@ -1,0 +1,53 @@
+public void testNormalTaskAndLimitedTT() throws Exception {
+    try {
+        if (!ProcfsBasedProcessTree.isAvailable()) {
+            LOG.info("Currently ProcessTree has only one implementation " + "ProcfsBasedProcessTree, which is not available on this " + "system. Not testing");
+            return;
+        }
+    } catch (Exception e) {
+        LOG.info(StringUtils.stringifyException(e));
+        return;
+    }
+    Pattern diagMsgPattern = Pattern.compile("TaskTree \\[pid=[0-9]*,tipID=.*\\] is running beyond " + "memory-limits. Current usage : [0-9]*kB. Limit : [0-9]*kB. Killing task.");
+    Matcher mat = null;
+    // Start cluster with proper configuration.
+    JobConf fConf = new JobConf();
+    // Fairly large value for WordCount to succeed
+    fConf.setMaxVirtualMemoryForTasks(Long.valueOf(10000000000L));
+    startCluster(fConf);
+    // Set up job.
+    JobConf conf = new JobConf();
+    JobTracker jt = miniMRCluster.getJobTrackerRunner().getJobTracker();
+    conf.set("mapred.job.tracker", jt.getJobTrackerMachine() + ":" + jt.getTrackerPort());
+    NameNode nn = miniDFSCluster.getNameNode();
+    conf.set("fs.default.name", "hdfs://" + nn.getNameNodeAddress().getHostName() + ":" + nn.getNameNodeAddress().getPort());
+    // Start the job.
+    boolean success = true;
+    try {
+        runWordCount(conf);
+        success = true;
+    } catch (Exception e) {
+        success = false;
+    }
+    // Job has to succeed
+    assertTrue(success);
+    // Alas, we don't have a way to get job id/Task completion events from
+    // WordCount
+    JobClient jClient = new JobClient(conf);
+    JobStatus[] jStatus = jClient.getAllJobs();
+    // Our only job
+    JobStatus js = jStatus[0];
+    RunningJob rj = jClient.getJob(js.getJobID());
+    // All events
+    TaskCompletionEvent[] taskComplEvents = rj.getTaskCompletionEvents(0);
+    for (TaskCompletionEvent tce : taskComplEvents) {
+        String[] diagnostics = jClient.jobSubmitClient.getTaskDiagnostics(tce.getTaskAttemptId());
+        if (diagnostics != null) {
+            for (String str : diagnostics) {
+                mat = diagMsgPattern.matcher(str);
+                // The error pattern shouldn't be there in any TIP's diagnostics
+                assertFalse(mat.find());
+            }
+        }
+    }
+}

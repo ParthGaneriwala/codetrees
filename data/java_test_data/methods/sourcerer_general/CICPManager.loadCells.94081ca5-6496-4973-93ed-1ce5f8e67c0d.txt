@@ -1,0 +1,113 @@
+private void loadCells(String rline, PrintWriter pw, RegionControl rc, String user, String key) throws IOException {
+    log.info(rline);
+    int mode = 0;
+    String menuPrimId = null;
+    String[] split = rline.split(",");
+    int layer = Integer.parseInt(split[7]);
+    LinkedList layerPrimList = rc.getPrimList(layer);
+    double startX = Double.parseDouble(split[1]);
+    double startY = Double.parseDouble(split[3]);
+    double startZ = Double.parseDouble(split[2]);
+    removeExpiredLayers();
+    SLGraph slg = layerTable.get(String.valueOf(layer));
+    if (slg == null) {
+        slg = new SLGraph(layer, startX, startY, startZ, rc, user, key);
+        layerTable.put(String.valueOf(layer), slg);
+    } else {
+        if ((user == null && slg.user != null) || (user != null && slg.user == null) || (key == null && slg.key != null) || (key != null && slg.key == null) || (user != null && !slg.user.equals(user)) || (key != null && !slg.key.equals(key))) {
+            pw.println("error: bad credentials");
+            return;
+        }
+        slg.chunkList.clear();
+        slg.dispatchList.clear();
+        slg.menuList.clear();
+        slg.listCounts[0] = 0;
+        slg.listCounts[1] = 0;
+        slg.timeMillis = System.currentTimeMillis();
+    }
+    boolean isMod = false;
+    boolean isImage = false;
+    if (split[0].equals("modify")) {
+        isMod = true;
+        mode = 2;
+        menuPrimId = slg.menuPrimId;
+    } else if (split[0].equals("flatImage"))
+        isImage = true;
+    // hack to avoid the overhead of doing SSL get locally
+    if (split[8].startsWith("https"))
+        split[8] = "http" + split[8].substring(5);
+    URL url = new URL(split[8]);
+    URLConnection conn = url.openConnection();
+    BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+    String line;
+    StringBuffer curChunk = new StringBuffer();
+    String chunkPrimId = null;
+    int chunkInd = 0;
+    while ((line = br.readLine()) != null) {
+        if (mode == 0) {
+            slg.menuList.add(line);
+            if (line.equals("nodes") || line.equals("images"))
+                mode = 1;
+        } else {
+            String[] lsplit = line.split(",");
+            LinkedList<Integer> tempPrimList = new LinkedList<Integer>();
+            if (!lsplit[0].equals("create") && !lsplit[0].equals("flatImage") && !lsplit[0].equals("modify")) {
+                String nextPrimId = null;
+                if (isMod)
+                    nextPrimId = String.valueOf(slg.nodeMap.get(lsplit[19]).intValue());
+                else if (!isImage)
+                    nextPrimId = slg.rc.getNextFreePrim(layer, lsplit[19], slg.nodeMap);
+                else
+                    nextPrimId = slg.rc.getNextFreePrim(layer, "0", slg.nodeMap);
+                if (nextPrimId.equals("full")) {
+                    br.close();
+                    pw.println("error: not enough cicp prims available");
+                    rc.freePrims(tempPrimList, layer);
+                    return;
+                } else
+                    tempPrimList.add(new Integer(Integer.parseInt(nextPrimId) - 1));
+                if (menuPrimId == null) {
+                    menuPrimId = nextPrimId;
+                    slg.menuPrimId = menuPrimId;
+                }
+                String lineAbs = null;
+                if (split[0].equals("flatImage"))
+                    lineAbs = line;
+                else
+                    lineAbs = makeAbsolute(lsplit, slg, menuPrimId, layer);
+                if (mode == 1) {
+                    slg.menuList.add(lineAbs);
+                    slg.dispatchList.add(nextPrimId + ";menu," + layer);
+                    mode = 2;
+                } else {
+                    if (chunkPrimId == null)
+                        chunkPrimId = nextPrimId;
+                    if (curChunk.length() + 2 + nextPrimId.length() + lineAbs.length() >= CHUNK_SIZE) {
+                        slg.chunkList.add(curChunk);
+                        slg.dispatchList.add(chunkPrimId + ";chunk," + layer + "," + chunkInd);
+                        chunkInd++;
+                        curChunk = new StringBuffer();
+                        chunkPrimId = nextPrimId;
+                    } else
+                        curChunk.append('\n');
+                    curChunk.append(nextPrimId);
+                    curChunk.append(';');
+                    curChunk.append(lineAbs);
+                }
+            }
+        }
+    }
+    br.close();
+    if (curChunk.length() > 0) {
+        slg.chunkList.add(curChunk);
+        slg.dispatchList.add(chunkPrimId + ";chunk," + layer + "," + chunkInd);
+    }
+    log.info("graph has " + slg.chunkList.size() + " chunks");
+    String directive = "new";
+    if (split[0].equals("modify"))
+        directive = "mod";
+    else
+        rc.freePrims(layerPrimList, layer);
+    pw.println(directive);
+    printListChunk(pw, slg.dispatchList, slg.listCounts, 0);
+}

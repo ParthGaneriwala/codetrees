@@ -1,0 +1,73 @@
+private boolean putImpl(String name, int index, Scriptable start, Object value, int constFlag) {
+    Slot slot;
+    if (this != start) {
+        slot = getSlot(name, index, SLOT_QUERY);
+        if (slot == null) {
+            return false;
+        }
+    } else if (!isExtensible()) {
+        slot = getSlot(name, index, SLOT_QUERY);
+        if (slot == null) {
+            return true;
+        }
+    } else {
+        checkNotSealed(name, index);
+        // either const hoisted declaration or initialization
+        if (constFlag != EMPTY) {
+            slot = getSlot(name, index, SLOT_MODIFY_CONST);
+            int attr = slot.getAttributes();
+            if ((attr & READONLY) == 0)
+                throw Context.reportRuntimeError1("msg.var.redecl", name);
+            if ((attr & UNINITIALIZED_CONST) != 0) {
+                slot.value = value;
+                // clear the bit on const initialization
+                if (constFlag != UNINITIALIZED_CONST)
+                    slot.setAttributes(attr & ~UNINITIALIZED_CONST);
+            }
+            return true;
+        }
+        slot = getSlot(name, index, SLOT_MODIFY);
+    }
+    if (slot instanceof GetterSlot) {
+        Object setterObj = ((GetterSlot) slot).setter;
+        if (setterObj == null) {
+            if (((GetterSlot) slot).getter != null) {
+                // we should throw a TypeError in this case.
+                throw ScriptRuntime.typeError1("msg.set.prop.no.setter", name);
+            }
+        } else {
+            Context cx = Context.getContext();
+            if (setterObj instanceof MemberBox) {
+                MemberBox nativeSetter = (MemberBox) setterObj;
+                Class<?>[] pTypes = nativeSetter.argTypes;
+                // XXX: cache tag since it is already calculated in
+                // defineProperty ?
+                Class<?> valueType = pTypes[pTypes.length - 1];
+                int tag = FunctionObject.getTypeTag(valueType);
+                Object actualArg = FunctionObject.convertArg(cx, start, value, tag);
+                Object setterThis;
+                Object[] args;
+                if (nativeSetter.delegateTo == null) {
+                    setterThis = start;
+                    args = new Object[] { actualArg };
+                } else {
+                    setterThis = nativeSetter.delegateTo;
+                    args = new Object[] { start, actualArg };
+                }
+                nativeSetter.invoke(setterThis, args);
+            } else {
+                Function f = (Function) setterObj;
+                f.call(cx, f.getParentScope(), start, new Object[] { value });
+            }
+            return true;
+        }
+    } else if ((slot.getAttributes() & READONLY) != 0) {
+        return true;
+    }
+    if (this == start) {
+        slot.value = value;
+        return true;
+    } else {
+        return false;
+    }
+}

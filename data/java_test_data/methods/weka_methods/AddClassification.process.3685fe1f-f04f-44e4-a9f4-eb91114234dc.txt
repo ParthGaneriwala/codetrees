@@ -1,0 +1,81 @@
+@Override
+protected Instances process(Instances instances) throws Exception {
+    Instances result;
+    double[] newValues;
+    double[] oldValues;
+    int i;
+    int n;
+    Instance newInstance;
+    Instance oldInstance;
+    double[] distribution;
+    // load or train classifier
+    if (!isFirstBatchDone()) {
+        getActualClassifier();
+        if (!getSerializedClassifierFile().isDirectory()) {
+            // same dataset format?
+            if ((m_SerializedHeader != null) && (!m_SerializedHeader.equalHeaders(instances)) && (!(m_ActualClassifier instanceof InputMappedClassifier))) {
+                throw new WekaException("Training header of classifier and filter dataset don't match:\n" + m_SerializedHeader.equalHeadersMsg(instances));
+            }
+        } else {
+            m_ActualClassifier.buildClassifier(instances);
+        }
+    }
+    result = getOutputFormat();
+    // traverse all instances
+    for (i = 0; i < instances.numInstances(); i++) {
+        oldInstance = instances.instance(i);
+        oldValues = oldInstance.toDoubleArray();
+        newValues = new double[result.numAttributes()];
+        // copy values
+        int start = 0;
+        for (int j = 0; j < oldValues.length; j++) {
+            // remove class?
+            if ((j == inputFormatPeek().classIndex()) && (getRemoveOldClass())) {
+                continue;
+            }
+            newValues[start++] = oldValues[j];
+        }
+        // 1. classification?
+        if (getOutputClassification()) {
+            newValues[start] = m_ActualClassifier.classifyInstance(oldInstance);
+            start++;
+        }
+        // 2. distribution?
+        if (getOutputDistribution()) {
+            distribution = m_ActualClassifier.distributionForInstance(oldInstance);
+            for (n = 0; n < distribution.length; n++) {
+                newValues[start] = distribution[n];
+                start++;
+            }
+        }
+        // 3. error flag?
+        if (getOutputErrorFlag()) {
+            Instance inst = oldInstance;
+            if (m_ActualClassifier instanceof InputMappedClassifier) {
+                inst = ((InputMappedClassifier) m_ActualClassifier).constructMappedInstance(inst);
+            }
+            if (instances.classIndex() < 0) {
+                newValues[start] = Utils.missingValue();
+            } else if (result.classAttribute().isNominal()) {
+                if (inst.classValue() == m_ActualClassifier.classifyInstance(oldInstance)) {
+                    newValues[start] = 0;
+                } else {
+                    newValues[start] = 1;
+                }
+            } else {
+                newValues[start] = m_ActualClassifier.classifyInstance(oldInstance) - inst.classValue();
+            }
+            start++;
+        }
+        // create new instance
+        if (oldInstance instanceof SparseInstance) {
+            newInstance = new SparseInstance(oldInstance.weight(), newValues);
+        } else {
+            newInstance = new DenseInstance(oldInstance.weight(), newValues);
+        }
+        // copy string/relational values from input to output
+        copyValues(newInstance, false, oldInstance.dataset(), outputFormatPeek());
+        result.add(newInstance);
+    }
+    return result;
+}

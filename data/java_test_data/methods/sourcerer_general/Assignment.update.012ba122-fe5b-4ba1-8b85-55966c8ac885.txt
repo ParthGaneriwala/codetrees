@@ -1,0 +1,121 @@
+public int update(Connection db) throws SQLException {
+    if (this.getId() == -1 || this.projectId == -1) {
+        throw new SQLException("ID was not specified");
+    }
+    if (!isValid()) {
+        return -1;
+    }
+    boolean autoCommit = db.getAutoCommit();
+    int resultCount = 0;
+    try {
+        if (autoCommit) {
+            db.setAutoCommit(false);
+        }
+        boolean newStatus = false;
+        Assignment previousState = new Assignment(db, id);
+        statusTypeId = lookupStatusIdType(db, statusId);
+        PreparedStatement pst = db.prepareStatement("UPDATE project_assignments " + "SET requirement_id = ?, technology = ?, " + "role = ?, estimated_loevalue = ?, estimated_loetype = ?, actual_loevalue = ?, " + "actual_loetype = ?, priority_id = ?, est_start_date = ?, start_date = ?, " + "due_date = ?, status_id = ?, status_date = ?, percent_complete = ?, complete_date = ?, " + "modifiedBy = ?, modified = CURRENT_TIMESTAMP, folder_id = ? " + "WHERE assignment_id = ? " + "AND modified = ? ");
+        int i = 0;
+        DatabaseUtils.setInt(pst, ++i, requirementId);
+        pst.setString(++i, technology);
+        pst.setString(++i, role);
+        DatabaseUtils.setInt(pst, ++i, estimatedLoe);
+        DatabaseUtils.setInt(pst, ++i, estimatedLoeTypeId);
+        DatabaseUtils.setInt(pst, ++i, actualLoe);
+        DatabaseUtils.setInt(pst, ++i, actualLoeTypeId);
+        DatabaseUtils.setInt(pst, ++i, priorityId);
+        if (previousState.getPriorityId() != priorityId) {
+            newStatus = true;
+        }
+        DatabaseUtils.setTimestamp(pst, ++i, estStartDate);
+        // Handle assignment start date
+        startDate = previousState.getStartDate();
+        if (statusTypeId == NOTSTARTED || statusTypeId == ONHOLD) {
+            startDate = null;
+        }
+        if (previousState.getStartDate() == null && statusTypeId != NOTSTARTED && statusTypeId != ONHOLD) {
+            java.util.Date tmpDate = new java.util.Date();
+            startDate = new java.sql.Timestamp(tmpDate.getTime());
+            startDate.setNanos(0);
+        }
+        DatabaseUtils.setTimestamp(pst, ++i, startDate);
+        DatabaseUtils.setTimestamp(pst, ++i, dueDate);
+        DatabaseUtils.setInt(pst, ++i, statusId);
+        // Handle assignment status date
+        if (previousState.getStatusId() != statusId || previousState.getPercentComplete() != percentComplete) {
+            if (statusDate == null) {
+                java.util.Date tmpDate = new java.util.Date();
+                statusDate = new java.sql.Timestamp(tmpDate.getTime());
+                statusDate.setNanos(0);
+            }
+            newStatus = true;
+        }
+        if (newStatus) {
+            java.util.Date tmpDate = new java.util.Date();
+            statusDate = new java.sql.Timestamp(tmpDate.getTime());
+            statusDate.setNanos(0);
+        } else {
+            statusDate = previousState.getStatusDate();
+        }
+        DatabaseUtils.setTimestamp(pst, ++i, statusDate);
+        DatabaseUtils.setInt(pst, ++i, percentComplete);
+        // A date is saved when the assignment is saved, otherwise it is erased
+        if (System.getProperty("DEBUG") != null) {
+            System.out.println("Assignment-> Assignment previous status type id = " + previousState.getStatusTypeId());
+        }
+        if (System.getProperty("DEBUG") != null) {
+            System.out.println("Assignment-> Assignment status type id = " + statusTypeId);
+        }
+        if (statusTypeId == COMPLETE || statusTypeId == CLOSED) {
+            if (previousState.getStatusTypeId() != COMPLETE && previousState.getStatusTypeId() != CLOSED) {
+                java.util.Date tmpDate = new java.util.Date();
+                completeDate = new java.sql.Timestamp(tmpDate.getTime());
+                completeDate.setNanos(0);
+                if (System.getProperty("DEBUG") != null) {
+                    System.out.println("     * NEW CLOSED DATE");
+                }
+            } else {
+                completeDate = previousState.getCompleteDate();
+                if (System.getProperty("DEBUG") != null) {
+                    System.out.println("     * EXISTING CLOSED DATE");
+                }
+            }
+        } else {
+            completeDate = null;
+            if (System.getProperty("DEBUG") != null) {
+                System.out.println("     * it's not finished");
+            }
+        }
+        DatabaseUtils.setTimestamp(pst, ++i, completeDate);
+        pst.setInt(++i, this.getModifiedBy());
+        DatabaseUtils.setInt(pst, ++i, folderId);
+        pst.setInt(++i, this.getId());
+        pst.setTimestamp(++i, modified);
+        resultCount = pst.executeUpdate();
+        pst.close();
+        // Insert any notes as well
+        assignmentNote = new AssignmentNote(this);
+        if (assignmentNote.isValid()) {
+            assignmentNote.insert(db);
+        }
+        // Update assigned users
+        if (assignedUserList != null) {
+            assignedUserList.setAssignmentId(id);
+            assignedUserList.setModifiedBy(modifiedBy);
+            assignedUserList.update(db);
+        }
+        if (autoCommit) {
+            db.commit();
+        }
+    } catch (Exception e) {
+        if (autoCommit) {
+            db.rollback();
+        }
+        throw new SQLException(e.getMessage());
+    } finally {
+        if (autoCommit) {
+            db.setAutoCommit(true);
+        }
+    }
+    return resultCount;
+}

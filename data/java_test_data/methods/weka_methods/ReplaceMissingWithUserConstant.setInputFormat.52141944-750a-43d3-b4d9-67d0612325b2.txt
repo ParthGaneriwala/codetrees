@@ -1,0 +1,151 @@
+@Override
+public boolean setInputFormat(Instances instanceInfo) throws Exception {
+    super.setInputFormat(instanceInfo);
+    m_resolvedNominalStringConstant = m_nominalStringConstant;
+    m_resolvedNumericConstant = m_numericConstant;
+    m_resolvedDateConstant = m_dateConstant;
+    m_resolvedDateFormat = m_defaultDateFormat;
+    m_resolvedRange = m_range;
+    if (m_env == null) {
+        m_env = Environment.getSystemWide();
+    }
+    try {
+        if (m_resolvedNominalStringConstant != null && m_resolvedNominalStringConstant.length() > 0) {
+            m_resolvedNominalStringConstant = m_env.substitute(m_resolvedNominalStringConstant);
+        }
+        if (m_resolvedNumericConstant != null && m_resolvedNumericConstant.length() > 0) {
+            m_resolvedNumericConstant = m_env.substitute(m_resolvedNumericConstant);
+        }
+        if (m_resolvedDateConstant != null && m_resolvedDateConstant.length() > 0) {
+            m_resolvedDateConstant = m_env.substitute(m_resolvedDateConstant);
+        }
+        if (m_resolvedDateFormat != null && m_resolvedDateFormat.length() > 0) {
+            m_resolvedDateFormat = m_env.substitute(m_resolvedDateFormat);
+        }
+        if (m_resolvedRange != null && m_resolvedRange.length() > 0) {
+            m_resolvedRange = m_env.substitute(m_resolvedRange);
+        }
+    } catch (Exception ex) {
+    }
+    // try and set up a Range first directly from the supplied string
+    m_selectedRange = new Range(m_resolvedRange);
+    try {
+        m_selectedRange.setUpper(instanceInfo.numAttributes() - 1);
+    } catch (IllegalArgumentException e) {
+        // now try as a list of named attributes
+        String[] parts = m_resolvedRange.split(",");
+        if (parts.length == 0) {
+            throw new Exception("Must specify which attributes to replace missing values for!");
+        }
+        StringBuffer indexList = new StringBuffer();
+        for (String att : parts) {
+            att = att.trim();
+            Attribute a = instanceInfo.attribute(att);
+            if (a == null) {
+                throw new Exception("I can't find the requested attribute '" + att + "' in the incoming instances.");
+            }
+            indexList.append(",").append(a.index() + 1);
+        }
+        String result = indexList.toString();
+        result = result.substring(1, result.length());
+        m_selectedRange = new Range(result);
+        m_selectedRange.setUpper(instanceInfo.numAttributes() - 1);
+    }
+    boolean hasNominal = false;
+    boolean hasString = false;
+    boolean hasNumeric = false;
+    boolean hasDate = false;
+    for (int i = 0; i < instanceInfo.numAttributes(); i++) {
+        if (m_selectedRange.isInRange(i)) {
+            if (instanceInfo.attribute(i).isNominal()) {
+                hasNominal = true;
+            } else if (instanceInfo.attribute(i).isString()) {
+                hasString = true;
+            } else if (instanceInfo.attribute(i).isDate()) {
+                hasDate = true;
+            } else if (instanceInfo.attribute(i).isNumeric()) {
+                hasNumeric = true;
+            }
+        }
+    }
+    if (hasNominal || hasString) {
+        if (m_resolvedNominalStringConstant == null || m_resolvedNominalStringConstant.length() == 0) {
+            if (m_resolvedNumericConstant != null && m_resolvedNumericConstant.length() > 0) {
+                // use the supplied numeric constant as a nominal value
+                m_resolvedNominalStringConstant = "" + m_resolvedNumericConstant;
+            } else {
+                throw new Exception("Data contains nominal/string attributes and no " + "replacement constant has been supplied");
+            }
+        }
+    }
+    if (hasNumeric) {
+        if (m_numericConstant == null || m_numericConstant.length() == 0) {
+            if (m_resolvedNominalStringConstant != null && m_resolvedNominalStringConstant.length() > 0) {
+                // value (if we can parse it as a number)
+                try {
+                    Double.parseDouble(m_resolvedNominalStringConstant);
+                    m_resolvedNumericConstant = m_resolvedNominalStringConstant;
+                } catch (NumberFormatException e) {
+                    throw new Exception("Data contains numeric attributes and no numeric " + "constant has been supplied. Unable to parse nominal " + "constant as a number either.");
+                }
+            } else {
+                throw new Exception("Data contains numeric attributes and no " + "replacement constant has been supplied");
+            }
+        }
+        try {
+            m_numericConstVal = Double.parseDouble(m_resolvedNumericConstant);
+        } catch (NumberFormatException e) {
+            throw new Exception("Unable to parse numeric constant");
+        }
+    }
+    if (hasDate) {
+        if (m_resolvedDateConstant == null || m_resolvedDateConstant.length() == 0) {
+            throw new Exception("Data contains date attributes and no replacement constant has been " + "supplied");
+        }
+        SimpleDateFormat sdf = new SimpleDateFormat(m_resolvedDateFormat);
+        Date d = sdf.parse(m_resolvedDateConstant);
+        m_dateConstVal = d.getTime();
+    }
+    Instances outputFormat = new Instances(instanceInfo, 0);
+    // check for nominal attributes and add the supplied constant to the
+    // list of legal values (if necessary)
+    ArrayList<Attribute> updatedNoms = new ArrayList<Attribute>();
+    for (int i = 0; i < instanceInfo.numAttributes(); i++) {
+        if (i != instanceInfo.classIndex() && m_selectedRange.isInRange(i)) {
+            Attribute temp = instanceInfo.attribute(i);
+            if (temp.isNominal()) {
+                if (temp.indexOfValue(m_resolvedNominalStringConstant) < 0) {
+                    List<String> values = new ArrayList<String>();
+                    values.add(m_resolvedNominalStringConstant);
+                    for (int j = 0; j < temp.numValues(); j++) {
+                        values.add(temp.value(j));
+                    }
+                    Attribute newAtt = new Attribute(temp.name(), values);
+                    newAtt.setWeight(temp.weight());
+                    updatedNoms.add(newAtt);
+                }
+            }
+        }
+    }
+    if (updatedNoms.size() > 0) {
+        int nomCount = 0;
+        ArrayList<Attribute> atts = new ArrayList<Attribute>();
+        for (int i = 0; i < instanceInfo.numAttributes(); i++) {
+            if (i != instanceInfo.classIndex() && m_selectedRange.isInRange(i)) {
+                if (instanceInfo.attribute(i).isNominal()) {
+                    atts.add(updatedNoms.get(nomCount++));
+                } else {
+                    // Copy not necessary
+                    atts.add(instanceInfo.attribute(i));
+                }
+            } else {
+                // Copy not necessary
+                atts.add(instanceInfo.attribute(i));
+            }
+        }
+        outputFormat = new Instances(instanceInfo.relationName(), atts, 0);
+        outputFormat.setClassIndex(getInputFormat().classIndex());
+    }
+    setOutputFormat(outputFormat);
+    return true;
+}

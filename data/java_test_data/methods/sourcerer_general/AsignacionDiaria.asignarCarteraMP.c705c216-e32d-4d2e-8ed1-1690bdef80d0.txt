@@ -1,0 +1,92 @@
+private List<Llamada__c> asignarCarteraMP(ID idEmpresa, int maximoCarga, String metodoPago, List<Cobro> cobros, List<Cola> colas) throws Exception {
+    try {
+        List<Llamada__c> newLlamadas = new ArrayList<Llamada__c>();
+        // Paso 1. Ordenar la lista de cobros
+        if (metodoPago.equals(Empresa.METODO_PAGO_SALDO_MINIMO)) {
+            Collections.sort(cobros, new CobroTarjetaCreditoComparator());
+        } else {
+            Collections.sort(cobros, new CobroPrestamoComparator());
+        }
+        // Paso 2. Obtiene los feriados
+        List<Date> feriados = this.obtenerFeriados();
+        Date fechaRealInicioCiclo = new Date();
+        // Paso 3. Inicializa los dias de cobro de las colas
+        for (Cola cola : colas) {
+            DiaAgente dia = new DiaAgente(fechaRealInicioCiclo);
+            if (cola.getDiasCobro().size() == 0) {
+                cola.getDiasCobro().add(dia);
+            }
+        }
+        // Paso 4. Asignar cobros a agentes
+        Integer indexCobro = 0;
+        Integer pesoCobro = cobros.size();
+        for (Iterator<Cobro> iterCobro = cobros.iterator(); iterCobro.hasNext(); ) {
+            Cobro cobro = iterCobro.next();
+            logger.info("Asignando cobro " + (indexCobro + 1) + ": " + cobro.getCobro__c().getName() + " (" + cobro.getCobro__c().getId() + ").");
+            if (!cobro.isAsignado()) {
+                // Cobros del mismo cliente, se marcan en la lista con asignado = true
+                List<Cobro> cobrosAdicionales = this.obtenerCobrosMismoCliente(cobros, indexCobro);
+                // Se hace una sola lista
+                List<Cobro> cobrosAgendar = cobrosAdicionales;
+                cobrosAgendar.add(0, cobro);
+                // Ordena por nivel de mora para as�, buscar un agente que vea la mora mas alta
+                if (cobrosAgendar.size() > 1) {
+                    Collections.sort(cobrosAgendar, new NivelMoraComparator());
+                }
+                // Busca la cola que corresponda
+                Cola cola = this.obtenerColaCobro(cobrosAgendar.get(0), colas);
+                if (cola == null || maximoCarga == 0) {
+                    // Crea una llamada para el primer dia
+                    for (Cobro cobroAgendar : cobrosAgendar) {
+                        cobroAgendar.setAsignado(true);
+                        cobroAgendar.getCobro__c().setIsMarcadorPredictivo__c(false);
+                        if (cobroAgendar.isEsNuevo()) {
+                            // Crea la llamada.
+                            newLlamadas.add(this.crearLlamada(idEmpresa, cobro.getCobro__c().getOwnerId(), null, cobroAgendar.getCobro__c(), fechaRealInicioCiclo, cobroAgendar.getIdRecordTypeLlamada()));
+                        }
+                    }
+                } else {
+                    for (Cobro cobroAgendar : cobrosAgendar) {
+                        cobroAgendar.getCobro__c().setOwnerId(cola.getIdCola());
+                        cobroAgendar.getCobro__c().setAgente__c(null);
+                        cobroAgendar.setAsignado(true);
+                        cobroAgendar.getCobro__c().setIsMarcadorPredictivo__c(true);
+                        // Obtiene el ultimo dia de cobro de la lista de dias de cobro
+                        DiaAgente diaCola = cola.getDiasCobro().get(cola.getDiasCobro().size() - 1);
+                        if (cobroAgendar.isEsNuevo()) {
+                            // Crea la llamada.
+                            if (diaCola.getLlamadas().size() < maximoCarga) {
+                                // Crea una llamada para ese dia
+                                diaCola.getLlamadas().add(this.crearLlamada(idEmpresa, cola.getIdCola(), null, cobroAgendar.getCobro__c(), diaCola.getFecha(), cobroAgendar.getIdRecordTypeLlamada()));
+                            } else {
+                                // Crea otro d�a para la cola
+                                Date sigDia = Util.obtenerSiguienteDiaHabil(diaCola.getFecha(), feriados);
+                                DiaAgente newDiaCola = new DiaAgente(sigDia);
+                                // Crea una nueva llamada
+                                newDiaCola.getLlamadas().add(this.crearLlamada(idEmpresa, cola.getIdCola(), null, cobroAgendar.getCobro__c(), newDiaCola.getFecha(), cobroAgendar.getIdRecordTypeLlamada()));
+                                cola.getDiasCobro().add(newDiaCola);
+                            }
+                        }
+                    }
+                // for
+                }
+            }
+            // end if
+            indexCobro++;
+            pesoCobro--;
+        }
+        // End for
+        // Devuelve la lista de llamadas nuevas
+        logger.info("Num Llamadas sin cola " + newLlamadas.size());
+        for (Iterator<Cola> iterC = colas.iterator(); iterC.hasNext(); ) {
+            Cola cola = iterC.next();
+            for (DiaAgente diaCobro : cola.getDiasCobro()) {
+                newLlamadas.addAll(diaCobro.getLlamadas());
+            }
+        }
+        return newLlamadas;
+    } catch (Exception e) {
+        logger.error(e);
+        throw e;
+    }
+}

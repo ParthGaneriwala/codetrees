@@ -1,0 +1,54 @@
+public void close(int modelid) throws IOException {
+    ModelStorage model = models[modelid];
+    if (model.writing) {
+        /*
+			for(WordFile wordFile : model.writingData.getWords().values()) {
+				wordFile.finishWriting();
+			}
+			*/
+        if (!model.dir.isDirectory()) {
+            model.dir.mkdirs();
+        }
+        ArrayList<String> filenames = new ArrayList<String>();
+        byte fileId = (byte) filenames.size();
+        String fname = "file-" + fileId + ".data";
+        filenames.add(fname);
+        FileOutputStream currentFile = new FileOutputStream(new File(model.dir, fname));
+        long[] words = new long[model.writingData.getWords().size()];
+        WordFileDesc[] descs = new WordFileDesc[words.length];
+        int wordNum = 0;
+        for (Map.Entry<FactorTuple, WordFile> entry : model.writingData.getWords().entrySet()) {
+            FactorTuple word = entry.getKey();
+            WordFile wordFile = entry.getValue();
+            // flush the buffers
+            wordFile.finishWriting();
+            // compactify
+            long startPosition = currentFile.getChannel().position();
+            if (startPosition >= maxFileSize) {
+                currentFile.close();
+                fileId = (byte) filenames.size();
+                fname = "file-" + fileId + ".data";
+                filenames.add(fname);
+                currentFile = new FileOutputStream(new File(model.dir, fname));
+                startPosition = 0;
+            }
+            wordFile.compactify(currentFile, compress);
+            long endPosition = currentFile.getChannel().position();
+            WordFileDesc wordDesc = new WordFileDesc(fileId, (int) startPosition, (int) (endPosition - startPosition), compress);
+            words[wordNum] = word.getBits();
+            descs[wordNum] = wordDesc;
+            ++wordNum;
+        }
+        currentFile.close();
+        CompactReadOnlyLong2ObjectHashMap<WordFileDesc> wordDescriptors = new CompactReadOnlyLong2ObjectHashMap<WordFileDesc>(words, descs);
+        model.descriptor.setWordDescriptors(wordDescriptors);
+        model.descriptor.setFilenames(filenames.toArray(new String[0]));
+        ObjectOutputStream ous = new ObjectOutputStream(IO.getOutputStream(new File(model.dir, DESCRIPTOR_FNAME)));
+        model.descriptor.writeExternal(ous);
+        ous.close();
+        long totalProbTrees = WordFile.getTotalprobtrees();
+        long duplicateProbTrees = WordFile.getDuplicateprobtrees();
+        long savedSpace = WordFile.getTotalspacesaved();
+        System.err.printf("Eliminated duplicated %d out of %d prob trees, saved %d bytes\n", duplicateProbTrees, totalProbTrees, savedSpace);
+    }
+}

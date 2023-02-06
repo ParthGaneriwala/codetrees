@@ -1,0 +1,103 @@
+protected void findBestModel() throws Exception {
+    // For the weighted case we still use numInstances in
+    // the calculation of the Akaike criterion.
+    int numInstances = m_TransformedData.numInstances();
+    if (m_Debug) {
+        System.out.println((new Instances(m_TransformedData, 0)).toString());
+    }
+    // Perform a regression for the full model, and remove colinear attributes
+    do {
+        m_Coefficients = doRegression(m_SelectedAttributes);
+    } while (m_EliminateColinearAttributes && deselectColinearAttributes(m_SelectedAttributes, m_Coefficients));
+    // Figure out current number of attributes + 1. (We treat this model
+    // as the full model for the Akaike-based methods.)
+    int numAttributes = 1;
+    for (boolean m_SelectedAttribute : m_SelectedAttributes) {
+        if (m_SelectedAttribute) {
+            numAttributes++;
+        }
+    }
+    double fullMSE = calculateSE(m_SelectedAttributes, m_Coefficients);
+    double akaike = (numInstances - numAttributes) + 2 * numAttributes;
+    if (m_Debug) {
+        System.out.println("Initial Akaike value: " + akaike);
+    }
+    boolean improved;
+    int currentNumAttributes = numAttributes;
+    switch(m_AttributeSelection) {
+        case SELECTION_GREEDY:
+            // Greedy attribute removal
+            do {
+                boolean[] currentSelected = m_SelectedAttributes.clone();
+                improved = false;
+                currentNumAttributes--;
+                for (int i = 0; i < m_SelectedAttributes.length; i++) {
+                    if (currentSelected[i]) {
+                        // Calculate the akaike rating without this attribute
+                        currentSelected[i] = false;
+                        double[] currentCoeffs = doRegression(currentSelected);
+                        double currentMSE = calculateSE(currentSelected, currentCoeffs);
+                        double currentAkaike = currentMSE / fullMSE * (numInstances - numAttributes) + 2 * currentNumAttributes;
+                        if (m_Debug) {
+                            System.out.println("(akaike: " + currentAkaike);
+                        }
+                        // If it is better than the current best
+                        if (currentAkaike < akaike) {
+                            if (m_Debug) {
+                                System.err.println("Removing attribute " + (i + 1) + " improved Akaike: " + currentAkaike);
+                            }
+                            improved = true;
+                            akaike = currentAkaike;
+                            System.arraycopy(currentSelected, 0, m_SelectedAttributes, 0, m_SelectedAttributes.length);
+                            m_Coefficients = currentCoeffs;
+                        }
+                        currentSelected[i] = true;
+                    }
+                }
+            } while (improved);
+            break;
+        case SELECTION_M5:
+            // standardised coefficient until no improvement in Akaike
+            do {
+                improved = false;
+                currentNumAttributes--;
+                // Find attribute with smallest SC
+                double minSC = 0;
+                int minAttr = -1, coeff = 0;
+                for (int i = 0; i < m_SelectedAttributes.length; i++) {
+                    if (m_SelectedAttributes[i]) {
+                        double SC = Math.abs(m_Coefficients[coeff] * m_StdDevs[i] / m_ClassStdDev);
+                        if ((coeff == 0) || (SC < minSC)) {
+                            minSC = SC;
+                            minAttr = i;
+                        }
+                        coeff++;
+                    }
+                }
+                // See whether removing it improves the Akaike score
+                if (minAttr >= 0) {
+                    m_SelectedAttributes[minAttr] = false;
+                    double[] currentCoeffs = doRegression(m_SelectedAttributes);
+                    double currentMSE = calculateSE(m_SelectedAttributes, currentCoeffs);
+                    double currentAkaike = currentMSE / fullMSE * (numInstances - numAttributes) + 2 * currentNumAttributes;
+                    if (m_Debug) {
+                        System.out.println("(akaike: " + currentAkaike);
+                    }
+                    // If it is better than the current best
+                    if (currentAkaike < akaike) {
+                        if (m_Debug) {
+                            System.err.println("Removing attribute " + (minAttr + 1) + " improved Akaike: " + currentAkaike);
+                        }
+                        improved = true;
+                        akaike = currentAkaike;
+                        m_Coefficients = currentCoeffs;
+                    } else {
+                        m_SelectedAttributes[minAttr] = true;
+                    }
+                }
+            } while (improved);
+            break;
+        case SELECTION_NONE:
+            break;
+    }
+}

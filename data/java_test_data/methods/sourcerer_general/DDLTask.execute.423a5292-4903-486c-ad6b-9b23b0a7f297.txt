@@ -1,0 +1,206 @@
+public int execute() {
+    // Create the db
+    Hive db;
+    FileSystem fs;
+    try {
+        db = Hive.get(conf);
+        fs = FileSystem.get(conf);
+        createTableDesc crtTbl = work.getCreateTblDesc();
+        if (crtTbl != null) {
+            // create the table
+            Table tbl = new Table(crtTbl.getTableName());
+            tbl.setFields(crtTbl.getCols());
+            StorageDescriptor tblStorDesc = tbl.getTTable().getSd();
+            if (crtTbl.getBucketCols() != null)
+                tblStorDesc.setBucketCols(crtTbl.getBucketCols());
+            if (crtTbl.getSortCols() != null)
+                tbl.setSortCols(crtTbl.getSortCols());
+            if (crtTbl.getPartCols() != null)
+                tbl.setPartCols(crtTbl.getPartCols());
+            if (crtTbl.getNumBuckets() != -1)
+                tblStorDesc.setNumBuckets(crtTbl.getNumBuckets());
+            if (crtTbl.getFieldDelim() != null)
+                tbl.setSerdeParam(Constants.FIELD_DELIM, crtTbl.getFieldDelim());
+            if (crtTbl.getCollItemDelim() != null)
+                tbl.setSerdeParam(Constants.COLLECTION_DELIM, crtTbl.getCollItemDelim());
+            if (crtTbl.getMapKeyDelim() != null)
+                tbl.setSerdeParam(Constants.MAPKEY_DELIM, crtTbl.getMapKeyDelim());
+            if (crtTbl.getLineDelim() != null)
+                tbl.setSerdeParam(Constants.LINE_DELIM, crtTbl.getLineDelim());
+            if (crtTbl.getComment() != null)
+                tbl.setProperty("comment", crtTbl.getComment());
+            if (crtTbl.getLocation() != null)
+                tblStorDesc.setLocation(crtTbl.getLocation());
+            if (crtTbl.isSequenceFile()) {
+                tbl.setInputFormatClass(SequenceFileInputFormat.class);
+                tbl.setOutputFormatClass(SequenceFileOutputFormat.class);
+            } else {
+                tbl.setOutputFormatClass(IgnoreKeyTextOutputFormat.class);
+                tbl.setInputFormatClass(TextInputFormat.class);
+            }
+            if (crtTbl.isExternal())
+                tbl.setProperty("EXTERNAL", "TRUE");
+            // 'n' columns where 'n' is the length of the bucketed columns.
+            if ((tbl.getBucketCols() != null) && (tbl.getSortCols() != null)) {
+                List<String> bucketCols = tbl.getBucketCols();
+                List<Order> sortCols = tbl.getSortCols();
+                if (sortCols.size() >= bucketCols.size()) {
+                    boolean found = true;
+                    Iterator<String> iterBucketCols = bucketCols.iterator();
+                    while (iterBucketCols.hasNext()) {
+                        String bucketCol = iterBucketCols.next();
+                        boolean colFound = false;
+                        for (int i = 0; i < bucketCols.size(); i++) {
+                            if (bucketCol.equals(sortCols.get(i).getCol())) {
+                                colFound = true;
+                                break;
+                            }
+                        }
+                        if (colFound == false) {
+                            found = false;
+                            break;
+                        }
+                    }
+                    if (found)
+                        tbl.setProperty("SORTBUCKETCOLSPREFIX", "TRUE");
+                }
+            }
+            // create the table
+            db.createTable(tbl);
+            return 0;
+        }
+        dropTableDesc dropTbl = work.getDropTblDesc();
+        if (dropTbl != null) {
+            // drop the table
+            db.dropTable(dropTbl.getTableName());
+            return 0;
+        }
+        alterTableDesc alterTbl = work.getAlterTblDesc();
+        if (alterTbl != null) {
+            // alter the table
+            Table tbl = db.getTable(alterTbl.getOldName());
+            if (alterTbl.getOp() == alterTableDesc.alterTableTypes.RENAME)
+                tbl.getTTable().setTableName(alterTbl.getNewName());
+            else
+                tbl.getTTable().getSd().setCols(alterTbl.getNewCols());
+            try {
+                db.alterTable(alterTbl.getOldName(), tbl);
+            } catch (InvalidOperationException e) {
+                LOG.info("alter table: " + StringUtils.stringifyException(e));
+                return 1;
+            } catch (MetaException e) {
+                return 1;
+            } catch (TException e) {
+                return 1;
+            }
+            return 0;
+        }
+        descTableDesc descTbl = work.getDescTblDesc();
+        if (descTbl != null) {
+            boolean found = true;
+            try {
+                // describe the table - populate the output stream
+                Table tbl = db.getTable(descTbl.getTableName());
+                LOG.info("DDLTask: got data for " + tbl.getName());
+                // write the results in the file
+                DataOutput os = (DataOutput) fs.create(descTbl.getResFile());
+                List<FieldSchema> cols = tbl.getCols();
+                Iterator<FieldSchema> iterCols = cols.iterator();
+                boolean firstCol = true;
+                while (iterCols.hasNext()) {
+                    if (!firstCol)
+                        os.write(terminator);
+                    FieldSchema col = iterCols.next();
+                    os.write(col.getName().getBytes("UTF-8"));
+                    os.write(separator);
+                    os.write(col.getType().getBytes("UTF-8"));
+                    if (col.getComment() != null) {
+                        os.write(separator);
+                        os.write(col.getComment().getBytes("UTF-8"));
+                    }
+                    firstCol = false;
+                }
+                // also return the partitioning columns
+                List<FieldSchema> partCols = tbl.getPartCols();
+                Iterator<FieldSchema> iterPartCols = partCols.iterator();
+                while (iterPartCols.hasNext()) {
+                    os.write(terminator);
+                    FieldSchema col = iterPartCols.next();
+                    os.write(col.getName().getBytes("UTF-8"));
+                    os.write(separator);
+                    os.write(col.getType().getBytes("UTF-8"));
+                    if (col.getComment() != null) {
+                        os.write(separator);
+                        os.write(col.getComment().getBytes("UTF-8"));
+                    }
+                }
+                LOG.info("DDLTask: written data for " + tbl.getName());
+                ((FSDataOutputStream) os).close();
+            } catch (FileNotFoundException e) {
+                LOG.info("describe table: " + StringUtils.stringifyException(e));
+                return 1;
+            } catch (InvalidTableException e) {
+                found = false;
+            } catch (IOException e) {
+                LOG.info("describe table: " + StringUtils.stringifyException(e));
+                return 1;
+            }
+            if (!found) {
+                try {
+                    DataOutput outStream = (DataOutput) fs.open(descTbl.getResFile());
+                    String errMsg = "Table " + descTbl.getTableName() + " does not exist";
+                    outStream.write(errMsg.getBytes("UTF-8"));
+                    ((FSDataOutputStream) outStream).close();
+                } catch (FileNotFoundException e) {
+                    LOG.info("describe table: " + StringUtils.stringifyException(e));
+                    return 1;
+                } catch (IOException e) {
+                    LOG.info("describe table: " + StringUtils.stringifyException(e));
+                    return 1;
+                }
+            }
+            return 0;
+        }
+        showTablesDesc showTbls = work.getShowTblsDesc();
+        if (showTbls != null) {
+            // get the tables for the desired pattenn - populate the output stream
+            List<String> tbls = null;
+            if (showTbls.getPattern() != null) {
+                LOG.info("pattern: " + showTbls.getPattern());
+                tbls = db.getTablesByPattern(showTbls.getPattern());
+                LOG.info("results : " + tbls.size());
+            } else
+                tbls = db.getAllTables();
+            // write the results in the file
+            try {
+                DataOutput outStream = (DataOutput) fs.create(showTbls.getResFile());
+                SortedSet<String> sortedTbls = new TreeSet<String>(tbls);
+                Iterator<String> iterTbls = sortedTbls.iterator();
+                boolean firstCol = true;
+                while (iterTbls.hasNext()) {
+                    if (!firstCol)
+                        outStream.write(separator);
+                    outStream.write(iterTbls.next().getBytes("UTF-8"));
+                    firstCol = false;
+                }
+                ((FSDataOutputStream) outStream).close();
+            } catch (FileNotFoundException e) {
+                LOG.info("show table: " + StringUtils.stringifyException(e));
+                return 1;
+            } catch (IOException e) {
+                LOG.info("show table: " + StringUtils.stringifyException(e));
+                return 1;
+            }
+            return 0;
+        }
+    } catch (HiveException e) {
+        console.printError("FAILED: Error in metadata: " + e.getMessage(), "\n" + StringUtils.stringifyException(e));
+        LOG.debug(StringUtils.stringifyException(e));
+        return 1;
+    } catch (Exception e) {
+        console.printError("Failed with exception " + e.getMessage(), "\n" + StringUtils.stringifyException(e));
+        return (1);
+    }
+    assert false;
+    return 0;
+}

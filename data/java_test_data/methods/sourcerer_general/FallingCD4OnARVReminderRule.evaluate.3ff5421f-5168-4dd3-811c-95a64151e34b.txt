@@ -1,0 +1,50 @@
+@Override
+protected Result evaluate(final LogicContext context, final Integer patientId, final Map<String, Object> parameters) throws LogicException {
+    Result result = new Result();
+    ObsWithRestrictionRule obsWithRestrictionRule = new ObsWithStringRestrictionRule();
+    parameters.put(EvaluableConstants.OBS_FETCH_SIZE, 2);
+    parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.CD4_COUNT));
+    Result clusterResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+    // only process when we have at least two results
+    if (CollectionUtils.size(clusterResults) >= 2) {
+        Calendar calendar = Calendar.getInstance();
+        // three months ago
+        calendar.add(Calendar.MONTH, -3);
+        Date threeMonthsAgo = calendar.getTime();
+        // we already know there's at least two results, so we can use the magic number here to get last and second from last result
+        Result currentClusterResult = clusterResults.get(0);
+        Result previousClusterResult = clusterResults.get(1);
+        Double percentage = (previousClusterResult.toNumber() - currentClusterResult.toNumber()) / previousClusterResult.toNumber();
+        if (currentClusterResult.getResultDate().before(threeMonthsAgo) && percentage > 0.25) {
+            AntiRetroViralRule antiRetroViralRule = new AntiRetroViralRule();
+            // prepare the encounter types
+            parameters.put(EvaluableConstants.ENCOUNTER_TYPE, Arrays.asList(EvaluableNameConstants.ENCOUNTER_TYPE_ADULT_INITIAL, EvaluableNameConstants.ENCOUNTER_TYPE_ADULT_RETURN, EvaluableNameConstants.ENCOUNTER_TYPE_ADULT_NONCLINICALMEDICATION));
+            Result arvResults = antiRetroViralRule.eval(context, patientId, parameters);
+            if (CollectionUtils.isNotEmpty(arvResults)) {
+                // we don't want to limit the search on the test
+                parameters.remove(EvaluableConstants.OBS_FETCH_SIZE);
+                // search for the test
+                parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.TESTS_ORDERED));
+                parameters.put(EvaluableConstants.OBS_VALUE_CODED, Arrays.asList(EvaluableNameConstants.CD4_PANEL, EvaluableNameConstants.HIV_DNA_POLYMERASE_CHAIN_REACTION_QUALITATIVE, EvaluableNameConstants.HIV_VIRAL_LOAD_QUANTITATIVE));
+                Result testResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+                calendar.setTime(currentClusterResult.getResultDate());
+                calendar.add(Calendar.MONTH, 3);
+                Date threeMonthsAfterResult = calendar.getTime();
+                Boolean testExists = Boolean.FALSE;
+                Boolean beforeDate = Boolean.FALSE;
+                Integer testCounter = 0;
+                while (testCounter < testResults.size() && !testExists && !beforeDate) {
+                    Result testResult = testResults.get(testCounter++);
+                    // if current result already before 3 months, then all of them are before the cutoff point date
+                    if (testResult.getResultDate().before(threeMonthsAfterResult))
+                        beforeDate = Boolean.TRUE;
+                    else
+                        testExists = Boolean.TRUE;
+                }
+                if (!testExists)
+                    result.add(new Result(String.valueOf(parameters.get(ReminderParameters.DISPLAYED_REMINDER_TEXT))));
+            }
+        }
+    }
+    return result;
+}

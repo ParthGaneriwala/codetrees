@@ -1,0 +1,49 @@
+@Override
+public boolean batchFinished() throws Exception {
+    if (getInputFormat() == null) {
+        throw new IllegalStateException("No input instance format defined");
+    }
+    Instances toFilter = getInputFormat();
+    if (!isFirstBatchDone()) {
+        // filter out attributes if necessary
+        Instances toFilterIgnoringAttributes = removeIgnored(toFilter);
+        // serialized model or build clusterer from scratch?
+        File file = getSerializedClustererFile();
+        if (!file.isDirectory()) {
+            // new ObjectInputStream(new FileInputStream(file));
+            ObjectInputStream ois = SerializationHelper.getObjectInputStream(new FileInputStream(file));
+            m_ActualClusterer = (Clusterer) ois.readObject();
+            Instances header = null;
+            // let's see whether there's an Instances header stored as well
+            try {
+                header = (Instances) ois.readObject();
+            } catch (Exception e) {
+            // ignored
+            }
+            ois.close();
+            // same dataset format?
+            if ((header != null) && (!header.equalHeaders(toFilterIgnoringAttributes))) {
+                throw new WekaException("Training header of clusterer and filter dataset don't match:\n" + header.equalHeadersMsg(toFilterIgnoringAttributes));
+            }
+        } else {
+            m_ActualClusterer = AbstractClusterer.makeCopy(m_Clusterer);
+            m_ActualClusterer.buildClusterer(toFilterIgnoringAttributes);
+        }
+        // create output dataset with new attribute
+        Instances filtered = new Instances(toFilter, 0);
+        ArrayList<String> nominal_values = new ArrayList<String>(m_ActualClusterer.numberOfClusters());
+        for (int i = 0; i < m_ActualClusterer.numberOfClusters(); i++) {
+            nominal_values.add("cluster" + (i + 1));
+        }
+        filtered.insertAttributeAt(new Attribute("cluster", nominal_values), filtered.numAttributes());
+        setOutputFormat(filtered);
+    }
+    // build new dataset
+    for (int i = 0; i < toFilter.numInstances(); i++) {
+        convertInstance(toFilter.instance(i));
+    }
+    flushInput();
+    m_NewBatch = true;
+    m_FirstBatchDone = true;
+    return (numPendingOutput() != 0);
+}

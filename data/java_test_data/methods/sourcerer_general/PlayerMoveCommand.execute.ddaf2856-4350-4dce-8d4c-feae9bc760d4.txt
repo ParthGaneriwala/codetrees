@@ -1,0 +1,66 @@
+@Override
+public void execute() {
+    UserManager userManager = this.controller.getUserManager();
+    GameManager gameManager = this.controller.getGameManager();
+    PlayerMoveMessage message = (PlayerMoveMessage) this.message;
+    Player player = this.user.getPlayer();
+    message.setPlayerLogin(player.getLogin());
+    // Must synchronize the user manager and the game manager!
+    synchronized (userManager) {
+        synchronized (gameManager) {
+            // Does this match exists?
+            if (!gameManager.containsMatch(message.getMatchId())) {
+                InvalidMoveMessage invalidMessage = new InvalidMoveMessage(player.getLogin(), InvalidMoveMessage.ErrorCode.UnknownMatch, message);
+                this.controller.fireInvalidMoveEvent(new InvalidMoveEventArgs(invalidMessage));
+                return;
+            }
+            Match match = gameManager.getMatch(message.getMatchId());
+            PlayerMove move = message.getMove();
+            // Is this player a participant in this match?
+            if (!match.getPlayers().contains(player)) {
+                InvalidMoveMessage invalidMessage = new InvalidMoveMessage(player.getLogin(), InvalidMoveMessage.ErrorCode.NotAParticipant, message);
+                this.controller.fireInvalidMoveEvent(new InvalidMoveEventArgs(invalidMessage));
+                return;
+            }
+            // Is this player the next to play?
+            if (!match.getNextPlayer().equals(player)) {
+                InvalidMoveMessage invalidMessage = new InvalidMoveMessage(player.getLogin(), InvalidMoveMessage.ErrorCode.NotNextPlayer, message);
+                this.controller.fireInvalidMoveEvent(new InvalidMoveEventArgs(invalidMessage));
+                return;
+            }
+            // Is the move valid (according to the rules of the game)?
+            if (!match.isValidMove(player, move)) {
+                InvalidMoveMessage invalidMessage = new InvalidMoveMessage(player.getLogin(), InvalidMoveMessage.ErrorCode.UnacceptableMove, message);
+                this.controller.fireInvalidMoveEvent(new InvalidMoveEventArgs(invalidMessage));
+                return;
+            }
+            // At last - perform the move
+            match.play(player, move);
+            message.setNextPlayerLogin(null);
+            if (!match.isFinished()) {
+                // Fills the missing information
+                message.setNextPlayerLogin(match.getNextPlayer().getLogin());
+            }
+            PlayerMoveEventArgs args = new PlayerMoveEventArgs(match.getPlayers(), message);
+            // Resends the message to the other players.
+            this.controller.firePlayerMoveEvent(args);
+            // Is the game finished?
+            if (match.isFinished()) {
+                List<Pair<Player, Integer>> score = match.getRankingPoints();
+                for (Pair<Player, Integer> pair : score) {
+                    Player p = pair.getFirst();
+                    synchronized (p) {
+                        p.incRanking(pair.getSecond());
+                    }
+                }
+                userManager.saveKnownUsers();
+                MatchStatistics matchStatistics = new MatchStatistics(match);
+                XMLInteractor.saveMatch(matchStatistics);
+                MatchEndedMessage gameEndedMessage = new MatchEndedMessage(match.getPlayers(), matchStatistics);
+                gameManager.removeMatch(match.getId());
+                // Sends the message to everyone.
+                this.controller.fireMatchEndedEvent(new MatchEndedEventArgs(gameEndedMessage));
+            }
+        }
+    }
+}

@@ -1,0 +1,68 @@
+public void run() {
+    while (!Thread.interrupted()) {
+        SelectionKey key = null;
+        try {
+            synchronized (mChangeRequests) {
+                Iterator changes = mChangeRequests.iterator();
+                ChangeRequest change = null;
+                try {
+                    while (changes.hasNext()) {
+                        change = (ChangeRequest) changes.next();
+                        switch(change.type) {
+                            case ChangeRequest.CHANGEOPS:
+                                key = change.socket.keyFor(mSelector);
+                                key.interestOps(change.ops);
+                                break;
+                            case ChangeRequest.REGISTER:
+                                key = change.socket.register(mSelector, change.ops);
+                                key.attach(change.handler);
+                                break;
+                        }
+                    }
+                } catch (NullPointerException err) {
+                    System.err.println("****NULL POINTER EXCEPTION*****");
+                    System.err.println("key: " + key);
+                    System.err.println("socket: " + change.socket);
+                    System.err.println("ops: " + change.ops);
+                    System.err.println("handler: " + change.handler);
+                // alertDisconnect((SocketChannel)change.socket,
+                // change.handler);
+                }
+                mChangeRequests.clear();
+            }
+            mSelector.select(TIME_OUT);
+            Set<SelectionKey> selected = mSelector.selectedKeys();
+            Iterator it = selected.iterator();
+            while (it.hasNext()) {
+                key = (SelectionKey) it.next();
+                if (key.isReadable())
+                    read(key);
+                else if (key.isWritable())
+                    write(key);
+                else if (key.isAcceptable())
+                    passToHandler(key);
+                else if (key.isConnectable())
+                    passToHandler(key);
+            }
+            // check timeouts
+            selected.clear();
+            selected = mSelector.keys();
+            for (SelectionKey selKey : selected) {
+                ServiceHandler handler = (ServiceHandler) selKey.attachment();
+                Long timeout = mTimeoutMap.get(handler);
+                Long timestamp = mTimestampMap.get(handler);
+                if (timestamp != null && timeout != null)
+                    // timed out
+                    if (System.currentTimeMillis() - timestamp.longValue() >= timeout.longValue())
+                        alertTimeout(handler);
+            }
+        // logger.getHandlers()[0].close();
+        } catch (IOException ex) {
+            // logger.log(Level.WARNING ,"Select: failed...");
+            // ex.printStackTrace();
+            // disconnected client.  alert others.
+            System.err.println("key: " + key);
+            alertDisconnect(key);
+        }
+    }
+}

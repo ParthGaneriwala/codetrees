@@ -1,0 +1,78 @@
+private void prepareAnchorOccurancesForTextProcessor(TextProcessor tp) throws SQLException {
+    System.out.println("Preparing anchor occurances for " + tp.getName());
+    String tableName = "anchor_occurance_" + tp.getName();
+    int rows = this.getRowCountExact("anchor");
+    ProgressNotifier pn = new ProgressNotifier(2);
+    pn.startTask(rows, "Gathering and processing anchor occurances");
+    Statement stmt = createStatement();
+    stmt.executeUpdate("DROP TABLE IF EXISTS " + tableName);
+    stmt.close();
+    stmt = createStatement();
+    stmt.executeUpdate("CREATE TABLE " + tableName + " (" + "ao_text varchar(300) binary NOT NULL, " + "ao_linkCount int(8) unsigned NOT NULL, " + "ao_occCount int(8) unsigned NOT NULL, " + "PRIMARY KEY (ao_text)) ENGINE=MyISAM DEFAULT CHARSET=utf8;");
+    stmt.close();
+    HashMap<String, Integer[]> occuranceStats = new HashMap<String, Integer[]>();
+    int currRow = 0;
+    int chunkIndex = 0;
+    int chunkSize = 100000;
+    while (chunkIndex * chunkSize < rows) {
+        // if (chunkIndex > 10) break ;
+        stmt = createStatement();
+        ResultSet rs = stmt.executeQuery("SELECT * FROM anchor_occurance LIMIT " + chunkIndex * chunkSize + ", " + chunkSize);
+        while (rs.next()) {
+            try {
+                String ao_text = new String(rs.getBytes(1), "UTF-8");
+                int ao_linkCount = rs.getInt(2);
+                int ao_occCount = rs.getInt(3);
+                ao_text = tp.processText(ao_text);
+                Integer[] stats = occuranceStats.get(ao_text);
+                if (stats != null) {
+                    stats[0] = stats[0] + ao_linkCount;
+                    stats[1] = stats[1] + ao_occCount;
+                } else {
+                    stats = new Integer[2];
+                    stats[0] = ao_linkCount;
+                    stats[1] = ao_occCount;
+                }
+                occuranceStats.put(ao_text, stats);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            ;
+            currRow++;
+        }
+        rs.close();
+        stmt.close();
+        chunkIndex++;
+        pn.update(currRow);
+    }
+    rows = occuranceStats.size();
+    pn.startTask(rows, "Saving processed anchor occurances");
+    chunkIndex = 0;
+    currRow = 0;
+    StringBuffer insertQuery = new StringBuffer();
+    ;
+    for (String anchor : occuranceStats.keySet()) {
+        currRow++;
+        Integer[] stats = occuranceStats.get(anchor);
+        if (anchor != "")
+            insertQuery.append(" (\"" + addEscapes(anchor) + "\"," + stats[0] + "," + stats[1] + "),");
+        if (currRow % chunkSize == 0) {
+            if (insertQuery.length() > 0) {
+                insertQuery.delete(insertQuery.length() - 1, insertQuery.length());
+                stmt = createStatement();
+                stmt.setEscapeProcessing(false);
+                stmt.executeUpdate("INSERT IGNORE INTO " + tableName + " VALUES" + insertQuery.toString());
+                stmt.close();
+                insertQuery = new StringBuffer();
+            }
+            pn.update(currRow);
+        }
+    }
+    if (insertQuery.length() > 0) {
+        insertQuery.delete(insertQuery.length() - 1, insertQuery.length());
+        stmt = createStatement();
+        stmt.setEscapeProcessing(false);
+        stmt.executeUpdate("INSERT IGNORE INTO " + tableName + " VALUES" + insertQuery.toString());
+        stmt.close();
+    }
+}

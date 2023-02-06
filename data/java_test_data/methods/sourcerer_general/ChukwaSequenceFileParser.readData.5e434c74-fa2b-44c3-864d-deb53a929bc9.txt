@@ -1,0 +1,71 @@
+public static List<Record> readData(String cluster, String dataSource, int maxRows, long t1, long t0, long maxOffset, String filter, String fileName, FileSystem fs, Configuration conf) throws MalformedFileFormat {
+    // String source = "NameNode." + fileName;
+    List<Record> records = new LinkedList<Record>();
+    SequenceFile.Reader r = null;
+    int lineCount = 0;
+    if (filter != null) {
+        filter = filter.toLowerCase();
+    }
+    try {
+        if (!fs.exists(new Path(fileName))) {
+            System.out.println("fileName not there!");
+            return records;
+        }
+        System.out.println("NameNodeParser Open [" + fileName + "]");
+        r = new SequenceFile.Reader(fs, new Path(fileName), conf);
+        System.out.println("NameNodeParser Open2 [" + fileName + "]");
+        long timestamp = 0;
+        int listSize = 0;
+        long offset = 0;
+        // HdfsWriter.HdfsWriterKey key = new HdfsWriter.HdfsWriterKey();
+        Text key = new Text();
+        ChukwaRecord evt = new ChukwaRecord();
+        while (r.next(key, evt)) {
+            lineCount++;
+            System.out.println("NameNodeParser Line [" + evt.getValue(Record.bodyField) + "]");
+            if (evt != null) {
+                timestamp = evt.getTime();
+                if (timestamp < t0) {
+                    System.out.println("Line not in range. Skipping: " + evt.getValue(Record.bodyField));
+                    System.out.println("Search for: " + new Date(t0) + " is :" + new Date(timestamp));
+                    continue;
+                } else if (// JB (epochTS < maxDate)
+                (timestamp < t1) && (offset < maxOffset)) {
+                    System.out.println("In Range: " + evt.getValue(Record.bodyField));
+                    boolean valid = false;
+                    if ((filter == null || filter.equals(""))) {
+                        valid = true;
+                    } else if (evt.getValue(Record.rawField).toLowerCase().indexOf(filter) > 0) {
+                        System.out.println("MATCH " + filter + "===========================>>>>>>>" + evt.getValue(Record.rawField));
+                        valid = true;
+                    }
+                    if (valid) {
+                        records.add(evt);
+                        evt = new ChukwaRecord();
+                        listSize = records.size();
+                        if (listSize > maxRows) {
+                            records.remove(0);
+                            System.out.println("==========>>>>>REMOVING: " + evt.getValue(Record.bodyField));
+                        }
+                    } else {
+                        System.out.println("In Range ==================>>>>>>>>> OUT Regex: " + evt.getValue(Record.bodyField));
+                    }
+                } else {
+                    System.out.println("Line out of range. Stopping now: " + evt.getValue(Record.bodyField));
+                    break;
+                }
+            }
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+    } finally {
+        System.out.println("File: " + fileName + " Line count: " + lineCount);
+        if (r != null) {
+            try {
+                r.close();
+            } catch (IOException e) {
+            }
+        }
+    }
+    return records;
+}

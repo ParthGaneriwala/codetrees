@@ -1,0 +1,77 @@
+public void testBasicSubscription() throws Exception {
+    // add the buddy to the buddy list - sends SUBSCRIBE, gets response
+    PresenceSubscriber s = getAlicePhone().addBuddy(getBobUri(), 60, 1000);
+    // check the return info
+    assertNotNull(s);
+    assertEquals(1, getAlicePhone().getBuddyList().size());
+    assertEquals(0, getAlicePhone().getRetiredBuddies().size());
+    assertEquals(getBobUri(), s.getTargetUri());
+    // call anytime to get
+    assertNotNull(getAlicePhone().getBuddyInfo(getBobUri()));
+    // Subscription
+    assertEquals(SipResponse.OK, s.getReturnCode());
+    assertTrue(s.format(), s.processResponse(1000));
+    // check the response processing results
+    assertTrue(s.isSubscriptionActive());
+    assertTrue(s.getTimeLeft() <= 60);
+    Response response = (Response) s.getLastReceivedResponse().getMessage();
+    assertEquals(60, response.getExpires().getExpires());
+    // wait for a NOTIFY
+    RequestEvent reqevent = s.waitNotify(10000);
+    assertNotNull(reqevent);
+    assertNoSubscriptionErrors(s);
+    // examine the request object
+    Request request = reqevent.getRequest();
+    assertEquals(Request.NOTIFY, request.getMethod());
+    assertBetween(55, 60, ((SubscriptionStateHeader) request.getHeader(SubscriptionStateHeader.NAME)).getExpires());
+    // process the NOTIFY
+    response = s.processNotify(reqevent);
+    // reply to the NOTIFY
+    assertTrue(s.format(), s.replyToNotify(reqevent, response));
+    // check PRESENCE info - devices/tuples
+    // -----------------------------------------------
+    HashMap<String, PresenceDeviceInfo> devices = s.getPresenceDevices();
+    assertEquals(1, devices.size());
+    PresenceDeviceInfo dev = devices.values().iterator().next();
+    assertNotNull(dev);
+    assertEquals("closed", dev.getBasicStatus());
+    Thread.sleep(200);
+    PublishSession publishSession = new PublishSession(getBobPhone());
+    Request publish = publishSession.newPublish(getClass().getResourceAsStream("publish1.xml"), 20);
+    publishSession.sendRequest(publish, SipResponse.OK);
+    // get the NOTIFY
+    reqevent = s.waitNotify(10000);
+    assertNotNull(s.format(), reqevent);
+    assertNoSubscriptionErrors(s);
+    // examine the request object
+    request = reqevent.getRequest();
+    assertEquals(Request.NOTIFY, request.getMethod());
+    assertTrue(((SubscriptionStateHeader) request.getHeader(SubscriptionStateHeader.NAME)).getExpires() > 0);
+    // process the NOTIFY
+    response = s.processNotify(reqevent);
+    assertNotNull(response);
+    assertTrue(s.isSubscriptionActive());
+    devices = s.getPresenceDevices();
+    assertEquals(1, devices.size());
+    dev = devices.get("bs35r9");
+    assertNotNull(dev);
+    assertEquals("open", dev.getBasicStatus());
+    assertEquals("sip:bob@cipango.org", dev.getContactURI());
+    assertEquals(0.8, dev.getContactPriority());
+    assertEquals("Don't Disturb Please!", dev.getDeviceNotes().get(0).getValue());
+    // reply to the NOTIFY
+    assertTrue(s.replyToNotify(reqevent, response));
+    assertNoSubscriptionErrors(s);
+    // End subscription
+    assertTrue(s.removeBuddy(5000));
+    reqevent = s.waitNotify(10000);
+    assertNotNull(s.format(), reqevent);
+    response = s.processNotify(reqevent);
+    assertEquals(Response.OK, response.getStatusCode());
+    assertTrue(s.replyToNotify(reqevent, response));
+    assertTrue(s.isSubscriptionTerminated());
+    // 13
+    publish = publishSession.newUnpublish();
+    // 14
+    publishSession.sendRequest(publish, Response.OK);
+}

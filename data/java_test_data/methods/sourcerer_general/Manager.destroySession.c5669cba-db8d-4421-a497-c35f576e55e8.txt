@@ -1,0 +1,57 @@
+protected void destroySession(HttpSession container) {
+    String id = container.getId();
+    if (Log.isDebugEnabled())
+        Log.debug("forgetting session - " + id);
+    Object tmp;
+    synchronized (_sessions) {
+        tmp = _sessions.remove(id);
+    }
+    container = (HttpSession) tmp;
+    if (Log.isDebugEnabled())
+        Log.debug("forgetting session - " + container);
+    if (container == null) {
+        Log.warn("session - " + id + " has already been destroyed");
+        return;
+    }
+    try {
+        State state = ((StateAdaptor) container).getState();
+        // filthy hack...
+        // stop InvalidInterceptors - otherwise we can't clean up session...
+        // - TODO
+        {
+            State s = state;
+            StateInterceptor si = null;
+            while (s instanceof StateInterceptor) {
+                si = (StateInterceptor) s;
+                // next interceptor
+                s = si.getState();
+                if (si instanceof ValidatingInterceptor)
+                    si.stop();
+            }
+        }
+        String[] names = state.getAttributeNameStringArray();
+        for (int i = 0; i < names.length; i++) state.removeAttribute(names[i], false);
+    // should just do this for attributes which are BindingListeners
+    // - then just clear() the rest... - TODO
+    } catch (RemoteException e) {
+        Log.debug("could not raise events on session destruction - problem in distribution layer", e);
+    }
+    if (Log.isDebugEnabled())
+        Log.debug("notifying session - " + id);
+    notifySessionDestroyed(container);
+    if (Log.isDebugEnabled())
+        Log.debug("destroying container - " + id);
+    State state = destroyContainer(container);
+    try {
+        if (// an interceptor may preempt us, if
+        state != null) // it does not want this state
+        // removed...
+        {
+            if (Log.isDebugEnabled())
+                Log.debug("removing state - " + id);
+            _store.removeState(state);
+        }
+    } catch (Exception e) {
+        Log.debug("could not remove session state", e);
+    }
+}

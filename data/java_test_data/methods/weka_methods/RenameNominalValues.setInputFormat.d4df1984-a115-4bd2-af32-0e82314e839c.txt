@@ -1,0 +1,87 @@
+@Override
+public boolean setInputFormat(Instances instanceInfo) throws Exception {
+    super.setInputFormat(instanceInfo);
+    int classIndex = instanceInfo.classIndex();
+    // setup the map
+    if (m_renameVals != null && m_renameVals.length() > 0) {
+        String[] vals = m_renameVals.split(",");
+        for (String val : vals) {
+            String[] parts = val.split(":");
+            if (parts.length != 2) {
+                throw new WekaException("Invalid replacement string: " + val);
+            }
+            if (parts[0].length() == 0 || parts[1].length() == 0) {
+                throw new WekaException("Invalid replacement string: " + val);
+            }
+            m_renameMap.put(m_ignoreCase ? parts[0].toLowerCase().trim() : parts[0].trim(), parts[1].trim());
+        }
+    }
+    // try selected atts as a numeric range first
+    Range tempRange = new Range();
+    tempRange.setInvert(m_invert);
+    if (m_selectedColsString == null) {
+        m_selectedColsString = "";
+    }
+    try {
+        tempRange.setRanges(m_selectedColsString);
+        tempRange.setUpper(instanceInfo.numAttributes() - 1);
+        m_selectedAttributes = tempRange.getSelection();
+        m_selectedCols = tempRange;
+    } catch (Exception r) {
+        // OK, now try as named attributes
+        StringBuffer indexes = new StringBuffer();
+        String[] attNames = m_selectedColsString.split(",");
+        boolean first = true;
+        for (String n : attNames) {
+            n = n.trim();
+            Attribute found = instanceInfo.attribute(n);
+            if (found == null) {
+                throw new WekaException("Unable to find attribute '" + n + "' in the incoming instances'");
+            }
+            if (first) {
+                indexes.append("" + (found.index() + 1));
+                first = false;
+            } else {
+                indexes.append("," + (found.index() + 1));
+            }
+        }
+        tempRange = new Range();
+        tempRange.setRanges(indexes.toString());
+        tempRange.setUpper(instanceInfo.numAttributes() - 1);
+        m_selectedAttributes = tempRange.getSelection();
+        m_selectedCols = tempRange;
+    }
+    ArrayList<Attribute> attributes = new ArrayList<Attribute>();
+    for (int i = 0; i < instanceInfo.numAttributes(); i++) {
+        if (m_selectedCols.isInRange(i)) {
+            if (instanceInfo.attribute(i).isNominal()) {
+                List<String> valsForAtt = new ArrayList<String>();
+                for (int j = 0; j < instanceInfo.attribute(i).numValues(); j++) {
+                    String origV = instanceInfo.attribute(i).value(j);
+                    String replace = m_ignoreCase ? m_renameMap.get(origV.toLowerCase()) : m_renameMap.get(origV);
+                    if (replace != null) {
+                        if (!valsForAtt.contains(replace)) {
+                            valsForAtt.add(replace);
+                        }
+                    } else {
+                        valsForAtt.add(origV);
+                    }
+                }
+                Attribute newAtt = new Attribute(instanceInfo.attribute(i).name(), valsForAtt);
+                newAtt.setWeight(instanceInfo.attribute(i).weight());
+                attributes.add(newAtt);
+            } else {
+                // ignore any selected attributes that are not nominal
+                Attribute att = (Attribute) instanceInfo.attribute(i).copy();
+                attributes.add(att);
+            }
+        } else {
+            Attribute att = (Attribute) instanceInfo.attribute(i).copy();
+            attributes.add(att);
+        }
+    }
+    Instances outputFormat = new Instances(instanceInfo.relationName(), attributes, 0);
+    outputFormat.setClassIndex(classIndex);
+    setOutputFormat(outputFormat);
+    return true;
+}

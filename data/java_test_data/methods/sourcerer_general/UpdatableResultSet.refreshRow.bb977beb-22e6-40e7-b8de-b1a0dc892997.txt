@@ -1,0 +1,75 @@
+private synchronized void refreshRow(PreparedStatement updateInsertStmt, ResultSetRow rowToRefresh) throws SQLException {
+    if (this.refresher == null) {
+        if (this.refreshSQL == null) {
+            generateStatements();
+        }
+        this.refresher = (PreparedStatement) this.connection.clientPrepareStatement(this.refreshSQL);
+    }
+    this.refresher.clearParameters();
+    int numKeys = this.primaryKeyIndicies.size();
+    if (numKeys == 1) {
+        byte[] dataFrom = null;
+        int index = ((Integer) this.primaryKeyIndicies.get(0)).intValue();
+        if (!this.doingUpdates && !this.onInsertRow) {
+            dataFrom = (byte[]) rowToRefresh.getColumnValue(index);
+        } else {
+            dataFrom = updateInsertStmt.getBytesRepresentation(index);
+            // Primary keys not set?
+            if (updateInsertStmt.isNull(index) || (dataFrom.length == 0)) {
+                dataFrom = (byte[]) rowToRefresh.getColumnValue(index);
+            } else {
+                dataFrom = stripBinaryPrefix(dataFrom);
+            }
+        }
+        if (this.fields[index].getvalueNeedsQuoting()) {
+            this.refresher.setBytesNoEscape(1, dataFrom);
+        } else {
+            this.refresher.setBytesNoEscapeNoQuotes(1, dataFrom);
+        }
+    } else {
+        for (int i = 0; i < numKeys; i++) {
+            byte[] dataFrom = null;
+            int index = ((Integer) this.primaryKeyIndicies.get(i)).intValue();
+            if (!this.doingUpdates && !this.onInsertRow) {
+                dataFrom = (byte[]) rowToRefresh.getColumnValue(index);
+            } else {
+                dataFrom = updateInsertStmt.getBytesRepresentation(index);
+                // Primary keys not set?
+                if (updateInsertStmt.isNull(index) || (dataFrom.length == 0)) {
+                    dataFrom = (byte[]) rowToRefresh.getColumnValue(index);
+                } else {
+                    dataFrom = stripBinaryPrefix(dataFrom);
+                }
+            }
+            this.refresher.setBytesNoEscape(i + 1, dataFrom);
+        }
+    }
+    java.sql.ResultSet rs = null;
+    try {
+        rs = this.refresher.executeQuery();
+        int numCols = rs.getMetaData().getColumnCount();
+        if (rs.next()) {
+            for (int i = 0; i < numCols; i++) {
+                byte[] val = rs.getBytes(i + 1);
+                if ((val == null) || rs.wasNull()) {
+                    rowToRefresh.setColumnValue(i, null);
+                } else {
+                    rowToRefresh.setColumnValue(i, rs.getBytes(i + 1));
+                }
+            }
+        } else {
+            throw SQLError.createSQLException(Messages.getString(// $NON-NLS-1$
+            "UpdatableResultSet.12"), SQLError.SQL_STATE_GENERAL_ERROR, // $NON-NLS-1$
+            getExceptionInterceptor());
+        }
+    } finally {
+        if (rs != null) {
+            try {
+                rs.close();
+            } catch (SQLException ex) {
+                // ignore
+                ;
+            }
+        }
+    }
+}

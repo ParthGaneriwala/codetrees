@@ -1,0 +1,109 @@
+final ResultSetRow nextRowFast(Field[] fields, int columnCount, boolean isBinaryEncoded, int resultSetConcurrency, boolean useBufferRowIfPossible, boolean useBufferRowExplicit, boolean canReuseRowPacket) throws SQLException {
+    try {
+        int lengthRead = readFully(this.mysqlInput, this.packetHeaderBuf, 0, 4);
+        if (lengthRead < 4) {
+            forceClose();
+            // $NON-NLS-1$
+            throw new RuntimeException(Messages.getString("MysqlIO.43"));
+        }
+        int packetLength = (this.packetHeaderBuf[0] & 0xff) + ((this.packetHeaderBuf[1] & 0xff) << 8) + ((this.packetHeaderBuf[2] & 0xff) << 16);
+        // Have we stumbled upon a multi-packet?
+        if (packetLength == this.maxThreeBytes) {
+            reuseAndReadPacket(this.reusablePacket, packetLength);
+            // Go back to "old" way which uses packets
+            return nextRow(fields, columnCount, isBinaryEncoded, resultSetConcurrency, useBufferRowIfPossible, useBufferRowExplicit, canReuseRowPacket, this.reusablePacket);
+        }
+        if (packetLength > this.useBufferRowSizeThreshold) {
+            reuseAndReadPacket(this.reusablePacket, packetLength);
+            // Go back to "old" way which uses packets
+            return nextRow(fields, columnCount, isBinaryEncoded, resultSetConcurrency, true, true, false, this.reusablePacket);
+        }
+        int remaining = packetLength;
+        boolean firstTime = true;
+        byte[][] rowData = null;
+        for (int i = 0; i < columnCount; i++) {
+            int sw = this.mysqlInput.read() & 0xff;
+            remaining--;
+            if (firstTime) {
+                if (sw == 255) {
+                    // error packet - we assemble it whole for "fidelity"
+                    // in case we ever need an entire packet in checkErrorPacket()
+                    // but we could've gotten away with just writing the error code
+                    // and message in it (for now).
+                    Buffer errorPacket = new Buffer(packetLength + HEADER_LENGTH);
+                    errorPacket.setPosition(0);
+                    errorPacket.writeByte(this.packetHeaderBuf[0]);
+                    errorPacket.writeByte(this.packetHeaderBuf[1]);
+                    errorPacket.writeByte(this.packetHeaderBuf[2]);
+                    errorPacket.writeByte((byte) 1);
+                    errorPacket.writeByte((byte) sw);
+                    readFully(this.mysqlInput, errorPacket.getByteBuffer(), 5, packetLength - 1);
+                    errorPacket.setPosition(4);
+                    checkErrorPacket(errorPacket);
+                }
+                if (sw == 254 && packetLength < 9) {
+                    if (this.use41Extensions) {
+                        this.warningCount = (this.mysqlInput.read() & 0xff) | ((this.mysqlInput.read() & 0xff) << 8);
+                        remaining -= 2;
+                        if (this.warningCount > 0) {
+                            // this is a
+                            this.hadWarnings = true;
+                        // 'latch', it's
+                        // reset by
+                        // sendCommand()
+                        }
+                        this.oldServerStatus = this.serverStatus;
+                        this.serverStatus = (this.mysqlInput.read() & 0xff) | ((this.mysqlInput.read() & 0xff) << 8);
+                        checkTransactionState(oldServerStatus);
+                        remaining -= 2;
+                        if (remaining > 0) {
+                            skipFully(this.mysqlInput, remaining);
+                        }
+                    }
+                    // last data packet
+                    return null;
+                }
+                rowData = new byte[columnCount][];
+                firstTime = false;
+            }
+            int len = 0;
+            switch(sw) {
+                case 251:
+                    len = NULL_LENGTH;
+                    break;
+                case 252:
+                    len = (this.mysqlInput.read() & 0xff) | ((this.mysqlInput.read() & 0xff) << 8);
+                    remaining -= 2;
+                    break;
+                case 253:
+                    len = (this.mysqlInput.read() & 0xff) | ((this.mysqlInput.read() & 0xff) << 8) | ((this.mysqlInput.read() & 0xff) << 16);
+                    remaining -= 3;
+                    break;
+                case 254:
+                    len = (int) ((this.mysqlInput.read() & 0xff) | ((long) (this.mysqlInput.read() & 0xff) << 8) | ((long) (this.mysqlInput.read() & 0xff) << 16) | ((long) (this.mysqlInput.read() & 0xff) << 24) | ((long) (this.mysqlInput.read() & 0xff) << 32) | ((long) (this.mysqlInput.read() & 0xff) << 40) | ((long) (this.mysqlInput.read() & 0xff) << 48) | ((long) (this.mysqlInput.read() & 0xff) << 56));
+                    remaining -= 8;
+                    break;
+                default:
+                    len = sw;
+            }
+            if (len == NULL_LENGTH) {
+                rowData[i] = null;
+            } else if (len == 0) {
+                rowData[i] = Constants.EMPTY_BYTE_ARRAY;
+            } else {
+                rowData[i] = new byte[len];
+                int bytesRead = readFully(this.mysqlInput, rowData[i], 0, len);
+                if (bytesRead != len) {
+                    throw SQLError.createCommunicationsException(this.connection, this.lastPacketSentTimeMs, this.lastPacketReceivedTimeMs, new IOException(Messages.getString("MysqlIO.43")), getExceptionInterceptor());
+                }
+                remaining -= bytesRead;
+            }
+        }
+        if (remaining > 0) {
+            skipFully(this.mysqlInput, remaining);
+        }
+        return new ByteArrayRow(rowData, getExceptionInterceptor());
+    } catch (IOException ioEx) {
+        throw SQLError.createCommunicationsException(this.connection, this.lastPacketSentTimeMs, this.lastPacketReceivedTimeMs, ioEx, getExceptionInterceptor());
+    }
+}

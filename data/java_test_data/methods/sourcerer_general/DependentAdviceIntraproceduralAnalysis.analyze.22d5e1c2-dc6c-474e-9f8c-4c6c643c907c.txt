@@ -1,0 +1,68 @@
+@Override
+public boolean analyze() {
+    HasDAInfo abcExtension = (HasDAInfo) Main.v().getAbcExtension();
+    // nothing to do?
+    if (abcExtension.getDependentAdviceInfo().getTracePatterns().size() == 0) {
+        return false;
+    }
+    try {
+        Set<Shadow> dependentAdviceShadows = abcExtension.getDependentAdviceInfo().flowInsensitiveAnalysis().getDependentAdviceShadowsEnabledAfterThisStage();
+        if (dependentAdviceShadows.isEmpty())
+            return false;
+        CallGraph cg = buildAbstractedCallGraph(dependentAdviceShadows);
+        File traceFile = retrieveTraceFileHandle();
+        int iteration = 1;
+        // the set of shadows enabled just before the current itration
+        Set<Shadow> enabledShadowsBeforeIteration = new HashSet<Shadow>(dependentAdviceShadows);
+        // the set of shadow enabled just after the last iteration
+        Set<Shadow> enabledShadowsAfterIteration = enabledShadowsBeforeIteration;
+        do {
+            // the shadows enabled before this iterations are the ones that remained enabled after the last one
+            enabledShadowsBeforeIteration = enabledShadowsAfterIteration;
+            if (Debug.v().debugDA)
+                System.err.println("da:    DA-Shadows enabled before FlowSens iteration " + iteration + ": " + enabledShadowsBeforeIteration.size());
+            // do the work...
+            oneIteration(enabledShadowsBeforeIteration, cg, traceFile);
+            // create the set of all still-enabled shadows
+            enabledShadowsAfterIteration = new HashSet<Shadow>(enabledShadowsBeforeIteration);
+            for (Iterator<Shadow> shadowIter = enabledShadowsAfterIteration.iterator(); shadowIter.hasNext(); ) {
+                Shadow shadow = shadowIter.next();
+                if (!shadow.isEnabled()) {
+                    shadowIter.remove();
+                }
+            }
+            iteration++;
+        // we iterate until no shadows are disabled any more
+        } while (!enabledShadowsBeforeIteration.equals(enabledShadowsAfterIteration));
+        if (Debug.v().debugDA)
+            System.err.println("da:    Results of Certain-Match Analysis follow.");
+        for (AnalysisJob job : allJobs()) {
+            for (Shadow s : job.pointsOfCertainMatches()) {
+                if (Debug.v().debugDA)
+                    System.err.println("Following cetain match is in Method: " + s.getContainer().getSignature());
+                Main.v().getAbcExtension().forceReportError(ErrorInfo.WARNING, "Detected certain match: " + job.tracePattern().getName() + "." + job.symbolNameForShadow(s), s.getPosition());
+            }
+        }
+        if (Debug.v().debugDA)
+            System.err.println("da:    Done with results of Certain-Match Analysis.");
+        Set<ResultListener> resultListeners = ResultListeners.v().getResultListeners();
+        if (!resultListeners.isEmpty()) {
+            Set<TransitionInfo> results = new HashSet<TransitionInfo>();
+            ShadowReportForUI shadowReport = abcExtension.getDependentAdviceInfo().shadowReport();
+            shadowReport.initialize(enabledShadowsAfterIteration);
+            for (AnalysisJob job : allJobs()) {
+                results.addAll(shadowReport.computeResultsForJob(job));
+            }
+            for (ResultListener l : resultListeners) {
+                l.showResult(results);
+            }
+        }
+        if (Debug.v().outputPFGs)
+            PFGs.v().dump("after flow-sensitive stage", enabledShadowsAfterIteration, false);
+        if (Debug.v().debugDA)
+            System.err.println("da:    DA-Shadows enabled after last FlowSens iteration: " + enabledShadowsAfterIteration.size());
+    } finally {
+        abcExtension.getDependentAdviceInfo().resetAnalysisDataStructures();
+    }
+    return false;
+}

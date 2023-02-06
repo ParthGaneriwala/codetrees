@@ -1,0 +1,36 @@
+protected void doInitialInviteResponse(SipServletResponse response) throws ServletException, IOException {
+    B2buaHelper b2bHelper = response.getRequest().getB2buaHelper();
+    SipSession leg1 = response.getSession();
+    SipSession leg2 = b2bHelper.getLinkedSession(leg1);
+    int status = response.getStatus();
+    if (leg2 == null) {
+        if (status >= SipServletResponse.SC_OK && status < SipServletResponse.SC_MULTIPLE_CHOICES) {
+            // Create second leg
+            SipServletRequest request = _sipFactory.createRequest(response.getApplicationSession(), response.getMethod(), response.getTo(), response.getFrom());
+            copy(response, request);
+            b2bHelper.linkSipSessions(leg1, request.getSession());
+            request.setAttribute(RESP_INV, response);
+            request.getSession().setHandler(getServletName());
+            // if leg2 took more than 10s to pick up call, cancel it.
+            ServletTimer cancelCallTask = _timerService.createTimer(leg1.getApplicationSession(), 15000, false, new CancelCallTask(leg1, request));
+            leg1.setAttribute(CancelCallTask.class.getName(), cancelCallTask);
+            request.send();
+        } else if (response.getStatus() >= SipServletResponse.SC_MULTIPLE_CHOICES) {
+            response.getApplicationSession().invalidate();
+        }
+    } else {
+        if (status >= SipServletResponse.SC_OK && status < SipServletResponse.SC_MULTIPLE_CHOICES) {
+            ((ServletTimer) leg2.getAttribute(CancelCallTask.class.getName())).cancel();
+            // ACK to leg2
+            SipServletResponse leg2Resp = (SipServletResponse) response.getRequest().getAttribute(RESP_INV);
+            SipServletRequest request = leg2Resp.createAck();
+            copy(response, request);
+            request.send();
+            // ACK to leg1
+            response.createAck().send();
+        } else if (status >= SipServletResponse.SC_MULTIPLE_CHOICES) {
+            leg2.createRequest("BYE").send();
+            leg1.getApplicationSession().invalidate();
+        }
+    }
+}

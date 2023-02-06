@@ -1,0 +1,90 @@
+// -----------------------------------------------------------------------------
+// SQL SCHEMATA VIEWS
+// limited to views used in JDBC DatabaseMetaData
+final Table COLUMN_PRIVILEGES(Session session) {
+    Table t = sysTables[COLUMN_PRIVILEGES];
+    if (t == null) {
+        t = createBlankTable(sysTableHsqlNames[COLUMN_PRIVILEGES]);
+        // not null
+        addColumn(t, "GRANTOR", SQL_IDENTIFIER);
+        // not null
+        addColumn(t, "GRANTEE", SQL_IDENTIFIER);
+        addColumn(t, "TABLE_CATALOG", SQL_IDENTIFIER);
+        addColumn(t, "TABLE_SCHEMA", SQL_IDENTIFIER);
+        // not null
+        addColumn(t, "TABLE_NAME", SQL_IDENTIFIER);
+        // not null
+        addColumn(t, "COLUMN_NAME", SQL_IDENTIFIER);
+        // not null
+        addColumn(t, "PRIVILEGE_TYPE", CHARACTER_DATA);
+        // not null
+        addColumn(t, "IS_GRANTABLE", YES_OR_NO);
+        HsqlName name = HsqlNameManager.newInfoSchemaObjectName(sysTableHsqlNames[COLUMN_PRIVILEGES].name, false, SchemaObject.INDEX);
+        t.createPrimaryKeyConstraint(name, new int[] { 2, 3, 4, 5, 6, 1, 0 }, false);
+        return t;
+    }
+    PersistentStore store = session.sessionData.getRowStore(t);
+    // calculated column values
+    String tableCatalog;
+    String tableSchema;
+    String tableName;
+    Grantee granteeObject;
+    // intermediate holders
+    User user;
+    Iterator tables;
+    Table table;
+    Object[] row;
+    // column number mappings
+    final int grantor = 0;
+    final int grantee = 1;
+    final int table_catalog = 2;
+    final int table_schema = 3;
+    final int table_name = 4;
+    final int column_name = 5;
+    final int privilege_type = 6;
+    final int is_grantable = 7;
+    // enumerations
+    OrderedHashSet grantees = session.getGrantee().getGranteeAndAllRolesWithPublic();
+    // Initialization
+    tables = allTables();
+    while (tables.hasNext()) {
+        table = (Table) tables.next();
+        tableName = table.getName().name;
+        tableCatalog = database.getCatalogName().name;
+        tableSchema = table.getSchemaName().name;
+        for (int i = 0; i < grantees.size(); i++) {
+            granteeObject = (Grantee) grantees.get(i);
+            OrderedHashSet rights = granteeObject.getAllDirectPrivileges(table);
+            OrderedHashSet grants = granteeObject.getAllGrantedPrivileges(table);
+            if (!grants.isEmpty()) {
+                grants.addAll(rights);
+                rights = grants;
+            }
+            for (int j = 0; j < rights.size(); j++) {
+                Right right = (Right) rights.get(j);
+                Right grantableRight = right.getGrantableRights();
+                for (int k = 0; k < Right.privilegeTypes.length; k++) {
+                    OrderedHashSet columnList = right.getColumnsForPrivilege(table, Right.privilegeTypes[k]);
+                    OrderedHashSet grantableList = grantableRight.getColumnsForPrivilege(table, Right.privilegeTypes[k]);
+                    for (int l = 0; l < columnList.size(); l++) {
+                        HsqlName fullName = ((HsqlName) columnList.get(l));
+                        row = t.getEmptyRowData();
+                        row[grantor] = right.getGrantor().getName().name;
+                        row[grantee] = right.getGrantee().getName().name;
+                        row[table_catalog] = tableCatalog;
+                        row[table_schema] = tableSchema;
+                        row[table_name] = tableName;
+                        row[column_name] = fullName.name;
+                        row[privilege_type] = Right.privilegeNames[k];
+                        row[is_grantable] = right.getGrantee() == table.getOwner() || grantableList.contains(fullName) ? "YES" : "NO";
+                        try {
+                            t.insertSys(store, row);
+                        } catch (HsqlException e) {
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return t;
+}

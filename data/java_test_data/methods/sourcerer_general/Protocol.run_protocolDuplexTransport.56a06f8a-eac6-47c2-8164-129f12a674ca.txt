@@ -1,0 +1,110 @@
+private boolean run_protocolDuplexTransport() {
+    // Log.setMessage(1, "Openning TCP connection ...");
+    if (!this._transportOpen(TRANSPORT_DUPLEX)) {
+        if (DateTime.isTimerExpired(this.lastDuplexErrorTimer, 60L)) {
+            this.lastDuplexErrorTimer = DateTime.getTimerSec();
+            Log.warn(LOG_NAME, "Unable to open Duplex transport");
+            Log.setMessage(1, "TCP failed");
+        } else {
+        // Log.setMessage(1, "");
+        }
+        return false;
+    }
+    Log.setMessage(1, "TX TCP ...");
+    /* check for GPS Fix expiration ("stale") */
+    if (GPSReceiver.isGpsStale()) {
+        // queue GPS error message
+        long lastSampleTime = GPSReceiver.getInstance().getLastSampleTime();
+        if (DateTime.getCurrentTimeSec() > (lastSampleTime + GPS_EVENT_INTERVAL)) {
+            // Likely serious GPS problem.
+            // We haven't received ANYTHING from the GPS reciver in the last GPS_EVENT_INTERVAL seconds
+            // The GPS receiver is no longer working!
+            Payload p = new Payload();
+            p.writeULong(ClientErrors.ERROR_GPS_FAILURE, 2);
+            p.writeULong(lastSampleTime, 4);
+            this.queueError(p);
+        } else {
+            // The GPS receiver still appears to be working, the fix is just expired
+            long lastValidTime = GPSReceiver.getInstance().getLastValidTime();
+            Payload p = new Payload();
+            p.writeULong(ClientErrors.ERROR_GPS_EXPIRED, 2);
+            p.writeULong(lastValidTime, 4);
+            this.queueError(p);
+        }
+    }
+    /* default speak freely permission on new connections */
+    this.speakFreely = false;
+    this.relinquishSpeakFreely = false;
+    /* default speak-brief on new connection */
+    this.speakBrief = Props.getBoolean(Props.PROP_COMM_FIRST_BRIEF, 0, false);
+    /* packet handling loop */
+    boolean rtnOK = true;
+    boolean keepLooping = true;
+    boolean speakFirst = Props.getBoolean(Props.PROP_COMM_SPEAK_FIRST, 0, true);
+    boolean firstPass = true;
+    for (; keepLooping; ) {
+        /* send queued packets */
+        if (firstPass) {
+            firstPass = false;
+            if (speakFirst) {
+                // 'speakFreely' is always false here
+                if (!this._sendAllPackets(TRANSPORT_DUPLEX, this.speakBrief)) {
+                    // write error
+                    rtnOK = false;
+                    break;
+                }
+                this.speakBrief = false;
+            }
+        } else if (this.speakFreely) {
+            // During 'speak-freely' wait until we have something to send.
+            if (this._hasMoreDataToSend()) {
+                // The thread may decide whether, or not, to relinquish 'speakFreely' permission
+                if (this.relinquishSpeakFreely) {
+                    // relinquish speak-freely permission
+                    this.speakFreely = false;
+                }
+                if (!this._sendAllPackets(TRANSPORT_DUPLEX, false)) {
+                    // write error
+                    rtnOK = false;
+                    break;
+                }
+            }
+        }
+        /* read packet */
+        Packet pkt = null;
+        try {
+            // <-- timeout is specified by transport
+            pkt = this._readServerPacket();
+            if (pkt == null) {
+                // read/parse error
+                rtnOK = false;
+                break;
+            }
+        } catch (TimeoutException toe) {
+            // read timeout
+            if (this.speakFreely) {
+                // read timeouts are allowed in 'speak-freely' mode
+                continue;
+            } else {
+                Log.info(LOG_NAME, "Duplex server read timeout");
+                // this is an error when not in 'speak-freely' mode, or not in a thread
+                // otherwise we'll be blocking the mainloop for too long.
+                rtnOK = false;
+                break;
+            }
+        }
+        /* handle received packet */
+        keepLooping = this._handleServerPacket(pkt);
+    }
+    /* close transport */
+    if (rtnOK) {
+        Log.setMessage(1, "");
+    } else {
+        Log.setMessage(1, "TCP TX Err");
+    }
+    this._transportClose(TRANSPORT_DUPLEX, false);
+    // set any remaining 'sent' events to 'unsent'
+    this.getEventQueue().resetSent();
+    Accounting.markDuplexConnection();
+    return rtnOK;
+}

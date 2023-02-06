@@ -1,0 +1,39 @@
+public RowAction addDeleteAction(Session session, Table table, Row row, int[] colMap) {
+    RowAction action = addDeleteActionToRow(session, table, row, colMap);
+    if (action == null) {
+        writeLock.lock();
+        try {
+            rollbackAction(session);
+            if (session.isolationLevel == SessionInterface.TX_REPEATABLE_READ || session.isolationLevel == SessionInterface.TX_SERIALIZABLE) {
+                session.tempSet.clear();
+                session.abortTransaction = true;
+                throw Error.error(ErrorCode.X_40501);
+            }
+            // can redo when conflicting action is already committed
+            if (row.rowAction != null && row.rowAction.isDeleted()) {
+                session.tempSet.clear();
+                session.redoAction = true;
+                redoCount++;
+                throw Error.error(ErrorCode.X_40501);
+            }
+            boolean canWait = checkDeadlock(session, session.tempSet);
+            if (canWait) {
+                Session current = (Session) session.tempSet.get(0);
+                session.redoAction = true;
+                current.waitingSessions.add(session);
+                session.waitedSessions.add(current);
+                session.latch.countUp();
+            } else {
+                session.redoAction = false;
+                session.abortTransaction = true;
+            }
+            session.tempSet.clear();
+            redoCount++;
+            throw Error.error(ErrorCode.X_40501);
+        } finally {
+            writeLock.unlock();
+        }
+    }
+    session.rowActionList.add(action);
+    return action;
+}

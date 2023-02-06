@@ -1,0 +1,40 @@
+public void testWriteTimeoutAtDataNode() throws IOException, InterruptedException {
+    Configuration conf = new Configuration();
+    // milliseconds.
+    final int writeTimeout = 100;
+    // set a very short write timeout for datanode, so that tests runs fast.
+    conf.setInt("dfs.datanode.socket.write.timeout", writeTimeout);
+    // set a smaller block size
+    final int blockSize = 10 * 1024 * 1024;
+    conf.setInt("dfs.block.size", blockSize);
+    conf.setInt("dfs.client.max.block.acquire.failures", 1);
+    // set a small buffer size
+    final int bufferSize = 4096;
+    conf.setInt("io.file.buffer.size", bufferSize);
+    MiniDFSCluster cluster = new MiniDFSCluster(conf, 3, true, null);
+    try {
+        cluster.waitActive();
+        FileSystem fs = cluster.getFileSystem();
+        Path filePath = new Path("/testWriteTimeoutAtDataNode");
+        OutputStream out = fs.create(filePath, true, bufferSize);
+        // write a 2 block file.
+        writeData(out, 2 * blockSize);
+        out.close();
+        // enough to empty TCP buffers.
+        byte[] buf = new byte[1024 * 1024];
+        InputStream in = fs.open(filePath, bufferSize);
+        // first read a few bytes
+        IOUtils.readFully(in, buf, 0, bufferSize / 2);
+        // now read few more chunks of data by sleeping in between :
+        for (int i = 0; i < 10; i++) {
+            // force write timeout at the datanode.
+            Thread.sleep(2 * writeTimeout);
+            // read enough to empty out socket buffers.
+            IOUtils.readFully(in, buf, 0, buf.length);
+        }
+        // successfully read with write timeout on datanodes.
+        in.close();
+    } finally {
+        cluster.shutdown();
+    }
+}

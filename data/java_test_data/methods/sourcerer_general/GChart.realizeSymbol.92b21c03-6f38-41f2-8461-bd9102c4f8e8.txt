@@ -1,0 +1,247 @@
+@Override
+void realizeSymbol(PlotPanel pp, GraphicsRenderingPanel grp, AnnotationRenderingPanel arp, Symbol symbol, Annotation annotation, boolean onY2, boolean clipPlotArea, boolean clipDecoratedChart, double renderPaddingFactor, boolean drawMainSymbol, double x, double y, double prevX, double prevY, double nextX, double nextY) {
+    if (!drawMainSymbol)
+        return;
+    double xPx = pp.xToPixel(x);
+    double yPx = pp.yToPixel(y, onY2);
+    double spacing = symbol.getFillSpacing();
+    int thickness = symbol.getFillThickness();
+    double r = symbol.getPieSliceRadius(pp, onY2);
+    double theta0 = symbol.getPieSliceTheta0();
+    double theta1 = symbol.getPieSliceTheta1();
+    GChartCanvasLite canvas = grp.getCanvas();
+    // x!=x is a faster isNaN
+    if ((xPx != xPx) || (yPx != yPx))
+        // undefined slice pivot point
+        return;
+    else if (clipPlotArea && !paddedIntersects(renderPaddingFactor, 0, 0, pp.getXChartSize(), pp.getYChartSize(), xPx - r, yPx - r, xPx + r, yPx + r))
+        // rect containing pie is off plot area
+        return;
+    else if (clipDecoratedChart) {
+        int leftOfY = pp.getLeftOfYWidth();
+        int titleThickness = pp.chartTitleThickness();
+        if (!paddedIntersects(renderPaddingFactor, 0.0 - leftOfY, 0.0 - titleThickness, pp.getXChartSizeDecoratedQuickly() - leftOfY, pp.getYChartSizeDecoratedQuickly() - titleThickness, xPx - r, yPx - r, xPx + r, yPx + r))
+            // rect containing pie is off decorated chart
+            return;
+    }
+    if (0 == spacing && null != canvas && thickness > 0) {
+        // continuous fill pie slice and canvas is available
+        /*
+           * Solid fill pie slices implement the notion of internal vs external
+           * borders a bit differently than rectangular symbols. <p>
+           * 
+           * Internal borders are always drawn "centered", that is, half
+           * internal, half external. In part, this is because that is how
+           * "stroke" of the canvas API does it, so it's easier to implement.
+           * But mainly it is because, when you assemble several slices into a
+           * full pie, a centered border, provided that each slice has the same
+           * border color, is really the only choice that looks right (this is a
+           * constraint of the geometry how the slices fit together into a pie).
+           * <p>
+           * 
+           * External borders (negative border width) are drawn outside the
+           * slice proper by doubling the thickness, and then over-filling the
+           * internal part of the border by issuing the fill after, instead of
+           * before, the border is drawn. Though external borders don't look
+           * right within a pie (because of how the slices occlude each other's
+           * borders) they can be handy for making slice selection borders that
+           * are drawn entirely outside of the selected slice.
+           */
+        int borderWidth = symbol.getBorderWidth();
+        int adjustedBorderWidth = (borderWidth >= 0) ? borderWidth : 2 * Math.abs(borderWidth);
+        /*
+           * With incubator's <tt>GWTCanvas</tt>, IE7 & Chrome draw 0 and 2*Pi
+           * slices incorrectly. See issues #278 #282 for more information: <p>
+           * 
+           * http://code.google.com/p/google-web-toolkit-incubator/issues/detail?id=278
+           * http://code.google.com/p/google-web-toolkit-incubator/issues/detail?id=282 <p>
+           * 
+           * Pies with > 500 px radii are unlikely (tried using 10000, but it
+           * didn't work in Chrome, tried 1000, but it didn't work in IE7 in
+           * Vista with the circle-selection cursor on the oil price simulation
+           * chart.). Such almost but not quite full pie slices could be
+           * inappropriately rendered as full pies due to this workaround with
+           * pies with large radii. A lesser evil than dropping the entire slice
+           * for full pies.
+           */
+        final double MIN_DTHETA = 1. / 500.0;
+        final double MAX_DTHETA = 2 * Math.PI - MIN_DTHETA;
+        // canvas measures angles clockwise from +x-axis;
+        // our angles are counter-clockwise from +x-axis
+        double dTheta = theta0 - theta1;
+        double angleStart = 2 * Math.PI - theta0;
+        double angleEnd = angleStart + Math.max(MIN_DTHETA, Math.min(dTheta, MAX_DTHETA));
+        if (dTheta >= MIN_DTHETA || borderWidth < 0) {
+            canvas.beginPath();
+            canvas.setLineWidth(adjustedBorderWidth);
+            canvas.arc(xPx - grp.x0, yPx - grp.y0, r, angleStart, angleEnd, false);
+            if (dTheta <= MAX_DTHETA)
+                canvas.lineTo(xPx - grp.x0, yPx - grp.y0);
+            // else avoid "line to center" in full pies
+            canvas.closePath();
+            String borderColor = symbol.getBorderColor();
+            String backgroundColor = symbol.getBackgroundColor();
+            // stroke overwrites internal half of border)
+            if (borderWidth >= 0 && thickness > 0 && TRANSPARENT_BORDER_COLOR != backgroundColor && // GWTCanvas throws an exception w "transparent"
+            "transparent" != backgroundColor) {
+                canvas.setFillStyle(backgroundColor);
+                canvas.fill();
+            }
+            // stroke whenever a border is present
+            if (borderWidth != 0 && TRANSPARENT_BORDER_COLOR != borderColor && "transparent" != borderColor) {
+                canvas.setStrokeStyle(borderColor);
+                canvas.stroke();
+            }
+            // the internal half of the stroked border).
+            if (borderWidth < 0 && thickness > 0 && TRANSPARENT_BORDER_COLOR != backgroundColor && "transparent" != backgroundColor) {
+                canvas.setFillStyle(backgroundColor);
+                canvas.fill();
+            }
+        }
+    // else 0-sized slice, 0 or internal border, is just dropped
+    } else {
+        if (0 == spacing)
+            spacing = 1;
+        // if center point is on the chart, draw it:
+        double prevXPx = pp.xToPixel(prevX);
+        double prevYPx = pp.yToPixel(prevY, onY2);
+        double nextXPx = pp.xToPixel(nextX);
+        double nextYPx = pp.yToPixel(nextY, onY2);
+        int nBands = (int) Math.round(r / spacing);
+        /*
+           * Holds positions at which the current vertical or horizontal
+           * "gridline-like band" intersects the outter perimeter of the current
+           * pie slice. These positions are used to define the location and size
+           * of shading bars required for each pie slice.
+           * 
+           * Note: Although most pie slice perimeters are convex and thus have
+           * perimeters that intersect a gridline in at most two points, pie
+           * slices that take up more than half of the entire pie have
+           * perimeters that can (across their pacman-like mouth) intersect a
+           * gridline at up to four points.
+           */
+        final int MAX_PIE_SLICE_PERIMETER_INTERSECTIONS = 4;
+        double[] p = new double[MAX_PIE_SLICE_PERIMETER_INTERSECTIONS];
+        final double EPS = 0.5;
+        SliceLimits sl = getSliceLimits(theta1, theta0);
+        boolean optimalIsVertical = (sl.yMax - sl.yMin) > (sl.xMax - sl.xMin);
+        boolean isFullPie = (symbol.getPieSliceSize() == 1.0);
+        // perform any vertical shading that may be required:
+        if (nBands > 0 && (verticallyShaded || (optimallyShaded && optimalIsVertical))) {
+            for (int i = (int) Math.round(nBands * sl.xMin); i < sl.xMax * nBands; i++) {
+                int nP = 0;
+                double dxPx = r * (i + 0.5) / nBands;
+                double dyPx = Math.sqrt(r * r - dxPx * dxPx);
+                // x of vertical line bisecting the shading band
+                double xi = xPx + dxPx;
+                // y-positions where this band crosses circle
+                // perimeter
+                double c1 = yPx - dyPx;
+                double c2 = yPx + dyPx;
+                // y-positions where this band crosses each slice
+                // edge
+                // (full pies don't have pie slice edges)
+                double e1 = isFullPie ? Double.NaN : yWherePieEdgeIntersectsVerticalLine(xi, xPx, yPx, r, theta0);
+                double e2 = isFullPie ? Double.NaN : yWherePieEdgeIntersectsVerticalLine(xi, xPx, yPx, r, theta1);
+                // of angle function below.
+                if (angleInRange(angle(xi - xPx, yPx - c1), theta0, theta1))
+                    p[nP++] = c1;
+                // p[]
+                if (e1 < e2) {
+                    // x!=x is a faster isNaN
+                    if (!(e1 != e1))
+                        p[nP++] = e1;
+                    if (!(e2 != e2))
+                        p[nP++] = e2;
+                } else {
+                    if (!(e2 != e2))
+                        p[nP++] = e2;
+                    if (!(e1 != e1))
+                        p[nP++] = e1;
+                }
+                if (angleInRange(angle(xi - xPx, yPx - c2), theta0, theta1))
+                    p[nP++] = c2;
+                for (int j = 1; j < nP; j++) {
+                    // and p[2].
+                    if (Math.abs(theta0 - theta1) <= Math.PI || angleInRange(angle(xi - xPx, yPx - (0.3 * p[j] + 0.7 * p[j - 1])), theta0, theta1)) {
+                        // widening of EPS pixels on either side
+                        // fills in
+                        // tiny intra-slice gaps (that can otherwise
+                        // appear
+                        // due to roundoff) by making each bar a tad
+                        // bigger.
+                        realizeOneImageOfSymbol(pp, grp, arp, symbol, null, onY2, clipPlotArea, clipDecoratedChart, renderPaddingFactor, xi - 0.5 * thickness, p[j - 1] - EPS, prevXPx, prevYPx, nextXPx, nextYPx, thickness, p[j] - p[j - 1] + 2 * EPS);
+                    }
+                }
+            }
+        }
+        // above (w appropriate transposition/adjustments).
+        if (nBands > 0 && (horizontallyShaded || (optimallyShaded && !optimalIsVertical))) {
+            for (int i = (int) Math.round(-nBands * sl.yMax); i < -nBands * sl.yMin; i++) {
+                int nP = 0;
+                double dyPx = r * (i + 0.5) / nBands;
+                double dxPx = Math.sqrt(r * r - dyPx * dyPx);
+                // y of the horizontal line bisecting the shading
+                // band
+                double yi = yPx + dyPx;
+                // x-positions where this band crosses circle
+                // perimeter
+                double c1 = xPx - dxPx;
+                double c2 = xPx + dxPx;
+                // x-positions where this band crosses each slice
+                // edge
+                // (full pies don't have pie slice edges)
+                double e1 = isFullPie ? Double.NaN : xWherePieEdgeIntersectsHorizontalLine(yi, xPx, yPx, r, theta0);
+                double e2 = isFullPie ? Double.NaN : xWherePieEdgeIntersectsHorizontalLine(yi, xPx, yPx, r, theta1);
+                // the slice
+                if (angleInRange(angle(c1 - xPx, yPx - yi), theta0, theta1))
+                    p[nP++] = c1;
+                // p[]
+                if (e1 < e2) {
+                    // x!=x is a faster isNaN
+                    if (!(e1 != e1))
+                        p[nP++] = e1;
+                    if (!(e2 != e2))
+                        p[nP++] = e2;
+                } else {
+                    if (!(e2 != e2))
+                        p[nP++] = e2;
+                    if (!(e1 != e1))
+                        p[nP++] = e1;
+                }
+                if (angleInRange(angle(c2 - xPx, yPx - yi), theta0, theta1))
+                    p[nP++] = c2;
+                for (int j = 1; j < nP; j++) {
+                    // above.
+                    if (Math.abs(theta0 - theta1) <= Math.PI || angleInRange(angle((0.3 * p[j] + 0.7 * p[j - 1]) - xPx, yPx - yi), theta0, theta1)) {
+                        // widening of EPS pixels on either side
+                        // fills in
+                        // tiny intra-slice gaps that can sometimes
+                        // appear
+                        // by making slices just a tad bigger.
+                        realizeOneImageOfSymbol(pp, grp, arp, symbol, null, onY2, clipPlotArea, clipDecoratedChart, renderPaddingFactor, p[j - 1] - EPS, yi - 0.5 * thickness, prevXPx, prevYPx, nextXPx, nextYPx, p[j] - p[j - 1] + 2 * EPS, thickness);
+                    }
+                }
+            }
+        }
+    }
+    // if the image has an attached label, realize that
+    if (annotation != null && (annotation.getText() != null || annotation.getWidget() != null) && annotation.getVisible()) {
+        // plus x-axis, for shifts, always corresponds to
+        // outward pointing radius that bisects the slice,
+        // with positive y axis, for shifts, at a 90 degree
+        // counter-clockwise rotation from this x. Basic
+        // trigonometry and this spec yeilds lines below.
+        double thetaMid = (theta0 + theta1) / 2.;
+        double dX = annotation.getXShift();
+        double dY = annotation.getYShift();
+        double sinTheta = Math.sin(thetaMid);
+        double cosTheta = Math.cos(thetaMid);
+        AnnotationLocation loc = annotation.getLocation();
+        if (null == loc)
+            loc = defaultAnnotationLocation();
+        // note: pixel Y increases down but yShift & "trig Y"
+        // increase going up, which explains dY sign reversal
+        arp.renderAnnotation(annotation, loc.decodePieLocation(thetaMid), xPx + (r + dX) * cosTheta - dY * sinTheta, yPx - (r + dX) * sinTheta - dY * cosTheta, 0, 0, symbol);
+    }
+}

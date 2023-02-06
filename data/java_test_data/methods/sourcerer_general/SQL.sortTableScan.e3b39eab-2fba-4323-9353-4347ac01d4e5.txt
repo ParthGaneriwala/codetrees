@@ -1,0 +1,76 @@
+public static void sortTableScan(Table iITable, Table iOTable, IExecutable iExecutable, int inField, int inOrder, int inMemorySize, Comparable[] iComparable) throws IOException, RecordException {
+    long t1 = System.nanoTime();
+    int nLength = iITable.getLengthTotal();
+    int nRecordAmount;
+    int indexBufferSize = 0;
+    if (iExecutable instanceof IndexJoin) {
+        indexBufferSize = ((IndexJoin) iExecutable).getIndexBufferSize();
+    }
+    // times for loads
+    nRecordAmount = (int) Math.floor((double) (inMemorySize - indexBufferSize) / nLength);
+    int nOutputBufferCount = 0;
+    if (iOTable != null) {
+        Utils.clear(iOTable.getFile());
+        nOutputBufferCount = 1;
+    }
+    int nSublist = 1;
+    if (!iITable.isSortedBy(inField, inOrder)) {
+        nSublist = TPPMS.quicksort(iITable, Utils.FILE_WORKDIR, new File(Utils.FILEPATH_WORKDIR + "sublist1_0.txt"), new int[] { inField }, inOrder, inMemorySize);
+    }
+    int nPhase = 2;
+    while (nSublist > nRecordAmount - 1) {
+        nSublist = TPPMS.reduce(iITable, Utils.FILE_WORKDIR, new File(Utils.FILEPATH_WORKDIR + "/tmp.txt"), nSublist, nPhase, new int[] { inField }, inOrder, inMemorySize);
+        nPhase++;
+    }
+    int nInputBufferCount = nSublist;
+    int nInputBufferSize = (nRecordAmount - 1) / nSublist;
+    int nOutputBufferSize = nRecordAmount - nInputBufferSize * nSublist;
+    // ProjectGUI.getInstance().update("Memory Execution: " + iTable.getName() + " " + iExecutable.getOperation(),nInputBufferCount+nOutputBufferCount);
+    if (iExecutable instanceof IndexJoin) {
+        ProjectGUI.getInstance().update("Memory Execution: " + iITable.getName() + " " + iExecutable.getOperation(), 3);
+        ProjectGUI.getInstance().update(0, nInputBufferCount * nInputBufferSize * nLength, ProjectGUI.getGI(0, 0, 1, nInputBufferCount * nInputBufferSize * nLength, iITable));
+        ProjectGUI.getInstance().update(1, indexBufferSize, ProjectGUI.getGI(1, 0, 1, indexBufferSize, iITable));
+        ProjectGUI.getInstance().update(2, nOutputBufferCount * nOutputBufferSize * nLength, ProjectGUI.getGO(0, 1, nOutputBufferCount * nOutputBufferSize * nLength, iITable));
+    } else {
+        ProjectGUI.getInstance().update("Memory Execution: " + iITable.getName() + " " + iExecutable.getOperation(), 2);
+        ProjectGUI.getInstance().update(0, nInputBufferCount * nInputBufferSize * nLength, ProjectGUI.getGI(0, 0, 1, nInputBufferCount * nInputBufferSize * nLength, iITable));
+        ProjectGUI.getInstance().update(1, nOutputBufferCount * nOutputBufferSize * nLength, ProjectGUI.getGO(0, 1, nOutputBufferCount * nOutputBufferSize * nLength, iITable));
+    }
+    TableInputBuffer[] iBuffer = new TableInputBuffer[nInputBufferCount];
+    TableOutputBuffer oBuffer = null;
+    if (iOTable != null) {
+        oBuffer = new TableOutputBuffer(iOTable, iOTable.getFile(), nOutputBufferSize, nInputBufferCount);
+    }
+    // Load data into input buffer
+    for (int i = 0; i < iBuffer.length; i++) {
+        if (!iITable.isSortedBy(inField, inOrder)) {
+            iBuffer[i] = new TableInputBuffer(iITable, TPPMS.getSublistFile(Utils.FILE_WORKDIR, nPhase - 1, i), nInputBufferSize, i);
+        } else {
+            iBuffer[i] = new TableInputBuffer(iITable, iITable.getFile(), nInputBufferSize, i);
+        }
+    }
+    // Add smallest to output buffer.
+    int[] naField = new int[] { inField };
+    Comparable[][] result;
+    int nSmallestIndex = 0;
+    try {
+        while ((nSmallestIndex = TPPMS.smallest(iBuffer, naField, inOrder)) != -1) {
+            result = iExecutable.execute(iBuffer[nSmallestIndex].getIndex(), iBuffer[nSmallestIndex].read(), naField, iComparable);
+            if (result != null) {
+                oBuffer.write(result);
+            }
+            ProjectGUI.getInstance().hasBreak();
+        }
+        result = iExecutable.lastExecute(naField, iComparable);
+        if (result != null) {
+            oBuffer.write(result);
+        }
+    } catch (FoundException e) {
+    }
+    long t2 = System.nanoTime();
+    if (iOTable != null) {
+        oBuffer.flush();
+        iOTable.setExecutionTime((t2 - t1) / Utils.NANO);
+        iOTable.setSortedBy(iOTable.getField()[inField], inOrder);
+    }
+}

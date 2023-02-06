@@ -1,0 +1,91 @@
+@SuppressWarnings("unused")
+@Override
+public void run() {
+    Pair<HashSet<Integer>, HashSet<Integer>> wordSet = ExchangeAlgo.getExchangeWordSplit(events.keySet(), events, exchangeInit);
+    Question question = new InSetQuestion((byte) (offset - contextSize), factorIndex, wordSet.getFirst());
+    Distributions[] dists = new Distributions[data.length];
+    AbstractQuestionEstimator.Result[] results = new AbstractQuestionEstimator.Result[data.length];
+    ContextVariable contextVar = new ContextVariable(question);
+    NbestDataSplits<NbestQuestionsEntry> nbest = nbestByContext.get(contextVar);
+    if (nbest == null) {
+        // TODO: move up, before the exchange algorithm
+        return;
+    }
+    for (int i = 0; i < dists.length; ++i) {
+        // construct left and right distributions for the split
+        Distributions d = new Distributions(futureWordIndex);
+        // d.parentTrain = parentTrainDist;
+        // d.parentDev = parentDevDist;
+        // train true distributions
+        // d.trueDist = makeDistribution(wordSet.getFirst(), eventsByWordAndData[factorIndex][i][offset]);
+        {
+            Map<Integer, Long2IntMap> ev = eventsByWordAndData[factorIndex][i][offset];
+            for (Integer word : wordSet.getFirst()) {
+                Long2IntMap e = ev.get(word);
+                if (e != null) {
+                    for (Long2IntMap.Iterator it = e.iterator(); it.hasNext(); ) {
+                        Long2IntMap.Entry entry = it.next();
+                        d.addTrueCount(entry.getKey(), entry.getValue());
+                    }
+                }
+            }
+        }
+        // train false distributions
+        // d.falseDist = makeDistribution(wordSet.getSecond(), eventsByWordAndData[factorIndex][i][offset]);
+        {
+            Map<Integer, Long2IntMap> ev = eventsByWordAndData[factorIndex][i][offset];
+            for (Integer word : wordSet.getSecond()) {
+                Long2IntMap e = ev.get(word);
+                if (e != null) {
+                    for (Long2IntMap.Iterator it = e.iterator(); it.hasNext(); ) {
+                        Long2IntMap.Entry entry = it.next();
+                        d.addFalseCount(entry.getKey(), entry.getValue());
+                    }
+                }
+            }
+        }
+        AbstractQuestionEstimator.Result result = estimator1.estimateQuestion(i, activeNode, d);
+        results[i] = result;
+        dists[i] = d;
+    }
+    synchronized (allDistributions) {
+        allDistributions.put(question, dists);
+        questions.add(question);
+        wordSets.put(question, wordSet);
+        if (estimator1.isGood(results, activeNode)) {
+            NbestQuestionsEntry removed = nbest.add(new NbestQuestionsEntry(question, results));
+            if (removed != null) {
+                allDistributions.remove(removed.question);
+            }
+        }
+        if (false && nr_exchange_inits > 1) {
+            // debug staff only
+            exchangeQuestions[myExchangeRun] = question;
+            exchangeResults[myExchangeRun] = results;
+            boolean allDone = true;
+            for (Question q : exchangeQuestions) {
+                if (q == null) {
+                    allDone = false;
+                    break;
+                }
+            }
+            if (allDone) {
+                StringBuilder sb = new StringBuilder();
+                sb.append("Exchage runs: ");
+                sb.append(events.keySet().size());
+                sb.append(" words\n");
+                int run = 1;
+                for (Result[] exResults : exchangeResults) {
+                    sb.append(String.format("#%d:", run));
+                    for (Result r : exResults) {
+                        sb.append(' ');
+                        sb.append(r.getCost());
+                    }
+                    sb.append("\n");
+                    ++run;
+                }
+                System.err.print(sb.toString());
+            }
+        }
+    }
+}

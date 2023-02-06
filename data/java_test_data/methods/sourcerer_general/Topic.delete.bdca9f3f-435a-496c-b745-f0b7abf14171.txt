@@ -1,0 +1,70 @@
+public synchronized boolean delete(Connection db, String filePath) throws SQLException {
+    if (id == -1 || projectId == -1 || categoryId == -1) {
+        throw new SQLException("Issue ID was not specified");
+    }
+    boolean canDelete = false;
+    boolean autoCommit = db.getAutoCommit();
+    try {
+        PreparedStatement pst = null;
+        int i = 0;
+        // Make sure the issue exists, then delete all
+        pst = db.prepareStatement("SELECT count(issue_id) AS issue_count " + "FROM project_issues " + "WHERE issue_id = ?");
+        pst.setInt(1, id);
+        ResultSet rs = pst.executeQuery();
+        if (rs.next()) {
+            canDelete = (rs.getInt("issue_count") == 1);
+        }
+        rs.close();
+        pst.close();
+        if (canDelete) {
+            buildFiles(db);
+            if (autoCommit) {
+                db.setAutoCommit(false);
+            }
+            files.delete(db, filePath);
+            // Delete the replies
+            ReplyList replyList = new ReplyList();
+            replyList.setIssueId(id);
+            replyList.setProjectId(projectId);
+            replyList.setCategoryId(categoryId);
+            replyList.buildList(db);
+            int replyCount = replyList.size();
+            replyList.delete(db, filePath);
+            // Update the category count (plus the issue count=1)
+            i = 0;
+            pst = db.prepareStatement("UPDATE project_issues_categories " + "SET posts_count = posts_count - " + (replyCount + 1) + ", " + "topics_count = topics_count - 1 " + "WHERE project_id = ? " + "AND category_id = ? ");
+            pst.setInt(++i, projectId);
+            pst.setInt(++i, categoryId);
+            pst.executeUpdate();
+            pst.close();
+            /*// Delete the distribution list
+        pst = db.prepareStatement(
+            "DELETE FROM project_issues_contacts " +
+                "WHERE issue_id = ? ");
+        pst.setInt(1, this.getId());
+        pst.execute();*/
+            // Delete the views
+            Viewing.delete(db, id, TABLE, PRIMARY_KEY);
+            // Delete Issue Rating
+            Rating.delete(db, id, TABLE, PRIMARY_KEY);
+            // Delete the issue
+            pst = db.prepareStatement("DELETE FROM project_issues " + "WHERE issue_id = ? ");
+            pst.setInt(1, id);
+            pst.execute();
+            pst.close();
+            if (autoCommit) {
+                db.commit();
+            }
+        }
+    } catch (SQLException e) {
+        if (autoCommit) {
+            db.rollback();
+        }
+        throw new SQLException(e.getMessage());
+    } finally {
+        if (autoCommit) {
+            db.setAutoCommit(true);
+        }
+    }
+    return true;
+}

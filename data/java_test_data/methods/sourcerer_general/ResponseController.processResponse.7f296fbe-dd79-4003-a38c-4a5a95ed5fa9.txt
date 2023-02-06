@@ -1,0 +1,53 @@
+@RequestMapping(method = RequestMethod.POST)
+public void processResponse(@RequestParam(required = false, value = USERNAME) String username, @RequestParam(required = false, value = PASSWORD) String password, HttpServletRequest request, HttpServletResponse response) throws IOException {
+    try {
+        if (!Context.isAuthenticated())
+            Context.authenticate(username, password);
+        List<BaseOpenmrsData> responses = new ArrayList<BaseOpenmrsData>();
+        Map parameterMap = request.getParameterMap();
+        for (Object parameterName : parameterMap.keySet()) {
+            // skip the username and password request parameter
+            if (!StringUtils.equalsIgnoreCase(USERNAME, String.valueOf(parameterName)) && !StringUtils.equalsIgnoreCase(PASSWORD, String.valueOf(parameterName))) {
+                String patientId = String.valueOf(parameterName);
+                Patient patient = Context.getPatientService().getPatient(NumberUtils.toInt(patientId));
+                String[] parameterValues = (String[]) parameterMap.get(parameterName);
+                for (String parameterValue : parameterValues) {
+                    String[] parameter = StringUtils.split(parameterValue, "|");
+                    if (StringUtils.equalsIgnoreCase(HEADER_REMINDER, parameter[0])) {
+                        ReminderResponse reminderResponse = new ReminderResponse();
+                        reminderResponse.setPatient(patient);
+                        reminderResponse.setProvider(Context.getAuthenticatedUser().getPerson());
+                        reminderResponse.setToken(parameter[1]);
+                        reminderResponse.setResponse(parameter[2]);
+                        reminderResponse.setReminderDatetime(WebUtils.parse(parameter[2], new Date()));
+                        // add to the list
+                        responses.add(reminderResponse);
+                    } else {
+                        MedicationResponse medicationResponse = new MedicationResponse();
+                        medicationResponse.setPatient(patient);
+                        medicationResponse.setProvider(Context.getAuthenticatedUser().getPerson());
+                        for (MedicationType medicationType : MedicationType.values()) if (StringUtils.equals(medicationType.getValue(), parameter[0]))
+                            medicationResponse.setMedicationType(medicationType);
+                        // get the concept from the cache or search the database when the concept is not in the cache
+                        Concept concept = CacheUtils.getConcept(parameter[1]);
+                        // if we still can't find the concept, the log this as an error
+                        if (concept == null) {
+                            Loggable loggable = new Loggable(patient, "Concept name: " + parameter[1] + " not found in the database");
+                            Context.getService(LoggableService.class).saveLoggable(loggable);
+                            continue;
+                        }
+                        medicationResponse.setConcept(concept);
+                        medicationResponse.setMedicationDatetime(WebUtils.parse(parameter[2], new Date()));
+                        medicationResponse.setStatus(NumberUtils.toInt(parameter[3]));
+                        // add to the list
+                        responses.add(medicationResponse);
+                    }
+                }
+                Context.getService(UtilService.class).saveResponses(responses);
+            }
+        }
+        response.setStatus(HttpServletResponse.SC_OK);
+    } catch (ContextAuthenticationException e) {
+        response.sendError(HttpServletResponse.SC_UNAUTHORIZED);
+    }
+}

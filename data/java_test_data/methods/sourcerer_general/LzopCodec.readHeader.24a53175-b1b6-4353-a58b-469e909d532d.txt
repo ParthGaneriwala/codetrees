@@ -1,0 +1,103 @@
+protected void readHeader(InputStream in) throws IOException {
+    if (0 > in.read(buf, 0, 9)) {
+        throw new EOFException();
+    }
+    if (!Arrays.equals(buf, LZO_MAGIC)) {
+        throw new IOException("Invalid LZO header");
+    }
+    Arrays.fill(buf, (byte) 0);
+    Adler32 adler = new Adler32();
+    CRC32 crc32 = new CRC32();
+    // lzop version
+    int hitem = readHeaderItem(in, buf, 2, adler, crc32);
+    if (hitem > LZOP_VERSION) {
+        LOG.debug("Compressed with later version of lzop: " + Integer.toHexString(hitem) + " (expected 0x" + Integer.toHexString(LZOP_VERSION) + ")");
+    }
+    // lzo library version
+    hitem = readHeaderItem(in, buf, 2, adler, crc32);
+    if (hitem > LzoDecompressor.LZO_LIBRARY_VERSION) {
+        throw new IOException("Compressed with incompatible lzo version: 0x" + Integer.toHexString(hitem) + " (expected 0x" + Integer.toHexString(LzoDecompressor.LZO_LIBRARY_VERSION) + ")");
+    }
+    // lzop extract version
+    hitem = readHeaderItem(in, buf, 2, adler, crc32);
+    if (hitem > LZOP_VERSION) {
+        throw new IOException("Compressed with incompatible lzop version: 0x" + Integer.toHexString(hitem) + " (expected 0x" + Integer.toHexString(LZOP_VERSION) + ")");
+    }
+    // method
+    hitem = readHeaderItem(in, buf, 1, adler, crc32);
+    if (hitem < 1 || hitem > 3) {
+        throw new IOException("Invalid strategy: " + Integer.toHexString(hitem));
+    }
+    // ignore level
+    readHeaderItem(in, buf, 1, adler, crc32);
+    // flags
+    hitem = readHeaderItem(in, buf, 4, adler, crc32);
+    try {
+        for (DChecksum f : dflags) {
+            if (0 == (f.getHeaderMask() & hitem)) {
+                dflags.remove(f);
+            } else {
+                dcheck.put(f, (int) f.getChecksumClass().newInstance().getValue());
+            }
+        }
+        for (CChecksum f : cflags) {
+            if (0 == (f.getHeaderMask() & hitem)) {
+                cflags.remove(f);
+            } else {
+                ccheck.put(f, (int) f.getChecksumClass().newInstance().getValue());
+            }
+        }
+    } catch (InstantiationException e) {
+        throw new RuntimeException("Internal error", e);
+    } catch (IllegalAccessException e) {
+        throw new RuntimeException("Internal error", e);
+    }
+    ((LzopDecompressor) decompressor).initHeaderFlags(dflags, cflags);
+    // F_H_CRC32
+    boolean useCRC32 = 0 != (hitem & 0x00001000);
+    // F_H_EXTRA_FIELD
+    boolean extraField = 0 != (hitem & 0x00000040);
+    if (0 != (hitem & 0x400)) {
+        // F_MULTIPART
+        throw new IOException("Multipart lzop not supported");
+    }
+    if (0 != (hitem & 0x800)) {
+        // F_H_FILTER
+        throw new IOException("lzop filter not supported");
+    }
+    if (0 != (hitem & 0x000FC000)) {
+        // F_RESERVED
+        throw new IOException("Unknown flags in header");
+    }
+    // known !F_H_FILTER, so no optional block
+    // ignore mode
+    readHeaderItem(in, buf, 4, adler, crc32);
+    // ignore mtime
+    readHeaderItem(in, buf, 4, adler, crc32);
+    // ignore gmtdiff
+    readHeaderItem(in, buf, 4, adler, crc32);
+    // fn len
+    hitem = readHeaderItem(in, buf, 1, adler, crc32);
+    if (hitem > 0) {
+        // skip filename
+        readHeaderItem(in, new byte[hitem], hitem, adler, crc32);
+    }
+    int checksum = (int) (useCRC32 ? crc32.getValue() : adler.getValue());
+    // read checksum
+    hitem = readHeaderItem(in, buf, 4, adler, crc32);
+    if (hitem != checksum) {
+        throw new IOException("Invalid header checksum: " + Long.toHexString(checksum) + " (expected 0x" + Integer.toHexString(hitem) + ")");
+    }
+    if (extraField) {
+        // lzop 1.08 ultimately ignores this
+        LOG.debug("Extra header field not processed");
+        adler.reset();
+        crc32.reset();
+        hitem = readHeaderItem(in, buf, 4, adler, crc32);
+        readHeaderItem(in, new byte[hitem], hitem, adler, crc32);
+        checksum = (int) (useCRC32 ? crc32.getValue() : adler.getValue());
+        if (checksum != readHeaderItem(in, buf, 4, adler, crc32)) {
+            throw new IOException("Invalid checksum for extra header field");
+        }
+    }
+}

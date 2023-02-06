@@ -1,0 +1,169 @@
+@Override
+protected void doPost(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+    Continuation continuation = ContinuationSupport.getContinuation(request);
+    if (continuation.isInitial()) {
+        response.setContentType("text/xml;charset=UTF-8");
+        response.setCharacterEncoding("UTF-8");
+        XmlPullParser parser = new MXParser();
+        Body body = null;
+        try {
+            parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, true);
+            parser.setInput(request.getReader());
+            parser.next();
+            String elementName = parser.getName();
+            if (!"body".equals(elementName)) {
+                response.setContentType("text/html;charset=UTF-8");
+                response.sendError(HttpServletResponse.SC_NOT_FOUND, "root element must be body");
+                return;
+            }
+            body = new Body();
+            for (int i = 0; i < parser.getAttributeCount(); i++) {
+                String attributeName = parser.getAttributeName(i);
+                if (!"xmlns".equals(attributeName)) {
+                    body.setProperty(attributeName, parser.getAttributeValue(i));
+                }
+            }
+            boolean done = false;
+            while (!done) {
+                int eventType = parser.next();
+                elementName = parser.getName();
+                if (eventType == XmlPullParser.START_TAG) {
+                    if (!"body".equals(elementName)) {
+                        body.addStanza(xmppParserServiceTracker.getParser().parseParser(parser));
+                    }
+                } else if (eventType == XmlPullParser.END_TAG) {
+                    if ("body".equals(elementName)) {
+                        done = true;
+                    }
+                }
+            }
+            if (loggerServiceTracker.isDebugEnabled()) {
+                loggerServiceTracker.debug("received Body:" + body.toXml());
+            }
+        } catch (Exception e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+            response.setContentType("text/html;charset=UTF-8");
+            response.sendError(HttpServletResponse.SC_BAD_REQUEST, " parsing message error");
+            return;
+        }
+        if (!body.containsProperty("sid")) {
+            createNewSession(request, response, body);
+            return;
+        }
+        String sid = (String) body.getProperty("sid");
+        WebClientSession webClientSession = webClientSessions.get(sid);
+        if (webClientSession == null) {
+            Body responseBody = new Body();
+            responseBody.setProperty("type", "terminate");
+            responseBody.setProperty("condition", "item-not-found");
+            response.getWriter().write(responseBody.toXml());
+            return;
+        }
+        synchronized (webClientSession) {
+            if (webClientSession.getHolded() >= maxHolded + 1) {
+                sendCloseStream(webClientSession);
+                response.setContentType("text/html;charset=UTF-8");
+                response.sendError(HttpServletResponse.SC_FORBIDDEN, "too many simultaneous requests");
+                webClientSession.close();
+                if (loggerServiceTracker.isDebugEnabled()) {
+                    loggerServiceTracker.debug(webClientSession.getUsername() + "[" + webClientSession.getStreamId() + "]:" + "too many simultaneous requests");
+                }
+                return;
+            }
+            webClientSession.setLastActive(System.currentTimeMillis());
+            Continuation oldContinuation = webClientSession.getContinuation();
+            if (oldContinuation != null) {
+                if (!oldContinuation.isResumed()) {
+                    oldContinuation.resume();
+                }
+                webClientSession.setContinuation(null);
+            }
+            webClientSession.increaseHolded();
+            if (!checkKey(webClientSession, body)) {
+                sendCloseStream(webClientSession);
+                Body responsebody = new Body();
+                responsebody.setProperty("type", "terminate");
+                responsebody.setProperty("condition", "item-not-found");
+                webClientSession.write(responsebody, response, (String) body.getProperty("rid"));
+                webClientSession.close();
+                if (loggerServiceTracker.isDebugEnabled()) {
+                    loggerServiceTracker.debug(webClientSession.getUsername() + "[" + webClientSession.getStreamId() + "]:" + "checkkey failed");
+                }
+                return;
+            }
+            boolean handled = false;
+            for (XmlStanza stanza : body.getStanzas()) {
+                if (handleStanza(webClientSession, body, stanza, response)) {
+                    handled = true;
+                }
+            }
+            String type = (String) body.getProperty("type");
+            if ("terminate".equals(type)) {
+                sendCloseStream(webClientSession);
+                Body responseBody = new Body();
+                responseBody.setProperty("type", "terminate");
+                webClientSession.write(responseBody, response, (String) body.getProperty("rid"));
+                webClientSession.close();
+                return;
+            }
+            if (!handled) {
+                if (webClientSession.hasMessage()) {
+                    Body responsebody = new Body();
+                    responsebody.setProperty("sid", webClientSession.getStreamId());
+                    for (XmlStanza stanza : webClientSession.getAllMessage()) {
+                        if (stanza instanceof StreamFeature) {
+                            responsebody.setProperty("xmlns:stream", "http://etherx.jabber.org/streams");
+                        }
+                        responsebody.addStanza(stanza);
+                    }
+                    boolean closed = webClientSession.containsProperty("closed");
+                    if (closed) {
+                        responsebody.setProperty("type", "terminate");
+                    }
+                    webClientSession.write(responsebody, response, (String) body.getProperty("rid"));
+                    webClientSession.decreaseHolded();
+                    if (closed) {
+                        webClientSession.close();
+                    }
+                    return;
+                }
+                continuation.setTimeout(webClientSession.getWait() * 1000);
+                webClientSession.setContinuation(continuation);
+                continuation.setAttribute("webClientSession", webClientSession);
+                continuation.setAttribute("rid", body.getProperty("rid"));
+                continuation.suspend();
+                return;
+            }
+            webClientSession.decreaseHolded();
+        }
+    } else {
+        WebClientSession webClientSession = (WebClientSession) continuation.getAttribute("webClientSession");
+        if (webClientSession != null) {
+            synchronized (webClientSession) {
+                Body responsebody = new Body();
+                responsebody.setProperty("sid", webClientSession.getStreamId());
+                if (webClientSession.hasMessage()) {
+                    for (XmlStanza stanza : webClientSession.getAllMessage()) {
+                        if (stanza instanceof StreamFeature) {
+                            responsebody.setProperty("xmlns:stream", "http://etherx.jabber.org/streams");
+                        }
+                        responsebody.addStanza(stanza);
+                    }
+                }
+                boolean closed = webClientSession.containsProperty("closed");
+                if (closed) {
+                    responsebody.setProperty("type", "terminate");
+                }
+                webClientSession.write(responsebody, response, (String) continuation.getAttribute("rid"));
+                webClientSession.decreaseHolded();
+                if (closed) {
+                    webClientSession.close();
+                }
+                if (webClientSession.getContinuation() == continuation) {
+                    webClientSession.setContinuation(null);
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,122 @@
+private static EdgeTable build_lmt(LmtTable lmt_table, ScanBeamTreeEntries sbte, Poly p, // poly type SUBJ/CLIP
+int type, OperationType op) {
+    /* Create the entire input polygon edge table in one go */
+    EdgeTable edge_table = new EdgeTable();
+    for (int c = 0; c < p.getNumInnerPoly(); c++) {
+        Poly ip = p.getInnerPoly(c);
+        if (!ip.isContributing(0)) {
+            /* Ignore the non-contributing contour */
+            ip.setContributing(0, true);
+        } else {
+            /* Perform contour optimisation */
+            int num_vertices = 0;
+            int e_index = 0;
+            edge_table = new EdgeTable();
+            for (int i = 0; i < ip.getNumPoints(); i++) {
+                if (OPTIMAL(ip, i)) {
+                    double x = ip.getX(i);
+                    double y = ip.getY(i);
+                    edge_table.addNode(x, y);
+                    /* Record vertex in the scanbeam table */
+                    add_to_sbtree(sbte, ip.getY(i));
+                    num_vertices++;
+                }
+            }
+            /* Do the contour forward pass */
+            for (int min = 0; min < num_vertices; min++) {
+                /* If a forward local minimum... */
+                if (edge_table.FWD_MIN(min)) {
+                    /* Search for the next local maximum... */
+                    int num_edges = 1;
+                    int max = NEXT_INDEX(min, num_vertices);
+                    while (edge_table.NOT_FMAX(max)) {
+                        num_edges++;
+                        max = NEXT_INDEX(max, num_vertices);
+                    }
+                    /* Build the next edge list */
+                    int v = min;
+                    EdgeNode e = edge_table.getNode(e_index);
+                    e.bstate[BELOW] = BundleState.UNBUNDLED;
+                    e.bundle[BELOW][CLIP] = 0;
+                    e.bundle[BELOW][SUBJ] = 0;
+                    for (int i = 0; i < num_edges; i++) {
+                        EdgeNode ei = edge_table.getNode(e_index + i);
+                        EdgeNode ev = edge_table.getNode(v);
+                        ei.xb = ev.vertex.x;
+                        ei.bot.x = ev.vertex.x;
+                        ei.bot.y = ev.vertex.y;
+                        v = NEXT_INDEX(v, num_vertices);
+                        ev = edge_table.getNode(v);
+                        ei.top.x = ev.vertex.x;
+                        ei.top.y = ev.vertex.y;
+                        ei.dx = (ev.vertex.x - ei.bot.x) / (ei.top.y - ei.bot.y);
+                        ei.type = type;
+                        ei.outp[ABOVE] = null;
+                        ei.outp[BELOW] = null;
+                        ei.next = null;
+                        ei.prev = null;
+                        ei.succ = ((num_edges > 1) && (i < (num_edges - 1))) ? edge_table.getNode(e_index + i + 1) : null;
+                        ei.pred = ((num_edges > 1) && (i > 0)) ? edge_table.getNode(e_index + i - 1) : null;
+                        ei.next_bound = null;
+                        ei.bside[CLIP] = (op == OperationType.GPC_DIFF) ? RIGHT : LEFT;
+                        ei.bside[SUBJ] = LEFT;
+                    }
+                    insert_bound(bound_list(lmt_table, edge_table.getNode(min).vertex.y), e);
+                    if (DEBUG) {
+                        System.out.println("fwd");
+                        lmt_table.print();
+                    }
+                    e_index += num_edges;
+                }
+            }
+            /* Do the contour reverse pass */
+            for (int min = 0; min < num_vertices; min++) {
+                /* If a reverse local minimum... */
+                if (edge_table.REV_MIN(min)) {
+                    /* Search for the previous local maximum... */
+                    int num_edges = 1;
+                    int max = PREV_INDEX(min, num_vertices);
+                    while (edge_table.NOT_RMAX(max)) {
+                        num_edges++;
+                        max = PREV_INDEX(max, num_vertices);
+                    }
+                    /* Build the previous edge list */
+                    int v = min;
+                    EdgeNode e = edge_table.getNode(e_index);
+                    e.bstate[BELOW] = BundleState.UNBUNDLED;
+                    e.bundle[BELOW][CLIP] = 0;
+                    e.bundle[BELOW][SUBJ] = 0;
+                    for (int i = 0; i < num_edges; i++) {
+                        EdgeNode ei = edge_table.getNode(e_index + i);
+                        EdgeNode ev = edge_table.getNode(v);
+                        ei.xb = ev.vertex.x;
+                        ei.bot.x = ev.vertex.x;
+                        ei.bot.y = ev.vertex.y;
+                        v = PREV_INDEX(v, num_vertices);
+                        ev = edge_table.getNode(v);
+                        ei.top.x = ev.vertex.x;
+                        ei.top.y = ev.vertex.y;
+                        ei.dx = (ev.vertex.x - ei.bot.x) / (ei.top.y - ei.bot.y);
+                        ei.type = type;
+                        ei.outp[ABOVE] = null;
+                        ei.outp[BELOW] = null;
+                        ei.next = null;
+                        ei.prev = null;
+                        ei.succ = ((num_edges > 1) && (i < (num_edges - 1))) ? edge_table.getNode(e_index + i + 1) : null;
+                        ei.pred = ((num_edges > 1) && (i > 0)) ? edge_table.getNode(e_index + i - 1) : null;
+                        ei.next_bound = null;
+                        ei.bside[CLIP] = (op == OperationType.GPC_DIFF) ? RIGHT : LEFT;
+                        ei.bside[SUBJ] = LEFT;
+                    }
+                    insert_bound(bound_list(lmt_table, edge_table.getNode(min).vertex.y), e);
+                    if (DEBUG) {
+                        System.out.println("rev");
+                        lmt_table.print();
+                    }
+                    e_index += num_edges;
+                }
+            }
+        }
+    }
+    return edge_table;
+}

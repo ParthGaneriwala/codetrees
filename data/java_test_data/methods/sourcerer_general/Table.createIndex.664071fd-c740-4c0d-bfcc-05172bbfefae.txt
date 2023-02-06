@@ -1,0 +1,40 @@
+Index createIndex(Session session, int[] column, HsqlName name, boolean unique, boolean constraint, boolean forward) throws HsqlException {
+    int newindexNo = createIndexStructureGetNo(column, name, unique, constraint, forward);
+    Index newindex = indexList[newindexNo];
+    Index primaryindex = getPrimaryIndex();
+    RowIterator it = primaryindex.firstRow(session);
+    int rowCount = 0;
+    HsqlException error = null;
+    try {
+        while (it.hasNext()) {
+            Row row = it.next();
+            Node backnode = row.getNode(newindexNo - 1);
+            Node newnode = Node.newNode(row, newindexNo, this);
+            newnode.nNext = backnode.nNext;
+            backnode.nNext = newnode;
+            // count before inserting
+            rowCount++;
+            newindex.insert(session, row, newindexNo);
+        }
+        return newindex;
+    } catch (java.lang.OutOfMemoryError e) {
+        error = Trace.error(Trace.OUT_OF_MEMORY);
+    } catch (HsqlException e) {
+        error = e;
+    }
+    // backtrack on error
+    // rowCount rows have been modified
+    it = primaryindex.firstRow(session);
+    for (int i = 0; i < rowCount; i++) {
+        Row row = it.next();
+        Node backnode = row.getNode(0);
+        int j = newindexNo;
+        while (--j > 0) {
+            backnode = backnode.nNext;
+        }
+        backnode.nNext = backnode.nNext.nNext;
+    }
+    indexList = (Index[]) ArrayUtil.toAdjustedArray(indexList, null, newindexNo, -1);
+    setBestRowIdentifiers();
+    throw error;
+}

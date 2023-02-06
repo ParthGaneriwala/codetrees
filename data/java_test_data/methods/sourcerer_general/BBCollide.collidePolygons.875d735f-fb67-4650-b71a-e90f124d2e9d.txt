@@ -1,0 +1,98 @@
+// Find edge normal of max separation on A - return if separating axis is found
+// Find edge normal of max separation on B - return if separation axis is found
+// Choose reference edge as min(minA, minB)
+// Find incident edge
+// Clip
+// The normal points from 1 to 2
+public static void collidePolygons(BBManifold manifold, final BBPolygonShape polyA, final BBTransform xfA, final BBPolygonShape polyB, final BBTransform xfB) {
+    manifold.m_pointCount = 0;
+    float totalRadius = polyA.m_radius + polyB.m_radius;
+    int[] edgeA = new int[1];
+    float separationA = findMaxSeparation(edgeA, polyA, xfA, polyB, xfB);
+    if (separationA > totalRadius)
+        return;
+    int[] edgeB = new int[1];
+    float separationB = findMaxSeparation(edgeB, polyB, xfB, polyA, xfA);
+    if (separationB > totalRadius)
+        return;
+    // reference polygon
+    final BBPolygonShape poly1;
+    // incident polygon
+    final BBPolygonShape poly2;
+    BBTransform xf1, xf2;
+    // reference edge
+    int edge1;
+    byte flip;
+    final float k_relativeTol = 0.98f;
+    final float k_absoluteTol = 0.001f;
+    if (separationB > k_relativeTol * separationA + k_absoluteTol) {
+        poly1 = polyB;
+        poly2 = polyA;
+        xf1 = xfB;
+        xf2 = xfA;
+        edge1 = edgeB[0];
+        manifold.m_type = BBManifold.e_faceB;
+        flip = 1;
+    } else {
+        poly1 = polyA;
+        poly2 = polyB;
+        xf1 = xfA;
+        xf2 = xfB;
+        edge1 = edgeA[0];
+        manifold.m_type = BBManifold.e_faceA;
+        flip = 0;
+    }
+    BBClipVertex[] incidentEdge = new BBClipVertex[2];
+    incidentEdge[0] = new BBClipVertex();
+    incidentEdge[1] = new BBClipVertex();
+    findIncidentEdge(incidentEdge, poly1, xf1, edge1, poly2, xf2);
+    int count1 = poly1.m_vertexCount;
+    final BBVec2[] vertices1 = poly1.m_vertices;
+    BBVec2 v11 = vertices1[edge1];
+    BBVec2 v12 = edge1 + 1 < count1 ? vertices1[edge1 + 1] : vertices1[0];
+    BBVec2 localTangent = sub(v12, v11);
+    localTangent.normalize();
+    BBVec2 localNormal = cross(localTangent, 1.0f);
+    BBVec2 planePoint = mul(0.5f, add(v11, v12));
+    BBVec2 tangent = mul(xf1.R, localTangent);
+    BBVec2 normal = cross(tangent, 1.0f);
+    v11 = mul(xf1, v11);
+    v12 = mul(xf1, v12);
+    // Face offset.
+    float frontOffset = dot(normal, v11);
+    // Side offsets, extended by polytope skin thickness.
+    float sideOffset1 = -dot(tangent, v11) + totalRadius;
+    float sideOffset2 = dot(tangent, v12) + totalRadius;
+    // Clip incident edge against extruded edge1 side edges.
+    BBClipVertex[] clipPoints1 = new BBClipVertex[2];
+    clipPoints1[0] = new BBClipVertex();
+    clipPoints1[1] = new BBClipVertex();
+    BBClipVertex[] clipPoints2 = new BBClipVertex[2];
+    clipPoints2[0] = new BBClipVertex();
+    clipPoints2[1] = new BBClipVertex();
+    int np;
+    // Clip to box side 1
+    np = clipSegmentToLine(clipPoints1, incidentEdge, tangent.neg(), sideOffset1);
+    if (np < 2)
+        return;
+    // Clip to negative box side 1
+    np = clipSegmentToLine(clipPoints2, clipPoints1, tangent, sideOffset2);
+    if (np < 2) {
+        return;
+    }
+    // Now clipPoints2 contains the clipped points.
+    manifold.m_localPlaneNormal = localNormal;
+    manifold.m_localPoint = planePoint;
+    int pointCount = 0;
+    for (int i = 0; i < maxManifoldPoints; ++i) {
+        float separation = dot(normal, clipPoints2[i].v) - frontOffset;
+        if (separation <= totalRadius) {
+            BBManifoldPoint cp = manifold.m_points[pointCount];
+            cp.m_localPoint = mulT(xf2, clipPoints2[i].v);
+            cp.m_id = clipPoints2[i].id;
+            cp.m_id.features.flip = flip;
+            ++pointCount;
+        }
+    }
+    manifold.m_pointCount = pointCount;
+}

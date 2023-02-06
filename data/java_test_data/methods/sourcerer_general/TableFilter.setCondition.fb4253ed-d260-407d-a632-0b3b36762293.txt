@@ -1,0 +1,99 @@
+private void setCondition(Session session, Expression e) throws HsqlException {
+    int type = e.getType();
+    Expression e1 = e.getArg();
+    Expression e2 = e.getArg2();
+    isAssigned = true;
+    if (type == Expression.AND) {
+        setCondition(session, e1);
+        setCondition(session, e2);
+        return;
+    }
+    if (type == Expression.OR && isOuterJoin && e.isInJoin && e.outerFilter == this) {
+        addAndCondition(e);
+        e.setTrue();
+        return;
+    }
+    int conditionType = getConditionType(e);
+    if (conditionType == CONDITION_NONE) {
+        // not a condition expression
+        return;
+    }
+    // fredt@users 20030813 - patch 1.7.2 - fix for column comparison within same table bugs #572075 and 722443
+    if (e1.getFilter() == this && e2.getFilter() == this) {
+        conditionType = CONDITION_UNORDERED;
+    } else if (e1.getFilter() == this) {
+        if (!e.isInJoin && isOuterJoin) {
+            // do not use a where condition on the second table in outer joins
+            return;
+        }
+    // ok include this
+    } else if ((e2.getFilter() == this) && (conditionType != CONDITION_UNORDERED)) {
+        // swap and try again to allow index usage
+        e.swapCondition();
+        setCondition(session, e);
+        return;
+    } else if (e1.outerFilter == this) {
+        // fredt - this test is last to allow swapping the terms above
+        conditionType = CONDITION_OUTER;
+    } else {
+        // unrelated: don't include
+        return;
+    }
+    // Trace.doAssert(e1.getFilter() == this, "setCondition");
+    if (!e2.isResolved()) {
+        return;
+    }
+    // fredt - condition defined in outer but not this one
+    if (e1.outerFilter != null && e1.outerFilter != this) {
+        return;
+    }
+    if (conditionType == CONDITION_UNORDERED) {
+        addAndCondition(e);
+        return;
+    }
+    if (conditionType == CONDITION_OUTER) {
+        addAndCondition(e);
+        return;
+    }
+    int i = e1.getColumnNr();
+    Index index = filterTable.getIndexForColumn(session, i);
+    if (index == null || (filterIndex != index && filterIndex != null)) {
+        addAndCondition(e);
+        return;
+    }
+    filterIndex = index;
+    switch(conditionType) {
+        case CONDITION_START_END:
+            {
+                // candidate for both start and end
+                if ((eStart != null) || (eEnd != null)) {
+                    addAndCondition(e);
+                    return;
+                }
+                eStart = new Expression(e);
+                eEnd = eStart;
+                break;
+            }
+        case CONDITION_START:
+            {
+                // candidate for start
+                if (eStart != null) {
+                    addAndCondition(e);
+                    return;
+                }
+                eStart = new Expression(e);
+                break;
+            }
+        case CONDITION_END:
+            {
+                // candidate for end
+                if (eEnd != null) {
+                    addAndCondition(e);
+                    return;
+                }
+                eEnd = new Expression(e);
+                break;
+            }
+    }
+    e.setTrue();
+}

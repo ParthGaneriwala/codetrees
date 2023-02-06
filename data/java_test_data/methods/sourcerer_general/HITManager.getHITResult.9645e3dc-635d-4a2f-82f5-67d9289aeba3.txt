@@ -1,0 +1,99 @@
+public void getHITResult(String hitId) {
+    long startTime = System.currentTimeMillis();
+    log.info("getting assignment result for hitId " + hitId);
+    Assignment[] assignments = service.getAllSubmittedAssignmentsForHIT(hitId);
+    Response[] responses = new Response[assignments.length];
+    Request request = null;
+    // Product product = null;
+    if (assignments != null && assignments.length > 0) {
+        request = turkDAO.getRequestByHitId(assignments[0].getHITId());
+    }
+    if (request == null) {
+        log.error("request not found for hitId=" + hitId);
+        return;
+    }
+    int i = 0;
+    for (Assignment assignment : assignments) {
+        log.info("got assignmentID " + assignment.getAssignmentId() + " from worker " + assignment.getWorkerId());
+        log.info("answer XML: " + assignment.getAnswer());
+        String categoryIdAnswer = answerParser.getAnswer(assignment.getAnswer());
+        log.info("answer is: " + categoryIdAnswer);
+        Response response = turkDAO.getResponseByAssignmentId(assignment.getAssignmentId());
+        if (response != null) {
+        } else {
+            response = new Response();
+            response.setAnswer(categoryIdAnswer);
+            response.setCreatedDate(new Date());
+            response.setHitId(assignment.getHITId());
+            response.setWorkerId(assignment.getWorkerId());
+            response.setAssignmentId(assignment.getAssignmentId());
+            response.setRequestId(request.getId());
+        }
+        response.setAnswer(categoryIdAnswer);
+        responses[i] = response;
+        turkDAO.saveResponse(response);
+        i++;
+    }
+    if (assignments.length == 2 && responses[0].getAnswer() != null && responses[1].getAnswer() != null) {
+        if (!AnswerParser.EMPTY_ANSWER.equals(responses[0].getAnswer()) && responses[0].getAnswer().equals(responses[1].getAnswer())) {
+            String unanymousAnswer = responses[0].getAnswer();
+            reviewAssignment(assignments[0].getAssignmentId(), true);
+            reviewAssignment(assignments[1].getAssignmentId(), true);
+            Product product = turkDAO.getProductById(request.getProductId());
+            product.setCategoryCode(unanymousAnswer);
+            product.setModifiedDate(new Date());
+            turkDAO.saveProduct(product);
+            for (int j = 0; j < 2; j++) {
+                responses[j].setResult(Response.RESULT_APPROVED);
+                turkDAO.saveResponse(responses[j]);
+                log.info("approved assignmentId " + responses[j].getAssignmentId());
+            }
+        } else {
+            // create adjudication hit
+            Product product = turkDAO.getProductById(request.getProductId());
+            log.info("answers did not match, creating adjudication hit for product " + product.getId());
+            createHIT(product, 2);
+        }
+    } else if (assignments.length == 1 && responses[0].getAnswer() != null) {
+        if (request != null && request.getTier() == 2) {
+            // this was a tier 2 hit
+            // provide feedback for tier one hits
+            int productId = request.getProductId();
+            // retrieve tier one request
+            Request tierOneRequest = turkDAO.getRequestByProductIdAndTier(productId, 1);
+            List<Response> tierOneResponses = turkDAO.getResponsesByRequestId(tierOneRequest.getId());
+            for (Response tierOneResponse : tierOneResponses) {
+                if (tierOneResponse.getAnswer() == null) {
+                    log.warn("tier2 response received but tier one answer is null for responseId " + tierOneResponse.getId());
+                } else if (!AnswerParser.EMPTY_ANSWER.equals(responses[0].getAnswer()) && tierOneResponse.getAnswer().equals(responses[0].getAnswer())) {
+                    reviewAssignment(tierOneResponse.getAssignmentId(), true);
+                    tierOneResponse.setResult(Response.RESULT_APPROVED);
+                    log.info("approved assigment " + tierOneResponse.getAssignmentId() + ", matched adjudication result");
+                } else {
+                    reviewAssignment(tierOneResponse.getAssignmentId(), false);
+                    tierOneResponse.setResult(Response.RESULT_REJECTED);
+                    log.info("rejected assigment " + tierOneResponse.getAssignmentId() + ", did not match adjudication result");
+                }
+                tierOneResponse.setModifiedDate(new Date());
+                turkDAO.saveResponse(tierOneResponse);
+            }
+            if (!AnswerParser.EMPTY_ANSWER.equals(responses[0].getAnswer())) {
+                reviewAssignment(assignments[0].getAssignmentId(), true);
+                responses[0].setResult(Response.RESULT_APPROVED);
+                log.info("approved adjudication assigment " + assignments[0].getAssignmentId());
+            } else {
+                reviewAssignment(assignments[0].getAssignmentId(), false);
+                responses[0].setResult(Response.RESULT_REJECTED);
+                log.info("rejected adjudication assigment " + assignments[0].getAssignmentId());
+            }
+            responses[0].setModifiedDate(new Date());
+            turkDAO.saveResponse(responses[0]);
+            Product product = turkDAO.getProductById(request.getProductId());
+            product.setCategoryCode(responses[0].getAnswer());
+            product.setModifiedDate(new Date());
+            turkDAO.saveProduct(product);
+        }
+    }
+    long elapsed = System.currentTimeMillis() - startTime;
+    log.info("hitResult processed in " + elapsed + " ms");
+}

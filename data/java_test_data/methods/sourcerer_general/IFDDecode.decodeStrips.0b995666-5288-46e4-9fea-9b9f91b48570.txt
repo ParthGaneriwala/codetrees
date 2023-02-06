@@ -1,0 +1,82 @@
+void decodeStrips() throws JimiException, IOException {
+    // strip buffer
+    byte[] strip;
+    // stop compiler complaining about initialise
+    int[] pixelBufI = null;
+    byte[] pixelBuf = null;
+    boolean startPage = true;
+    int bitsPerSample = bitspersample[0];
+    int row = 0;
+    if (samplesperpixel != 1) {
+        pixelBufI = new int[imagewidth];
+        pixelBuf = new byte[imagewidth * samplesperpixel];
+    } else // samplesperpixel == 1
+    {
+        if (bitsPerSample == 1)
+            // bit packed
+            pixelBuf = new byte[(imagewidth + 7) / 8];
+        else
+            pixelBuf = new byte[imagewidth];
+    }
+    // allocate enough space for the largest strip
+    int max_strip_size = 0;
+    for (int i = 0; i < stripsperimage; i++) if (stripbytecounts[i] > max_strip_size)
+        max_strip_size = stripbytecounts[i];
+    strip = new byte[max_strip_size + 2];
+    for (int s = 0; s < stripsperimage; ++s) {
+        sis.seek(stripoffsets[s]);
+        sis.readFully(strip, 0, stripbytecounts[s]);
+        Decompressor dcmpr = createDecompressor(strip);
+        dcmpr.setRowsPerStrip(rowsperstrip);
+        if (photometricinterpretation == TIFTags.PHOTOMETRIC_WHITEISZERO && samplesperpixel == 1)
+            dcmpr.setInvert(true);
+        dcmpr.begOfStrip();
+        if (startPage)
+            dcmpr.begOfPage();
+        startPage = false;
+        if (samplesperpixel == 1) {
+            if (bitsPerSample == 1) {
+                for (int i = numRows(s); --i >= 0; ) {
+                    dcmpr.decodeLine(pixelBuf, imagewidth);
+                    // LZW predictor is not implemented as it appears that there
+                    // is no way to create Black & White LZW compressed images.
+                    setPackedChannel_Oriented(row, pixelBuf);
+                    ++row;
+                    decoder.setProgress((row * 100) / imagelength);
+                }
+            } else {
+                for (int i = numRows(s); --i >= 0; ) {
+                    dcmpr.decodeLine(pixelBuf, pixelBuf.length);
+                    if (compression == TIFTags.COMPRESSION_LZW) {
+                        if (predictor == TIFTags.PREDICTOR_HORIZONTAL) {
+                            for (int k = 0; k < pixelBuf.length - 1; ++k) pixelBuf[k + 1] += pixelBuf[k];
+                        }
+                    }
+                    setChannel_Oriented(0, row, pixelBuf);
+                    ++row;
+                    decoder.setProgress((row * 100) / imagelength);
+                }
+            }
+        } else {
+            for (int i = numRows(s); --i >= 0; ) {
+                dcmpr.decodeLine(pixelBuf, pixelBuf.length);
+                if (compression == TIFTags.COMPRESSION_LZW) {
+                    // different for R/G/B byte data
+                    if (predictor == TIFTags.PREDICTOR_HORIZONTAL) {
+                        for (int k = 0; k < (pixelBuf.length - 1) / 3; ++k) {
+                            pixelBuf[(k + 1) * 3] += pixelBuf[k * 3];
+                            pixelBuf[(k + 1) * 3 + 1] += pixelBuf[k * 3 + 1];
+                            pixelBuf[(k + 1) * 3 + 2] += pixelBuf[k * 3 + 2];
+                        }
+                    }
+                }
+                for (int j = 0; j < imagewidth; ++j) {
+                    pixelBufI[j] = 0xFF000000 | ((pixelBuf[j * 3] & 0xff) << 16) | ((pixelBuf[j * 3 + 1] & 0xff) << 8) | ((pixelBuf[j * 3 + 2] & 0xff));
+                }
+                setChannel_Oriented(row, pixelBufI);
+                ++row;
+                decoder.setProgress((row * 100) / imagelength);
+            }
+        }
+    }
+}

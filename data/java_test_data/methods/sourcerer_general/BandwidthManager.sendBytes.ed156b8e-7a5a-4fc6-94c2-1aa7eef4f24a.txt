@@ -1,0 +1,52 @@
+// private double preferredAddTo(Transfer t) {
+// int numLoose = 0;
+// for(Transfer t1 : transfers)
+// if(t1.loose())
+// numLoose++;
+// double retval = availableInBPS / numLoose;
+// 
+// retval = Math.floor(retval); // to prevent future rounding errors, remove fractions
+// 
+// return retval;
+// }
+public Transfer sendBytes(int remoteNodeId, Message message, long bytes) throws Exception {
+    // System.out.print("Send Bytes: ");
+    // the delay is only used as a minimum possible delay in case the bandwidth delay is less that it
+    // in other words, the final delay will not be less that 'delay'.
+    // delayManager.getDelay(this.nodeId, remoteNodeId);
+    long delay = 0;
+    BandwidthManager remoteBandwidthManager = network.get(remoteNodeId).getDownBandwidthManager();
+    sanityCheck();
+    remoteBandwidthManager.sanityCheck();
+    double bandwidthInBPS = Math.min(getNextTransferBandwidth(), remoteBandwidthManager.getNextTransferBandwidth());
+    // to prevent future rounding errors, prevent fractions
+    bandwidthInBPS = Math.floor(bandwidthInBPS);
+    // ms =  b/(b/ms)
+    long timeInMilliSec = Math.max((long) UnitConversion.secToMilliSec(bytes / (bandwidthInBPS)), /*delay*/
+    0);
+    long now = scheduler.now;
+    message.setDest(remoteNodeId);
+    message.setSource(this.nodeId);
+    message.setBytes(bytes);
+    MessageDeliveryEvent evt = new MessageDeliveryEvent(now + timeInMilliSec, message);
+    Transfer trns = new Transfer(bandwidthInBPS, this, remoteBandwidthManager, bytes, evt);
+    message.setTransfer(trns);
+    // for debug purposes only
+    trns.setMessage(message);
+    sanityCheck();
+    remoteBandwidthManager.sanityCheck();
+    this.makeRoomFor(bandwidthInBPS);
+    this.availableInBPS -= bandwidthInBPS;
+    remoteBandwidthManager.makeRoomFor(bandwidthInBPS);
+    remoteBandwidthManager.availableInBPS -= bandwidthInBPS;
+    // this must not be done before we call makeRoomFor,
+    // cuz that function depend on the old size of the transfers array List
+    // and it depends on the old availableInBPS
+    transfers.add(trns);
+    remoteBandwidthManager.transfers.add(trns);
+    sanityCheck();
+    remoteBandwidthManager.sanityCheck();
+    scheduler.enqueue(evt);
+    P.rint("t( " + scheduler.now + " ) SEND BYTES (" + message.getSource() + "->" + message.getDest() + ") " + "[" + bytes + " b] , alloc_bw = " + bandwidthInBPS + " BPS of " + totalBandwidthInBPS + ", curr_trans = " + transfers.size() + "/ " + remoteBandwidthManager.transfers.size() + ", time_est. = " + timeInMilliSec + " ms, delvr = " + evt.getTime() + ", " + message.toString());
+    return trns;
+}

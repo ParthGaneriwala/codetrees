@@ -1,0 +1,80 @@
+protected void configure() {
+    bind(ThreadFactory.class).toInstance(new ThreadFactory() {
+
+        ThreadFactory delegate = Executors.defaultThreadFactory();
+
+        int nextSequenceNumber = 1;
+
+        public Thread newThread(Runnable runnable) {
+            Thread thread = delegate.newThread(runnable);
+            thread.setName("CodeSearch Thread " + nextSequenceNumber++);
+            return thread;
+        }
+    });
+    bind(ExecutorService.class).toProvider(new Provider<ExecutorService>() {
+
+        @Inject
+        ThreadFactory threadFactory;
+
+        public ExecutorService get() {
+            return Executors.newCachedThreadPool(threadFactory);
+        }
+    }).in(Scopes.SINGLETON);
+    bind(DownloadedFileSystem.class).in(Scopes.SINGLETON);
+    bind(SearchTermFinder.class);
+    PushProvider<Project> projectPushProvider = new PushProvider<Project>();
+    bind(new TypeLiteral<PushProvider<Project>>() {
+    }).toInstance(projectPushProvider);
+    bind(Project.class).toProvider(projectPushProvider);
+    PushProvider<Editor> editorProvider = new PushProvider<Editor>();
+    bind(new TypeLiteral<PushProvider<Editor>>() {
+    }).toInstance(editorProvider);
+    bind(Editor.class).toProvider(editorProvider);
+    bind(ConfigurationManager.class).in(Scopes.SINGLETON);
+    bind(Configuration.class).toProvider(new Provider<Configuration>() {
+
+        @Inject
+        ConfigurationManager configurationManager;
+
+        public Configuration get() {
+            return configurationManager.getCurrent();
+        }
+    });
+    bind(QueryHistory.class).toProvider(new Provider<QueryHistory>() {
+
+        @Inject
+        private Provider<Project> projectProvider;
+
+        public QueryHistory get() {
+            return projectProvider.get().getComponent(IntellijQueryHistory.class);
+        }
+    });
+    bind(QueryRunner.class).to(DefaultQueryRunner.class);
+    bind(ResultsDisplayer.class).to(IntellijResultsDisplayer.class);
+    // stuff for sharing eventlists
+    final BasicEventList list = new BasicEventList();
+    bind(ListEventPublisher.class).toInstance(list.getPublisher());
+    bind(ReadWriteLock.class).toInstance(list.getReadWriteLock());
+    bind(EventList.class).toProvider(new Provider<EventList>() {
+
+        public EventList get() {
+            return new BasicEventList<Line>(list.getPublisher(), list.getReadWriteLock());
+        }
+    });
+    bind(ResultActionsProvider.class).to(IntellijResultActionsProvider.class);
+    bind(Clipboard.class).to(IntelliJClipboard.class);
+    SearchProviders searchProviders = new SearchProviders();
+    bind(SearchProviders.class).toInstance(searchProviders);
+    bind(SearchProviderFactory.class);
+    for (final SearchProvider searchProvider : searchProviders.getAll()) {
+        bind(searchProvider.getConfiguration()).toProvider(new Provider() {
+
+            @Inject
+            Provider<Configuration> configurationProvider;
+
+            public SearchProviderConfiguration get() {
+                return configurationProvider.get().getSearchProviderConfiguration(searchProvider);
+            }
+        });
+    }
+}

@@ -1,0 +1,108 @@
+protected void doRegister(SipServletRequest register) throws ServletException, IOException {
+    System.out.println("got register: " + register);
+    try {
+        String aor = getAor(register.getTo());
+        if (!_users.containsKey(aor)) {
+            register.createResponse(SipServletResponse.SC_FORBIDDEN).send();
+            return;
+        }
+        SipURI uri = (SipURI) register.getTo().getURI();
+        if (!checkAuthorization(aor, register.getMethod(), register.getHeader(SipHeaders.AUTHORIZATION))) {
+            SipServletResponse response = register.createResponse(SipServletResponse.SC_UNAUTHORIZED);
+            byte[] nonce = new byte[16];
+            _random.nextBytes(nonce);
+            response.setHeader(SipHeaders.WWW_AUTHENTICATE, "Digest realm=\"cipango.org\"" + ", qop=\"auth\", nonce=\"" + new String(TypeUtil.toString(nonce, 16)) + "\", opaque=\"\", stale=FALSE, algorithm=MD5");
+            response.send();
+            return;
+        }
+        Set<Binding> bindings = getBindings(aor, true);
+        Iterator<Address> it = register.getAddressHeaders("Contact");
+        if (it.hasNext()) {
+            List<Address> contacts = new ArrayList<Address>();
+            boolean wildcard = false;
+            while (it.hasNext()) {
+                Address contact = it.next();
+                if (contact.isWildcard()) {
+                    wildcard = true;
+                    if (it.hasNext() || contacts.size() > 0 || register.getExpires() > 0) {
+                        register.createResponse(SipServletResponse.SC_BAD_REQUEST, "Invalid wildcard").send();
+                        return;
+                    }
+                }
+                contacts.add(contact);
+            }
+            String callId = register.getCallId();
+            int cseq;
+            try {
+                String s = register.getHeader("CSeq");
+                cseq = Integer.parseInt(s.substring(0, s.indexOf(' ')));
+            } catch (Exception e) {
+                register.createResponse(SipServletResponse.SC_BAD_REQUEST, e.getMessage()).send();
+                return;
+            }
+            if (wildcard) {
+            // TODO
+            } else {
+                for (Address contact : contacts) {
+                    int expires = -1;
+                    expires = contact.getExpires();
+                    if (expires < 0)
+                        expires = register.getExpires();
+                    if (expires != 0) {
+                        if (expires < 0)
+                            expires = _defaultExpires;
+                        if (expires > _maxExpires) {
+                            expires = _maxExpires;
+                        } else if (expires < _minExpires) {
+                            SipServletResponse response = register.createResponse(423);
+                            response.addHeader("Min-Expires", Integer.toString(_minExpires));
+                            response.send();
+                            return;
+                        }
+                    }
+                    boolean exist = false;
+                    Iterator<Binding> it2 = bindings.iterator();
+                    while (it2.hasNext()) {
+                        Binding binding = it2.next();
+                        if (contact.getURI().equals(binding.getContact())) {
+                            exist = true;
+                            if (callId.equals(binding.getCallId()) && cseq < binding.getCSeq()) {
+                                register.createResponse(SipServletResponse.SC_SERVER_INTERNAL_ERROR, "cseq too low").send();
+                                return;
+                            }
+                            if (expires == 0) {
+                                it2.remove();
+                            } else {
+                                binding.setCallId(callId);
+                                binding.setCSeq(cseq);
+                                binding.setExpiryTime(System.currentTimeMillis() + expires * 1000l);
+                            }
+                        }
+                    }
+                    if (!exist && expires != 0) {
+                        Binding binding = new Binding(aor, contact.getURI());
+                        binding.setCallId(callId);
+                        binding.setCSeq(cseq);
+                        binding.setExpiryTime(System.currentTimeMillis() + expires * 1000l);
+                        bindings.add(binding);
+                    }
+                }
+            }
+        }
+        SipServletResponse ok = register.createResponse(SipServletResponse.SC_OK);
+        if (bindings.size() > 0) {
+            long now = System.currentTimeMillis();
+            for (Binding binding : bindings) {
+                Address address = _sipFactory.createAddress(binding.getContact());
+                address.setExpires((int) ((binding.getExpiryTime() - now) / 1000l));
+                ok.addAddressHeader("Contact", address, false);
+            }
+        }
+        ok.addHeader("Date", _dateFormat.format(new Date()));
+        ok.send();
+    } catch (Throwable t) {
+        t.printStackTrace();
+        SipServletResponse response = register.createResponse(SipServletResponse.SC_SERVER_INTERNAL_ERROR);
+        response.send();
+    }
+}

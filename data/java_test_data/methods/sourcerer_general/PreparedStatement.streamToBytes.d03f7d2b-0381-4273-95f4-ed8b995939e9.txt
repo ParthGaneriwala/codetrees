@@ -1,0 +1,56 @@
+private final void streamToBytes(Buffer packet, InputStream in, boolean escape, int streamLength, boolean useLength) throws SQLException {
+    try {
+        String connectionEncoding = this.connection.getEncoding();
+        boolean hexEscape = false;
+        if (this.connection.isNoBackslashEscapesSet() || (this.connection.getUseUnicode() && connectionEncoding != null && CharsetMapping.isMultibyteCharset(connectionEncoding) && !this.connection.parserKnowsUnicode())) {
+            hexEscape = true;
+        }
+        if (streamLength == -1) {
+            useLength = false;
+        }
+        int bc = -1;
+        if (useLength) {
+            bc = readblock(in, streamConvertBuf, streamLength);
+        } else {
+            bc = readblock(in, streamConvertBuf);
+        }
+        int lengthLeftToRead = streamLength - bc;
+        if (hexEscape) {
+            packet.writeStringNoNull("x");
+        } else if (this.connection.getIO().versionMeetsMinimum(4, 1, 0)) {
+            packet.writeStringNoNull("_binary");
+        }
+        if (escape) {
+            packet.writeByte((byte) '\'');
+        }
+        while (bc > 0) {
+            if (hexEscape) {
+                hexEscapeBlock(streamConvertBuf, packet, bc);
+            } else if (escape) {
+                escapeblockFast(streamConvertBuf, packet, bc);
+            } else {
+                packet.writeBytesNoNull(streamConvertBuf, 0, bc);
+            }
+            if (useLength) {
+                bc = readblock(in, streamConvertBuf, lengthLeftToRead);
+                if (bc > 0) {
+                    lengthLeftToRead -= bc;
+                }
+            } else {
+                bc = readblock(in, streamConvertBuf);
+            }
+        }
+        if (escape) {
+            packet.writeByte((byte) '\'');
+        }
+    } finally {
+        if (this.connection.getAutoClosePStmtStreams()) {
+            try {
+                in.close();
+            } catch (IOException ioEx) {
+                ;
+            }
+            in = null;
+        }
+    }
+}

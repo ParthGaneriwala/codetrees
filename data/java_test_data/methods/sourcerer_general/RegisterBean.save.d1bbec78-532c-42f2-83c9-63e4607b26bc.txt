@@ -1,0 +1,65 @@
+public boolean save(Connection db, ApplicationPrefs prefs, ActionRequest request, String userIp) throws SQLException {
+    // Remove the captcha's session value
+    request.getPortletSession().removeAttribute("TE-REGISTER-CAPTCHA-PASSED");
+    // Determine the user's password
+    password = String.valueOf(StringUtils.rand(100000, 999999));
+    encryptedPassword = PasswordHash.encrypt(password);
+    // NOTE: A confirmation message will be sent by the workflow
+    boolean commit = db.getAutoCommit();
+    try {
+        if (commit) {
+            db.setAutoCommit(false);
+        }
+        // Store the user in the database
+        user = new User();
+        user.setId(User.getIdByEmailAddress(db, email));
+        user.setInstanceId(instanceId);
+        user.setGroupId(1);
+        user.setDepartmentId(1);
+        user.setFirstName(nameFirst);
+        user.setLastName(nameLast);
+        user.setCompany(organization);
+        user.setEmail(email);
+        user.setUsername(email);
+        user.setPassword(encryptedPassword);
+        user.setEnteredBy(0);
+        user.setModifiedBy(0);
+        user.setEnabled(true);
+        user.setStartPage(1);
+        user.setRegistered(true);
+        user.setTerms(terms);
+        user.setAccountSize(prefs.get("ACCOUNT.SIZE"));
+        user.setAccessAddProjects(prefs.get(ApplicationPrefs.USERS_CAN_START_PROJECTS));
+        user.setCity(city);
+        user.setState(state);
+        user.setCountry(country);
+        user.setPostalCode(postalCode);
+        if (user.getId() == -1) {
+            // This is a new user, so insert
+            user.insert(db, userIp, prefs);
+        } else {
+            // Else set the status as registered and update the info
+            updateRegisteredStatus(db, user);
+        }
+        if (commit) {
+            db.commit();
+        }
+    } catch (Exception e) {
+        LOG.error("save", e);
+        if (commit) {
+            db.rollback();
+        }
+        throw new SQLException(e.getMessage());
+    } finally {
+        if (commit) {
+            db.setAutoCommit(true);
+        }
+    }
+    // After the commit, reload the complete user record
+    CacheUtils.invalidateValue(Constants.SYSTEM_USER_CACHE, user.getId());
+    CacheUtils.invalidateValue(Constants.SYSTEM_PROJECT_CACHE, user.getProfileProjectId());
+    user = UserUtils.loadUser(user.getId());
+    this.setEntered(user.getEntered());
+    this.setModified(user.getModified());
+    return true;
+}

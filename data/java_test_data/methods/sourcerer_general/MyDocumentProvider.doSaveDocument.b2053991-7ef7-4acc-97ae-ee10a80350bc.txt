@@ -1,0 +1,74 @@
+protected void doSaveDocument(IProgressMonitor monitor, Object element, IDocument document, boolean overwrite) throws CoreException {
+    ResourceSetInfo info = getResourceSetInfo(element);
+    if (info != null) {
+        if (!overwrite && !info.isSynchronized()) {
+            throw new CoreException(new Status(IStatus.ERROR, MyDiagramEditorPlugin.ID, IResourceStatus.OUT_OF_SYNC_LOCAL, Messages.MyDocumentProvider_UnsynchronizedFileSaveError, null));
+        }
+        info.stopResourceListening();
+        fireElementStateChanging(element);
+        try {
+            monitor.beginTask(Messages.MyDocumentProvider_SaveDiagramTask, // "Saving diagram"
+            info.getResourceSet().getResources().size() + 1);
+            for (Iterator /*<org.eclipse.emf.ecore.resource.Resource>*/
+            it = info.getLoadedResourcesIterator(); it.hasNext(); ) {
+                Resource nextResource = (Resource) it.next();
+                monitor.setTaskName(NLS.bind(Messages.MyDocumentProvider_SaveNextResourceTask, nextResource.getURI()));
+                if (nextResource.isLoaded() && !info.getEditingDomain().isReadOnly(nextResource)) {
+                    try {
+                        nextResource.save(MyDiagramEditorUtil.getSaveOptions());
+                    } catch (IOException e) {
+                        fireElementStateChangeFailed(element);
+                        throw new CoreException(new Status(IStatus.ERROR, MyDiagramEditorPlugin.ID, EditorStatusCodes.RESOURCE_FAILURE, e.getLocalizedMessage(), null));
+                    }
+                }
+                monitor.worked(1);
+            }
+            monitor.done();
+            info.setModificationStamp(computeModificationStamp(info));
+        } catch (RuntimeException x) {
+            fireElementStateChangeFailed(element);
+            throw x;
+        } finally {
+            info.startResourceListening();
+        }
+    } else {
+        URI newResoruceURI;
+        List affectedFiles = null;
+        if (element instanceof FileEditorInput) {
+            IFile newFile = ((FileEditorInput) element).getFile();
+            affectedFiles = Collections.singletonList(newFile);
+            newResoruceURI = URI.createPlatformResourceURI(newFile.getFullPath().toString(), true);
+        } else if (element instanceof URIEditorInput) {
+            newResoruceURI = ((URIEditorInput) element).getURI();
+        } else {
+            fireElementStateChangeFailed(element);
+            throw new CoreException(new Status(IStatus.ERROR, MyDiagramEditorPlugin.ID, 0, NLS.bind(Messages.MyDocumentProvider_IncorrectInputError, new Object[] { element, "org.eclipse.ui.part.FileEditorInput", // $NON-NLS-1$ //$NON-NLS-2$
+            "org.eclipse.emf.common.ui.URIEditorInput" }), null));
+        }
+        if (false == document instanceof IDiagramDocument) {
+            fireElementStateChangeFailed(element);
+            throw new CoreException(new Status(IStatus.ERROR, MyDiagramEditorPlugin.ID, 0, "Incorrect document used: " + document + " instead of org.eclipse.gmf.runtime.diagram.ui.resources.editor.document.IDiagramDocument", // $NON-NLS-1$ //$NON-NLS-2$
+            null));
+        }
+        IDiagramDocument diagramDocument = (IDiagramDocument) document;
+        final Resource newResource = diagramDocument.getEditingDomain().getResourceSet().createResource(newResoruceURI);
+        final Diagram diagramCopy = (Diagram) EcoreUtil.copy(diagramDocument.getDiagram());
+        try {
+            new AbstractTransactionalCommand(diagramDocument.getEditingDomain(), NLS.bind(Messages.MyDocumentProvider_SaveAsOperation, diagramCopy.getName()), affectedFiles) {
+
+                protected CommandResult doExecuteWithResult(IProgressMonitor monitor, IAdaptable info) throws ExecutionException {
+                    newResource.getContents().add(diagramCopy);
+                    return CommandResult.newOKCommandResult();
+                }
+            }.execute(monitor, null);
+            newResource.save(MyDiagramEditorUtil.getSaveOptions());
+        } catch (ExecutionException e) {
+            fireElementStateChangeFailed(element);
+            throw new CoreException(new Status(IStatus.ERROR, MyDiagramEditorPlugin.ID, 0, e.getLocalizedMessage(), null));
+        } catch (IOException e) {
+            fireElementStateChangeFailed(element);
+            throw new CoreException(new Status(IStatus.ERROR, MyDiagramEditorPlugin.ID, 0, e.getLocalizedMessage(), null));
+        }
+        newResource.unload();
+    }
+}

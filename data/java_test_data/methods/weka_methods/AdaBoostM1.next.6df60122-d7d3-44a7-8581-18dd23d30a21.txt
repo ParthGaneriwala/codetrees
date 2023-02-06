@@ -1,0 +1,71 @@
+@Override
+public boolean next() throws Exception {
+    // Have we reached the maximum?
+    if (m_NumItsThisSession >= m_NumIterations) {
+        return false;
+    }
+    // only class? -> just use ZeroR model
+    if (m_TrainingData.numAttributes() == 1) {
+        return false;
+    }
+    if (m_Debug) {
+        System.err.println("Training classifier " + (m_NumIterationsPerformed + 1));
+    }
+    // Select instances to train the classifier on
+    Instances trainData = null;
+    if (m_WeightThreshold < 100) {
+        trainData = selectWeightQuantile(m_TrainingData, (double) m_WeightThreshold / 100);
+    } else {
+        trainData = new Instances(m_TrainingData);
+    }
+    double epsilon = 0;
+    if ((m_UseResampling) || (!(m_Classifier instanceof WeightedInstancesHandler))) {
+        // Resample
+        int resamplingIterations = 0;
+        double[] weights = new double[trainData.numInstances()];
+        for (int i = 0; i < weights.length; i++) {
+            weights[i] = trainData.instance(i).weight();
+        }
+        do {
+            Instances sample = trainData.resampleWithWeights(m_RandomInstance, weights);
+            // Build and evaluate classifier
+            m_Classifiers[m_NumIterationsPerformed].buildClassifier(sample);
+            Evaluation evaluation = new Evaluation(m_TrainingData);
+            evaluation.evaluateModel(m_Classifiers[m_NumIterationsPerformed], m_TrainingData);
+            epsilon = evaluation.errorRate();
+            resamplingIterations++;
+        } while (Utils.eq(epsilon, 0) && (resamplingIterations < MAX_NUM_RESAMPLING_ITERATIONS));
+    } else {
+        // Build the classifier
+        if (m_Classifiers[m_NumIterationsPerformed] instanceof Randomizable) {
+            ((Randomizable) m_Classifiers[m_NumIterationsPerformed]).setSeed(m_RandomInstance.nextInt());
+        }
+        m_Classifiers[m_NumIterationsPerformed].buildClassifier(trainData);
+        // Evaluate the classifier
+        // Does this need
+        Evaluation evaluation = new Evaluation(m_TrainingData);
+        // to be a copy
+        evaluation.evaluateModel(m_Classifiers[m_NumIterationsPerformed], m_TrainingData);
+        epsilon = evaluation.errorRate();
+    }
+    // Stop if error too big or 0
+    if (Utils.grOrEq(epsilon, 0.5) || Utils.eq(epsilon, 0)) {
+        if (m_NumIterationsPerformed == 0) {
+            // If we're the first we have to use it
+            m_NumIterationsPerformed = 1;
+        }
+        return false;
+    }
+    // Determine the weight to assign to this model
+    double reweight = (1 - epsilon) / epsilon;
+    m_Betas[m_NumIterationsPerformed] = Math.log(reweight);
+    if (m_Debug) {
+        System.err.println("\terror rate = " + epsilon + "  beta = " + m_Betas[m_NumIterationsPerformed]);
+    }
+    // Update instance weights
+    setWeights(m_TrainingData, reweight);
+    // Model has been built successfully
+    m_NumIterationsPerformed++;
+    m_NumItsThisSession++;
+    return true;
+}

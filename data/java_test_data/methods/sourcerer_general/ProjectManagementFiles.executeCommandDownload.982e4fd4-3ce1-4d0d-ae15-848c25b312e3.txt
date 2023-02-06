@@ -1,0 +1,95 @@
+public String executeCommandDownload(ActionContext context) {
+    Exception errorMessage = null;
+    // Determine the download parameters
+    String projectId = context.getRequest().getParameter("pid");
+    String itemId = context.getRequest().getParameter("fid");
+    String version = context.getRequest().getParameter("ver");
+    String view = context.getRequest().getParameter("view");
+    // Locate the item in the database
+    FileItem thisItem = null;
+    Connection db = null;
+    try {
+        db = getConnection(context);
+        Project thisProject = retrieveAuthorizedProject(Integer.parseInt(projectId), context);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-documents-files-download")) {
+            return "PermissionError";
+        }
+        thisItem = new FileItem(db, Integer.parseInt(itemId), thisProject.getId(), Constants.PROJECTS_FILES);
+        // Reset version if it's not a real version number
+        if ("0".equals(version)) {
+            version = null;
+        }
+        if (version != null) {
+            thisItem.buildVersionList(db);
+        }
+    } catch (Exception e) {
+        errorMessage = e;
+    } finally {
+        this.freeConnection(context, db);
+    }
+    // Start the download
+    try {
+        if (version == null) {
+            // Send the latest version
+            FileItem itemToDownload = thisItem;
+            itemToDownload.setEnteredBy(getUserId(context));
+            String filePath = this.getPath(context, "projects") + getDatePath(itemToDownload.getModified()) + itemToDownload.getFilename();
+            FileDownload fileDownload = new FileDownload();
+            fileDownload.setFullPath(filePath);
+            fileDownload.setDisplayName(itemToDownload.getClientFilename());
+            if (fileDownload.fileExists()) {
+                if (view != null && "true".equals(view)) {
+                    fileDownload.setFileTimestamp(itemToDownload.getModificationDate().getTime());
+                    fileDownload.streamContent(context);
+                } else {
+                    fileDownload.sendFile(context);
+                }
+                // Get a db connection now that the download is complete
+                db = getConnection(context);
+                itemToDownload.updateCounter(db);
+                // trigger the workflow
+                FileItem fileItem = new FileItem(db, itemToDownload.getId());
+                this.processUpdateHook(context, itemToDownload, fileItem);
+            } else {
+                System.err.println("ProjectManagementFiles-> Trying to send a file that does not exist");
+            }
+        } else {
+            // Send the specified version
+            FileItemVersion itemToDownload = thisItem.getVersion(Double.parseDouble(version));
+            itemToDownload.setEnteredBy(getUserId(context));
+            String filePath = this.getPath(context, "projects") + getDatePath(itemToDownload.getModified()) + itemToDownload.getFilename();
+            FileDownload fileDownload = new FileDownload();
+            fileDownload.setFullPath(filePath);
+            fileDownload.setDisplayName(itemToDownload.getClientFilename());
+            if (fileDownload.fileExists()) {
+                if (view != null && "true".equals(view)) {
+                    fileDownload.setFileTimestamp(itemToDownload.getModificationDate().getTime());
+                    fileDownload.streamContent(context);
+                } else {
+                    fileDownload.sendFile(context);
+                }
+                // Get a db connection now that the download is complete
+                db = getConnection(context);
+                itemToDownload.updateCounter(db);
+                // trigger the workflow
+                FileItem fileItem = new FileItem(db, itemToDownload.getId());
+                this.processUpdateHook(context, thisItem, fileItem);
+            } else {
+                System.err.println("PMF-> Trying to send a file that does not exist");
+            }
+        }
+    } catch (java.net.SocketException se) {
+    // User either canceled the download or lost connection
+    } catch (Exception e) {
+        errorMessage = e;
+        System.out.println(e.toString());
+    } finally {
+        this.freeConnection(context, db);
+    }
+    if (errorMessage == null) {
+        return ("-none-");
+    } else {
+        context.getRequest().setAttribute("Error", errorMessage);
+        return ("SystemError");
+    }
+}

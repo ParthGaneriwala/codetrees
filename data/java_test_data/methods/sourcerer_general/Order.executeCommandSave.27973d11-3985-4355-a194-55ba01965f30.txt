@@ -1,0 +1,175 @@
+public String executeCommandSave(ActionContext context) {
+    ApplicationPrefs prefs = (ApplicationPrefs) context.getServletContext().getAttribute("applicationPrefs");
+    Connection db = null;
+    try {
+        OrderBean orderBean = (OrderBean) context.getFormBean();
+        if ("edit".equals(context.getRequest().getParameter("billing"))) {
+            orderBean.getBilling().setReset(true);
+        }
+        if ("edit".equals(context.getRequest().getParameter("payment"))) {
+            orderBean.getPayment().setReset(true);
+        }
+        if (orderBean.getProductList().size() == 0) {
+            return "OrderListOK";
+        }
+        if (orderBean.requiresContactInformation()) {
+            if (orderBean.getContactInformation().getAttempt()) {
+                processErrors(context, orderBean.getContactInformation().getErrors());
+            }
+            return "OrderContactInformationFormOK";
+        }
+        // Check for billing information
+        if (orderBean.requiresBillingAddress()) {
+            orderBean.getBilling().setReset(false);
+            if (!orderBean.getBilling().getAttempt() && orderBean.getContactInformation().isValid()) {
+                // Prefill contact information into billing form from contact information
+                orderBean.getBilling().setNameFirst(orderBean.getContactInformation().getNameFirst());
+                orderBean.getBilling().setNameLast(orderBean.getContactInformation().getNameLast());
+                orderBean.getBilling().setOrganization(orderBean.getContactInformation().getOrganization());
+                orderBean.getBilling().setEmail(orderBean.getContactInformation().getEmail());
+            }
+            if (orderBean.getBilling().getAttempt()) {
+                processErrors(context, orderBean.getBilling().getErrors());
+            }
+            return "OrderBillingFormOK";
+        }
+        if (orderBean.requiresShippingAddress()) {
+            if (orderBean.getShipping().getAttempt()) {
+                processErrors(context, orderBean.getShipping().getErrors());
+            }
+            return "OrderShippingFormOK";
+        }
+        if (orderBean.requiresPayment() && orderBean.getChargeAmount() > 0.0) {
+            orderBean.getPayment().setReset(false);
+            if (!orderBean.getPayment().getAttempt()) {
+                Key publicKey = PrivateString.loadKey(getPref(context, "FILELIBRARY") + "public.key");
+                orderBean.getPayment().setKey(publicKey);
+            }
+            if (orderBean.getPayment().getAttempt()) {
+                processErrors(context, orderBean.getPayment().getErrors());
+            }
+            return "OrderPaymentFormOK";
+        }
+        if (context.getRequest().getAttribute("actionError") != null) {
+            return "OrderSystemError";
+        }
+        db = getConnection(context);
+        synchronized (this) {
+            if (!orderBean.isSaved()) {
+                User thisUser = getUser(context);
+                if (thisUser != null && thisUser.getId() > 0) {
+                    orderBean.setUserId(thisUser.getId());
+                }
+                // Insert with processed status = false
+                orderBean.insert(db);
+                // Process the credit card if specified
+                if (orderBean.getPayment().getType() == Payment.TYPE_CREDITCARD && orderBean.getChargeAmount() > 0.0) {
+                    if ("AUTHORIZE.NET".equals(prefs.get("AGENT.NAME"))) {
+                        AuthorizeNet authorizeNet = new AuthorizeNet(orderBean);
+                        authorizeNet.setLogin(prefs.get("AGENT.LOGIN"));
+                        authorizeNet.setTransactionKey(prefs.get("AGENT.KEY"));
+                        authorizeNet.setDescription("Online Order");
+                        if (orderBean.getPayment().getCreditCard().getNumericNumber().equals("5424000000000015")) {
+                            authorizeNet.setTestMode(true);
+                        }
+                        // TODO: add a field in orderBean to record the AGENT.NAME
+                        authorizeNet.authorizeAndCapture();
+                        if (authorizeNet.getResponseCode() != AuthorizeNet.APPROVED) {
+                            // TODO: Keep this logic in OrderBean
+                            context.getRequest().setAttribute("actionError", authorizeNet.getResponseText());
+                            orderBean.getBilling().setReset(true);
+                            orderBean.getPayment().setReset(true);
+                            orderBean.setSaved(false);
+                            return "CreditCardError";
+                        }
+                        // Update status to processed
+                        orderBean.getPayment().updateProcessed(db);
+                    }
+                }
+                // Send the order to the rules engine
+                processInsertHook(context, orderBean);
+                // Order is now complete, remove from session
+                context.getSession().removeAttribute("orderBean");
+                context.getRequest().setAttribute("orderBean", orderBean);
+                OrderRecord orderRecord = new OrderRecord(db, orderBean.getId());
+                context.getRequest().setAttribute("orderRecord", orderRecord);
+                // Provide the attachment URLs to the user too...
+                AttachmentList attachmentList = new AttachmentList();
+                attachmentList.setProductIdRange(orderBean.getProductList().getIdRange());
+                attachmentList.setAllowAfterCheckout(Constants.TRUE);
+                attachmentList.buildList(db);
+                context.getRequest().setAttribute("attachmentList", attachmentList);
+                // Prepare the email notifications
+                String adminEmails = UserAdmins.getEmailAddresses(db);
+                // Provide the attachment URLs to the user too which will be emailed...
+                AttachmentList emailAttachments = new AttachmentList();
+                emailAttachments.setProductIdRange(orderBean.getProductList().getIdRange());
+                emailAttachments.setSendAsEmail(Constants.TRUE);
+                emailAttachments.buildList(db);
+                // Finished with the connection
+                freeConnection(context, db);
+                db = null;
+                // Notify those interested
+                try {
+                    String CRLF = System.getProperty("line.separator");
+                    if (1 == 1) {
+                        SMTPMessage mail = SMTPMessageFactory.createSMTPMessageInstance(prefs.getPrefs());
+                        mail.setType("text/plain");
+                        mail.setTo(adminEmails);
+                        mail.setFrom(prefs.get("ORDER.EMAILADDRESS"));
+                        mail.addReplyTo(prefs.get("ORDER.EMAILADDRESS"));
+                        mail.setSubject(prefs.get("TITLE") + " Order #" + orderBean.getId());
+                        mail.setBody("A new order has been received." + CRLF + CRLF + orderBean.toString() + CRLF + CRLF + "");
+                        mail.send();
+                    }
+                    // Also send to the user
+                    if (orderBean.getBilling().getEmail() != null) {
+                        SMTPMessage mail = SMTPMessageFactory.createSMTPMessageInstance(prefs.getPrefs());
+                        mail.setType("text/plain");
+                        mail.setTo(orderBean.getBilling().getEmail());
+                        mail.setFrom(prefs.get("ORDER.EMAILADDRESS"));
+                        mail.addReplyTo(prefs.get("ORDER.EMAILADDRESS"));
+                        mail.setSubject(prefs.get("TITLE") + " Order #" + orderBean.getId());
+                        mail.setBody("Thank you for your order!" + CRLF + CRLF + "Your order has been received with the following details:" + CRLF + CRLF + orderBean.toString() + CRLF + CRLF + "");
+                        mail.send();
+                    }
+                    if (emailAttachments.size() > 0) {
+                        // Send the email
+                        SMTPMessage mail = SMTPMessageFactory.createSMTPMessageInstance(prefs.getPrefs());
+                        mail.setType("text/plain");
+                        if (orderBean.getContactInformation().getEmail() != null) {
+                            mail.setTo(orderBean.getContactInformation().getEmail());
+                        } else if (orderBean.getBilling().getEmail() != null) {
+                            mail.setTo(orderBean.getBilling().getEmail());
+                        }
+                        mail.setFrom(prefs.get("ORDER.EMAILADDRESS"));
+                        mail.addReplyTo(prefs.get("ORDER.EMAILADDRESS"));
+                        mail.setSubject(prefs.get("TITLE") + " Registration #" + orderBean.getId());
+                        mail.setBody("Thank you for your registration!" + CRLF + CRLF + "The documents you requested from us are attached..." + CRLF + CRLF + "");
+                        String filePath = this.getPath(context, "projects");
+                        Iterator i = emailAttachments.iterator();
+                        while (i.hasNext()) {
+                            Attachment thisAttachment = (Attachment) i.next();
+                            mail.addFileAttachment(filePath + getDatePath(thisAttachment.getAttachmentModified()) + thisAttachment.getAttachmentFilename(), thisAttachment.getAttachmentClientFilename());
+                        }
+                        int result = mail.send();
+                        if (result != 0) {
+                            System.out.println("Order-> Save -- Send attachment result: " + mail.getErrorMsg());
+                        }
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace(System.out);
+                }
+            }
+        }
+        return "OrderCompleteOK";
+    } catch (Exception e) {
+        e.printStackTrace(System.out);
+    } finally {
+        if (db != null) {
+            freeConnection(context, db);
+        }
+    }
+    context.getRequest().setAttribute("actionError", "Checkout failed due to a system error");
+    return "OrderSystemError";
+}

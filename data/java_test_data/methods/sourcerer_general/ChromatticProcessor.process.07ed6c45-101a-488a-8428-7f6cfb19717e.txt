@@ -1,0 +1,80 @@
+private void process(RoundEnvironment roundEnv, Set<Element> elts, Map<String, PackageMetaData> packageMetaDatas) throws Exception {
+    Filer filer = processingEnv.getFiler();
+    Set<ClassTypeInfo> classTypes = new HashSet<ClassTypeInfo>();
+    SetMap<String, ClassTypeInfo> packageToClassTypes = new SetMap<String, ClassTypeInfo>();
+    for (Element elt : elts) {
+        TypeElement typeElt = (TypeElement) elt;
+        // 
+        ClassTypeInfo cti = (ClassTypeInfo) domain.resolve(typeElt);
+        // 
+        TreeMap<Integer, PackageMetaData> packageSorter = new TreeMap<Integer, PackageMetaData>();
+        for (PackageMetaData packageMetaData : packageMetaDatas.values()) {
+            int dist = packageMetaData.distance(cti);
+            if (dist >= 0) {
+                packageSorter.put(dist, packageMetaData);
+            }
+        }
+        // Find the most appropriate package in those which are declared
+        if (packageSorter.size() > 0) {
+            PackageMetaData packageMetaData = packageSorter.values().iterator().next();
+            Set<ClassTypeInfo> set = packageToClassTypes.get(packageMetaData.packageName);
+            set.add(cti);
+        }
+        processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE, "About to process the type " + cti.getName());
+        classTypes.add(cti);
+        try {
+            JavaFileObject jfo = filer.createSourceFile(typeElt.getQualifiedName() + "_Chromattic", typeElt);
+            PrintWriter out = new PrintWriter(jfo.openWriter());
+            StringBuilder builder = new StringBuilder();
+            new ProxyTypeGenerator(cti).build(builder);
+            out.write(builder.toString());
+            out.close();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+    // Build mapping
+    BeanMappingBuilder amp = new BeanMappingBuilder();
+    Map<ClassTypeInfo, BeanMapping> beanMappings = amp.build(classTypes);
+    // Validate model
+    Map<ClassTypeInfo, NodeType> schema = new SchemaBuilder().build(beanMappings.values());
+    // Build property literals
+    for (BeanMapping beanMapping : beanMappings.values()) {
+        if (!beanMapping.isAbstract()) {
+            new PropertyLiteralGenerator(beanMapping).build(filer);
+        }
+    }
+    // 
+    for (String packageName : packageToClassTypes.keySet()) {
+        env.getMessager().printMessage(Diagnostic.Kind.NOTE, "Processing node type package " + packageName);
+        List<NodeType> nodeTypes = new ArrayList<NodeType>();
+        // 
+        Map<String, String> mappings = Collections.emptyMap();
+        // 
+        for (ClassTypeInfo cti : packageToClassTypes.get(packageName)) {
+            PackageMetaData packageMetaData = packageMetaDatas.get(packageName);
+            if (packageMetaData.prefixMappings.size() > 0) {
+                if (mappings.isEmpty()) {
+                    mappings = new HashMap<String, String>();
+                }
+                mappings.putAll(packageMetaData.prefixMappings);
+            }
+            NodeType nodeType = schema.get(cti);
+            if (nodeType != null) {
+                nodeTypes.add(nodeType);
+            }
+        }
+        // 
+        FileObject cndFile = filer.createResource(StandardLocation.SOURCE_OUTPUT, packageName, "nodetypes.cnd");
+        NodeTypeSerializer cndSerializer = new CNDNodeTypeSerializer(nodeTypes, mappings);
+        Writer cndWriter = cndFile.openWriter();
+        cndSerializer.writeTo(cndWriter);
+        cndWriter.close();
+        // 
+        FileObject xmlFile = filer.createResource(StandardLocation.SOURCE_OUTPUT, packageName, "nodetypes.xml");
+        NodeTypeSerializer xmlSerializer = new XMLNodeTypeSerializer(nodeTypes, mappings);
+        Writer xmlWriter = xmlFile.openWriter();
+        xmlSerializer.writeTo(xmlWriter);
+        xmlWriter.close();
+    }
+}

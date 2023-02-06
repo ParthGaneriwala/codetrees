@@ -1,0 +1,69 @@
+private int readNextPacket() throws IOException {
+    /* This dances around buf a little bit, mainly to read 
+     * full packet with single read and to accept arbitarary size  
+     * for next packet at the same time.
+     */
+    if (buf == null) {
+        /* initialize buffer to the best guess size:
+       * 'chunksPerPacket' calculation here should match the same 
+       * calculation in DFSClient to make the guess accurate.
+       */
+        int chunkSize = bytesPerChecksum + checksumSize;
+        int chunksPerPacket = (datanode.writePacketSize - DataNode.PKT_HEADER_LEN - SIZE_OF_INTEGER + chunkSize - 1) / chunkSize;
+        buf = ByteBuffer.allocate(DataNode.PKT_HEADER_LEN + SIZE_OF_INTEGER + Math.max(chunksPerPacket, 1) * chunkSize);
+        buf.limit(0);
+    }
+    // See if there is data left in the buffer :
+    if (bufRead > buf.limit()) {
+        buf.limit(bufRead);
+    }
+    while (buf.remaining() < SIZE_OF_INTEGER) {
+        if (buf.position() > 0) {
+            shiftBufData();
+        }
+        readToBuf(-1);
+    }
+    /* We mostly have the full packet or at least enough for an int
+     */
+    buf.mark();
+    int payloadLen = buf.getInt();
+    buf.reset();
+    if (payloadLen == 0) {
+        // end of stream!
+        buf.limit(buf.position() + SIZE_OF_INTEGER);
+        return 0;
+    }
+    // check corrupt values for pktLen, 100MB upper limit should be ok?
+    if (payloadLen < 0 || payloadLen > (100 * 1024 * 1024)) {
+        throw new IOException("Incorrect value for packet payload : " + payloadLen);
+    }
+    int pktSize = payloadLen + DataNode.PKT_HEADER_LEN;
+    if (buf.remaining() < pktSize) {
+        // we need to read more data
+        int toRead = pktSize - buf.remaining();
+        // first make sure buf has enough space.
+        int spaceLeft = buf.capacity() - buf.limit();
+        if (toRead > spaceLeft && buf.position() > 0) {
+            shiftBufData();
+            spaceLeft = buf.capacity() - buf.limit();
+        }
+        if (toRead > spaceLeft) {
+            byte[] oldBuf = buf.array();
+            int toCopy = buf.limit();
+            buf = ByteBuffer.allocate(toCopy + toRead);
+            System.arraycopy(oldBuf, 0, buf.array(), 0, toCopy);
+            buf.limit(toCopy);
+        }
+        // now read:
+        while (toRead > 0) {
+            toRead -= readToBuf(toRead);
+        }
+    }
+    if (buf.remaining() > pktSize) {
+        buf.limit(buf.position() + pktSize);
+    }
+    if (pktSize > maxPacketReadLen) {
+        maxPacketReadLen = pktSize;
+    }
+    return payloadLen;
+}

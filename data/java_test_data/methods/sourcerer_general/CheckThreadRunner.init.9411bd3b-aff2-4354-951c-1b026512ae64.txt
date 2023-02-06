@@ -1,0 +1,86 @@
+/**
+ * Main entry point for running CheckThread
+ * This runs when the user clicks on the "CheckThread" toolbar button
+ * Runs on EDT thread
+ */
+public static void init() {
+    ArrayList<URI> targetPath = new ArrayList<URI>();
+    ArrayList<URI> classPath = new ArrayList<URI>();
+    ArrayList<VirtualFile> srcDirList = new ArrayList<VirtualFile>();
+    // Get current project
+    final Project project = Util.getCurrentProject();
+    ArrayList<Module> moduleList = getModulesForProject(project);
+    // init console view
+    ConsoleViewManager.init(project);
+    ConsoleViewManager.printToConsole(project, ResourceNames.START_MSG);
+    ErrorViewManager.clearPreviousView(project);
+    if (project == null || moduleList.size() < 1) {
+        ConsoleViewManager.printToConsole(project, "CheckThread found no main project selected.");
+        ConsoleViewManager.printToConsole(project, "Right click on a project node and select 'Set as main project', then run CheckThread.");
+    }
+    for (Module mod : moduleList) {
+        // printConsole("Module name: " + mod.getName() + "is loaded: " + mod.isLoaded());
+        ErrorViewManager.clearPreviousMarkups(mod);
+        // getCompilerOutputPath method doesn't exist when running
+        // on Intellij with JDK 1.5 (e.g. Mac OSX)
+        // This is an intellij compatability bug
+        VirtualFile output = ModuleRootManager.getInstance(mod).getCompilerOutputPath();
+        URI uriOutput = convertVirtualFiletoURI(output);
+        if (uriOutput != null) {
+            targetPath.add(uriOutput);
+        }
+        // GET CLASS PATH
+        ModuleRootManager mrm = ModuleRootManager.getInstance(mod);
+        OrderEntry[] oeList = mrm.getOrderEntries();
+        for (OrderEntry oe : oeList) {
+            // Get build class path
+            VirtualFile[] vfList = oe.getFiles(OrderRootType.COMPILATION_CLASSES);
+            for (VirtualFile oevf : vfList) {
+                URI uriClassPath = convertVirtualFiletoURI(oevf);
+                // remove "jar:file:" prefix, replace with "file:"
+                String uriClassPathStr = uriClassPath.toASCIIString();
+                if (uriClassPathStr.startsWith("jar:file:")) {
+                    try {
+                        uriClassPath = new URI(uriClassPathStr.replaceFirst("jar:file:", "file:"));
+                    } catch (URISyntaxException e) {
+                        // propogate excetion as unchecked to remove exception clutter
+                        throw new IllegalStateException(e);
+                    }
+                }
+                if (!classPath.contains(uriClassPath) && uriClassPath != null) {
+                    classPath.add(uriClassPath);
+                }
+            }
+            // Get root source directories
+            VirtualFile[] vfSourceList = oe.getFiles(OrderRootType.SOURCES);
+            for (VirtualFile vf : vfSourceList) {
+                if (!srcDirList.contains(vf) && vf != null) {
+                    srcDirList.add(vf);
+                }
+            }
+        }
+    }
+    if (targetPath.size() < 1) {
+        ConsoleViewManager.printToConsole(project, ResourceNames.NO_TARGET_FOUND_MSG);
+    } else {
+        // output target to console
+        for (URI uri : targetPath) {
+            ConsoleViewManager.printToConsole(project, "Target Path: " + uri);
+        }
+        // RUN CHECKTHREAD
+        InputBean inputBean = InputBean.newInstance();
+        inputBean.setTargetPath(targetPath);
+        inputBean.setClassPath(classPath);
+        inputBean.setVerboseLevel(1);
+        inputBean.setRecurse(true);
+        inputBean.setListener(new ICheckThreadListener() {
+
+            public void analyzeUpdate(CheckThreadUpdateEvent evt) {
+                if (evt.getType() == CheckThreadUpdateEvent.Type.PROGRESS) {
+                    ConsoleViewManager.printToConsole(project, evt.getMessage());
+                }
+            }
+        });
+        runCheckThread(inputBean, srcDirList, project);
+    }
+}

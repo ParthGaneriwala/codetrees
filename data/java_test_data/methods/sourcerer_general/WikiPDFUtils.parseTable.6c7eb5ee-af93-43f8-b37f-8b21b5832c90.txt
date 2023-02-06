@@ -1,0 +1,122 @@
+private static String parseTable(WikiPDFContext context, Wiki wiki, String line, Document document, Connection db, ArrayList<Integer> wikiListTodo, ArrayList<Integer> wikiListDone, BufferedReader in) throws Exception {
+    if (line == null) {
+        return null;
+    }
+    PdfPTable pdfTable = null;
+    int columnCount = 0;
+    int rowCount = 0;
+    // Keep track of the table's custom styles
+    HashMap<Integer, String> cStyle = new HashMap<Integer, String>();
+    while (line != null && (line.startsWith("|") || line.startsWith("!"))) {
+        // Build a complete line
+        String lineToParse = line;
+        while (!line.endsWith("|")) {
+            line = in.readLine();
+            if (line == null) {
+                // there is an error in the line to process
+                return null;
+            }
+            if (line.startsWith("!")) {
+                lineToParse += CRLF + line.substring(1);
+            }
+        }
+        line = lineToParse;
+        // Determine if the row can output
+        boolean canOutput = true;
+        ++rowCount;
+        String cellType = null;
+        Scanner sc = null;
+        if (line.startsWith("||") && line.endsWith("||")) {
+            cellType = "th";
+            sc = new Scanner(line).useDelimiter("[|][|]");
+        // sc = new Scanner(line.substring(2, line.length() - 2)).useDelimiter("[|][|]");
+        } else if (line.startsWith("|")) {
+            cellType = "td";
+            sc = new Scanner(line.substring(1, line.length() - 1)).useDelimiter("\\|(?=[^\\]]*(?:\\[|$))");
+        }
+        if (sc != null) {
+            if (rowCount == 1) {
+                // Count the columns, get the specified widths too...
+                while (sc.hasNext()) {
+                    ++columnCount;
+                    sc.next();
+                }
+                // Reset the scanner now that the columns have been counted
+                if (line.startsWith("||") && line.endsWith("||")) {
+                    sc = new Scanner(line).useDelimiter("[|][|]");
+                } else if (line.startsWith("|")) {
+                    sc = new Scanner(line.substring(1, line.length() - 1)).useDelimiter("\\|(?=[^\\]]*(?:\\[|$))");
+                }
+                // Start the table
+                pdfTable = new PdfPTable(columnCount);
+                // pdfTable.setWidthPercentage(100);
+                pdfTable.setHorizontalAlignment(Element.ALIGN_LEFT);
+                pdfTable.setSpacingBefore(10);
+                pdfTable.setWidthPercentage(100);
+                pdfTable.setKeepTogether(true);
+            }
+            // Determine the column span
+            int colSpan = 1;
+            // Determine the cell being output
+            int cellCount = 0;
+            while (sc.hasNext()) {
+                String cellData = sc.next();
+                if (cellData.length() == 0) {
+                    ++colSpan;
+                    continue;
+                }
+                // Track the cell count being output
+                ++cellCount;
+                if (rowCount == 1) {
+                    // Parse and validate the style input
+                    if (cellData.startsWith("{") && cellData.endsWith("}")) {
+                        String[] style = cellData.substring(1, cellData.length() - 1).split(":");
+                        String attribute = style[0].trim();
+                        String value = style[1].trim();
+                        // Determine the width of each column and store it
+                        if ("width".equals(attribute)) {
+                            // Validate the width style
+                            if (StringUtils.hasAllowedOnly("0123456789%.", value)) {
+                                cStyle.put(cellCount, attribute + ": " + value + ";");
+                            }
+                        }
+                        canOutput = false;
+                    }
+                }
+                // Output the header
+                if (canOutput) {
+                    PdfPCell cell = new PdfPCell();
+                    cell.setPadding(10);
+                    cell.setBorderColor(new Color(100, 100, 100));
+                    if ("th".equals(cellType)) {
+                        cell.setHorizontalAlignment(Element.ALIGN_CENTER);
+                        cell.setBackgroundColor(new Color(0xC0, 0xC0, 0xC0));
+                    }
+                    if (colSpan > 1) {
+                        cell.setColspan(colSpan);
+                    }
+                    // Output the data
+                    if (" ".equals(cellData) || "¬†".equals(cellData)) {
+                        // Put a blank space in blank cells for output consistency
+                        cell.addElement(new Chunk(" "));
+                        LOG.debug("   OUTPUTTING A BLANK");
+                    } else {
+                        // Output the cell as a complete wiki
+                        float cellWidth = (100.0f / columnCount);
+                        parseContent(context, wiki, cellData, document, cell, db, wikiListTodo, wikiListDone, cellWidth);
+                        LOG.debug("   OUTPUTTING CONTENT");
+                    }
+                    pdfTable.addCell(cell);
+                }
+            }
+        }
+        // read another line to see if it's part of the table
+        line = in.readLine();
+    }
+    if (pdfTable != null) {
+        LOG.debug("document.add(pdfTable)");
+        document.add(pdfTable);
+    // document.add(Chunk.NEWLINE);
+    }
+    return line;
+}

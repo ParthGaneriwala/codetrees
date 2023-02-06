@@ -1,0 +1,253 @@
+public int parseNext() throws IOException {
+    int totalFilled = -1;
+    if (_buffer == null)
+        throw new IOException("No buffer");
+    if (_state == STATE_END)
+        throw new IllegalStateException("STATE_END");
+    if (_state == STATE_CONTENT && _contentPosition == _contentLength) {
+        _state = STATE_END;
+        // TODO FIXME content(...)
+        return totalFilled;
+    }
+    int length = _buffer.length();
+    if (length == 0) {
+        int filled = -1;
+        if (_buffer.markIndex() == 0 && _buffer.putIndex() == _buffer.capacity())
+            throw new BufferOverflowException("FULL");
+        if (_endpoint != null && filled <= 0) {
+            if (_buffer.space() == 0)
+                throw new BufferOverflowException("FULL");
+            try {
+                if (totalFilled < 0)
+                    totalFilled = 0;
+                filled = _endpoint.fill(_buffer);
+                if (filled > 0)
+                    totalFilled += filled;
+            } catch (IOException e) {
+                Log.debug(e);
+                throw (e instanceof EofException) ? e : new EofException(e);
+            }
+        }
+        if (filled < 0) {
+            if (_state == STATE_EOF_CONTENT) {
+                _state = STATE_END;
+                _handler.content(_buffer.sliceFromMark(_contentPosition));
+                return totalFilled;
+            }
+            // reset();
+            throw new EofException();
+        }
+        length = _buffer.length();
+    }
+    byte b;
+    byte[] array = _buffer.array();
+    while (_state < STATE_END && length-- > 0) {
+        b = _buffer.get();
+        if (_eol == SipGrammar.CR && b == SipGrammar.LF) {
+            _eol = SipGrammar.LF;
+            continue;
+        }
+        _eol = 0;
+        switch(_state) {
+            case STATE_START:
+                _contentLength = UNKNOWN_CONTENT;
+                _cached = null;
+                if (b < 0 || b > SipGrammar.SPACE) {
+                    _buffer.mark();
+                    _state = STATE_FIELD0;
+                }
+                break;
+            case STATE_FIELD0:
+                if (b == SipGrammar.SPACE) {
+                    _token0.update(_buffer.markIndex(), _buffer.getIndex() - 1);
+                    _state = STATE_SPACE0;
+                } else if (// TODO token only
+                b >= 0 && b < SipGrammar.SPACE) {
+                    throw new SipException(SipServletResponse.SC_BAD_REQUEST);
+                }
+                break;
+            case STATE_SPACE0:
+                if (b < 0 || b > SipGrammar.SPACE) {
+                    _buffer.mark();
+                    _state = STATE_FIELD1;
+                    _response = (b >= '1' && b <= '6');
+                } else if (b < SipGrammar.SPACE) {
+                    throw new SipException(SipServletResponse.SC_BAD_REQUEST);
+                }
+                break;
+            case STATE_FIELD1:
+                if (b == SipGrammar.SPACE) {
+                    _token1.update(_buffer.markIndex(), _buffer.getIndex() - 1);
+                    _state = STATE_SPACE1;
+                }
+                break;
+            case STATE_SPACE1:
+                if (b < 0 || b > SipGrammar.SPACE) {
+                    _buffer.mark();
+                    _state = STATE_FIELD2;
+                } else if (b < SipGrammar.SPACE) {
+                    // Case no reason phrase
+                    _state = STATE_FIELD2;
+                    _buffer.mark(0);
+                }
+                break;
+            case STATE_FIELD2:
+                if (b == SipGrammar.CR || b == SipGrammar.LF) {
+                    if (_response) {
+                        _handler.startResponse(SipVersions.CACHE.lookup(_token0), BufferUtil.toInt(_token1), _buffer.sliceFromMark());
+                    } else {
+                        _handler.startRequest(SipMethods.CACHE.lookup(_token0), _token1, SipVersions.CACHE.lookup(_buffer.sliceFromMark()));
+                    }
+                    _eol = b;
+                    _state = STATE_HEADER;
+                    _token0.setPutIndex(_token0.getIndex());
+                    _token1.setPutIndex(_token1.getIndex());
+                    _multiline = null;
+                    return totalFilled;
+                }
+                break;
+            case STATE_HEADER:
+                if (b == SipGrammar.COLON || b == SipGrammar.SPACE || b == SipGrammar.TAB) {
+                    _length = -1;
+                    _state = STATE_HEADER_VALUE;
+                } else {
+                    if (// TODO cached
+                    _cached != null || _token0.length() > 0 || _token1.length() > 0 || _multiline != null) {
+                        Buffer name = null;
+                        if (_cached != null) {
+                            // System.out.println("Cached: " + _cached);
+                            name = _cached;
+                            _cached = null;
+                        } else {
+                            // System.out.println("Not Cached: " + _token0);
+                            if (_token0.length() == 1) {
+                                name = SipHeaders.getCompact(_token0.peek());
+                                if (name == null)
+                                    name = SipHeaders.CACHE.lookup(_token0);
+                            } else {
+                                name = SipHeaders.CACHE.lookup(_token0);
+                            }
+                        }
+                        // FIXME UTF8
+                        Buffer value = _multiline == null ? (Buffer) _token1 : new ByteArrayBuffer(_multiline);
+                        int ho = SipHeaders.CACHE.getOrdinal(name);
+                        if (ho == SipHeaders.CONTENT_LENGTH_ORDINAL) {
+                            _contentLength = BufferUtil.toInt(value);
+                            if (_contentLength <= 0)
+                                _contentLength = NO_CONTENT;
+                        }
+                        _handler.header(name, value);
+                        _token0.setPutIndex(_token0.getIndex());
+                        _token1.setPutIndex(_token1.getIndex());
+                        _multiline = null;
+                    }
+                    if (b == SipGrammar.CR || b == SipGrammar.LF) {
+                        _eol = b;
+                        _contentPosition = 0;
+                        _buffer.mark(0);
+                        if (_contentLength == UNKNOWN_CONTENT) {
+                            if (_endpoint != null)
+                                throw new IOException("No Content-Length");
+                            else
+                                _state = STATE_EOF_CONTENT;
+                        } else if (_contentLength == 0) {
+                            _state = STATE_END;
+                        // TODO callback
+                        } else {
+                            // TODO header complete ??
+                            _state = STATE_CONTENT;
+                        }
+                        return totalFilled;
+                    } else {
+                        _buffer.mark();
+                        _length = 1;
+                        _state = STATE_HEADER_NAME;
+                        if (array != null)
+                            _cached = SipHeaders.CACHE.getBest(array, _buffer.markIndex(), length + 1);
+                        // System.out.println(new String(array, _buffer.markIndex(), length + 1));
+                        if (_cached != null) {
+                            // System.out.println("Found in cache: " + _cached);
+                            _length = _cached.length();
+                            _buffer.setGetIndex(_buffer.markIndex() + _length);
+                            length = _buffer.length();
+                        }
+                    }
+                }
+                break;
+            case STATE_HEADER_NAME:
+                if (b == SipGrammar.CR || b == SipGrammar.LF) {
+                    if (_length > 0)
+                        _token0.update(_buffer.markIndex(), _buffer.markIndex() + _length);
+                    _eol = b;
+                    _state = STATE_HEADER;
+                }
+                if (b == SipGrammar.COLON) {
+                    if (_length > 0)
+                        _token0.update(_buffer.markIndex(), _buffer.markIndex() + _length);
+                    _length = -1;
+                    _state = STATE_HEADER_VALUE;
+                } else if (b != SipGrammar.SPACE && b != SipGrammar.TAB) {
+                    if (_length == -1)
+                        _buffer.mark();
+                    _length = _buffer.getIndex() - _buffer.markIndex();
+                }
+                break;
+            case STATE_HEADER_VALUE:
+                if (b == SipGrammar.CR || b == SipGrammar.LF) {
+                    if (_length > 0) {
+                        if (_token1.length() == 0) {
+                            _token1.update(_buffer.markIndex(), _buffer.markIndex() + _length);
+                        } else {
+                            if (_multiline == null)
+                                // TODO UTF-8
+                                _multiline = _token1.toString();
+                            _token1.update(_buffer.markIndex(), _buffer.markIndex() + _length);
+                            _multiline += " " + _token1.toString();
+                        }
+                    }
+                    _eol = b;
+                    _state = STATE_HEADER;
+                } else if (b != SipGrammar.SPACE && b != SipGrammar.TAB) {
+                    if (_length == -1)
+                        _buffer.mark();
+                    _length = _buffer.getIndex() - _buffer.markIndex();
+                }
+                break;
+        }
+    }
+    // header done
+    Buffer chunk;
+    length = _buffer.length();
+    while (_state > STATE_END && length > 0) {
+        if (_eol == SipGrammar.CR && _buffer.peek() == SipGrammar.LF) {
+            _eol = _buffer.get();
+            length = _buffer.length();
+            _contentPosition = 0;
+            _buffer.mark(0);
+            continue;
+        }
+        _eol = 0;
+        switch(_state) {
+            case STATE_EOF_CONTENT:
+                chunk = _buffer.get(_buffer.length());
+                _contentPosition += chunk.length();
+                return totalFilled;
+            case STATE_CONTENT:
+                int remaining = _contentLength - _contentPosition;
+                if (remaining == 0) {
+                    _state = STATE_END;
+                } else if (length >= remaining) {
+                    length = remaining;
+                    _state = STATE_END;
+                }
+                _contentPosition += length;
+                _buffer.get(length);
+                if (_state == STATE_END) {
+                    _handler.content(_buffer.sliceFromMark(_contentPosition));
+                // System.out.println("Buffer: " + buffer.sliceFromMark(contentPosition));
+                }
+                return totalFilled;
+        }
+    }
+    return totalFilled;
+}

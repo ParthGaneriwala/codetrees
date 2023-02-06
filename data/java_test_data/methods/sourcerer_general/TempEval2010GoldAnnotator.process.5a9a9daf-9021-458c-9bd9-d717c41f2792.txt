@@ -1,0 +1,114 @@
+@Override
+public void process(JCas jCas) throws AnalysisEngineProcessException {
+    // load the sentences and tokens from the view
+    ListMultimap<Integer, String> sentTokens = ArrayListMultimap.create();
+    for (String line : lines(jCas, TimeMLViewName.TEMPEVAL_BASE_SEGMENTATION)) {
+        String[] columns = split(line, "<filename>", "<sent_no>", "<token_no>", "<text>");
+        int sentIndex = new Integer(columns[1]);
+        String text = columns[3];
+        sentTokens.put(sentIndex, text);
+    }
+    // create the sentences and tokens
+    Map<String, StringBuilder> textBuilders = new HashMap<String, StringBuilder>();
+    for (String viewName : this.textViews) {
+        // leave line for document time
+        StringBuilder textBuilder = new StringBuilder("\n\n");
+        JCas view = JCasUtil.getView(jCas, viewName, true);
+        for (int i = 0; i < sentTokens.keySet().size(); ++i) {
+            int sentBegin = textBuilder.length();
+            List<Token> tokens = new ArrayList<Token>();
+            for (String tokenText : sentTokens.get(i)) {
+                int tokenBegin = textBuilder.length();
+                textBuilder.append(tokenText);
+                int tokenEnd = textBuilder.length();
+                textBuilder.append(' ');
+                Token token = new Token(view, tokenBegin, tokenEnd);
+                token.addToIndexes();
+                tokens.add(token);
+            }
+            int sentEnd = textBuilder.length() - 1;
+            textBuilder.setCharAt(sentEnd, '\n');
+            Sentence sentence = new Sentence(view, sentBegin, sentEnd);
+            sentence.addToIndexes();
+        }
+        textBuilders.put(viewName, textBuilder);
+    }
+    // add the document creation time
+    for (String line : lines(jCas, TimeMLViewName.TEMPEVAL_DCT)) {
+        String[] dctColumns = split(line, "<filename>", "<dct>");
+        String dctValue = dctColumns[1].replaceAll("(\\d{4})(\\d{2})(\\d{2})", "$1-$2-$3");
+        for (String viewName : this.documentCreationTimeViews) {
+            JCas view = JCasUtil.getView(jCas, viewName, true);
+            DocumentCreationTime docTime = new DocumentCreationTime(view, 1, 1);
+            docTime.setId("t0");
+            docTime.setTimeType("DATE");
+            docTime.setValue(dctValue);
+            docTime.setFunctionInDocument("CREATION_TIME");
+            docTime.addToIndexes();
+        }
+    }
+    // add Time annotations
+    addSpans(jCas, TimeMLViewName.TEMPEVAL_TIMEX_EXTENTS, "timex3", this.timeExtentViews, new AnnotationConstructor<Time>() {
+
+        @Override
+        public Time apply(JCas aJCas, int begin, int end) {
+            return new Time(aJCas, begin, end);
+        }
+    });
+    // add Time attributes
+    addAttributes(jCas, TimeMLViewName.TEMPEVAL_TIMEX_ATTRIBUTES, Time.class, this.timeAttributeViews, new AttributeSetter<Time>() {
+
+        @Override
+        public void apply(Time time, String attrName, String attrValue) {
+            if (attrName.equals("type")) {
+                time.setTimeType(attrValue);
+            } else if (attrName.equals("value")) {
+                time.setValue(attrValue);
+            } else {
+                String message = "Unexpected TIMEX attribute %s=%s";
+                throw new IllegalArgumentException(String.format(message, attrName, attrValue));
+            }
+        }
+    });
+    // add Event annotations
+    addSpans(jCas, TimeMLViewName.TEMPEVAL_EVENT_EXTENTS, "event", this.eventExtentViews, new AnnotationConstructor<Event>() {
+
+        @Override
+        public Event apply(JCas aJCas, int begin, int end) {
+            return new Event(aJCas, begin, end);
+        }
+    });
+    // add Event attributes
+    addAttributes(jCas, TimeMLViewName.TEMPEVAL_EVENT_ATTRIBUTES, Event.class, this.eventAttributeViews, new AttributeSetter<Event>() {
+
+        @Override
+        public void apply(Event event, String attrName, String attrValue) {
+            if (attrName.equals("pos")) {
+                event.setPos(attrValue);
+            } else if (attrName.equals("tense")) {
+                event.setTense(attrValue);
+            } else if (attrName.equals("aspect")) {
+                event.setAspect(attrValue);
+            } else if (attrName.equals("class")) {
+                event.setEventClass(attrValue);
+            } else if (attrName.equals("polarity")) {
+                event.setPolarity(attrValue);
+            } else if (attrName.equals("modality")) {
+                event.setModality(attrValue);
+            } else {
+                String message = "Unexpected EVENT attribute %s=%s";
+                throw new IllegalArgumentException(String.format(message, attrName, attrValue));
+            }
+        }
+    });
+    // add TemporalLink annotations
+    addTemporalLinks(jCas, TimeMLViewName.TEMPEVAL_TLINK_DCT_EVENT, textBuilders, this.temporalLinkEventToDocumentCreationTimeViews);
+    addTemporalLinks(jCas, TimeMLViewName.TEMPEVAL_TLINK_TIMEX_EVENT, textBuilders, this.temporalLinkEventToSameSentenceTimeViews);
+    addTemporalLinks(jCas, TimeMLViewName.TEMPEVAL_TLINK_SUBORDINATED_EVENTS, textBuilders, this.temporalLinkEventToSubordinatedEventViews);
+    addTemporalLinks(jCas, TimeMLViewName.TEMPEVAL_TLINK_MAIN_EVENTS, textBuilders, this.temporalLinkMainEventToNextSentenceMainEventViews);
+    // set the document text
+    for (String viewName : this.textViews) {
+        JCas view = JCasUtil.getView(jCas, viewName, true);
+        view.setDocumentText(textBuilders.get(viewName).toString());
+    }
+}

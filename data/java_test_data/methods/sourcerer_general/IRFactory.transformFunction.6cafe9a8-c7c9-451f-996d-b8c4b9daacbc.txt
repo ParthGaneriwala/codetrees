@@ -1,0 +1,41 @@
+private Node transformFunction(FunctionNode fn) {
+    int functionType = fn.getFunctionType();
+    int start = decompiler.markFunctionStart(functionType);
+    Node mexpr = decompileFunctionHeader(fn);
+    int index = currentScriptOrFn.addFunction(fn);
+    PerFunctionVariables savedVars = new PerFunctionVariables(fn);
+    try {
+        // If we start needing to record much more codegen metadata during
+        // function parsing, we should lump it all into a helper class.
+        Node destructuring = (Node) fn.getProp(Node.DESTRUCTURING_PARAMS);
+        fn.removeProp(Node.DESTRUCTURING_PARAMS);
+        int lineno = fn.getBody().getLineno();
+        // only for body, not params
+        ++nestingOfFunction;
+        Node body = transform(fn.getBody());
+        if (!fn.isExpressionClosure()) {
+            decompiler.addToken(Token.RC);
+        }
+        fn.setEncodedSourceBounds(start, decompiler.markFunctionEnd(start));
+        if (functionType != FunctionNode.FUNCTION_EXPRESSION && !fn.isExpressionClosure()) {
+            // Add EOL only if function is not part of expression
+            // since it gets SEMI + EOL from Statement in that case
+            decompiler.addToken(Token.EOL);
+        }
+        if (destructuring != null) {
+            body.addChildToFront(new Node(Token.EXPR_VOID, destructuring, lineno));
+        }
+        int syntheticType = fn.getFunctionType();
+        Node pn = initFunction(fn, index, body, syntheticType);
+        if (mexpr != null) {
+            pn = createAssignment(Token.ASSIGN, mexpr, pn);
+            if (syntheticType != FunctionNode.FUNCTION_EXPRESSION) {
+                pn = createExprStatementNoReturn(pn, fn.getLineno());
+            }
+        }
+        return pn;
+    } finally {
+        --nestingOfFunction;
+        savedVars.restore();
+    }
+}

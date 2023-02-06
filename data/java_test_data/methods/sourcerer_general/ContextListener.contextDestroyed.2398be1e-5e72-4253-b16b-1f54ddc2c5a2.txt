@@ -1,0 +1,103 @@
+public void contextDestroyed(ServletContextEvent event) {
+    ServletContext context = event.getServletContext();
+    LOG.info("Shutting down");
+    // Remove scheduler
+    try {
+        Scheduler scheduler = (Scheduler) context.getAttribute(Constants.SCHEDULER);
+        if (scheduler != null) {
+            // Remove the App connection pool
+            ConnectionPool appCP = (ConnectionPool) scheduler.getContext().get("ConnectionPool");
+            // Interrupt any interruptable jobs
+            scheduler.interrupt("directoryIndexer", (String) scheduler.getContext().get(ScheduledJobs.CONTEXT_SCHEDULER_GROUP));
+            // Cleanup the scheduler
+            scheduler.getContext().remove(appCP);
+            int count = scheduler.getCurrentlyExecutingJobs().size();
+            if (count > 0) {
+                LOG.info("Waiting for scheduler jobs to finish executing... (" + count + ")");
+            }
+            scheduler.shutdown(true);
+            LOG.info("Scheduler shutdown");
+            if (appCP != null) {
+                appCP.closeAllConnections();
+                appCP.destroy();
+            }
+            context.removeAttribute(Constants.SCHEDULER);
+        }
+    } catch (Exception e) {
+        LOG.error("Scheduler error", e);
+    }
+    // Remove the tracker
+    context.removeAttribute(Constants.USER_SESSION_TRACKER);
+    // Stop the object hook manager
+    ObjectHookManager hookManager = (ObjectHookManager) context.getAttribute(Constants.OBJECT_HOOK_MANAGER);
+    if (hookManager != null) {
+        hookManager.reset();
+        hookManager.shutdown();
+        context.removeAttribute(Constants.OBJECT_HOOK_MANAGER);
+    }
+    // Stop the work flow manager
+    WorkflowManager wfManager = (WorkflowManager) context.getAttribute(Constants.WORKFLOW_MANAGER);
+    if (wfManager != null) {
+        context.removeAttribute(Constants.WORKFLOW_MANAGER);
+    }
+    // De-register the remote wsrp producer
+    ProducerRegistry producerRegistry = ProducerRegistryImpl.getInstance();
+    ProducerImpl producer = (ProducerImpl) producerRegistry.getProducer(PortletManager.CONCURSIVE_WSRP_PRODUCER_ID);
+    if (producer != null) {
+        try {
+            producer.deregister();
+            LOG.info("Successfully deregistered remote wsrp producer");
+        } catch (WSRPException e) {
+            LOG.error("Unable to de-register the remote wsrp producer");
+        }
+    }
+    // Stop the portlet container
+    PortletContainer container = (PortletContainer) context.getAttribute(Constants.PORTLET_CONTAINER);
+    if (container != null) {
+        try {
+            container.destroy();
+        } catch (Exception e) {
+            LOG.error("PortletContainer error", e);
+        }
+        context.removeAttribute(Constants.PORTLET_CONTAINER);
+    }
+    // Remove the cache manager
+    CacheManager.getInstance().shutdown();
+    // TODO: Create a connection pool array
+    // Remove the connection pool
+    ConnectionPool cp = (ConnectionPool) context.getAttribute(Constants.CONNECTION_POOL);
+    if (cp != null) {
+        cp.closeAllConnections();
+        cp.destroy();
+        context.removeAttribute(Constants.CONNECTION_POOL);
+    }
+    // Remove the RSS connection pool
+    ConnectionPool rssCP = (ConnectionPool) context.getAttribute(Constants.CONNECTION_POOL_RSS);
+    if (rssCP != null) {
+        rssCP.closeAllConnections();
+        rssCP.destroy();
+        context.removeAttribute(Constants.CONNECTION_POOL_RSS);
+    }
+    // Remove the API connection pool
+    ConnectionPool apiCP = (ConnectionPool) context.getAttribute(Constants.CONNECTION_POOL_API);
+    if (apiCP != null) {
+        apiCP.closeAllConnections();
+        apiCP.destroy();
+        context.removeAttribute(Constants.CONNECTION_POOL_API);
+    }
+    // Shutdown the indexer service
+    IIndexerService indexer = IndexerFactory.getInstance().getIndexerService();
+    if (indexer != null) {
+        try {
+            indexer.shutdown();
+        } catch (Exception e) {
+            LOG.error("Error shutting down indexer", e);
+        }
+    }
+    // Remove system settings
+    context.removeAttribute(Constants.SYSTEM_SETTINGS);
+    // Remove the logger
+    ClassLoader contextClassLoader = Thread.currentThread().getContextClassLoader();
+    LogFactory.release(contextClassLoader);
+    LOG.info("Shutdown complete");
+}

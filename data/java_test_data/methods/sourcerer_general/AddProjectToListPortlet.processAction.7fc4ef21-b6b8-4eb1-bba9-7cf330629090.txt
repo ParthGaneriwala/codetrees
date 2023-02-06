@@ -1,0 +1,84 @@
+@Override
+public void processAction(ActionRequest request, ActionResponse response) throws PortletException, IOException {
+    String ctx = request.getContextPath();
+    boolean isClose = "true".equals(request.getParameter("close"));
+    if (isClose) {
+        // Clean up the session
+        LOG.debug("Closing the form");
+        request.getPortletSession().removeAttribute(VIEW_TYPE);
+        response.sendRedirect(ctx + CLOSE_PAGE);
+        return;
+    }
+    int projectIdToBookmark = Integer.valueOf(request.getParameter(PROJECT_ID_TO_BOOKMARK));
+    int projectIdOfLists = Integer.valueOf(request.getParameter(PROJECT_ID_OF_LISTS));
+    String newListName = request.getParameter(NEW_LIST_NAME);
+    // If the user selected an item in the drop-down, then that means they are
+    // changing lists
+    int pidToCompare = Integer.valueOf(request.getParameter("pidToCompare"));
+    boolean isChangePidOfLists = pidToCompare != projectIdOfLists;
+    if (isChangePidOfLists) {
+        LOG.debug("A new project has been selected: " + projectIdOfLists);
+        response.setRenderParameter(PROJECT_ID_OF_LISTS, String.valueOf(projectIdOfLists));
+        return;
+    }
+    try {
+        LOG.debug("Saving the form...");
+        boolean isSuccess;
+        User user = PortalUtils.getUser(request);
+        int userId = user.getId();
+        Connection db = PortalUtils.useConnection(request);
+        Project projectOfLists = new Project(db, projectIdOfLists);
+        Project projectToBookmark = new Project(db, projectIdToBookmark);
+        Collection<Integer> listIds = getListIds(request.getParameterValues(LIST));
+        // verify user can modify lists for project
+        boolean isAddNewList = false;
+        if (ProjectUtils.hasAccess(projectOfLists.getId(), user, "project-lists-modify")) {
+            if (!StringUtils.hasText(newListName) && (listIds.size() == 0)) {
+                System.out.println("Error need to show From");
+                request.getPortletSession().setAttribute(ACTION_ERROR, "Choose a list or create one");
+                request.getPortletSession().setAttribute(VIEW_TYPE, VIEW_FORM_PAGE);
+                return;
+            }
+            if (StringUtils.hasText(newListName)) {
+                if (!ProjectUtils.hasAccess(projectOfLists.getId(), user, "project-lists-add")) {
+                    request.getPortletSession().setAttribute(ACTION_ERROR, "Not authorized to create new list");
+                    request.getPortletSession().setAttribute(VIEW_TYPE, VIEW_FORM_PAGE);
+                    return;
+                }
+                int newListId = saveNewList(db, projectIdOfLists, newListName);
+                if (newListId == -1) {
+                    request.getPortletSession().setAttribute(ACTION_ERROR, "Unable to create new list.");
+                    request.getPortletSession().setAttribute(VIEW_TYPE, SAVE_FAILURE);
+                    return;
+                } else {
+                    listIds.add(newListId);
+                    isAddNewList = true;
+                }
+            }
+            TaskList existingTasks = findExistingTasksForProjects(db, projectIdOfLists, projectIdToBookmark);
+            // check to see if the user is deleting tasks (listItems)
+            if ((isAddNewList && existingTasks.size() > listIds.size() - 1) || !isAddNewList && existingTasks.size() > listIds.size()) {
+                if (!ProjectUtils.hasAccess(projectOfLists.getId(), user, "project-lists-delete")) {
+                    request.getPortletSession().setAttribute(ACTION_ERROR, "Not authorized to delete items");
+                    request.getPortletSession().setAttribute(VIEW_TYPE, VIEW_FORM_PAGE);
+                    return;
+                } else {
+                    deleteFromLists(db, existingTasks, listIds);
+                }
+            }
+            isSuccess = saveToLists(db, existingTasks, listIds, userId, projectIdToBookmark, projectToBookmark.getTitle(), projectIdOfLists, request);
+        } else {
+            isSuccess = false;
+            request.getPortletSession().setAttribute(ACTION_ERROR, "Not authorized to bookmark");
+        }
+        if (isSuccess) {
+            // Close the panel, everything went well
+            response.sendRedirect(ctx + "/close_panel_refresh.jsp");
+        } else {
+            request.getPortletSession().setAttribute(VIEW_TYPE, SAVE_FAILURE);
+        }
+    } catch (SQLException e) {
+        e.printStackTrace();
+        throw new RuntimeException(e);
+    }
+}

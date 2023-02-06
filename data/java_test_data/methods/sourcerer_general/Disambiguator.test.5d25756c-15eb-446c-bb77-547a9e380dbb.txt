@@ -1,0 +1,64 @@
+private Result<Integer> test(Article article, int snippetLength, RelatednessCache rc) throws Exception {
+    System.out.println(" - testing " + article);
+    Vector<Anchor> unambigAnchors = new Vector<Anchor>();
+    Vector<TopicReference> ambigRefs = new Vector<TopicReference>();
+    String content = cleaner.getMarkupLinksOnly(article, snippetLength);
+    Pattern linkPattern = Pattern.compile("\\[\\[(.*?)\\]\\]");
+    Matcher linkMatcher = linkPattern.matcher(content);
+    HashSet<Integer> goldStandard = new HashSet<Integer>();
+    HashSet<Integer> disambiguatedLinks = new HashSet<Integer>();
+    while (linkMatcher.find()) {
+        String linkText = content.substring(linkMatcher.start() + 2, linkMatcher.end() - 2);
+        String anchorText = linkText;
+        String destText = linkText;
+        int pos = linkText.lastIndexOf('|');
+        if (pos > 0) {
+            destText = linkText.substring(0, pos);
+            anchorText = linkText.substring(pos + 1);
+        }
+        // Get first char and capitalize
+        destText = Character.toUpperCase(destText.charAt(0)) + destText.substring(1);
+        Anchor anchor = new Anchor(anchorText, tp, wikipedia.getDatabase());
+        int senseCount = anchor.getSenses().size();
+        Article dest = wikipedia.getArticleByTitle(destText);
+        if (senseCount > 0 && dest != null) {
+            goldStandard.add(dest.getId());
+            if (senseCount == 1 || anchor.getSenses().first().getProbability() >= (1 - minSenseProbability)) {
+                unambigAnchors.add(anchor);
+                disambiguatedLinks.add(dest.getId());
+            } else {
+                TopicReference ref = new TopicReference(anchor, dest.getId(), null);
+                ambigRefs.add(ref);
+            }
+        }
+    }
+    // use all terms as context
+    Context context = getContext(article, snippetLength, rc);
+    // resolve senses
+    for (TopicReference ref : ambigRefs) {
+        TreeSet<Article> validSenses = new TreeSet<Article>();
+        for (Sense sense : ref.getAnchor().getSenses()) {
+            if (sense.getProbability() < minSenseProbability)
+                break;
+            double[] values = new double[attributes.size()];
+            values[0] = sense.getProbability();
+            values[1] = context.getRelatednessTo(sense);
+            values[2] = context.getQuality();
+            values[3] = Instance.missingValue();
+            Instance i = new Instance(1.0, values);
+            i.setDataset(header);
+            double prob = classifier.distributionForInstance(i)[0];
+            if (prob > 0.5) {
+                Article art = new Article(wikipedia.getDatabase(), sense.getId());
+                art.setWeight(prob);
+                validSenses.add(art);
+            }
+        }
+        // use most valid sense
+        if (!validSenses.isEmpty())
+            disambiguatedLinks.add(validSenses.first().getId());
+    }
+    Result<Integer> result = new Result<Integer>(disambiguatedLinks, goldStandard);
+    System.out.println("   " + result);
+    return result;
+}

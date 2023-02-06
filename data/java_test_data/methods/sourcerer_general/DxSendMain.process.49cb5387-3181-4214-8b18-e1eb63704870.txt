@@ -1,0 +1,82 @@
+public void process() {
+    sendService = (SendService) Globals.getWebBean("sendService");
+    orderservice = (OrderService) Globals.getWebBean("orderService");
+    // 更新昨天违章，但是到今天已经不再违章的情况，这类短信不下发
+    int s = sendService.setHasBeenHandled();
+    LOG.info("更新" + s + "条违章为已处理");
+    // 得到地市的短信模板信息
+    templist = sendService.getTemplateList();
+    LOG.info("得到短信下发模板处理完毕");
+    // 得到该地市要下发的公共信息
+    promtlist = sendService.getPromptList();
+    LOG.info("得到地市要下发的公共信息完成");
+    // 得到订购用户今天所有的违章记录，和违章车牌表绑定
+    Map<String, List<DzjcAllHistory>> todaylist = sendService.getTodayList();
+    LOG.info("得到今天的违章数据完毕：" + todaylist.size());
+    // 得到所有的订购用户总数,没有退订的
+    int usercount = orderservice.getAllOrderUserCount();
+    LOG.info("用户总数:::" + usercount);
+    int smscount = 0;
+    if (usercount != 0) {
+        // 有订购用户的情况下
+        int getcount = ((usercount - 1) / PAGE_SIZE) + 1;
+        LOG.debug("总计处理次数:::" + getcount);
+        for (int i = 0; i < getcount; i++) {
+            int startIndex = i * PAGE_SIZE;
+            // 得到这批用户并匹配是否
+            List list = orderservice.getAllOrdreUsers(startIndex, PAGE_SIZE);
+            int len = list == null ? 0 : list.size();
+            for (int j = 0; j < len; j++) {
+                // 要下发的短信内容
+                String smscontent = "";
+                UserOrder uo = (UserOrder) list.get(j);
+                if (!(uo.getAreacode() == null || uo.getAreacode().equals("") || !OrderConstant.AREA_DATABASE.containsKey(uo.getAreacode()) || !OrderConstant.CITY_DATABASE.containsKey(uo.getAreacode()))) {
+                    LOG.warn(uo.getMobile() + "没有上传区域信息,忽略");
+                    continue;
+                }
+                String userkey = uo.getChepai() + "_" + uo.getChepaileixing();
+                if (todaylist.containsKey(userkey)) {
+                    // 这个人有违章的情况
+                    List<DzjcAllHistory> histories = todaylist.get(userkey);
+                    // 有违章信息,看有几条,然后看是不是之前的违章信息
+                    int hlen = histories == null ? 0 : histories.size();
+                    if (hlen == 1) {
+                        // 只一条违章
+                        DzjcAllHistory history = histories.get(0);
+                        if (history.getHandleDays() == 0) {
+                            // 第一次违章
+                            smscontent = sendFirstWz(uo, history);
+                        } else {
+                            // 这条违章信息一直没处理
+                            smscontent = sendWzNotHandle(uo, history);
+                        }
+                    } else if (hlen > 1) {
+                        // 有多条违章，只是发送统计信息
+                        smscontent = sendStatic(uo, histories);
+                    // 下面再考虑
+                    // for(DzjcAllHistory history:histories){
+                    // if(history.getHandleDays()==0){//第一次违章
+                    // sendFirstWz(uo,history);
+                    // }else{//违章信息一直没处理
+                    // sendWzNotHandle(uo,history);
+                    // }
+                    // }
+                    }
+                } else {
+                    // 这个人已经没有违章的情况了,
+                    smscontent = sendNoWz(uo);
+                }
+                if (smscontent != null && !smscontent.equals("")) {
+                    // 这里真的下发短信
+                    String result = Sms.sendSms(uo.getMobile(), smscontent, "yw", "", uo.getProductid());
+                    LOG.debug("下发短信:" + uo.getMobile() + "," + smscontent + "," + uo.getProductid());
+                    // String result = "-1";
+                    // 将下发的短信存储到数据库里
+                    smscount++;
+                }
+            }
+            list.clear();
+        }
+    }
+    LOG.info("本次处理完成,短信下发数:" + smscount);
+}

@@ -1,0 +1,170 @@
+public void testTrash() throws IOException {
+    Configuration conf = new Configuration();
+    // 10 minute
+    conf.set("fs.trash.interval", "10");
+    MiniDFSCluster cluster = new MiniDFSCluster(conf, 2, true, null);
+    FileSystem fs = cluster.getFileSystem();
+    DistributedFileSystem fileSys = (DistributedFileSystem) fs;
+    FsShell shell = new FsShell();
+    shell.setConf(conf);
+    Path trashRoot = null;
+    try {
+        // First create a new directory with mkdirs
+        Path myPath = new Path("/test/mkdirs");
+        mkdir(fs, myPath);
+        // Second, create a file in that directory.
+        Path myFile = new Path("/test/mkdirs/myFile");
+        writeFile(fs, myFile);
+        // Verify that expunge without Trash directory
+        // won't throw Exception
+        {
+            String[] args = new String[1];
+            args[0] = "-expunge";
+            int val = -1;
+            try {
+                val = shell.run(args);
+            } catch (Exception e) {
+                System.err.println("Exception raised from Trash.run " + e.getLocalizedMessage());
+            }
+            assertTrue(val == 0);
+        }
+        // Verify that we succeed in removing the file we created.
+        // This should go into Trash.
+        {
+            String[] args = new String[2];
+            args[0] = "-rm";
+            args[1] = "/test/mkdirs/myFile";
+            int val = -1;
+            try {
+                val = shell.run(args);
+            } catch (Exception e) {
+                System.err.println("Exception raised from Trash.run " + e.getLocalizedMessage());
+            }
+            assertTrue(val == 0);
+            trashRoot = shell.getCurrentTrashDir();
+            checkTrash(fs, trashRoot, args[1]);
+        }
+        // Verify that we can recreate the file
+        writeFile(fs, myFile);
+        // Verify that we succeed in removing the file we re-created
+        {
+            String[] args = new String[2];
+            args[0] = "-rm";
+            args[1] = "/test/mkdirs/myFile";
+            int val = -1;
+            try {
+                val = shell.run(args);
+            } catch (Exception e) {
+                System.err.println("Exception raised from Trash.run " + e.getLocalizedMessage());
+            }
+            assertTrue(val == 0);
+        }
+        // Verify that we can recreate the file
+        writeFile(fs, myFile);
+        // Verify that we succeed in removing the whole directory
+        // along with the file inside it.
+        {
+            String[] args = new String[2];
+            args[0] = "-rmr";
+            args[1] = "/test/mkdirs";
+            int val = -1;
+            try {
+                val = shell.run(args);
+            } catch (Exception e) {
+                System.err.println("Exception raised from Trash.run " + e.getLocalizedMessage());
+            }
+            assertTrue(val == 0);
+        }
+        // recreate directory
+        mkdir(fs, myPath);
+        // Verify that we succeed in removing the whole directory
+        {
+            String[] args = new String[2];
+            args[0] = "-rmr";
+            args[1] = "/test/mkdirs";
+            int val = -1;
+            try {
+                val = shell.run(args);
+            } catch (Exception e) {
+                System.err.println("Exception raised from Trash.run " + e.getLocalizedMessage());
+            }
+            assertTrue(val == 0);
+        }
+        // Check that we can delete a file from the trash
+        {
+            Path toErase = new Path(trashRoot, "toErase");
+            int retVal = -1;
+            writeFile(fs, toErase);
+            try {
+                retVal = shell.run(new String[] { "-rm", toErase.toString() });
+            } catch (Exception e) {
+                System.err.println("Exception raised from Trash.run " + e.getLocalizedMessage());
+            }
+            assertTrue(retVal == 0);
+            checkNotInTrash(fs, trashRoot, toErase.toString());
+            checkNotInTrash(fs, trashRoot, toErase.toString() + ".1");
+        }
+        // simulate Trash removal
+        {
+            String[] args = new String[1];
+            args[0] = "-expunge";
+            int val = -1;
+            try {
+                val = shell.run(args);
+            } catch (Exception e) {
+                System.err.println("Exception raised from Trash.run " + e.getLocalizedMessage());
+            }
+            assertTrue(val == 0);
+        }
+        // verify that after expunging the Trash, it really goes away
+        checkNotInTrash(fs, trashRoot, "/test/mkdirs/myFile");
+        // recreate directory and file
+        mkdir(fs, myPath);
+        writeFile(fs, myFile);
+        // remove file first, then remove directory
+        {
+            String[] args = new String[2];
+            args[0] = "-rm";
+            args[1] = "/test/mkdirs/myFile";
+            int val = -1;
+            try {
+                val = shell.run(args);
+            } catch (Exception e) {
+                System.err.println("Exception raised from Trash.run " + e.getLocalizedMessage());
+            }
+            assertTrue(val == 0);
+            checkTrash(fs, trashRoot, args[1]);
+            args = new String[2];
+            args[0] = "-rmr";
+            args[1] = "/test/mkdirs";
+            val = -1;
+            try {
+                val = shell.run(args);
+            } catch (Exception e) {
+                System.err.println("Exception raised from Trash.run " + e.getLocalizedMessage());
+            }
+            assertTrue(val == 0);
+            checkTrash(fs, trashRoot, args[1]);
+        }
+        // attempt to remove parent of trash
+        {
+            String[] args = new String[2];
+            args[0] = "-rmr";
+            args[1] = trashRoot.getParent().getParent().toString();
+            int val = -1;
+            try {
+                val = shell.run(args);
+            } catch (Exception e) {
+                System.err.println("Exception raised from Trash.run " + e.getLocalizedMessage());
+            }
+            assertTrue(val == -1);
+            assertTrue(fs.exists(trashRoot));
+        }
+    } finally {
+        try {
+            fs.close();
+        } catch (Exception e) {
+        }
+        cluster.shutdown();
+    }
+}

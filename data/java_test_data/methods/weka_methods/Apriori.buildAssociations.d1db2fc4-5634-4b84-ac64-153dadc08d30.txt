@@ -1,0 +1,160 @@
+@SuppressWarnings("unchecked")
+@Override
+public void buildAssociations(Instances instances) throws Exception {
+    double[] confidences, supports;
+    int[] indices;
+    ArrayList<Object>[] sortedRuleSet;
+    double necSupport = 0;
+    instances = new Instances(instances);
+    if (m_removeMissingCols) {
+        instances = removeMissingColumns(instances);
+    }
+    if (m_car && m_metricType != CONFIDENCE) {
+        throw new Exception("For CAR-Mining metric type has to be confidence!");
+    }
+    // only set class index if CAR is requested
+    if (m_car) {
+        if (m_classIndex == -1) {
+            instances.setClassIndex(instances.numAttributes() - 1);
+        } else if (m_classIndex <= instances.numAttributes() && m_classIndex > 0) {
+            instances.setClassIndex(m_classIndex - 1);
+        } else {
+            throw new Exception("Invalid class index.");
+        }
+    }
+    // can associator handle the data?
+    getCapabilities().testWithFail(instances);
+    m_cycles = 0;
+    // make sure that the lower bound is equal to at least one instance
+    double lowerBoundMinSupportToUse = (m_lowerBoundMinSupport * instances.numInstances() < 1.0) ? 1.0 / instances.numInstances() : m_lowerBoundMinSupport;
+    if (m_car) {
+        // m_instances does not contain the class attribute
+        m_instances = LabeledItemSet.divide(instances, false);
+        // m_onlyClass contains only the class attribute
+        m_onlyClass = LabeledItemSet.divide(instances, true);
+    } else {
+        m_instances = instances;
+    }
+    if (m_car && m_numRules == Integer.MAX_VALUE) {
+        // Set desired minimum support
+        m_minSupport = lowerBoundMinSupportToUse;
+    } else {
+        // Decrease minimum support until desired number of rules found.
+        // m_minSupport = m_upperBoundMinSupport - m_delta;
+        m_minSupport = 1.0 - m_delta;
+        m_minSupport = (m_minSupport < lowerBoundMinSupportToUse) ? lowerBoundMinSupportToUse : m_minSupport;
+    }
+    do {
+        // Reserve space for variables
+        m_Ls = new ArrayList<ArrayList<Object>>();
+        m_hashtables = new ArrayList<Hashtable<ItemSet, Integer>>();
+        m_allTheRules = new ArrayList[6];
+        m_allTheRules[0] = new ArrayList<Object>();
+        m_allTheRules[1] = new ArrayList<Object>();
+        m_allTheRules[2] = new ArrayList<Object>();
+        // if (m_metricType != CONFIDENCE || m_significanceLevel != -1) {
+        m_allTheRules[3] = new ArrayList<Object>();
+        m_allTheRules[4] = new ArrayList<Object>();
+        m_allTheRules[5] = new ArrayList<Object>();
+        // }
+        sortedRuleSet = new ArrayList[6];
+        sortedRuleSet[0] = new ArrayList<Object>();
+        sortedRuleSet[1] = new ArrayList<Object>();
+        sortedRuleSet[2] = new ArrayList<Object>();
+        // if (m_metricType != CONFIDENCE || m_significanceLevel != -1) {
+        sortedRuleSet[3] = new ArrayList<Object>();
+        sortedRuleSet[4] = new ArrayList<Object>();
+        sortedRuleSet[5] = new ArrayList<Object>();
+        // }
+        if (!m_car) {
+            // Find large itemsets and rules
+            findLargeItemSets();
+            if (m_significanceLevel != -1 || m_metricType != CONFIDENCE) {
+                findRulesBruteForce();
+            } else {
+                findRulesQuickly();
+            }
+        } else {
+            findLargeCarItemSets();
+            findCarRulesQuickly();
+        }
+        // prune rules for upper bound min support
+        if (m_upperBoundMinSupport < 1.0) {
+            pruneRulesForUpperBoundSupport();
+        }
+        // Sort rules according to their support
+        /*
+       * supports = new double[m_allTheRules[2].size()]; for (int i = 0; i <
+       * m_allTheRules[2].size(); i++) supports[i] =
+       * (double)((AprioriItemSet)m_allTheRules[1].elementAt(i)).support();
+       * indices = Utils.stableSort(supports); for (int i = 0; i <
+       * m_allTheRules[2].size(); i++) {
+       * sortedRuleSet[0].add(m_allTheRules[0].get(indices[i]));
+       * sortedRuleSet[1].add(m_allTheRules[1].get(indices[i]));
+       * sortedRuleSet[2].add(m_allTheRules[2].get(indices[i])); if
+       * (m_metricType != CONFIDENCE || m_significanceLevel != -1) {
+       * sortedRuleSet[3].add(m_allTheRules[3].get(indices[i]));
+       * sortedRuleSet[4].add(m_allTheRules[4].get(indices[i]));
+       * sortedRuleSet[5].add(m_allTheRules[5].get(indices[i])); } }
+       */
+        int j = m_allTheRules[2].size() - 1;
+        supports = new double[m_allTheRules[2].size()];
+        for (int i = 0; i < (j + 1); i++) {
+            supports[j - i] = ((double) ((ItemSet) m_allTheRules[1].get(j - i)).support()) * (-1);
+        }
+        indices = Utils.stableSort(supports);
+        for (int i = 0; i < (j + 1); i++) {
+            sortedRuleSet[0].add(m_allTheRules[0].get(indices[j - i]));
+            sortedRuleSet[1].add(m_allTheRules[1].get(indices[j - i]));
+            sortedRuleSet[2].add(m_allTheRules[2].get(indices[j - i]));
+            if (!m_car) {
+                // if (m_metricType != CONFIDENCE || m_significanceLevel != -1) {
+                sortedRuleSet[3].add(m_allTheRules[3].get(indices[j - i]));
+                sortedRuleSet[4].add(m_allTheRules[4].get(indices[j - i]));
+                sortedRuleSet[5].add(m_allTheRules[5].get(indices[j - i]));
+            }
+        // }
+        }
+        // Sort rules according to their confidence
+        m_allTheRules[0].clear();
+        m_allTheRules[1].clear();
+        m_allTheRules[2].clear();
+        // if (m_metricType != CONFIDENCE || m_significanceLevel != -1) {
+        m_allTheRules[3].clear();
+        m_allTheRules[4].clear();
+        m_allTheRules[5].clear();
+        // }
+        confidences = new double[sortedRuleSet[2].size()];
+        int sortType = 2 + m_metricType;
+        for (int i = 0; i < sortedRuleSet[2].size(); i++) {
+            confidences[i] = ((Double) sortedRuleSet[sortType].get(i)).doubleValue();
+        }
+        indices = Utils.stableSort(confidences);
+        for (int i = sortedRuleSet[0].size() - 1; (i >= (sortedRuleSet[0].size() - m_numRules)) && (i >= 0); i--) {
+            m_allTheRules[0].add(sortedRuleSet[0].get(indices[i]));
+            m_allTheRules[1].add(sortedRuleSet[1].get(indices[i]));
+            m_allTheRules[2].add(sortedRuleSet[2].get(indices[i]));
+            // if (m_metricType != CONFIDENCE || m_significanceLevel != -1) {
+            if (!m_car) {
+                m_allTheRules[3].add(sortedRuleSet[3].get(indices[i]));
+                m_allTheRules[4].add(sortedRuleSet[4].get(indices[i]));
+                m_allTheRules[5].add(sortedRuleSet[5].get(indices[i]));
+            }
+        // }
+        }
+        if (m_verbose) {
+            if (m_Ls.size() > 1) {
+                System.out.println(toString());
+            }
+        }
+        if (m_minSupport == lowerBoundMinSupportToUse || m_minSupport - m_delta > lowerBoundMinSupportToUse) {
+            m_minSupport -= m_delta;
+        } else {
+            m_minSupport = lowerBoundMinSupportToUse;
+        }
+        necSupport = Math.rint(m_minSupport * m_instances.numInstances());
+        m_cycles++;
+    } while ((m_allTheRules[0].size() < m_numRules) && (Utils.grOrEq(m_minSupport, lowerBoundMinSupportToUse)) && /* (Utils.grOrEq(m_minSupport, m_lowerBoundMinSupport)) */
+    (necSupport >= 1));
+    m_minSupport += m_delta;
+}

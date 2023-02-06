@@ -1,0 +1,153 @@
+public static void main(String[] args) throws DatabaseException, IOException, ClassNotFoundException {
+    final MemoryMXBean memoryBean = ManagementFactory.getMemoryMXBean();
+    MemoryUsage memuse;
+    OptionParser optParser = new OptionParser(Options.class);
+    final Options opts = (Options) optParser.parse(args, true);
+    if (opts.meminfo) {
+        memuse = memoryBean.getHeapMemoryUsage();
+        System.out.printf("MEMUSE: initial: %dM/%dM\n", memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+    }
+    LMDecodingOptions lmOpts = new LMDecodingOptions();
+    lmOpts.config = opts.config;
+    lmOpts.debug = opts.debug;
+    if (opts.jobs > 0)
+        lmOpts.jobs = opts.jobs;
+    if (opts.host != null)
+        lmOpts.host = opts.host;
+    if (opts.port > 0)
+        lmOpts.port = opts.port;
+    if (opts.coarse > 0)
+        lmOpts.coarseThreshold = opts.coarse;
+    if (opts.forest != null)
+        lmOpts.forest = opts.forest;
+    if (opts.host != null && opts.port > 0)
+        lmOpts.storage = LMDecodingOptions.Storage.REMOTE;
+    if (opts.useJerboa)
+        lmOpts.storage = LMDecodingOptions.Storage.JERBOA;
+    if (opts.useBDB)
+        lmOpts.storage = LMDecodingOptions.Storage.BDB;
+    if (opts.useCompact)
+        lmOpts.storage = LMDecodingOptions.Storage.COMPACT;
+    if (opts.meminfo) {
+        memuse = memoryBean.getHeapMemoryUsage();
+        System.out.printf("MEMUSE: initial: %dM/%dM\n", memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+    }
+    LanguageModel.initDecoding(lmOpts);
+    Experiment experiment = Experiment.getInstance();
+    final InputParser parser = new PlainInputParser(experiment.getTupleDescription());
+    // final InputParser parser = experiment.getTupleParser();
+    {
+        long[] endTuples = new long[1];
+        endTuples[0] = experiment.getTupleDescription().createEndTuple();
+        parser.setEndTuples(endTuples);
+    }
+    final ForestModel forest = experiment.getForest(opts.forest);
+    // final Decoder eval = forest.getDecoder();
+    final Tagger tagger = opts.viterbi ? new ViterbiTagger(forest.getDecoder(), 10000, "T") : new VariationalTagger(forest.getDecoder(), 10, "T");
+    if (opts.meminfo) {
+        memuse = memoryBean.getHeapMemoryUsage();
+        System.out.printf("MEMUSE: after loading LMs: %dM/%dM\n", memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+    }
+    final MutableInteger extraWords = new MutableInteger(0);
+    if (parser.getStartTuples() != null) {
+        extraWords.set(extraWords.intValue() + parser.getStartTuples().length);
+    }
+    if (parser.getEndTuples() != null) {
+        extraWords.set(extraWords.intValue() + parser.getEndTuples().length);
+    }
+    final DataSequencer<String> sequencer = new DataSequencer<String>(1);
+    final Dictionary tagDictionary = experiment.getTupleDescription().getDictionary("T");
+    class EvalRunnable implements Runnable {
+
+        Pair<Integer, String> pair;
+
+        public EvalRunnable(int sentNo, String line) {
+            pair = new Pair<Integer, String>(sentNo, line);
+        }
+
+        public void run() {
+            long[] sentence = parser.parseSentence(pair.getSecond());
+            ArrayList<String> words = parser.parseSentenceToWords(pair.getSecond());
+            Pair<SortedSet<? extends TaggedPath>, Double> result = tagger.evaluateSentence(sentence);
+            SortedSet<? extends TaggedPath> nbestTags = result.getFirst();
+            double sentenceProb = result.getSecond();
+            // ArrayList<ViterbiPath> bestTags = new ArrayList<ViterbiPath>(nbestTags);
+            StringBuilder sb = new StringBuilder();
+            TaggedPath[] paths = nbestTags.toArray(new TaggedPath[nbestTags.size()]);
+            for (int p = paths.length - 1; p > paths.length - 1 - opts.nbest && p >= 0; --p) {
+                // nbestTags.last();
+                TaggedPath theBest = paths[p];
+                int[] tags = theBest.getOrderedTags();
+                if (opts.printProb) {
+                    // p(t | w)
+                    sb.append(theBest.getLogProb());
+                    sb.append('\t');
+                }
+                for (int i = 0; i < tags.length - 1; ++i) {
+                    sb.append(words.get(i));
+                    sb.append('/');
+                    sb.append(tagDictionary.getWord(tags[i]));
+                    sb.append(' ');
+                }
+                sb.append('\n');
+            /*
+					int firstWord = forest.getOrder();
+					for(int i=firstWord-1; i<tags.length-1; ++i) {
+						sb.append(words.get(i-firstWord+1));
+						sb.append('/');
+						sb.append(tagDictionary.getWord(tags[i]));
+						sb.append(' ');
+					}
+					sb.append('\n');
+*/
+            }
+            pair.setSecond(sb.substring(0, sb.length() - 1));
+            sequencer.putItem(pair);
+            if (opts.meminfo) {
+                MemoryUsage memuse = memoryBean.getHeapMemoryUsage();
+                System.out.printf("MEMUSE: after evaluating sentence %s: %dM/%dM\n", pair.getFirst().toString(), memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+            // System.out.println("STATS: " + eval.getStatistics());
+            }
+        }
+    }
+    Timer timer = null;
+    if (opts.meminfo) {
+        memuse = memoryBean.getHeapMemoryUsage();
+        System.out.printf("MEMUSE: after experiment.closeXML(): %dM/%dM\n", memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+        timer = new Timer(true);
+        TimerTask task = new TimerTask() {
+
+            public void run() {
+                MemoryUsage memuse = memoryBean.getHeapMemoryUsage();
+                DateFormat df = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.LONG);
+                System.out.printf("MEMUSE: %s: %dM/%dM\n", df.format(new Date()), memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+            }
+        };
+        timer.scheduleAtFixedRate(task, 0, 10000);
+    }
+    try {
+        BufferedReader reader = IO.getReader(opts.input == null ? System.in : IO.getInputStream((opts.input)));
+        BufferedWriter writer = IO.getWriter(opts.output == null ? System.out : IO.getOutputStream((opts.output)));
+        JobManager manager = JobManager.getInstance();
+        JobGroup group = manager.createJobGroup("decoding");
+        Thread outputPrinter = new Thread(new OutputPrinter(sequencer, writer));
+        outputPrinter.start();
+        int lineNo = 0;
+        for (String line = reader.readLine(); line != null; line = reader.readLine()) {
+            Job job = new Job(new EvalRunnable(++lineNo, line), "decoding sentence #" + Integer.toString(lineNo));
+            job.setPriority(lineNo);
+            manager.addJob(group, job);
+        }
+        sequencer.setLastItem(lineNo);
+        outputPrinter.join();
+        writer.close();
+        if (opts.debug > 0) {
+            System.err.println(opts.forest + " stats: \n" + forest.getDecoder().getStatistics() + "\n");
+        }
+    } catch (IOException e) {
+        e.printStackTrace();
+    } catch (InterruptedException e) {
+        // TODO Auto-generated catch block
+        e.printStackTrace();
+    }
+}

@@ -1,0 +1,118 @@
+@Override
+public void trainOnInstanceImpl(Instance inst) {
+    int numClasses = inst.numClasses();
+    // Init Ensemble
+    if (this.initClassifiers == true) {
+        numberAttributes = numAttributesOption.getValue();
+        if (bigTreesOption.isSet()) {
+            numberAttributes = inst.numAttributes() - 1 - numAttributesOption.getValue();
+        }
+        CombinationGenerator x = new CombinationGenerator(inst.numAttributes() - 1, this.numberAttributes);
+        int numberClassifiers = x.getTotal().intValue();
+        this.ensemble = new Classifier[numberClassifiers];
+        Classifier baseLearner = (Classifier) getPreparedClassOption(this.baseLearnerOption);
+        baseLearner.resetLearning();
+        for (int i = 0; i < this.ensemble.length; i++) {
+            this.ensemble[i] = baseLearner.copy();
+        }
+        this.ADError = new ADWIN[this.ensemble.length];
+        for (int i = 0; i < this.ensemble.length; i++) {
+            this.ADError[i] = new ADWIN((double) this.deltaAdwinOption.getValue());
+        }
+        this.numberOfChangesDetected = 0;
+        // Prepare combinations
+        int i = 0;
+        if (baseLearner instanceof LimAttHoeffdingTree) {
+            while (x.hasMore()) {
+                ((LimAttHoeffdingTree) this.ensemble[i]).setlistAttributes(x.getNext());
+                i++;
+            }
+        }
+        this.initClassifiers = false;
+    }
+    boolean Change = false;
+    Instance weightedInst = (Instance) inst.copy();
+    // Train Perceptron
+    double[][] votes = new double[this.ensemble.length + 1][numClasses];
+    for (int i = 0; i < this.ensemble.length; i++) {
+        double[] v = new double[numClasses];
+        for (int j = 0; j < v.length; j++) {
+            v[j] = (double) this.oddsOffsetOption.getValue();
+        }
+        double[] vt = this.ensemble[i].getVotesForInstance(inst);
+        double sum = Utils.sum(vt);
+        if (!Double.isNaN(sum) && (sum > 0)) {
+            for (int j = 0; j < vt.length; j++) {
+                vt[j] /= sum;
+            }
+        } else {
+            // Just in case the base learner returns NaN
+            for (int k = 0; k < vt.length; k++) {
+                vt[k] = 0.0;
+            }
+        }
+        sum = numClasses * (double) this.oddsOffsetOption.getValue();
+        for (int j = 0; j < vt.length; j++) {
+            v[j] += vt[j];
+            sum += vt[j];
+        }
+        for (int j = 0; j < vt.length; j++) {
+            votes[i][j] = Math.log(v[j] / (sum - v[j]));
+        }
+    }
+    if (adwinReplaceWorstClassifierOption.isSet() == false) {
+        // Train ensemble of classifiers
+        for (int i = 0; i < this.ensemble.length; i++) {
+            boolean correctlyClassifies = this.ensemble[i].correctlyClassifies(weightedInst);
+            double ErrEstim = this.ADError[i].getEstimation();
+            if (this.ADError[i].setInput(correctlyClassifies ? 0 : 1)) {
+                numInstances = initialNumInstancesOption.getValue();
+                if (this.ADError[i].getEstimation() > ErrEstim) {
+                    Change = true;
+                    // Replace classifier if ADWIN has detected change
+                    numberOfChangesDetected++;
+                    this.ensemble[i].resetLearning();
+                    this.ADError[i] = new ADWIN((double) this.deltaAdwinOption.getValue());
+                    for (int ii = 0; ii < inst.numClasses(); ii++) {
+                        // 0.2 * Math.random() - 0.1;
+                        weightAttribute[ii][i] = 0.0;
+                    }
+                }
+            }
+        }
+    } else {
+        // Train ensemble of classifiers
+        for (int i = 0; i < this.ensemble.length; i++) {
+            boolean correctlyClassifies = this.ensemble[i].correctlyClassifies(weightedInst);
+            double ErrEstim = this.ADError[i].getEstimation();
+            if (this.ADError[i].setInput(correctlyClassifies ? 0 : 1)) {
+                if (this.ADError[i].getEstimation() > ErrEstim) {
+                    Change = true;
+                }
+            }
+        }
+        // Replace classifier with higher error if ADWIN has detected change
+        if (Change) {
+            numberOfChangesDetected++;
+            double max = 0.0;
+            int imax = -1;
+            for (int i = 0; i < this.ensemble.length; i++) {
+                if (max < this.ADError[i].getEstimation()) {
+                    max = this.ADError[i].getEstimation();
+                    imax = i;
+                }
+            }
+            if (imax != -1) {
+                this.ensemble[imax].resetLearning();
+                this.ADError[imax] = new ADWIN((double) this.deltaAdwinOption.getValue());
+                for (int ii = 0; ii < inst.numClasses(); ii++) {
+                    weightAttribute[ii][imax] = 0.0;
+                }
+            }
+        }
+    }
+    trainOnInstanceImplPerceptron(inst.numClasses(), (int) inst.classValue(), votes);
+    for (int i = 0; i < this.ensemble.length; i++) {
+        this.ensemble[i].trainOnInstance(inst);
+    }
+}

@@ -1,0 +1,83 @@
+protected int[] executeBatchSerially(int batchTimeout) throws SQLException {
+    MySQLConnection locallyScopedConn = this.connection;
+    if (locallyScopedConn == null) {
+        checkClosed();
+    }
+    int[] updateCounts = null;
+    if (this.batchedArgs != null) {
+        int nbrCommands = this.batchedArgs.size();
+        updateCounts = new int[nbrCommands];
+        for (int i = 0; i < nbrCommands; i++) {
+            updateCounts[i] = -3;
+        }
+        SQLException sqlEx = null;
+        CancelTask timeoutTask = null;
+        try {
+            if (locallyScopedConn.getEnableQueryTimeouts() && batchTimeout != 0 && locallyScopedConn.versionMeetsMinimum(5, 0, 0)) {
+                timeoutTask = new CancelTask(this);
+                locallyScopedConn.getCancelTimer().schedule(timeoutTask, batchTimeout);
+            }
+            if (this.retrieveGeneratedKeys) {
+                this.batchedGeneratedKeys = new ArrayList(nbrCommands);
+            }
+            for (batchCommandIndex = 0; batchCommandIndex < nbrCommands; batchCommandIndex++) {
+                Object arg = this.batchedArgs.get(batchCommandIndex);
+                if (arg instanceof String) {
+                    updateCounts[batchCommandIndex] = executeUpdate((String) arg);
+                } else {
+                    BatchParams paramArg = (BatchParams) arg;
+                    try {
+                        updateCounts[batchCommandIndex] = executeUpdate(paramArg.parameterStrings, paramArg.parameterStreams, paramArg.isStream, paramArg.streamLengths, paramArg.isNull, true);
+                        if (this.retrieveGeneratedKeys) {
+                            java.sql.ResultSet rs = null;
+                            try {
+                                if (containsOnDuplicateKeyUpdateInSQL())
+                                    rs = getGeneratedKeysInternal(1);
+                                else
+                                    rs = getGeneratedKeysInternal();
+                                while (rs.next()) {
+                                    this.batchedGeneratedKeys.add(new ByteArrayRow(new byte[][] { rs.getBytes(1) }, getExceptionInterceptor()));
+                                }
+                            } finally {
+                                if (rs != null) {
+                                    rs.close();
+                                }
+                            }
+                        }
+                    } catch (SQLException ex) {
+                        updateCounts[batchCommandIndex] = EXECUTE_FAILED;
+                        if (this.continueBatchOnError && !(ex instanceof MySQLTimeoutException) && !(ex instanceof MySQLStatementCancelledException) && !hasDeadlockOrTimeoutRolledBackTx(ex)) {
+                            sqlEx = ex;
+                        } else {
+                            int[] newUpdateCounts = new int[batchCommandIndex];
+                            System.arraycopy(updateCounts, 0, newUpdateCounts, 0, batchCommandIndex);
+                            throw new java.sql.BatchUpdateException(ex.getMessage(), ex.getSQLState(), ex.getErrorCode(), newUpdateCounts);
+                        }
+                    }
+                }
+            }
+            if (sqlEx != null) {
+                throw new java.sql.BatchUpdateException(sqlEx.getMessage(), sqlEx.getSQLState(), sqlEx.getErrorCode(), updateCounts);
+            }
+        } catch (NullPointerException npe) {
+            try {
+                checkClosed();
+            } catch (SQLException connectionClosedEx) {
+                updateCounts[batchCommandIndex] = EXECUTE_FAILED;
+                int[] newUpdateCounts = new int[batchCommandIndex];
+                System.arraycopy(updateCounts, 0, newUpdateCounts, 0, batchCommandIndex);
+                throw new java.sql.BatchUpdateException(connectionClosedEx.getMessage(), connectionClosedEx.getSQLState(), connectionClosedEx.getErrorCode(), newUpdateCounts);
+            }
+            // we don't know why this happened, punt
+            throw npe;
+        } finally {
+            batchCommandIndex = -1;
+            if (timeoutTask != null) {
+                timeoutTask.cancel();
+                locallyScopedConn.getCancelTimer().purge();
+            }
+            resetCancelledState();
+        }
+    }
+    return (updateCounts != null) ? updateCounts : new int[0];
+}

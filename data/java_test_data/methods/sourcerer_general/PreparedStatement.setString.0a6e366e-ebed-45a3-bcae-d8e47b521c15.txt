@@ -1,0 +1,114 @@
+public void setString(int parameterIndex, String x) throws SQLException {
+    // if the passed string is null, then set this column to null
+    if (x == null) {
+        setNull(parameterIndex, Types.CHAR);
+    } else {
+        checkClosed();
+        int stringLength = x.length();
+        if (this.connection.isNoBackslashEscapesSet()) {
+            // Scan for any nasty chars
+            boolean needsHexEscape = isEscapeNeededForString(x, stringLength);
+            if (!needsHexEscape) {
+                byte[] parameterAsBytes = null;
+                StringBuffer quotedString = new StringBuffer(x.length() + 2);
+                quotedString.append('\'');
+                quotedString.append(x);
+                quotedString.append('\'');
+                if (!this.isLoadDataQuery) {
+                    parameterAsBytes = StringUtils.getBytes(quotedString.toString(), this.charConverter, this.charEncoding, this.connection.getServerCharacterEncoding(), this.connection.parserKnowsUnicode(), getExceptionInterceptor());
+                } else {
+                    // Send with platform character encoding
+                    parameterAsBytes = quotedString.toString().getBytes();
+                }
+                setInternal(parameterIndex, parameterAsBytes);
+            } else {
+                byte[] parameterAsBytes = null;
+                if (!this.isLoadDataQuery) {
+                    parameterAsBytes = StringUtils.getBytes(x, this.charConverter, this.charEncoding, this.connection.getServerCharacterEncoding(), this.connection.parserKnowsUnicode(), getExceptionInterceptor());
+                } else {
+                    // Send with platform character encoding
+                    parameterAsBytes = x.getBytes();
+                }
+                setBytes(parameterIndex, parameterAsBytes);
+            }
+            return;
+        }
+        String parameterAsString = x;
+        boolean needsQuoted = true;
+        if (this.isLoadDataQuery || isEscapeNeededForString(x, stringLength)) {
+            // saves an allocation later
+            needsQuoted = false;
+            StringBuffer buf = new StringBuffer((int) (x.length() * 1.1));
+            buf.append('\'');
+            for (int i = 0; i < stringLength; ++i) {
+                char c = x.charAt(i);
+                switch(c) {
+                    case 0:
+                        /* Must be escaped for 'mysql' */
+                        buf.append('\\');
+                        buf.append('0');
+                        break;
+                    case '\n':
+                        /* Must be escaped for logs */
+                        buf.append('\\');
+                        buf.append('n');
+                        break;
+                    case '\r':
+                        buf.append('\\');
+                        buf.append('r');
+                        break;
+                    case '\\':
+                        buf.append('\\');
+                        buf.append('\\');
+                        break;
+                    case '\'':
+                        buf.append('\\');
+                        buf.append('\'');
+                        break;
+                    case '"':
+                        /* Better safe than sorry */
+                        if (this.usingAnsiMode) {
+                            buf.append('\\');
+                        }
+                        buf.append('"');
+                        break;
+                    case '\032':
+                        /* This gives problems on Win32 */
+                        buf.append('\\');
+                        buf.append('Z');
+                        break;
+                    case '\u00a5':
+                    case '\u20a9':
+                        // escape characters interpreted as backslash by mysql
+                        if (charsetEncoder != null) {
+                            CharBuffer cbuf = CharBuffer.allocate(1);
+                            ByteBuffer bbuf = ByteBuffer.allocate(1);
+                            cbuf.put(c);
+                            cbuf.position(0);
+                            charsetEncoder.encode(cbuf, bbuf, true);
+                            if (bbuf.get(0) == '\\') {
+                                buf.append('\\');
+                            }
+                        }
+                    default:
+                        buf.append(c);
+                }
+            }
+            buf.append('\'');
+            parameterAsString = buf.toString();
+        }
+        byte[] parameterAsBytes = null;
+        if (!this.isLoadDataQuery) {
+            if (needsQuoted) {
+                parameterAsBytes = StringUtils.getBytesWrapped(parameterAsString, '\'', '\'', this.charConverter, this.charEncoding, this.connection.getServerCharacterEncoding(), this.connection.parserKnowsUnicode(), getExceptionInterceptor());
+            } else {
+                parameterAsBytes = StringUtils.getBytes(parameterAsString, this.charConverter, this.charEncoding, this.connection.getServerCharacterEncoding(), this.connection.parserKnowsUnicode(), getExceptionInterceptor());
+            }
+        } else {
+            // Send with platform character encoding
+            parameterAsBytes = parameterAsString.getBytes();
+        }
+        setInternal(parameterIndex, parameterAsBytes);
+        this.parameterTypes[parameterIndex - 1 + getParameterIndexOffset()] = Types.VARCHAR;
+    }
+}

@@ -1,0 +1,138 @@
+// ==================================================
+// File server code
+// ==================================================
+public Response serveFile(String uri, Properties header, File homeDir, boolean allowDirectoryListing) {
+    // Make sure we won't die of an exception later
+    if (!homeDir.isDirectory())
+        return new Response(HTTP_INTERNALERROR, MIME_PLAINTEXT, // $NON-NLS-1$
+        "INTERNAL ERRROR: serveFile(): given homeDir is not a directory. " + homeDir.getAbsolutePath());
+    // Remove URL arguments
+    uri = uri.trim().replace(File.separatorChar, '/');
+    if (uri.indexOf('?') >= 0)
+        uri = uri.substring(0, uri.indexOf('?'));
+    // Prohibit getting out of current directory
+    if (// $NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+    uri.startsWith("..") || uri.endsWith("..") || uri.indexOf("../") >= 0)
+        return new Response(HTTP_FORBIDDEN, MIME_PLAINTEXT, // $NON-NLS-1$
+        "FORBIDDEN: Won't serve ../ for security reasons.");
+    File f = new File(homeDir, uri);
+    if (!f.exists())
+        return new Response(HTTP_NOTFOUND, MIME_PLAINTEXT, // $NON-NLS-1$
+        "Error 404, file not found.");
+    // List the directory, if necessary
+    if (f.isDirectory()) {
+        // directory, send a redirect.
+        if (// $NON-NLS-1$
+        !uri.endsWith("/")) {
+            // $NON-NLS-1$
+            uri += "/";
+            Response r = new Response(HTTP_REDIRECT, MIME_HTML, // $NON-NLS-1$ //$NON-NLS-2$
+            "<html><body>Redirected: <a href=\"" + uri + "\">" + uri + // $NON-NLS-1$
+            "</a></body></html>");
+            // $NON-NLS-1$
+            r.addHeader("Location", uri);
+            return r;
+        }
+        // First try index.html and index.htm
+        if (// $NON-NLS-1$
+        new File(f, "index.html").exists())
+            // $NON-NLS-1$
+            f = new File(homeDir, uri + "/index.html");
+        else if (// $NON-NLS-1$
+        new File(f, "index.htm").exists())
+            // $NON-NLS-1$
+            f = new File(homeDir, uri + "/index.htm");
+        else // No index file, list the directory
+        if (allowDirectoryListing) {
+            String[] files = f.list();
+            // $NON-NLS-1$ //$NON-NLS-2$
+            String msg = Messages.getString("NanoHTTPD.Directory") + uri + "</h1><br/>";
+            if (uri.length() > 1) {
+                String u = uri.substring(0, uri.length() - 1);
+                int slash = u.lastIndexOf('/');
+                if (slash >= 0 && slash < u.length())
+                    // msg += "<b><a href=\"" + uri.substring(0, slash+1) + "\">..</a></b><br/>";
+                    // $NON-NLS-1$ //$NON-NLS-2$
+                    msg += "<b><a href=\"" + uri.substring(0, slash + 1) + Messages.getString("NanoHTTPD.Up");
+            }
+            for (int i = 0; i < files.length; ++i) {
+                File curFile = new File(f, files[i]);
+                boolean dir = curFile.isDirectory();
+                if (dir) {
+                    // $NON-NLS-1$
+                    msg += "<b>";
+                    // $NON-NLS-1$
+                    files[i] += "/";
+                }
+                msg += // $NON-NLS-1$ //$NON-NLS-2$
+                "<a href=\"" + encodeUri(uri + files[i]) + "\">" + files[i] + // $NON-NLS-1$
+                "</a>";
+                // Show file size
+                if (curFile.isFile()) {
+                    long len = curFile.length();
+                    // $NON-NLS-1$
+                    msg += " &nbsp;<font size=2>(";
+                    if (len < 1024)
+                        // $NON-NLS-1$
+                        msg += curFile.length() + " bytes";
+                    else if (len < 1024 * 1024)
+                        // $NON-NLS-1$ //$NON-NLS-2$
+                        msg += curFile.length() / 1024 + "." + (curFile.length() % 1024 / 10 % 100) + " KB";
+                    else
+                        // $NON-NLS-1$ //$NON-NLS-2$
+                        msg += curFile.length() / (1024 * 1024) + "." + curFile.length() % (1024 * 1024) / 10 % 100 + " MB";
+                    // $NON-NLS-1$
+                    msg += ")</font>";
+                }
+                // $NON-NLS-1$
+                msg += "<br/>";
+                // $NON-NLS-1$
+                if (dir)
+                    msg += "</b>";
+            }
+            return new Response(HTTP_OK, MIME_HTML, msg);
+        } else {
+            return new Response(HTTP_FORBIDDEN, MIME_PLAINTEXT, // $NON-NLS-1$
+            "FORBIDDEN: No directory listing.");
+        }
+    }
+    try {
+        // Get MIME type from file name extension, if possible
+        String mime = null;
+        int dot = f.getCanonicalPath().lastIndexOf('.');
+        if (dot >= 0)
+            mime = (String) theMimeTypes.get(f.getCanonicalPath().substring(dot + 1).toLowerCase());
+        if (mime == null)
+            mime = MIME_DEFAULT_BINARY;
+        // Support (simple) skipping:
+        long startFrom = 0;
+        // $NON-NLS-1$
+        String range = header.getProperty("Range");
+        if (range != null) {
+            if (// $NON-NLS-1$
+            range.startsWith("bytes=")) {
+                // $NON-NLS-1$
+                range = range.substring("bytes=".length());
+                int minus = range.indexOf('-');
+                if (minus > 0)
+                    range = range.substring(0, minus);
+                try {
+                    startFrom = Long.parseLong(range);
+                } catch (NumberFormatException nfe) {
+                }
+            }
+        }
+        FileInputStream fis = new FileInputStream(f);
+        fis.skip(startFrom);
+        Response r = new Response(HTTP_OK, mime, fis);
+        // $NON-NLS-1$ //$NON-NLS-2$
+        r.addHeader("Content-length", "" + (f.length() - startFrom));
+        r.addHeader("Content-range", // $NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        "" + startFrom + "-" + (f.length() - 1) + "/" + // $NON-NLS-1$
+        f.length());
+        return r;
+    } catch (IOException ioe) {
+        // $NON-NLS-1$
+        return new Response(HTTP_FORBIDDEN, MIME_PLAINTEXT, "FORBIDDEN: Reading file failed.");
+    }
+}

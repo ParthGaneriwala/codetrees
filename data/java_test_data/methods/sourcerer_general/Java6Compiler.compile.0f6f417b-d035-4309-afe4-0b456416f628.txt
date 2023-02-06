@@ -1,0 +1,85 @@
+public boolean compile(File[] sources, CompileObserver observer, boolean internal) {
+    boolean result = true;
+    JavaCompiler jc = ToolProvider.getSystemJavaCompiler();
+    List<String> optionsList = new ArrayList<String>();
+    DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<JavaFileObject>();
+    try {
+        // setup the filemanager
+        StandardJavaFileManager sjfm = jc.getStandardFileManager(diagnostics, null, null);
+        List<File> pathList = new ArrayList<File>();
+        List<File> outputList = new ArrayList<File>();
+        outputList.add(getDestDir());
+        pathList.addAll(Arrays.asList(getProjectClassLoader().getClassPathAsFiles()));
+        sjfm.setLocation(StandardLocation.SOURCE_PATH, pathList);
+        sjfm.setLocation(StandardLocation.CLASS_PATH, pathList);
+        sjfm.setLocation(StandardLocation.CLASS_OUTPUT, outputList);
+        // get the source files for compilation
+        Iterable<? extends JavaFileObject> compilationUnits1 = sjfm.getJavaFileObjectsFromFiles(Arrays.asList(sources));
+        // add any options
+        if (isDebug())
+            optionsList.add("-g");
+        if (isDeprecation())
+            optionsList.add("-deprecation");
+        addUserSpecifiedOptions(optionsList, COMPILER_OPTIONS);
+        // compile
+        jc.getTask(null, sjfm, diagnostics, optionsList, null, compilationUnits1).call();
+        sjfm.close();
+    } catch (IOException e) {
+        e.printStackTrace(System.out);
+        return false;
+    }
+    // Query diagnostics for error/warning messages
+    List<Diagnostic<? extends JavaFileObject>> diagnosticList = diagnostics.getDiagnostics();
+    String src = null;
+    int pos = 0;
+    String msg = null;
+    boolean error = false;
+    boolean warning = false;
+    int diagnosticErrorPosition = -1;
+    int diagnosticWarningPosition = -1;
+    // (errors should have priority in the diagnostic list, but this is just in case not)
+    for (int i = 0; i < diagnosticList.size(); i++) {
+        if (diagnosticList.get(i).getKind().equals(Diagnostic.Kind.ERROR)) {
+            diagnosticErrorPosition = i;
+            error = true;
+            warning = false;
+            break;
+        }
+        if (diagnosticList.get(i).getKind().equals(Diagnostic.Kind.WARNING) || diagnosticList.get(i).getKind().equals(Diagnostic.Kind.NOTE)) {
+            warning = true;
+            // (not the last position)
+            if (diagnosticWarningPosition == -1) {
+                diagnosticWarningPosition = i;
+            }
+        }
+    }
+    // diagnosticErrorPosition can either be the warning/error
+    if (diagnosticErrorPosition < 0)
+        diagnosticErrorPosition = diagnosticWarningPosition;
+    // set the necessary values
+    if (warning || error) {
+        if (((Diagnostic<?>) diagnosticList.get(diagnosticErrorPosition)).getSource() != null)
+            src = ((Diagnostic<?>) diagnosticList.get(diagnosticErrorPosition)).getSource().toString();
+        pos = (int) ((Diagnostic<?>) diagnosticList.get(diagnosticErrorPosition)).getLineNumber();
+        // Handle compiler error messages
+        if (error) {
+            result = false;
+            msg = ((Diagnostic<?>) diagnosticList.get(diagnosticErrorPosition)).getMessage(null);
+            msg = processMessage(src, pos, msg);
+            observer.errorMessage(src, pos, msg);
+        }
+        // If it is a warning message, need to get all the messages
+        if (warning) {
+            for (int i = diagnosticErrorPosition; i < diagnosticList.size(); i++) {
+                // warnings can still be displayed
+                if (internal && ((Diagnostic<?>) diagnosticList.get(i)).getKind().equals(Diagnostic.Kind.NOTE)) {
+                    continue;
+                } else {
+                    msg = ((Diagnostic<?>) diagnosticList.get(i)).getMessage(null);
+                    observer.warningMessage(src, pos, msg);
+                }
+            }
+        }
+    }
+    return result;
+}

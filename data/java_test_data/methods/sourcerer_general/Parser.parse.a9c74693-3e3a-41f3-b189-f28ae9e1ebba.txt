@@ -1,0 +1,152 @@
+private void parse(PageDefinition pgdef, NodeInfo parent, Element el, AnnotationHelper annHelper, boolean bNativeContent) throws Exception {
+    final String nm = el.getLocalName();
+    final Namespace ns = el.getNamespace();
+    final String pref = ns != null ? ns.getPrefix() : "";
+    final String uri = ns != null ? ns.getURI() : "";
+    LanguageDefinition langdef = pgdef.getLanguageDefinition();
+    if ("zscript".equals(nm) && isZkElement(langdef, nm, pref, uri)) {
+        parseZScript(parent, el, annHelper);
+    } else if ("attribute".equals(nm) && isZkElement(langdef, nm, pref, uri)) {
+        if (!(parent instanceof ComponentInfo))
+            throw new UiException("<attribute> cannot be the root element, " + el.getLocator());
+        parseAttribute(pgdef, (ComponentInfo) parent, el, annHelper);
+    } else if ("custom-attributes".equals(nm) && isZkElement(langdef, nm, pref, uri)) {
+        parseCustomAttributes(langdef, parent, el, annHelper);
+    } else if ("variables".equals(nm) && isZkElement(langdef, nm, pref, uri)) {
+        parseVariables(langdef, parent, el, annHelper);
+    } else if (LanguageDefinition.ANNO_NAMESPACE.equals(uri) || "annotation".equals(uri)) {
+        parseAnnotation(el, annHelper);
+    } else {
+        // if (D.ON && log.debugable()) log.debug("component: "+nm+", ns:"+ns);
+        final ComponentInfo compInfo;
+        final boolean bzk = "zk".equals(nm) && isZkElement(langdef, nm, pref, uri);
+        if (bzk) {
+            if (annHelper.clear())
+                log.warning("Annotations are ignored since <zk> doesn't support them, " + el.getLocator());
+            compInfo = new ZkInfo(parent);
+        } else {
+            if (isZkSwitch(parent))
+                throw new UiException("Only <zk> can be used in <zk switch>, " + el.getLocator());
+            boolean prefRequired = uri.startsWith(LanguageDefinition.NATIVE_NAMESPACE_PREFIX);
+            boolean bNative = bNativeContent || prefRequired || LanguageDefinition.NATIVE_NAMESPACE.equals(uri) || "native".equals(uri);
+            if (!bNative && langdef.isNative() && !langdef.getNamespace().equals(uri))
+                bNative = prefRequired = ("".equals(pref) && "".equals(uri)) || !LanguageDefinition.exists(uri);
+            if (bNative) {
+                if (annHelper.clear())
+                    log.warning("Annotations are ignored since native doesn't support them, " + el.getLocator());
+                final NativeInfo ni;
+                compInfo = ni = new NativeInfo(parent, langdef.getNativeDefinition(), prefRequired && pref.length() > 0 ? pref + ":" + nm : nm);
+                // add declared namespace if starting with native:
+                final Collection dns = el.getDeclaredNamespaces();
+                if (!dns.isEmpty())
+                    addDeclaredNamespace(ni, dns, langdef);
+            } else {
+                final boolean defaultNS = isDefaultNS(langdef, pref, uri);
+                final LanguageDefinition complangdef = defaultNS ? langdef : LanguageDefinition.lookup(uri);
+                ComponentDefinition compdef = defaultNS ? pgdef.getComponentDefinitionMap().get(nm) : null;
+                if (compdef != null) {
+                    compInfo = new ComponentInfo(parent, compdef);
+                } else if (complangdef.hasComponentDefinition(nm)) {
+                    compdef = complangdef.getComponentDefinition(nm);
+                    compInfo = new ComponentInfo(parent, compdef);
+                    langdef = complangdef;
+                } else {
+                    compdef = complangdef.getDynamicTagDefinition();
+                    if (compdef == null)
+                        throw new DefinitionNotFoundException("Component definition not found: " + nm + " in " + complangdef + ", " + el.getLocator());
+                    compInfo = new ComponentInfo(parent, compdef, nm);
+                    langdef = complangdef;
+                }
+                // process use first because addProperty needs it
+                String use = el.getAttributeValue("use");
+                if (use != null) {
+                    use = use.trim();
+                    if (use.length() != 0)
+                        compInfo.setImplementation(use);
+                // Resolve later since might defined in zscript
+                }
+            }
+        }
+        String ifc = null, unless = null, forEach = null, forEachBegin = null, forEachEnd = null;
+        AnnotationHelper attrAnnHelper = null;
+        for (Iterator it = el.getAttributeItems().iterator(); it.hasNext(); ) {
+            final Attribute attr = (Attribute) it.next();
+            final Namespace attrns = attr.getNamespace();
+            final String attURI = attrns != null ? attrns.getURI() : "";
+            final String attnm = attr.getLocalName();
+            final String attval = attr.getValue();
+            if (LanguageDefinition.ANNO_NAMESPACE.equals(attURI) || "annotation".equals(attURI)) {
+                if (bzk)
+                    warnWrongZkAttr(attr);
+                else {
+                    if (attrAnnHelper == null)
+                        attrAnnHelper = new AnnotationHelper();
+                    attrAnnHelper.addByRawValue(attnm, attval);
+                }
+            } else if ("apply".equals(attnm) && isZkAttr(langdef, attrns)) {
+                if (bzk)
+                    warnWrongZkAttr(attr);
+                else
+                    compInfo.setApply(attval);
+            } else if ("forward".equals(attnm) && isZkAttr(langdef, attrns)) {
+                if (bzk)
+                    warnWrongZkAttr(attr);
+                else
+                    compInfo.setForward(attval);
+            } else if ("if".equals(attnm) && isZkAttr(langdef, attrns)) {
+                ifc = attval;
+            } else if ("unless".equals(attnm) && isZkAttr(langdef, attrns)) {
+                unless = attval;
+            } else if ("forEach".equals(attnm) && isZkAttr(langdef, attrns)) {
+                forEach = attval;
+            } else if ("forEachBegin".equals(attnm) && isZkAttr(langdef, attrns)) {
+                forEachBegin = attval;
+            } else if ("forEachEnd".equals(attnm) && isZkAttr(langdef, attrns)) {
+                forEachEnd = attval;
+            } else if ("fulfill".equals(attnm) && isZkAttr(langdef, attrns)) {
+                if (bzk)
+                    warnWrongZkAttr(attr);
+                else
+                    compInfo.setFulfill(attval);
+            } else if (bzk) {
+                if ("switch".equals(attnm) || "choose".equals(attnm)) {
+                    if (isZkSwitch(parent))
+                        throw new UiException("<zk " + attnm + "> cannot be used in <zk switch/choose>, " + el.getLocator());
+                    ((ZkInfo) compInfo).setSwitch(attval);
+                } else if ("case".equals(attnm)) {
+                    if (!isZkSwitch(parent))
+                        throw new UiException("<zk case> can be used only in <zk switch>, " + attr.getLocator());
+                    ((ZkInfo) compInfo).setCase(attval);
+                } else if ("when".equals(attnm)) {
+                    ifc = attval;
+                } else {
+                    final String attPref = attrns != null ? attrns.getPrefix() : null;
+                    if (!"xmlns".equals(attnm) && !"xml".equals(attnm) && attURI.indexOf("w3.org") < 0 && (attPref == null || (!"xmlns".equals(attPref) && !"xml".equals(attPref))))
+                        warnWrongZkAttr(attr);
+                }
+            } else if (!("use".equals(attnm) && isZkAttr(langdef, attrns))) {
+                final String attPref = attrns != null ? attrns.getPrefix() : "";
+                if (!"xmlns".equals(attPref) && !("xmlns".equals(attnm) && "".equals(attPref)) && !"http://www.w3.org/2001/XMLSchema-instance".equals(attURI)) {
+                    if (isAttrAnnot(attval)) {
+                        // annotation
+                        if (attrAnnHelper == null)
+                            attrAnnHelper = new AnnotationHelper();
+                        applyAttrAnnot(attrAnnHelper, compInfo, attnm, attval, true);
+                    } else {
+                        addAttribute(compInfo, attrns, attnm, attval, null, attr.getLocator());
+                        if (attrAnnHelper != null)
+                            attrAnnHelper.applyAnnotations(compInfo, attnm, true);
+                    }
+                }
+            }
+        }
+        compInfo.setCondition(ConditionImpl.getInstance(ifc, unless));
+        compInfo.setForEach(forEach, forEachBegin, forEachEnd);
+        annHelper.applyAnnotations(compInfo, null, true);
+        // recursive
+        parse(pgdef, compInfo, el.getChildren(), annHelper, bNativeContent);
+        // optimize native components
+        if (compInfo instanceof NativeInfo && !compInfo.getChildren().isEmpty())
+            optimizeNativeInfos((NativeInfo) compInfo);
+    }
+}

@@ -1,0 +1,124 @@
+private int fastForwardOneLevel(TrainingContext ctx, TrainingContext newCtx) throws IOException {
+    TrainingDataNodeReader reader = ctx.getDataReader();
+    TrainingDataNodeWriter writer = newCtx.getDataWriter();
+    // reader.reset();
+    int oldNodeCount = 0;
+    // int newNodeCount = 0;
+    int maxId = ctx.getLastNodeId().intValue();
+    int nonLeafNodes = 0;
+    final AbstractQuestionEstimator estimator;
+    if (nbestQuestions > 1 && estimator2 != null) {
+        estimator = estimator2;
+    } else {
+        estimator = estimator1;
+    }
+    for (ReadableTrainingDataNode nodeData = reader.getNext(); nodeData != null; nodeData = reader.getNext()) {
+        if (nodeData.getNodeId() > maxId) {
+            maxId = nodeData.getNodeId();
+        }
+        ++oldNodeCount;
+        BinaryTree<HistoryTreePayload> oldLeaf = ctx.getLeaf(nodeData.getNodeId());
+        ActiveTreeNode activeNode = ctx.getActiveNodes().getNode(nodeData.getNodeId());
+        final CompactReadOnlyLongHashSet futureWordIndex = new CompactReadOnlyLongHashSet(activeNode.possibleWords);
+        if (oldLeaf.isLeaf()) {
+            if (!oldLeaf.getPayload().isBackoff) {
+                // simply copy the node
+                // System.out.printf("copying leaf node %d\n", nodeData.nodeId);
+                WritableTrainingDataNode newNode = writer.createNode(nodeData.getNodeId(), nodeData.getNumData());
+                writer.add(newNode);
+                for (int i = 0; i < nodeData.getNumData(); ++i) {
+                    ReadableTrainingData in = nodeData.getData(i);
+                    WritableTrainingData out = newNode.getData(i);
+                    in.start();
+                    out.setContextSize(in.getContextSize());
+                    out.start();
+                    while (in.hasNext()) {
+                        out.add(in.next());
+                    }
+                    out.finish();
+                }
+                if (activeNode != null) {
+                    newCtx.getActiveNodes().putNode(nodeData.getNodeId(), activeNode);
+                }
+                newCtx.putLeaf(nodeData.getNodeId(), oldLeaf);
+            } else {
+                // just read the data
+                nodeData.skipData();
+            }
+            continue;
+        }
+        // newNodeCount += 2;
+        BinaryTree<HistoryTreePayload> left = getFalseBranch(oldLeaf);
+        BinaryTree<HistoryTreePayload> right = getTrueBranch(oldLeaf);
+        if (!left.isLeaf()) {
+            ++nonLeafNodes;
+        }
+        if (!right.isLeaf()) {
+            ++nonLeafNodes;
+        }
+        int leftNodeId = left.getPayload().clusterid;
+        int rightNodeId = right.getPayload().clusterid;
+        WritableTrainingDataNode leftDataNode = writer.createNode(leftNodeId, nodeData.getNumData());
+        WritableTrainingDataNode rightDataNode = writer.createNode(rightNodeId, nodeData.getNumData());
+        writer.add(leftDataNode);
+        writer.add(rightDataNode);
+        Distributions[] dists = new Distributions[nodeData.getNumData()];
+        AbstractQuestionEstimator.Result[] results = new AbstractQuestionEstimator.Result[nodeData.getNumData()];
+        Long2IntMap trueWords = new Long2IntMap(futureWordIndex.size());
+        Long2IntMap falseWords = new Long2IntMap(futureWordIndex.size());
+        for (int i = 0; i < dists.length; ++i) {
+            Distributions dist = new Distributions(futureWordIndex);
+            Long2IntMap trueCounts = new Long2IntMap();
+            Long2IntMap falseCounts = new Long2IntMap();
+            TrainingDataUtil.splitData(nodeData.getData(i), oldLeaf.getPayload().question, rightDataNode.getData(i), leftDataNode.getData(i), null, trueCounts, falseCounts);
+            for (Long2IntMap.Iterator it = trueCounts.iterator(); it.hasNext(); ) {
+                Long2IntMap.Entry e = it.next();
+                dist.addTrueCount(e.getKey(), e.getValue());
+                trueWords.addAndGet(e.getKey(), 1);
+            }
+            for (Long2IntMap.Iterator it = falseCounts.iterator(); it.hasNext(); ) {
+                Long2IntMap.Entry e = it.next();
+                dist.addFalseCount(e.getKey(), e.getValue());
+                falseWords.addAndGet(e.getKey(), 1);
+            }
+            AbstractQuestionEstimator.Result result = estimator.estimateQuestion(i, activeNode, dist);
+            results[i] = result;
+            dists[i] = dist;
+        }
+        ActiveTreeNode rightNode = new ActiveTreeNode(nodeData.getNumData());
+        for (int i = 0; i < dists.length; ++i) {
+            rightNode.counts[i] = dists[i].getTotalTrueCount();
+            results[i].setupTrueActiveNode(i, rightNode, activeNode, dists[i]);
+        }
+        rightNode.possibleWords = new long[trueWords.size()];
+        {
+            int i = 0;
+            for (Long2IntMap.Iterator it = trueWords.iterator(); it.hasNext(); ) {
+                Long2IntMap.Entry e = it.next();
+                rightNode.possibleWords[i++] = e.getKey();
+            }
+        }
+        newCtx.getActiveNodes().putNode(rightNodeId, rightNode);
+        newCtx.putLeaf(rightNodeId, right);
+        ActiveTreeNode leftNode = new ActiveTreeNode(nodeData.getNumData());
+        for (int i = 0; i < dists.length; ++i) {
+            leftNode.counts[i] = dists[i].getTotalFalseCount();
+            results[i].setupFalseActiveNode(i, leftNode, activeNode, dists[i]);
+        }
+        leftNode.possibleWords = new long[falseWords.size()];
+        {
+            int i = 0;
+            for (Long2IntMap.Iterator it = falseWords.iterator(); it.hasNext(); ) {
+                Long2IntMap.Entry e = it.next();
+                leftNode.possibleWords[i++] = e.getKey();
+            }
+        }
+        newCtx.getActiveNodes().putNode(leftNodeId, leftNode);
+        newCtx.putLeaf(leftNodeId, left);
+    }
+    reader.close();
+    writer.close();
+    newCtx.getLastNodeId().set(maxId);
+    System.err.printf("old node count: %d, non-leaf node count: %d\n", oldNodeCount, nonLeafNodes);
+    return nonLeafNodes;
+}

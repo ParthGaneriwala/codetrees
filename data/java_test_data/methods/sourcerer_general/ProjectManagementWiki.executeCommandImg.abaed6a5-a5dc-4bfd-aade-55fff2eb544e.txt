@@ -1,0 +1,72 @@
+public String executeCommandImg(ActionContext context) {
+    Connection db = null;
+    String pid = context.getRequest().getParameter("pid");
+    String filename = context.getRequest().getParameter("subject");
+    String thumbnailValue = context.getRequest().getParameter("th");
+    String panelValue = context.getRequest().getParameter("panel");
+    FileDownload fileDownload = null;
+    FileItem fileItem = null;
+    Thumbnail thumbnail = null;
+    try {
+        int projectId = Integer.parseInt(pid);
+        boolean showThumbnail = "true".equals(thumbnailValue);
+        fileDownload = new FileDownload();
+        db = getConnection(context);
+        // Check project permissions
+        Project thisProject = retrieveAuthorizedProject(projectId, context);
+        // Check access to this project
+        boolean allowed = false;
+        if (thisProject.getPortal() && thisProject.getApproved()) {
+            allowed = true;
+        } else if (hasProjectAccess(context, thisProject.getId(), "project-wiki-view")) {
+            allowed = true;
+        }
+        if (!allowed) {
+            return "PermissionError";
+        }
+        // Load the file for download
+        FileItemList fileItemList = new FileItemList();
+        fileItemList.setLinkModuleId(Constants.PROJECT_WIKI_FILES);
+        fileItemList.setLinkItemId(projectId);
+        fileItemList.setFilename(filename);
+        fileItemList.buildList(db);
+        if (fileItemList.size() > 0) {
+            fileItem = fileItemList.get(0);
+            if (showThumbnail) {
+                thumbnail = ThumbnailUtils.retrieveThumbnail(db, fileItem, 210, 150, this.getPath(context, "projects"));
+                String filePath = this.getPath(context, "projects") + getDatePath(fileItem.getModified()) + thumbnail.getFilename();
+                fileDownload.setFullPath(filePath);
+                fileDownload.setFileTimestamp(fileItem.getModificationDate().getTime());
+            } else {
+                if ("true".equals(panelValue)) {
+                    // This retrieves a standard size resolution for a panel...
+                    thumbnail = ThumbnailUtils.retrieveThumbnail(db, fileItem, 640, 480, this.getPath(context, "projects"));
+                    String filePath = this.getPath(context, "projects") + getDatePath(fileItem.getModified()) + thumbnail.getFilename();
+                    fileDownload.setFullPath(filePath);
+                    fileDownload.setFileTimestamp(fileItem.getModificationDate().getTime());
+                } else {
+                    // This retrieves the full resolution image...
+                    String filePath = this.getPath(context, "projects") + getDatePath(fileItem.getModified()) + (showThumbnail ? fileItem.getThumbnailFilename() : fileItem.getFilename());
+                    fileDownload.setFullPath(filePath);
+                    fileDownload.setDisplayName(fileItem.getClientFilename());
+                }
+            }
+        }
+    } catch (Exception e) {
+        e.printStackTrace(System.out);
+    } finally {
+        freeConnection(context, db);
+    }
+    try {
+        // Stream the file
+        if (thumbnail != null) {
+            fileDownload.streamThumbnail(context, thumbnail);
+        } else if (fileItem != null && fileDownload.fileExists()) {
+            fileDownload.setFileTimestamp(fileItem.getModificationDate().getTime());
+            fileDownload.streamContent(context);
+        }
+    } catch (Exception e) {
+        e.printStackTrace(System.out);
+    }
+    return null;
+}

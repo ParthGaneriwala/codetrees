@@ -1,0 +1,103 @@
+static void write(NameSpace ns, ObjectOutputStream s, Filter filter) throws IOException {
+    // 1. variables
+    final String[] vars = ns.getVariableNames();
+    for (int j = vars != null ? vars.length : 0; --j >= 0; ) {
+        final String nm = vars[j];
+        if (nm != null && !"bsh".equals(nm) && isVariableSerializable(nm)) {
+            try {
+                final Object val = ns.getVariable(nm, false);
+                if ((val == null || (val instanceof Serializable) || (val instanceof Externalizable)) && !(val instanceof Component) && (filter == null || filter.accept(nm, val))) {
+                    s.writeObject(nm);
+                    s.writeObject(val);
+                }
+            } catch (IOException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                log.warning("Ignored failure to write " + nm, ex);
+            }
+        }
+    }
+    // denote end-of-vars
+    s.writeObject(null);
+    // 2. methods
+    if (shallSerializeMethod()) {
+        final BshMethod[] mtds = ns.getMethods();
+        for (int j = mtds != null ? mtds.length : 0; --j >= 0; ) {
+            final String nm = mtds[j].getName();
+            if (isMethodSerializable(nm) && (filter == null || filter.accept(nm, mtds[j]))) {
+                // hack BeanShell 2.0b4 which cannot be serialized correctly
+                Field f = null;
+                boolean acs = false;
+                try {
+                    f = Classes.getAnyField(BshMethod.class, "declaringNameSpace");
+                    acs = f.isAccessible();
+                    Fields.setAccessible(f, true);
+                    final Object old = f.get(mtds[j]);
+                    try {
+                        f.set(mtds[j], null);
+                        s.writeObject(mtds[j]);
+                    } finally {
+                        f.set(mtds[j], old);
+                    }
+                } catch (IOException ex) {
+                    throw ex;
+                } catch (Throwable ex) {
+                    log.warning("Ignored failure to write " + nm, ex);
+                } finally {
+                    if (f != null)
+                        Fields.setAccessible(f, acs);
+                }
+            }
+        }
+    }
+    // denote end-of-mtds
+    s.writeObject(null);
+    // 3. imported class
+    Field f = null;
+    boolean acs = false;
+    try {
+        f = Classes.getAnyField(NameSpace.class, "importedClasses");
+        acs = f.isAccessible();
+        Fields.setAccessible(f, true);
+        final Map clses = (Map) f.get(ns);
+        if (clses != null)
+            for (Iterator it = clses.values().iterator(); it.hasNext(); ) {
+                final String clsnm = (String) it.next();
+                if (!clsnm.startsWith("bsh."))
+                    s.writeObject(clsnm);
+            }
+    } catch (IOException ex) {
+        throw ex;
+    } catch (Throwable ex) {
+        log.warning("Ignored failure to write imported classes", ex);
+    } finally {
+        if (f != null)
+            Fields.setAccessible(f, acs);
+    }
+    // denote end-of-cls
+    s.writeObject(null);
+    // 4. imported package
+    f = null;
+    acs = false;
+    try {
+        f = Classes.getAnyField(NameSpace.class, "importedPackages");
+        acs = f.isAccessible();
+        Fields.setAccessible(f, true);
+        final Collection pkgs = (Collection) f.get(ns);
+        if (pkgs != null)
+            for (Iterator it = pkgs.iterator(); it.hasNext(); ) {
+                final String pkgnm = (String) it.next();
+                if (!pkgnm.startsWith("java.awt") && !pkgnm.startsWith("javax.swing"))
+                    s.writeObject(pkgnm);
+            }
+    } catch (IOException ex) {
+        throw ex;
+    } catch (Throwable ex) {
+        log.warning("Ignored failure to write imported packages", ex);
+    } finally {
+        if (f != null)
+            Fields.setAccessible(f, acs);
+    }
+    // denote end-of-cls
+    s.writeObject(null);
+}

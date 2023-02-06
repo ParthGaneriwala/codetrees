@@ -1,0 +1,65 @@
+@Override
+public int updateCode(Code code) throws Exception {
+    int op = NO_ACTION;
+    Jccat cat = (Jccat) DataObjectUtils.objectForQuery(context, new ObjectIdQuery(getCodePK("Jccat", code)));
+    Overhead oh = null;
+    if (cat != null) {
+        oh = new Overhead(cat.getJob());
+        cat.setName(code.getName());
+        cat.setBudgetAmount(map(code.getPhaseCode()).next(), (double) Math.round(code.getAmount() * 100 / (oh.get(map(code.getPhaseCode()).next()) + 1)) / 100);
+        op = UPDATED;
+    } else {
+        // Doesn't exist does the phase exits?
+        Jcphase phase = (Jcphase) DataObjectUtils.objectForQuery(context, new ObjectIdQuery(getPhasePK(code)));
+        // Phase exists create the code
+        if (phase != null) {
+            oh = new Overhead(phase.getJob());
+            createCat(code, oh);
+            op = CREATED;
+        } else {
+            // Phase doesn't exist does the job?
+            Jcjob job = (Jcjob) DataObjectUtils.objectForQuery(context, new ObjectIdQuery(new ObjectId("Jcjob", "jobnum", code.getJobNum())));
+            // Job exists create the phase
+            if (job != null) {
+                oh = new Overhead(job);
+                phase = (Jcphase) context.newObject(Jcphase.class);
+                phase.setJob(job);
+                ResultSet rs = null;
+                Database db = null;
+                try {
+                    db = new Database();
+                    rs = db.dbQuery("select description from job_divisions join job using(job_id) where " + "division = '" + code.getDivision() + "' and job_num = '" + code.getJobNum() + "'");
+                    log.debug("Performing division lookup: " + "select description from job_divisions join job using(job_id) where " + "division = '" + code.getDivision() + "' and job_num = '" + code.getJobNum() + "'");
+                    if (rs.first())
+                        phase.setName(rs.getString(1));
+                    else
+                        phase.setName("Contrack");
+                } catch (Exception e) {
+                    phase.setName("Contrack");
+                    e.printStackTrace();
+                } finally {
+                    try {
+                        if (rs != null)
+                            rs.getStatement().close();
+                        if (db != null)
+                            db.disconnect();
+                    } catch (SQLException e) {
+                    }
+                    rs = null;
+                }
+                phase.setPhasenum(code.getDivision());
+                phase.setSequence(500);
+                Jccat phaseCat = (Jccat) context.newObject(Jccat.class);
+                phaseCat.setJob(job);
+                phaseCat.setPhase(phase);
+                phaseCat.setSequence(0);
+                phaseCat.setCatnum("");
+                createCat(code, oh);
+                op = CREATED;
+            } else
+                op = NO_JOB;
+        }
+    }
+    context.commitChanges();
+    return op;
+}

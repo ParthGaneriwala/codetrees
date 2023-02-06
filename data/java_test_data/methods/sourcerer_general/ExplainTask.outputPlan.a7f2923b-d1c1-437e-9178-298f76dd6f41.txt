@@ -1,0 +1,76 @@
+private void outputPlan(Serializable work, PrintStream out, boolean extended, int indent) throws Exception {
+    // Check if work has an explain annotation
+    Annotation note = work.getClass().getAnnotation(explain.class);
+    if (note instanceof explain) {
+        explain xpl_note = (explain) note;
+        if (extended || xpl_note.normalExplain()) {
+            out.print(indentString(indent));
+            out.println(xpl_note.displayName());
+        }
+    }
+    // the children
+    if (work instanceof Operator) {
+        Operator<? extends Serializable> operator = (Operator<? extends Serializable>) work;
+        if (operator.getConf() != null) {
+            outputPlan(operator.getConf(), out, extended, indent);
+        }
+        if (operator.getChildOperators() != null) {
+            for (Operator<? extends Serializable> op : operator.getChildOperators()) {
+                outputPlan(op, out, extended, indent + 2);
+            }
+        }
+        return;
+    }
+    // We look at all methods that generate values for explain
+    for (Method m : work.getClass().getMethods()) {
+        int prop_indents = indent + 2;
+        note = m.getAnnotation(explain.class);
+        if (note instanceof explain) {
+            explain xpl_note = (explain) note;
+            if (extended || xpl_note.normalExplain()) {
+                Object val = m.invoke(work);
+                if (val == null) {
+                    continue;
+                }
+                String header = null;
+                if (!xpl_note.displayName().equals("")) {
+                    header = indentString(prop_indents) + xpl_note.displayName() + ":";
+                } else {
+                    prop_indents = indent;
+                    header = indentString(prop_indents);
+                }
+                if (isPrintable(val)) {
+                    out.printf("%s ", header);
+                    out.println(val);
+                    continue;
+                }
+                // Try this as a map
+                try {
+                    // Go through the map and print out the stuff
+                    Map<?, ?> mp = (Map<?, ?>) val;
+                    outputMap(mp, header, out, extended, prop_indents + 2);
+                    continue;
+                } catch (ClassCastException ce) {
+                // Ignore - all this means is that this is not a map
+                }
+                // Try this as a list
+                try {
+                    List<?> l = (List<?>) val;
+                    outputList(l, header, out, extended, prop_indents + 2);
+                    continue;
+                } catch (ClassCastException ce) {
+                // Ignore
+                }
+                // Finally check if it is serializable
+                try {
+                    Serializable s = (Serializable) val;
+                    out.println(header);
+                    outputPlan(s, out, extended, prop_indents + 2);
+                    continue;
+                } catch (ClassCastException ce) {
+                // Ignore
+                }
+            }
+        }
+    }
+}

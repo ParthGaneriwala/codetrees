@@ -1,0 +1,74 @@
+public String runFlow(ChainFlow chainFlow, ChainContext chainContext) throws FlowException {
+    DataSource ds = null;
+    Connection conn = null;
+    try {
+        List<String> script = chainFlow.getScripts();
+        String sqlstr = "";
+        log.info("Start to run the flow [" + chainFlow.getFlowCode() + "]");
+        chainContext.addSimuList("<font color=blue><b>" + "Start to run the flow [" + chainFlow.getFlowCode() + "]" + "</b></font>");
+        if ("Y".equals(chainFlow.getSkipYn())) {
+            log.info("The flow [" + chainFlow.getFlowCode() + "]: skipFlag=true");
+            chainContext.addSimuList("The flow [" + chainFlow.getFlowCode() + "]: skipFlag=true<br>=================");
+            chainFlow.setNextFlowCode(this.getChainFlow().getNextFlowCode());
+            return "0";
+        }
+        if (script.size() < 1) {
+            log.info("The flow [" + chainFlow.getFlowCode() + "] runFlow(): there is no statement");
+            chainContext.addSimuList("The flow [" + chainFlow.getFlowCode() + "]: there is no statement<br>=================");
+            chainFlow.setNextFlowCode(this.getChainFlow().getNextFlowCode());
+            return "0";
+        }
+        String dataSourceId = chainFlow.getAttr3();
+        try {
+            Datasource ktiDs = DatasourceManager.getDatasourceByName(dataSourceId);
+            log.info("Datasoure: " + ktiDs.getName());
+            chainContext.addSimuList("Datasoure: " + ktiDs.getName());
+            ds = DbUtil.setupDataSource(ktiDs);
+            chainContext.addDatasource(ds);
+        } catch (Exception e) {
+            log.error("Connection not exist.", e);
+            chainContext.addSimuList("Connection not exist. ");
+            chainFlow.setNextFlowCode(this.getChainFlow().getAttr1());
+            throw new FlowException("Connection not exist.", e);
+        }
+        conn = ds.getConnection();
+        if (conn == null) {
+            log.error("getConnection() return null.");
+            chainContext.addSimuList("getConnection() return null. ");
+            chainFlow.setNextFlowCode(this.getChainFlow().getAttr2());
+            throw new FlowException("getConnection() return null. ");
+        }
+        conn.setAutoCommit(false);
+        chainContext.addConnection(conn);
+        for (int i = 0; i < script.size(); i++) {
+            sqlstr = script.get(i).toString();
+            Iterator<Object> iter = chainContext.getDataMapIterator();
+            while (iter.hasNext()) {
+                DataMapping dataMapping = (DataMapping) iter.next();
+                sqlstr = StringUtils.replace(sqlstr, dataMapping.getFieldName(), dataMapping.getFieldMapping());
+            }
+            sqlstr = FormulaFactory.getInstance().run(sqlstr);
+            log.info(sqlstr);
+            chainContext.addSimuList(sqlstr);
+            conn.createStatement().executeUpdate(sqlstr);
+        }
+        log.info("SqlFlowImp::runFlow OK");
+        chainContext.addSimuList("SqlFlowImp::runFlow OK<br>--------------------------------");
+        return "0";
+    } catch (Exception e) {
+        if (conn != null) {
+            DbUtil.rollbackAndCloseQuietly(conn);
+        }
+        if (ds != null) {
+            DbUtil.shutdownDataSourceQuietly(ds);
+        }
+        log.error("SqlFlowImp::runFlow" + e.getMessage());
+        chainContext.addSimuList("SqlFlowImp::runFlow" + e.getMessage());
+        try {
+            return Integer.toString(onError(chainFlow, chainContext, 98));
+        } catch (Exception ex) {
+            // TODO
+            return "98";
+        }
+    }
+}

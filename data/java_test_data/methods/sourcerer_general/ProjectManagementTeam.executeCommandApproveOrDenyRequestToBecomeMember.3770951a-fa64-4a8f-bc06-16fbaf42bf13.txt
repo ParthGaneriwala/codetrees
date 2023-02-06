@@ -1,0 +1,72 @@
+public String executeCommandApproveOrDenyRequestToBecomeMember(ActionContext context) {
+    Connection db = null;
+    String projectIdStr = context.getRequest().getParameter("pid");
+    String idStr = context.getRequest().getParameter("id");
+    boolean approval = "true".equals(context.getRequest().getParameter("approval"));
+    User user = getUser(context);
+    int projectId = Integer.parseInt(projectIdStr);
+    try {
+        db = getConnection(context);
+        Project targetProject = retrieveAuthorizedProject(projectId, context);
+        if (!hasProjectAccess(context, targetProject.getId(), "project-team-edit")) {
+            return "PermissionError";
+        }
+        // Check for an existing team member record
+        TeamMember prevMember = new TeamMember(db, targetProject.getId(), Integer.parseInt(idStr));
+        if (prevMember.getStatus() == TeamMember.STATUS_JOINED_NEEDS_APPROVAL) {
+            if (approval) {
+                // Change the status of the member being approved
+                TeamMember teamMember = new TeamMember(db, targetProject.getId(), Integer.parseInt(idStr));
+                teamMember.setStatus(TeamMember.STATUS_ADDED);
+                teamMember.setUserLevel(UserUtils.getUserLevel(TeamMember.MEMBER));
+                teamMember.setModifiedBy(user.getId());
+                teamMember.update(db);
+                // Let the workflow know about the change
+                processUpdateHook(context, prevMember, teamMember);
+                // Reciprocate membership in the requesting users profile if the target project is a user profile
+                if (targetProject.getOwner() != -1) {
+                    User ownerOfTargetProject = UserUtils.loadUser(targetProject.getOwner());
+                    if (ownerOfTargetProject.getProfileProjectId() == targetProject.getId()) {
+                        Project requestingUserProfileProject = UserUtils.loadUser(Integer.parseInt(idStr)).getProfileProject();
+                        TeamMemberList teamMembersOfRequestingUser = requestingUserProfileProject.getTeam();
+                        TeamMember reciprocatingTeamMember = null;
+                        // Determine if the reciprocal already exists, then update if necessary
+                        if (teamMembersOfRequestingUser.hasUserId(targetProject.getOwner())) {
+                            reciprocatingTeamMember = teamMembersOfRequestingUser.getTeamMember(targetProject.getOwner());
+                            if (reciprocatingTeamMember.getStatus() == TeamMember.STATUS_ADDED) {
+                            // DO Nothing
+                            } else {
+                                reciprocatingTeamMember.setStatus(TeamMember.STATUS_ADDED);
+                                reciprocatingTeamMember.setUserLevel(UserUtils.getUserLevel(TeamMember.MEMBER));
+                                reciprocatingTeamMember.update(db);
+                            }
+                        } else {
+                            // Reciprocal does not exist, therefore create one
+                            reciprocatingTeamMember = new TeamMember();
+                            reciprocatingTeamMember.setUserId(ownerOfTargetProject.getId());
+                            reciprocatingTeamMember.setProjectId(requestingUserProfileProject.getId());
+                            reciprocatingTeamMember.setStatus(TeamMember.STATUS_ADDED);
+                            reciprocatingTeamMember.setUserLevel(UserUtils.getUserLevel(TeamMember.MEMBER));
+                            reciprocatingTeamMember.setEnteredBy(user.getId());
+                            reciprocatingTeamMember.setModifiedBy(user.getId());
+                            reciprocatingTeamMember.insert(db);
+                        }
+                    }
+                }
+            } else {
+                // Handle that the membership is being denied by deleting them.
+                TeamMember teamMember = new TeamMember(db, targetProject.getId(), Integer.parseInt(idStr));
+                teamMember.setStatus(TeamMember.STATUS_REFUSED);
+                teamMember.delete(db);
+                processUpdateHook(context, prevMember, teamMember);
+            }
+        } else {
+            context.getRequest().setAttribute("actionError", "The member has already been approved or denied.");
+        }
+        context.getRequest().setAttribute("project", targetProject);
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return "SystemError";
+    }
+    return "AskToBecomeMemberOK";
+}

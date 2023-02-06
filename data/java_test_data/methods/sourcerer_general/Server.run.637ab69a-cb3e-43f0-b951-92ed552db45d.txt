@@ -1,0 +1,59 @@
+@Override
+public void run() {
+    LOG.info(getName() + ": starting");
+    SERVER.set(Server.this);
+    while (running) {
+        SelectionKey key = null;
+        try {
+            selector.select();
+            Iterator<SelectionKey> iter = selector.selectedKeys().iterator();
+            while (iter.hasNext()) {
+                key = iter.next();
+                iter.remove();
+                try {
+                    if (key.isValid()) {
+                        if (key.isAcceptable())
+                            doAccept(key);
+                        else if (key.isReadable())
+                            doRead(key);
+                    }
+                } catch (IOException e) {
+                }
+                key = null;
+            }
+        } catch (OutOfMemoryError e) {
+            // we can run out of memory if we have too many threads
+            // log the event and sleep for a minute and give
+            // some thread(s) a chance to finish
+            LOG.warn("Out of Memory in server select", e);
+            closeCurrentConnection(key, e);
+            cleanupConnections(true);
+            try {
+                Thread.sleep(60000);
+            } catch (Exception ie) {
+            }
+        } catch (InterruptedException e) {
+            if (running) {
+                // unexpected -- log it
+                LOG.info(getName() + " caught: " + StringUtils.stringifyException(e));
+            }
+        } catch (Exception e) {
+            closeCurrentConnection(key, e);
+        }
+        cleanupConnections(false);
+    }
+    LOG.info("Stopping " + this.getName());
+    synchronized (this) {
+        try {
+            acceptChannel.close();
+            selector.close();
+        } catch (IOException e) {
+        }
+        selector = null;
+        acceptChannel = null;
+        // clean up all connections
+        while (!connectionList.isEmpty()) {
+            closeConnection(connectionList.remove(0));
+        }
+    }
+}

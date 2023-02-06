@@ -1,0 +1,54 @@
+protected void doPut(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+    if (readOnly) {
+        resp.sendError(HttpServletResponse.SC_FORBIDDEN);
+        return;
+    }
+    String path = getRelativePath(req);
+    // Retrieve the resources
+    DirContext resources = getResources();
+    if (resources == null) {
+        resp.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+        return;
+    }
+    boolean exists = true;
+    try {
+        resources.lookup(path);
+    } catch (NamingException e) {
+        exists = false;
+    }
+    boolean result = true;
+    // Temp. content file used to support partial PUT
+    File contentFile = null;
+    // Input stream for temp. content file used to support partial PUT
+    FileInputStream contentFileInStream = null;
+    ResourceInfo resourceInfo = new ResourceInfo(path, resources);
+    Range range = parseContentRange(req, resp);
+    InputStream resourceInputStream = null;
+    // Assume just one range is specified for now
+    if (range != null) {
+        contentFile = executePartialPut(req, range, path);
+        resourceInputStream = new FileInputStream(contentFile);
+    } else {
+        resourceInputStream = req.getInputStream();
+    }
+    try {
+        Resource newResource = new Resource(resourceInputStream);
+        // FIXME: Add attributes
+        if (exists) {
+            resources.rebind(path, newResource);
+        } else {
+            resources.bind(path, newResource);
+        }
+    } catch (NamingException e) {
+        result = false;
+    }
+    if (result) {
+        if (exists) {
+            resp.setStatus(HttpServletResponse.SC_NO_CONTENT);
+        } else {
+            resp.setStatus(HttpServletResponse.SC_CREATED);
+        }
+    } else {
+        resp.sendError(HttpServletResponse.SC_CONFLICT);
+    }
+}

@@ -1,0 +1,47 @@
+private SootMethod createMethodForProbe(Probe probe, SootClass switchClass, Set<Shadow> enabledShadows) {
+    SootMethod method = new SootMethod("initProbe$" + probe.getNumber(), Collections.EMPTY_LIST, VoidType.v(), Modifier.PRIVATE);
+    switchClass.addMethod(method);
+    Body body = Jimple.v().newBody(method);
+    method.setActiveBody(body);
+    PatchingChain<Unit> units = body.getUnits();
+    int probeNumber = probe.getNumber();
+    // boolean[][] probeTable = ShadowSwitch.probeTable
+    Local array = Jimple.v().newLocal("probeTable", ArrayType.v(BooleanType.v(), 2));
+    body.getLocals().add(array);
+    SootFieldRef fieldRef = Scene.v().makeFieldRef(Scene.v().getSootClass(SpatialPartitioner.SHADOW_SWITCH_CLASS_NAME), "probeTable", ArrayType.v(BooleanType.v(), 2), true);
+    StaticFieldRef staticFieldRef = Jimple.v().newStaticFieldRef(fieldRef);
+    AssignStmt fieldAssignStmt = Jimple.v().newAssignStmt(array, staticFieldRef);
+    units.add(fieldAssignStmt);
+    // create a new local "boolean[] innerArray$probeNumber" which is
+    // assigned an array of boolean;
+    // this array represents the current probe
+    // boolean[] innerArray = newarray (boolean)[|shadowsOfProbe|]
+    Local innerArray = soot.jimple.Jimple.v().newLocal("innerArray", ArrayType.v(BooleanType.v(), 1));
+    body.getLocals().add(innerArray);
+    NewArrayExpr newInnerArrayExpr = Jimple.v().newNewArrayExpr(BooleanType.v(), IntConstant.v(enabledShadows.size()));
+    AssignStmt innerAssignStmt = Jimple.v().newAssignStmt(innerArray, newInnerArrayExpr);
+    units.add(innerAssignStmt);
+    // for all (enabled) shadows...
+    for (Shadow shadow : enabledShadows) {
+        // get the unique shadow number (starts at 0, so it can be used to
+        // index the array)
+        int shadowNumber = codeGenNumber.get(shadow);
+        // if the shadow in the current probe?
+        boolean isInProbe = probe.getShadows().contains(shadow);
+        // innerArray[shadowNumber] = isInProbe
+        ArrayRef innerArrayRef = Jimple.v().newArrayRef(innerArray, IntConstant.v(shadowNumber));
+        AssignStmt valAssignStmt = Jimple.v().newAssignStmt(innerArrayRef, IntConstant.v(isInProbe ? 1 : 0));
+        units.add(valAssignStmt);
+    }
+    // assign the array into the twodimensional array
+    // probeTable[probeNumber] = innerArray
+    ArrayRef arrayRef = Jimple.v().newArrayRef(array, IntConstant.v(probeNumber));
+    AssignStmt arrayAssignStmt = Jimple.v().newAssignStmt(arrayRef, innerArray);
+    units.add(arrayAssignStmt);
+    // have to add a return statement to make the method complete
+    units.add(Jimple.v().newReturnVoidStmt());
+    if (Debug.v().doValidate) {
+        body.validate();
+    }
+    return method;
+}

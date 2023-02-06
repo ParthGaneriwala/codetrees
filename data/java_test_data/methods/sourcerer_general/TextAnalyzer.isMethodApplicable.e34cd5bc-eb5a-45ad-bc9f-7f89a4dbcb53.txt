@@ -1,0 +1,120 @@
+private static MethodCallDesc isMethodApplicable(GenTypeClass targetType, List<GenTypeClass> tpars, MethodReflective m, JavaType[] args, boolean varargs) {
+    boolean rawTarget = targetType.isRaw();
+    boolean boxingRequired = false;
+    // Check that the number of parameters supplied is allowable. Expand varargs
+    // arguments if necessary.
+    List<JavaType> mparams = m.getParamTypes();
+    if (varargs) {
+        // the number of formal parameters.
+        if (mparams.size() > args.length + 1)
+            return null;
+        GenTypeArray lastArgType = mparams.get(mparams.size() - 1).getArray();
+        JavaType vaType = lastArgType.getArrayComponent();
+        List<JavaType> expandedParams = new ArrayList<JavaType>(args.length);
+        expandedParams.addAll(mparams);
+        for (int i = mparams.size(); i < args.length; i++) {
+            expandedParams.set(i, vaType);
+        }
+        mparams = expandedParams;
+    } else {
+        // Not varargs: supplied arguments must match formal parameters
+        if (mparams.size() != args.length)
+            return null;
+    }
+    // Get type parameters of the method
+    List<GenTypeDeclTpar> tparams = Collections.emptyList();
+    if ((!rawTarget) || m.isStatic())
+        tparams = m.getTparTypes();
+    // are ignored).
+    if (!tpars.isEmpty() && !tparams.isEmpty() && tpars.size() != tparams.size())
+        return null;
+    // Set up a map we can use to put actual/inferred type arguments. Initialise it
+    // with the target type's arguments.
+    Map<String, GenTypeParameter> tparMap;
+    if (rawTarget)
+        tparMap = new HashMap<String, GenTypeParameter>();
+    else
+        tparMap = targetType.getMap();
+    // Perform type inference, if necessary
+    if (!tparams.isEmpty() && tpars.isEmpty()) {
+        // shadowed by the method's type parameters (map to themselves).
+        for (Iterator<GenTypeDeclTpar> i = tparams.iterator(); i.hasNext(); ) {
+            GenTypeDeclTpar tpar = (GenTypeDeclTpar) i.next();
+            tparMap.put(tpar.getTparName(), tpar);
+        }
+        Map<String, Set<GenTypeSolid>> tlbConstraints = new HashMap<String, Set<GenTypeSolid>>();
+        Map teqConstraints = new HashMap();
+        // Time for some type inference
+        for (int i = 0; i < mparams.size(); i++) {
+            if (mparams.get(i).isPrimitive())
+                continue;
+            GenTypeSolid mparam = (GenTypeSolid) mparams.get(i);
+            mparam = mparam.mapTparsToTypes(tparMap);
+            processAtoFConstraint(args[i], mparam, tlbConstraints, teqConstraints);
+        }
+        // what we have now is a map with tpar constraints.
+        // Some tpars may not have been constrained: these are inferred to be the
+        // intersection of their upper bounds.
+        tpars = new ArrayList();
+        Iterator i = tparams.iterator();
+        while (i.hasNext()) {
+            GenTypeDeclTpar fTpar = (GenTypeDeclTpar) i.next();
+            String tparName = fTpar.getTparName();
+            GenTypeSolid eqConstraint = (GenTypeSolid) teqConstraints.get(tparName);
+            // If there's no equality constraint, use the lower bound constraints
+            if (eqConstraint == null) {
+                Set lbConstraintSet = (Set) tlbConstraints.get(tparName);
+                if (lbConstraintSet != null) {
+                    GenTypeSolid[] lbounds = (GenTypeSolid[]) lbConstraintSet.toArray(new GenTypeSolid[lbConstraintSet.size()]);
+                    eqConstraint = GenTypeSolid.lub(lbounds);
+                } else {
+                    // no equality or lower bound constraints: use the upper
+                    // bounds of the tpar
+                    eqConstraint = fTpar.getBound();
+                }
+            }
+            eqConstraint = (GenTypeSolid) eqConstraint.mapTparsToTypes(tparMap);
+            tpars.add((GenTypeClass) eqConstraint);
+            tparMap.put(tparName, eqConstraint);
+        }
+    } else {
+        // Get a map of type parameter names to types from the target type
+        // complete the type parameter map with tpars of the method
+        Iterator<GenTypeDeclTpar> formalI = tparams.iterator();
+        Iterator<GenTypeClass> actualI = tpars.iterator();
+        while (formalI.hasNext()) {
+            GenTypeDeclTpar formalTpar = (GenTypeDeclTpar) formalI.next();
+            GenTypeSolid argTpar = (GenTypeSolid) actualI.next();
+            // first we check that the argument type is a subtype of the
+            // declared type.
+            GenTypeSolid[] formalUbounds = formalTpar.upperBounds();
+            for (int i = 0; i < formalUbounds.length; i++) {
+                formalUbounds[i] = (GenTypeSolid) formalUbounds[i].mapTparsToTypes(tparMap);
+                if (formalUbounds[i].isAssignableFrom(argTpar))
+                    break;
+                if (i == formalUbounds.length - 1)
+                    return null;
+            }
+            tparMap.put(formalTpar.getTparName(), argTpar);
+        }
+    }
+    for (int i = 0; i < args.length; i++) {
+        JavaType formalArg = mparams.get(i);
+        JavaType givenParam = args[i];
+        // Substitute type arguments.
+        formalArg = formalArg.mapTparsToTypes(tparMap);
+        // check if the given parameter doesn't match the formal argument
+        if (!formalArg.isAssignableFrom(givenParam)) {
+            // a boxing conversion followed by a widening reference conversion
+            if (!formalArg.isAssignableFrom(boxType(givenParam))) {
+                // an unboxing conversion followed by a widening primitive conversion
+                if (!formalArg.isAssignableFrom(unBox(givenParam))) {
+                    return null;
+                }
+            }
+            boxingRequired = true;
+        }
+    }
+    JavaType rType = m.getReturnType().mapTparsToTypes(tparMap);
+    return new MethodCallDesc(m, mparams, varargs, boxingRequired, rType);
+}

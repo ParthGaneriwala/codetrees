@@ -1,0 +1,98 @@
+static void checkCascadeUpdate(Session session, Table table, HashMappedList tableUpdateLists, Row orow, Object[] nrow, int[] cols, Table ref, HashSet path) throws HsqlException {
+    // --
+    for (int i = 0, size = table.constraintList.length; i < size; i++) {
+        Constraint c = table.constraintList[i];
+        if (c.getType() == Constraint.FOREIGN_KEY && c.getRef() != null) {
+            // --
+            if (ref == null || c.getMain() != ref) {
+                // -- common indexes of the changed columns and the main/ref constraint
+                if (ArrayUtil.countCommonElements(cols, c.getRefColumns()) == 0) {
+                    // -- Table::checkCascadeUpdate -- NO common cols; reiterating
+                    continue;
+                }
+                c.hasMainRef(session, nrow);
+            }
+        } else if (c.getType() == Constraint.MAIN && c.getRef() != null) {
+            // -- (2) If it happens to be a main constraint we check if the slave
+            // --     table holds any records refering to the old contents. If so,
+            // --     the constraint has to support an 'on update' action or we
+            // --     throw an exception (all via a call to Constraint.findFkRef).
+            // --
+            // -- If there are no common columns between the reference constraint
+            // -- and the changed columns, we reiterate.
+            int[] common = ArrayUtil.commonElements(cols, c.getMainColumns());
+            if (common == null) {
+                // -- NO common cols between; reiterating
+                continue;
+            }
+            int[] m_columns = c.getMainColumns();
+            int[] r_columns = c.getRefColumns();
+            // fredt - find out if the FK columns have actually changed
+            boolean nochange = true;
+            for (int j = 0; j < m_columns.length; j++) {
+                if (!orow.getData()[m_columns[j]].equals(nrow[m_columns[j]])) {
+                    nochange = false;
+                    break;
+                }
+            }
+            if (nochange) {
+                continue;
+            }
+            // there must be no record in the 'slave' table
+            // sebastian@scienion -- dependent on forDelete | forUpdate
+            RowIterator refiterator = c.findFkRef(session, orow.getData(), false);
+            if (refiterator.hasNext()) {
+                if (c.core.updateAction == Constraint.NO_ACTION) {
+                    throw Trace.error(Trace.INTEGRITY_CONSTRAINT_VIOLATION, Trace.Constraint_violation, new Object[] { c.core.fkName.name, c.core.refTable.getName().name });
+                }
+            } else {
+                // no referencing row found
+                continue;
+            }
+            Table reftable = c.getRef();
+            // -- unused shortcut when update table has no imported constraint
+            boolean hasref = reftable.getNextConstraintIndex(0, Constraint.MAIN) != -1;
+            Index refindex = c.getRefIndex();
+            // -- walk the index for all the nodes that reference update node
+            HashMappedList rowSet = (HashMappedList) tableUpdateLists.get(reftable);
+            if (rowSet == null) {
+                rowSet = new HashMappedList();
+                tableUpdateLists.add(reftable, rowSet);
+            }
+            for (Row refrow = refiterator.next(); ; refrow = refiterator.next()) {
+                if (refrow == null || refindex.compareRowNonUnique(session, orow.getData(), m_columns, refrow.getData()) != 0) {
+                    break;
+                }
+                Object[] rnd = reftable.getEmptyRowData();
+                System.arraycopy(refrow.getData(), 0, rnd, 0, rnd.length);
+                // -- And handle the insertion procedure differently.
+                if (c.getUpdateAction() == Constraint.SET_NULL) {
+                    // -- since we are setting <code>null</code> values
+                    for (int j = 0; j < r_columns.length; j++) {
+                        rnd[r_columns[j]] = null;
+                    }
+                } else if (c.getUpdateAction() == Constraint.SET_DEFAULT) {
+                    // -- the values and referential integrity is no longer guaranteed to be valid
+                    for (int j = 0; j < r_columns.length; j++) {
+                        Column col = reftable.getColumn(r_columns[j]);
+                        rnd[r_columns[j]] = col.getDefaultValue(session);
+                    }
+                    if (path.add(c)) {
+                        checkCascadeUpdate(session, reftable, tableUpdateLists, refrow, rnd, r_columns, null, path);
+                        path.remove(c);
+                    }
+                } else {
+                    // -- table therefor we set ref==this.
+                    for (int j = 0; j < m_columns.length; j++) {
+                        rnd[r_columns[j]] = nrow[m_columns[j]];
+                    }
+                    if (path.add(c)) {
+                        checkCascadeUpdate(session, reftable, tableUpdateLists, refrow, rnd, common, table, path);
+                        path.remove(c);
+                    }
+                }
+                mergeUpdate(rowSet, refrow, rnd, r_columns);
+            }
+        }
+    }
+}

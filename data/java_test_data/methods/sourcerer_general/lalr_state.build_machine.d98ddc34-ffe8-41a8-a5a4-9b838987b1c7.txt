@@ -1,0 +1,140 @@
+/*. . . . . . . . . . . . . . . . . . . . . . . . . . . . . .*/
+/**
+ * Build an LALR viable prefix recognition machine given a start
+ * production.  This method operates by first building a start state
+ * from the start production (based on a single item with the dot at
+ * the beginning and EOF as expected lookahead).  Then for each state
+ * it attempts to extend the machine by creating transitions out of
+ * the state to new or existing states.  When considering extension
+ * from a state we make a transition on each symbol that appears before
+ * the dot in some item.  For example, if we have the items: <pre>
+ * [A ::= a b * X c, {d,e}]
+ * [B ::= a b * X d, {a,b}]
+ * </pre>
+ * in some state, then we would be making a transition under X to a new
+ * state.  This new state would be formed by a "kernel" of items
+ * corresponding to moving the dot past the X.  In this case: <pre>
+ * [A ::= a b X * c, {d,e}]
+ * [B ::= a b X * Y, {a,b}]
+ * </pre>
+ * The full state would then be formed by "closing" this kernel set of
+ * items so that it included items that represented productions of things
+ * the parser was now looking for.  In this case we would items
+ * corresponding to productions of Y, since various forms of Y are expected
+ * next when in this state (see lalr_item_set.compute_closure() for details
+ * on closure). <p>
+ *
+ * The process of building the viable prefix recognizer terminates when no
+ * new states can be added.  However, in order to build a smaller number of
+ * states (i.e., corresponding to LALR rather than canonical LR) the state
+ * building process does not maintain full loookaheads in all items.
+ * Consequently, after the machine is built, we go back and propagate
+ * lookaheads through the constructed machine using a call to
+ * propagate_all_lookaheads().  This makes use of propagation links
+ * constructed during the closure and transition process.
+ *
+ * @param start_prod the start production of the grammar
+ * @see   java_cup.lalr_item_set#compute_closure
+ * @see   java_cup.lalr_state#propagate_all_lookaheads
+ */
+public static lalr_state build_machine(production start_prod) throws internal_error {
+    lalr_state start_state;
+    lalr_item_set start_items;
+    lalr_item_set new_items;
+    lalr_item_set linked_items;
+    lalr_item_set kernel;
+    Stack work_stack = new Stack();
+    lalr_state st, new_st;
+    symbol_set outgoing;
+    lalr_item itm, new_itm, existing, fix_itm;
+    symbol sym, sym2;
+    Enumeration i, s, fix;
+    /* sanity check */
+    if (start_prod == null)
+        throw new internal_error("Attempt to build viable prefix recognizer using a null production");
+    /* build item with dot at front of start production and EOF lookahead */
+    start_items = new lalr_item_set();
+    itm = new lalr_item(start_prod);
+    itm.lookahead().add(terminal.EOF);
+    start_items.add(itm);
+    /* create copy the item set to form the kernel */
+    kernel = new lalr_item_set(start_items);
+    /* create the closure from that item set */
+    start_items.compute_closure();
+    /* build a state out of that item set and put it in our work set */
+    start_state = new lalr_state(start_items);
+    work_stack.push(start_state);
+    /* enter the state using the kernel as the key */
+    _all_kernels.put(kernel, start_state);
+    /* continue looking at new states until we have no more work to do */
+    while (!work_stack.empty()) {
+        /* remove a state from the work set */
+        st = (lalr_state) work_stack.pop();
+        /* gather up all the symbols that appear before dots */
+        outgoing = new symbol_set();
+        for (i = st.items().all(); i.hasMoreElements(); ) {
+            itm = (lalr_item) i.nextElement();
+            /* add the symbol before the dot (if any) to our collection */
+            sym = itm.symbol_after_dot();
+            if (sym != null)
+                outgoing.add(sym);
+        }
+        /* now create a transition out for each individual symbol */
+        for (s = outgoing.all(); s.hasMoreElements(); ) {
+            sym = (symbol) s.nextElement();
+            /* will be keeping the set of items with propagate links */
+            linked_items = new lalr_item_set();
+            /* gather up shifted versions of all the items that have this
+		 symbol before the dot */
+            new_items = new lalr_item_set();
+            for (i = st.items().all(); i.hasMoreElements(); ) {
+                itm = (lalr_item) i.nextElement();
+                /* if this is the symbol we are working on now, add to set */
+                sym2 = itm.symbol_after_dot();
+                if (sym.equals(sym2)) {
+                    /* add to the kernel of the new state */
+                    new_items.add(itm.shift());
+                    /* remember that itm has propagate link to it */
+                    linked_items.add(itm);
+                }
+            }
+            /* use new items as state kernel */
+            kernel = new lalr_item_set(new_items);
+            /* have we seen this one already? */
+            new_st = (lalr_state) _all_kernels.get(kernel);
+            /* if we haven't, build a new state out of the item set */
+            if (new_st == null) {
+                /* compute closure of the kernel for the full item set */
+                new_items.compute_closure();
+                /* build the new state */
+                new_st = new lalr_state(new_items);
+                /* add the new state to our work set */
+                work_stack.push(new_st);
+                /* put it in our kernel table */
+                _all_kernels.put(kernel, new_st);
+            } else /* otherwise relink propagation to items in existing state */
+            {
+                /* walk through the items that have links to the new state */
+                for (fix = linked_items.all(); fix.hasMoreElements(); ) {
+                    fix_itm = (lalr_item) fix.nextElement();
+                    /* look at each propagate link out of that item */
+                    for (int l = 0; l < fix_itm.propagate_items().size(); l++) {
+                        /* pull out item linked to in the new state */
+                        new_itm = (lalr_item) fix_itm.propagate_items().elementAt(l);
+                        /* find corresponding item in the existing state */
+                        existing = new_st.items().find(new_itm);
+                        /* fix up the item so it points to the existing set */
+                        if (existing != null)
+                            fix_itm.propagate_items().setElementAt(existing, l);
+                    }
+                }
+            }
+            /* add a transition from current state to that state */
+            st.add_transition(sym, new_st);
+        }
+    }
+    /* all done building states */
+    /* propagate complete lookahead sets throughout the states */
+    propagate_all_lookaheads();
+    return start_state;
+}

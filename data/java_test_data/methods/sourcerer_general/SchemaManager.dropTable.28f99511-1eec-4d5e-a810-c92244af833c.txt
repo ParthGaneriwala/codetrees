@@ -1,0 +1,63 @@
+private void dropTable(Session session, Table table, boolean cascade) {
+    Schema schema = (Schema) schemaMap.get(table.getSchemaName().name);
+    int dropIndex = schema.tableList.getIndex(table.getName().name);
+    OrderedHashSet externalConstraints = table.getDependentExternalConstraints();
+    OrderedHashSet externalReferences = new OrderedHashSet();
+    getCascadingReferencingObjectNames(table.getName(), externalReferences);
+    if (!cascade) {
+        for (int i = 0; i < externalConstraints.size(); i++) {
+            Constraint c = (Constraint) externalConstraints.get(i);
+            HsqlName tablename = c.getRef().getName();
+            HsqlName refname = c.getRefName();
+            if (c.getConstraintType() == SchemaObject.ConstraintTypes.MAIN) {
+                throw Error.error(ErrorCode.X_42533, refname.schema.name + '.' + tablename.name + '.' + refname.name);
+            }
+        }
+        if (!externalReferences.isEmpty()) {
+            int i = 0;
+            for (; i < externalReferences.size(); i++) {
+                HsqlName name = (HsqlName) externalReferences.get(i);
+                if (name.parent == table.getName()) {
+                    continue;
+                }
+                throw Error.error(ErrorCode.X_42502, name.getSchemaQualifiedStatementName());
+            }
+        }
+    }
+    OrderedHashSet tableSet = new OrderedHashSet();
+    OrderedHashSet constraintNameSet = new OrderedHashSet();
+    OrderedHashSet indexNameSet = new OrderedHashSet();
+    // only columns with refs
+    OrderedHashSet childReferences = table.getReferences();
+    SchemaObject[] triggers = table.getTriggers();
+    for (int i = 0; i < triggers.length; i++) {
+        childReferences.add(triggers[i].getName());
+    }
+    for (int i = 0; i < externalConstraints.size(); i++) {
+        Constraint c = (Constraint) externalConstraints.get(i);
+        Table t = c.getMain();
+        if (t != table) {
+            tableSet.add(t);
+        }
+        t = c.getRef();
+        if (t != table) {
+            tableSet.add(t);
+        }
+        constraintNameSet.add(c.getMainName());
+        constraintNameSet.add(c.getRefName());
+        indexNameSet.add(c.getRefIndex().getName());
+    }
+    TableWorks tw = new TableWorks(session, table);
+    tableSet = tw.makeNewTables(tableSet, constraintNameSet, indexNameSet);
+    tw.setNewTablesInSchema(tableSet);
+    tw.updateConstraints(tableSet, constraintNameSet);
+    removeSchemaObjects(externalReferences);
+    removeSchemaObjects(childReferences);
+    removeReferencedObject(table.getName());
+    removeReferencingObject(table);
+    schema.tableList.remove(dropIndex);
+    schema.indexLookup.removeParent(table.getName());
+    schema.constraintLookup.removeParent(table.getName());
+    removeTable(session, table);
+    recompileDependentObjects(tableSet);
+}

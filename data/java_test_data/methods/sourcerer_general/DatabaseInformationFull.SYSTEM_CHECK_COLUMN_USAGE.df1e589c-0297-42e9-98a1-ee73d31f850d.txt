@@ -1,0 +1,103 @@
+Table SYSTEM_CHECK_COLUMN_USAGE() throws HsqlException {
+    Table t = sysTables[SYSTEM_CHECK_COLUMN_USAGE];
+    if (t == null) {
+        t = createBlankTable(sysTableHsqlNames[SYSTEM_CHECK_COLUMN_USAGE]);
+        addColumn(t, "CONSTRAINT_CATALOG", Types.VARCHAR);
+        addColumn(t, "CONSTRAINT_SCHEMA", Types.VARCHAR);
+        // not null
+        addColumn(t, "CONSTRAINT_NAME", Types.VARCHAR, false);
+        addColumn(t, "TABLE_CATALOG", Types.VARCHAR);
+        addColumn(t, "TABLE_SCHEMA", Types.VARCHAR);
+        // not null
+        addColumn(t, "TABLE_NAME", Types.VARCHAR, false);
+        // not null
+        addColumn(t, "COLUMN_NAME", Types.VARCHAR, false);
+        t.createPrimaryKey(null, new int[] { 0, 1, 2, 3, 4, 5, 6 }, false);
+        return t;
+    }
+    // calculated column values
+    String constraintCatalog;
+    String constraintSchema;
+    String constraintName;
+    // Intermediate holders
+    Iterator tables;
+    Table table;
+    Constraint[] constraints;
+    int constraintCount;
+    Constraint constraint;
+    Expression.Collector collector;
+    Expression expression;
+    TableFilter tableFilter;
+    Table columnTable;
+    Iterator iterator;
+    Result result;
+    Object[] resultRow;
+    Object[] row;
+    // column number mappings
+    final int icons_cat = 0;
+    final int icons_schem = 1;
+    final int icons_name = 2;
+    final int itab_cat = 3;
+    final int itab_schem = 4;
+    final int itab_name = 5;
+    final int itab_col = 6;
+    // Initialization
+    tables = database.schemaManager.allTablesIterator();
+    collector = new Expression.Collector();
+    result = new Result(ResultConstants.DATA, 4);
+    result.metaData.colTypes[0] = result.metaData.colTypes[1] = result.metaData.colTypes[2] = result.metaData.colTypes[3] = Types.VARCHAR;
+    // Do it.
+    while (tables.hasNext()) {
+        table = (Table) tables.next();
+        if (!isAccessibleTable(table)) {
+            continue;
+        }
+        constraints = table.getConstraints();
+        constraintCount = constraints.length;
+        constraintCatalog = ns.getCatalogName(table);
+        constraintSchema = table.getSchemaName();
+        // process constraints
+        for (int i = 0; i < constraintCount; i++) {
+            constraint = (Constraint) constraints[i];
+            if (constraint.getType() != Constraint.CHECK) {
+                continue;
+            }
+            constraintName = constraint.getName().name;
+            result.setRows(null);
+            collector.clear();
+            collector.addAll(constraint.core.check, Expression.COLUMN);
+            iterator = collector.iterator();
+            // calculate distinct column references
+            while (iterator.hasNext()) {
+                expression = (Expression) iterator.next();
+                tableFilter = expression.getFilter();
+                columnTable = tableFilter.getTable();
+                if (columnTable.getTableType() == Table.SYSTEM_SUBQUERY || !isAccessibleTable(columnTable)) {
+                    continue;
+                }
+                result.add(new Object[] { ns.getCatalogName(columnTable), columnTable.getSchemaName(), columnTable.getName().name, expression.getColumnName() });
+            }
+            /*
+                result.removeDuplicates(
+                    database.sessionManager.getSysSession(
+                        database.schemaManager.INFORMATION_SCHEMA));
+*/
+            result.removeDuplicates(session);
+            iterator = result.iterator();
+            while (iterator.hasNext()) {
+                row = t.getEmptyRowData();
+                resultRow = (Object[]) iterator.next();
+                row[icons_cat] = constraintCatalog;
+                row[icons_schem] = constraintSchema;
+                row[icons_name] = constraintName;
+                row[itab_cat] = resultRow[0];
+                row[itab_schem] = resultRow[1];
+                row[itab_name] = resultRow[2];
+                row[itab_col] = resultRow[3];
+                t.insertSys(row);
+            }
+        }
+    }
+    t.setDataReadOnly(true);
+    return t;
+}

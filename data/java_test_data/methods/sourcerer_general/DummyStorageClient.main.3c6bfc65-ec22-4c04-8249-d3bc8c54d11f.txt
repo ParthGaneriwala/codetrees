@@ -1,0 +1,41 @@
+public static void main(String[] args) throws IOException {
+    // TODO Auto-generated method stub
+    OptionParser optParser = new OptionParser(Options.class);
+    final Options opts = (Options) optParser.parse(args, true);
+    JobManager.initialize(opts.jobs);
+    Thread thread = new Thread(JobManager.getInstance(), "Job Manager");
+    thread.setDaemon(true);
+    thread.start();
+    Experiment.initialize(opts.config);
+    Experiment experiment = Experiment.getInstance();
+    experiment.buildPrefixes();
+    experiment.buildWordPrefixes();
+    InetSocketAddress address = new InetSocketAddress(InetAddress.getByName(opts.host), opts.port);
+    ClientStorageConnection connection = new ClientStorageConnection(address);
+    {
+        Timer timer = new Timer(true);
+        long interval = ClientStorageConnection.ClientMonitor.INTERVAL;
+        timer.scheduleAtFixedRate(new ClientStorageConnection.ClientMonitor(connection), interval, interval);
+    }
+    JobManager manager = JobManager.getInstance();
+    JobGroup group = manager.createJobGroup("dummies");
+    if (opts.ping) {
+        final Pinger pinger = new Pinger(connection);
+        for (int i = 0; i < opts.iterations; ++i) {
+            manager.addJob(group, new Job(new PingJob(pinger), Integer.toString(i)));
+        }
+        group.join();
+        System.err.printf("Ping delay: %fms\n", Pinger.totalTime.get() * 1e-6 / Pinger.totalRequests.get());
+    } else {
+        AbstractProbTreeStorage storage = new ClientProbTreeStorage(connection);
+        storage = new CachedProbTreeStorage(storage, 100, 200);
+        for (int i = 0; i < opts.iterations; ++i) {
+            manager.addJob(group, new Job(new RetrievingJob(storage, opts.ping), Integer.toString(i)));
+        }
+        group.join();
+        if (opts.ping) {
+            long totalRequests = opts.iterations * BATCH_SIZE;
+            System.err.printf("Ping delay: %fms\n", RetrievingJob.pingTime.get() * 1e-6 / totalRequests);
+        }
+    }
+}

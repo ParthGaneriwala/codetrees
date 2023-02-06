@@ -1,0 +1,91 @@
+public static byte[] createAdapterCode(ObjToIntMap functionNames, String adapterName, Class<?> superClass, Class<?>[] interfaces, String scriptClassName) {
+    ClassFileWriter cfw = new ClassFileWriter(adapterName, superClass.getName(), "<adapter>");
+    cfw.addField("factory", "Lorg/mozilla/javascript/ContextFactory;", (short) (ClassFileWriter.ACC_PUBLIC | ClassFileWriter.ACC_FINAL));
+    cfw.addField("delegee", "Lorg/mozilla/javascript/Scriptable;", (short) (ClassFileWriter.ACC_PUBLIC | ClassFileWriter.ACC_FINAL));
+    cfw.addField("self", "Lorg/mozilla/javascript/Scriptable;", (short) (ClassFileWriter.ACC_PUBLIC | ClassFileWriter.ACC_FINAL));
+    int interfacesCount = interfaces == null ? 0 : interfaces.length;
+    for (int i = 0; i < interfacesCount; i++) {
+        if (interfaces[i] != null)
+            cfw.addInterface(interfaces[i].getName());
+    }
+    String superName = superClass.getName().replace('.', '/');
+    generateCtor(cfw, adapterName, superName);
+    generateSerialCtor(cfw, adapterName, superName);
+    if (scriptClassName != null)
+        generateEmptyCtor(cfw, adapterName, superName, scriptClassName);
+    ObjToIntMap generatedOverrides = new ObjToIntMap();
+    ObjToIntMap generatedMethods = new ObjToIntMap();
+    // generate methods to satisfy all specified interfaces.
+    for (int i = 0; i < interfacesCount; i++) {
+        Method[] methods = interfaces[i].getMethods();
+        for (int j = 0; j < methods.length; j++) {
+            Method method = methods[j];
+            int mods = method.getModifiers();
+            if (Modifier.isStatic(mods) || Modifier.isFinal(mods)) {
+                continue;
+            }
+            String methodName = method.getName();
+            Class<?>[] argTypes = method.getParameterTypes();
+            if (!functionNames.has(methodName)) {
+                try {
+                    superClass.getMethod(methodName, argTypes);
+                    // bug 61226.
+                    continue;
+                } catch (NoSuchMethodException e) {
+                // Not implemented by superclass; fall through
+                }
+            }
+            // make sure to generate only one instance of a particular
+            // method/signature.
+            String methodSignature = getMethodSignature(method, argTypes);
+            String methodKey = methodName + methodSignature;
+            if (!generatedOverrides.has(methodKey)) {
+                generateMethod(cfw, adapterName, methodName, argTypes, method.getReturnType());
+                generatedOverrides.put(methodKey, 0);
+                generatedMethods.put(methodName, 0);
+            }
+        }
+    }
+    // Now, go through the superclass's methods, checking for abstract
+    // methods or additional methods to override.
+    // generate any additional overrides that the object might contain.
+    Method[] methods = getOverridableMethods(superClass);
+    for (int j = 0; j < methods.length; j++) {
+        Method method = methods[j];
+        int mods = method.getModifiers();
+        // if a method is marked abstract, must implement it or the
+        // resulting class won't be instantiable. otherwise, if the object
+        // has a property of the same name, then an override is intended.
+        boolean isAbstractMethod = Modifier.isAbstract(mods);
+        String methodName = method.getName();
+        if (isAbstractMethod || functionNames.has(methodName)) {
+            // make sure to generate only one instance of a particular
+            // method/signature.
+            Class<?>[] argTypes = method.getParameterTypes();
+            String methodSignature = getMethodSignature(method, argTypes);
+            String methodKey = methodName + methodSignature;
+            if (!generatedOverrides.has(methodKey)) {
+                generateMethod(cfw, adapterName, methodName, argTypes, method.getReturnType());
+                generatedOverrides.put(methodKey, 0);
+                generatedMethods.put(methodName, 0);
+                // which lets the delegate call the superclass' version.
+                if (!isAbstractMethod) {
+                    generateSuper(cfw, adapterName, superName, methodName, methodSignature, argTypes, method.getReturnType());
+                }
+            }
+        }
+    }
+    // Generate Java methods for remaining properties that are not
+    // overrides.
+    ObjToIntMap.Iterator iter = new ObjToIntMap.Iterator(functionNames);
+    for (iter.start(); !iter.done(); iter.next()) {
+        String functionName = (String) iter.getKey();
+        if (generatedMethods.has(functionName))
+            continue;
+        int length = iter.getValue();
+        Class<?>[] parms = new Class[length];
+        for (int k = 0; k < length; k++) parms[k] = ScriptRuntime.ObjectClass;
+        generateMethod(cfw, adapterName, functionName, parms, ScriptRuntime.ObjectClass);
+    }
+    return cfw.toByteArray();
+}

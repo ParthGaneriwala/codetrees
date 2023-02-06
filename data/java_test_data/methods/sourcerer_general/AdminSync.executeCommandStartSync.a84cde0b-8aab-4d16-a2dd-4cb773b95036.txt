@@ -1,0 +1,106 @@
+public String executeCommandStartSync(ActionContext context) {
+    if (!getUser(context).getAccessAdmin()) {
+        return "PermissionError";
+    }
+    boolean isValid = false;
+    String serverURL = null;
+    String apiClientId = null;
+    String apiCode = null;
+    String startSync = null;
+    String saveConnectionDetails = null;
+    Connection db = null;
+    try {
+        Scheduler scheduler = (Scheduler) context.getServletContext().getAttribute(Constants.SCHEDULER);
+        Vector syncStatus = (Vector) scheduler.getContext().get("CRMSyncStatus");
+        String syncListings = context.getRequest().getParameter("syncListings");
+        startSync = context.getRequest().getParameter("startSync");
+        if ("true".equals(startSync)) {
+            isValid = true;
+            if (syncStatus != null && syncStatus.size() == 0) {
+                // Trigger the sync job
+                triggerJob(context, "syncSystem", syncListings);
+            } else {
+            // Do nothing as a sync is already in progress.
+            }
+        }
+        saveConnectionDetails = context.getRequest().getParameter("saveConnectionDetails");
+        if ("true".equals(saveConnectionDetails)) {
+            ApplicationPrefs prefs = this.getApplicationPrefs(context);
+            serverURL = context.getRequest().getParameter("serverURL");
+            apiClientId = context.getRequest().getParameter("apiClientId");
+            apiCode = context.getRequest().getParameter("apiCode");
+            String domainAndPort = "";
+            if (serverURL.indexOf("http://") != -1) {
+                domainAndPort = serverURL.substring(7).split("/")[0];
+            } else if (serverURL.indexOf("https://") != -1) {
+                domainAndPort = serverURL.substring(8).split("/")[0];
+            }
+            String domain = domainAndPort;
+            if (domainAndPort.indexOf(":") != -1) {
+                domain = domainAndPort.split(":")[0];
+            }
+            if (StringUtils.hasText(serverURL) && StringUtils.hasText(domain) && StringUtils.hasText(apiClientId) && StringUtils.hasText(apiCode)) {
+                if (testConnection(serverURL, domain, apiCode, apiClientId)) {
+                    isValid = true;
+                    prefs.add("CONCURSIVE_CRM.SERVER", serverURL);
+                    prefs.add("CONCURSIVE_CRM.ID", domain);
+                    prefs.add("CONCURSIVE_CRM.CODE", apiCode);
+                    prefs.add("CONCURSIVE_CRM.CLIENT", apiClientId);
+                    prefs.save();
+                    triggerJob(context, "syncSystem", syncListings);
+                    // Set the connect user performing the first sync to have crm admin role
+                    db = this.getConnection(context);
+                    User user = getUser(context);
+                    user.setConnectCRMAdmin(true);
+                    user.update(db);
+                    // Add a sync client and send that information over to the Mgmt CRM Server
+                    Key key = (Key) context.getServletContext().getAttribute(ApplicationPrefs.TEAM_KEY);
+                    SyncClient syncClient = new SyncClient();
+                    syncClient.setType(prefs.get(ApplicationPrefs.PURPOSE));
+                    syncClient.setCode(new String(Hex.encodeHex(key.getEncoded())));
+                    syncClient.setEnabled(true);
+                    syncClient.setEnteredBy(user.getId());
+                    syncClient.setModifiedBy(user.getId());
+                    boolean recorded = syncClient.insert(db);
+                    if (recorded) {
+                        CRMConnection connection = new CRMConnection();
+                        connection.setUrl(serverURL);
+                        connection.setId(domain);
+                        connection.setCode(apiCode);
+                        connection.setClientId(apiClientId);
+                        DataRecord record = new DataRecord();
+                        record.setName(MAP);
+                        record.setAction(SAVE_CONNECT_SYNC_INFO_SERVICE);
+                        record.addField("connectURL", getServerUrl(context));
+                        if (StringUtils.hasText(prefs.get(ApplicationPrefs.WEB_DOMAIN_NAME))) {
+                            record.addField("connectDomain", prefs.get(ApplicationPrefs.WEB_DOMAIN_NAME));
+                        } else {
+                            record.addField("connectDomain", context.getRequest().getServerName());
+                        }
+                        record.addField("connectSyncClientId", syncClient.getId());
+                        record.addField("connectSyncClientCode", syncClient.getCode());
+                        connection.save(record);
+                        if (!connection.hasError()) {
+                            LOG.debug("Connect Sync connection information has been successfully transmitted...");
+                        } else {
+                            LOG.debug("Connect Sync connection information transmission failed...");
+                        }
+                    }
+                }
+            }
+        }
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return ("SystemError");
+    } finally {
+        this.freeConnection(context, db);
+    }
+    if (!isValid && "true".equals(saveConnectionDetails)) {
+        context.getRequest().setAttribute("serverURL", context.getRequest().getParameter("serverURL"));
+        context.getRequest().setAttribute("apiClientId", context.getRequest().getParameter("apiClientId"));
+        context.getRequest().setAttribute("apiCode", context.getRequest().getParameter("apiCode"));
+        context.getRequest().setAttribute("actionError", "Could not connect to the suite.");
+        return executeCommandDefault(context);
+    }
+    return "StartSyncOK";
+}

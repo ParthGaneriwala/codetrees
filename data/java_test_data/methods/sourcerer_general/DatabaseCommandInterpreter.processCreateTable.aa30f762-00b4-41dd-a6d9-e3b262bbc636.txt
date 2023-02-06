@@ -1,0 +1,98 @@
+private void processCreateTable(int type) throws HsqlException {
+    String token = tokenizer.getName();
+    HsqlName schemaname = session.getSchemaHsqlNameForWrite(tokenizer.getLongNameFirst());
+    database.schemaManager.checkUserTableNotExists(session, token, schemaname.name);
+    boolean isnamequoted = tokenizer.wasQuotedIdentifier();
+    int[] pkCols = null;
+    int colIndex = 0;
+    boolean constraint = false;
+    Table t = newTable(type, token, isnamequoted, schemaname);
+    tokenizer.getThis(Token.T_OPENBRACKET);
+    while (true) {
+        token = tokenizer.getString();
+        switch(Token.get(token)) {
+            case Token.CONSTRAINT:
+            case Token.PRIMARY:
+            case Token.FOREIGN:
+            case Token.UNIQUE:
+            case Token.CHECK:
+                // fredt@users : check for quoted reserved words used as column names
+                constraint = !tokenizer.wasQuotedIdentifier() && !tokenizer.wasLongName();
+        }
+        tokenizer.back();
+        if (constraint) {
+            break;
+        }
+        Column newcolumn = processCreateColumn();
+        t.addColumn(newcolumn);
+        if (newcolumn.isPrimaryKey()) {
+            Trace.check(pkCols == null, Trace.SECOND_PRIMARY_KEY, newcolumn.columnName.name);
+            pkCols = new int[] { colIndex };
+        }
+        token = tokenizer.getSimpleToken();
+        if (token.equals(Token.T_COMMA)) {
+            colIndex++;
+            continue;
+        }
+        if (token.equals(Token.T_CLOSEBRACKET)) {
+            break;
+        }
+        throw Trace.error(Trace.UNEXPECTED_TOKEN, token);
+    }
+    HsqlArrayList tempConstraints = processCreateConstraints(t, constraint, pkCols);
+    if (tokenizer.isGetThis(Token.T_ON)) {
+        if (!t.isTemp) {
+            throw Trace.error(Trace.UNEXPECTED_TOKEN, Token.T_ON);
+        }
+        tokenizer.getThis(Token.T_COMMIT);
+        token = tokenizer.getSimpleToken();
+        if (token.equals(Token.T_DELETE)) {
+        } else if (token.equals(Token.T_PRESERVE)) {
+            t.onCommitPreserve = true;
+        } else {
+            throw Trace.error(Trace.UNEXPECTED_TOKEN, token);
+        }
+        tokenizer.getThis(Token.T_ROWS);
+    }
+    try {
+        session.commit();
+        Constraint primaryConst = (Constraint) tempConstraints.get(0);
+        t.createPrimaryKey(null, primaryConst.core.mainColArray, true);
+        if (primaryConst.core.mainColArray != null) {
+            if (primaryConst.constName == null) {
+                primaryConst.constName = t.makeSysPKName();
+            }
+            Constraint newconstraint = new Constraint(primaryConst.constName, t, t.getPrimaryIndex(), Constraint.PRIMARY_KEY);
+            t.addConstraint(newconstraint);
+            database.schemaManager.registerConstraintName(primaryConst.constName.name, t.getName());
+        }
+        for (int i = 1; i < tempConstraints.size(); i++) {
+            Constraint tempConst = (Constraint) tempConstraints.get(i);
+            if (tempConst.constType == Constraint.UNIQUE) {
+                TableWorks tableWorks = new TableWorks(session, t);
+                tableWorks.createUniqueConstraint(tempConst.core.mainColArray, tempConst.constName);
+                t = tableWorks.getTable();
+            }
+            if (tempConst.constType == Constraint.FOREIGN_KEY) {
+                TableWorks tableWorks = new TableWorks(session, t);
+                tableWorks.createForeignKey(tempConst.core.mainColArray, tempConst.core.refColArray, tempConst.constName, tempConst.core.refTable, tempConst.core.deleteAction, tempConst.core.updateAction);
+                t = tableWorks.getTable();
+            }
+            if (tempConst.constType == Constraint.CHECK) {
+                TableWorks tableWorks = new TableWorks(session, t);
+                tableWorks.createCheckConstraint(tempConst, tempConst.constName);
+                t = tableWorks.getTable();
+            }
+        }
+        database.schemaManager.linkTable(t);
+    } catch (HsqlException e) {
+        // fredt@users 20020225 - comment
+        // if a HsqlException is thrown while creating table, any foreign key that has
+        // been created leaves it modification to the expTable in place
+        // need to undo those modifications. This should not happen in practice.
+        database.schemaManager.removeExportedKeys(t);
+        database.schemaManager.removeIndexNames(t.tableName);
+        database.schemaManager.removeConstraintNames(t.tableName);
+        throw e;
+    }
+}

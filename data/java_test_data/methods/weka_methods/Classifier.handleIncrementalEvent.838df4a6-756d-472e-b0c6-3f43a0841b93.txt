@@ -1,0 +1,183 @@
+private void handleIncrementalEvent() {
+    if (m_executorPool != null && (m_executorPool.getQueue().size() > 0 || m_executorPool.getActiveCount() > 0)) {
+        String messg = "[Classifier] " + statusMessagePrefix() + " is currently batch training!";
+        if (m_log != null) {
+            m_log.logMessage(messg);
+            m_log.statusMessage(statusMessagePrefix() + "WARNING: " + "Can't accept instance - batch training in progress.");
+        } else {
+            System.err.println(messg);
+        }
+        return;
+    }
+    if (m_incrementalEvent.getStatus() == InstanceEvent.FORMAT_AVAILABLE) {
+        m_throughput = new StreamThroughput(statusMessagePrefix());
+        // clear any warnings/errors from the log
+        if (m_log != null) {
+            m_log.statusMessage(statusMessagePrefix() + "remove");
+        }
+        // Instances dataset = m_incrementalEvent.getInstance().dataset();
+        Instances dataset = m_incrementalEvent.getStructure();
+        // default to the last column if no class is set
+        if (dataset.classIndex() < 0) {
+            stop();
+            String errorMessage = statusMessagePrefix() + "ERROR: no class attribute set in incoming stream!";
+            if (m_log != null) {
+                m_log.statusMessage(errorMessage);
+                m_log.logMessage("[" + getCustomName() + "] " + errorMessage);
+            } else {
+                System.err.println("[" + getCustomName() + "] " + errorMessage);
+            }
+            return;
+        // System.err.println("Classifier : setting class index...");
+        // dataset.setClassIndex(dataset.numAttributes()-1);
+        }
+        if (m_loadModelFileName != null && m_loadModelFileName.length() > 0 && m_state == IDLE && !m_listenees.containsKey("trainingSet")) {
+            // load model (if specified)
+            String resolvedFileName = m_loadModelFileName;
+            if (m_env != null) {
+                try {
+                    resolvedFileName = m_env.substitute(resolvedFileName);
+                } catch (Exception ex) {
+                }
+            }
+            File loadFrom = new File(resolvedFileName);
+            try {
+                loadFromFile(loadFrom);
+            } catch (Exception ex) {
+                // stop();
+                m_log.statusMessage(statusMessagePrefix() + "WARNING: unable to load " + "model (see log).");
+                m_log.logMessage("[Classifier] " + statusMessagePrefix() + "Problem loading classifier - training from scratch... " + ex.getMessage());
+            // return;
+            }
+        }
+        try {
+            // mode, *if* headers match
+            if (m_trainingSet == null || !m_trainingSet.equalHeaders(dataset) || m_resetIncrementalClassifier) {
+                if (!(m_ClassifierTemplate instanceof weka.classifiers.UpdateableClassifier) && !(m_ClassifierTemplate instanceof weka.classifiers.misc.InputMappedClassifier)) {
+                    // stop all processing
+                    stop();
+                    if (m_log != null) {
+                        String msg = (m_trainingSet == null) ? statusMessagePrefix() + "ERROR: classifier has not been batch " + "trained; can't process instance events." : statusMessagePrefix() + "ERROR: instance event's structure is different from " + "the data that " + "was used to batch train this classifier; can't continue.";
+                        m_log.logMessage("[Classifier] " + msg);
+                        m_log.statusMessage(msg);
+                    }
+                    return;
+                }
+                if (m_ClassifierTemplate instanceof weka.classifiers.misc.InputMappedClassifier) {
+                    m_trainingSet = ((weka.classifiers.misc.InputMappedClassifier) m_Classifier).getModelHeader(m_trainingSet);
+                /*
+             * // check to see if the classifier that gets loaded is updateable
+             * weka.classifiers.Classifier tempC =
+             * ((weka.classifiers.misc.InputMappedClassifier
+             * )m_Classifier).getClassifier(); if (!(tempC instanceof
+             * weka.classifiers.UpdateableClassifier)) {
+             * 
+             * }
+             */
+                }
+                if (m_trainingSet != null && (!dataset.equalHeaders(m_trainingSet))) {
+                    if (m_log != null) {
+                        String msg = statusMessagePrefix() + " WARNING : structure of instance events differ " + "from data used in batch training this " + "classifier. Resetting classifier...";
+                        m_log.logMessage("[Classifier] " + msg);
+                        m_log.statusMessage(msg);
+                    }
+                    m_trainingSet = null;
+                }
+                if (m_resetIncrementalClassifier) {
+                    if (m_log != null) {
+                        String msg = statusMessagePrefix() + " Reseting incremental classifier";
+                        m_log.logMessage("[Classifier] " + msg);
+                        m_log.statusMessage(msg);
+                    }
+                    m_trainingSet = null;
+                }
+                if (m_trainingSet == null) {
+                    // initialize the classifier if it hasn't been trained yet
+                    m_trainingSet = new Instances(dataset, 0);
+                    m_Classifier = weka.classifiers.AbstractClassifier.makeCopy(m_ClassifierTemplate);
+                    if (m_Classifier instanceof EnvironmentHandler && m_env != null) {
+                        ((EnvironmentHandler) m_Classifier).setEnvironment(m_env);
+                    }
+                    m_Classifier.buildClassifier(m_trainingSet);
+                }
+            }
+        } catch (Exception ex) {
+            stop();
+            if (m_log != null) {
+                m_log.statusMessage(statusMessagePrefix() + "ERROR (See log for details)");
+                m_log.logMessage("[Classifier] " + statusMessagePrefix() + " problem during incremental processing. " + ex.getMessage());
+            }
+            ex.printStackTrace();
+            return;
+        }
+        if (!m_incrementalEvent.m_formatNotificationOnly) {
+            String msg = m_updateIncrementalClassifier ? statusMessagePrefix() + "Training incrementally..." : statusMessagePrefix() + "Predicting incrementally...";
+            if (m_log != null) {
+                m_log.statusMessage(msg);
+            }
+        }
+        // Notify incremental classifier listeners of new batch
+        System.err.println("NOTIFYING NEW BATCH");
+        m_ie.setStructure(dataset);
+        m_ie.setClassifier(m_Classifier);
+        notifyIncrementalClassifierListeners(m_ie);
+        return;
+    } else {
+        if (m_trainingSet == null) {
+            // do anything meaningful
+            return;
+        }
+    }
+    try {
+        // test on this instance
+        if (m_incrementalEvent.getInstance() != null) {
+            if (m_incrementalEvent.getInstance().dataset().classIndex() < 0) {
+                // System.err.println("Classifier : setting class index...");
+                m_incrementalEvent.getInstance().dataset().setClassIndex(m_incrementalEvent.getInstance().dataset().numAttributes() - 1);
+            }
+        }
+        int status = IncrementalClassifierEvent.WITHIN_BATCH;
+        /* } else */
+        if (m_incrementalEvent.getStatus() == InstanceEvent.BATCH_FINISHED || m_incrementalEvent.getInstance() == null) {
+            status = IncrementalClassifierEvent.BATCH_FINISHED;
+        }
+        if (m_incrementalEvent.getInstance() != null) {
+            m_throughput.updateStart();
+        }
+        m_ie.setStatus(status);
+        m_ie.setClassifier(m_Classifier);
+        m_ie.setCurrentInstance(m_incrementalEvent.getInstance());
+        if (status == InstanceEvent.BATCH_FINISHED && m_Classifier instanceof UpdateableBatchProcessor) {
+            ((UpdateableBatchProcessor) m_Classifier).batchFinished();
+        }
+        notifyIncrementalClassifierListeners(m_ie);
+        // updated)
+        if (m_ClassifierTemplate instanceof weka.classifiers.UpdateableClassifier && m_updateIncrementalClassifier == true && m_incrementalEvent.getInstance() != null && !(m_incrementalEvent.getInstance().isMissing(m_incrementalEvent.getInstance().dataset().classIndex()))) {
+            ((weka.classifiers.UpdateableClassifier) m_Classifier).updateClassifier(m_incrementalEvent.getInstance());
+        }
+        if (m_incrementalEvent.getInstance() != null) {
+            m_throughput.updateEnd(m_log);
+        }
+        if (m_incrementalEvent.getStatus() == InstanceEvent.BATCH_FINISHED || m_incrementalEvent.getInstance() == null) {
+            if (m_textListeners.size() > 0) {
+                String modelString = m_Classifier.toString();
+                String titleString = m_Classifier.getClass().getName();
+                titleString = titleString.substring(titleString.lastIndexOf('.') + 1, titleString.length());
+                modelString = "=== Classifier model ===\n\n" + "Scheme:   " + titleString + "\n" + "Relation: " + m_trainingSet.relationName() + "\n\n" + modelString;
+                titleString = "Model: " + titleString;
+                TextEvent nt = new TextEvent(this, modelString, titleString);
+                notifyTextListeners(nt);
+            }
+            m_throughput.finished(m_log);
+        }
+    } catch (Exception ex) {
+        stop();
+        if (m_log != null) {
+            m_log.logMessage("[Classifier] " + statusMessagePrefix() + ex.getMessage());
+            m_log.statusMessage(statusMessagePrefix() + "ERROR (see log for details)");
+            ex.printStackTrace();
+        } else {
+            ex.printStackTrace();
+        }
+    }
+}

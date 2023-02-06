@@ -1,0 +1,60 @@
+@Override
+public synchronized void processIncoming(Data data) throws WekaException {
+    try {
+        int setNum = (Integer) data.getPayloadElement(StepManager.CON_AUX_DATA_SET_NUM);
+        Instances trainingData = (Instances) data.getPayloadElement(StepManager.CON_AUX_DATA_TRAININGSET);
+        Instances testData = (Instances) data.getPayloadElement(StepManager.CON_AUX_DATA_TESTSET);
+        if (testData == null || testData.numInstances() == 0) {
+            // can't evaluate empty/non-existent test instances
+            getStepManager().logDetailed("No test set available - unable to evaluate");
+            return;
+        }
+        weka.classifiers.Classifier classifier = (weka.classifiers.Classifier) data.getPayloadElement(StepManager.CON_BATCH_CLASSIFIER);
+        String evalLabel = data.getPayloadElement(StepManager.CON_AUX_DATA_LABEL).toString();
+        if (classifier == null) {
+            throw new WekaException("Classifier is null!!");
+        }
+        if (m_isReset) {
+            m_isReset = false;
+            getStepManager().processing();
+            m_maxSetNum = (Integer) data.getPayloadElement(StepManager.CON_AUX_DATA_MAX_SET_NUM);
+            m_setsToGo = new AtomicInteger(0);
+            if (trainingData == null) {
+                // no training data to estimate majority class/mean target from
+                Evaluation eval = new Evaluation(testData, m_costSensitiveEval ? m_matrix : null);
+                m_PlotInstances = ExplorerDefaults.getClassifierErrorsPlotInstances();
+                m_PlotInstances.setInstances(testData);
+                m_PlotInstances.setClassifier(classifier);
+                m_PlotInstances.setClassIndex(testData.classIndex());
+                m_PlotInstances.setEvaluation(eval);
+                eval = adjustForInputMappedClassifier(eval, classifier, testData, m_PlotInstances, m_costSensitiveEval ? m_matrix : null);
+                eval.useNoPriors();
+                m_eval = new AggregateableEvaluation(eval);
+                m_eval.setMetricsToDisplay(m_metricsList);
+            } else {
+                Evaluation eval = new Evaluation(trainingData, m_costSensitiveEval ? m_matrix : null);
+                m_PlotInstances = ExplorerDefaults.getClassifierErrorsPlotInstances();
+                m_PlotInstances.setInstances(trainingData);
+                m_PlotInstances.setClassifier(classifier);
+                m_PlotInstances.setClassIndex(trainingData.classIndex());
+                m_PlotInstances.setEvaluation(eval);
+                eval = adjustForInputMappedClassifier(eval, classifier, trainingData, m_PlotInstances, m_costSensitiveEval ? m_matrix : null);
+                m_eval = new AggregateableEvaluation(eval);
+                m_eval.setMetricsToDisplay(m_metricsList);
+            }
+            m_PlotInstances.setUp();
+            m_aggregatedPlotInstances = null;
+        }
+        if (!isStopRequested()) {
+            getStepManager().logBasic("Scheduling evaluation of fold/set " + setNum + " for execution");
+            // submit the task
+            EvaluationTask evalTask = new EvaluationTask(this, classifier, trainingData, testData, setNum, m_metricsList, getErrorPlotPointSizeProportionalToMargin(), evalLabel, new EvaluationCallback(), m_costSensitiveEval ? m_matrix : null);
+            getStepManager().getExecutionEnvironment().submitTask(evalTask);
+            m_taskCount.incrementAndGet();
+        } else {
+            getStepManager().interrupted();
+        }
+    } catch (Exception ex) {
+        throw new WekaException(ex);
+    }
+}

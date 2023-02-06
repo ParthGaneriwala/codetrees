@@ -1,0 +1,65 @@
+private boolean doInline(Graph graph) {
+    CostGraphNode node1 = null;
+    CostGraphNode node2 = null;
+    CostGraphNode caller;
+    int arc_index;
+    CostInlineCallGraphArc arc = null;
+    int weight;
+    int smallest = Integer.MAX_VALUE - 1;
+    int i, j;
+    MethodDescriptor md;
+    MethodDescriptor caller_md, callee_md;
+    ArrayList<CLInstruction> caller_code, callee_code;
+    ArrayList<ClassDescriptor> caller_locals, callee_locals;
+    boolean caller_static, callee_static;
+    int call_index;
+    while (total_code_size < MAX_CODE_SIZE && smallest != Integer.MAX_VALUE) {
+        smallest = Integer.MAX_VALUE;
+        caller = null;
+        arc_index = -1;
+        for (i = 0; i < graph.size(); i++) {
+            node1 = (CostGraphNode) graph.getNode(i);
+            for (j = 0; j < node1.size(); j++) {
+                arc = (CostInlineCallGraphArc) node1.getArc(j);
+                node2 = arc.getCallee();
+                md = node2.getMethodDescriptor();
+                weight = arc.isInlineable(method_sizes.get(md));
+                if (weight < smallest) {
+                    smallest = weight;
+                    caller = node1;
+                    arc_index = j;
+                }
+            }
+        }
+        // arch to inline was found
+        if (caller != null) {
+            // inline arc
+            caller_md = caller.getMethodDescriptor();
+            arc = (CostInlineCallGraphArc) caller.getArc(arc_index);
+            node2 = arc.getCallee();
+            callee_md = node2.getMethodDescriptor();
+            try {
+                caller_code = clel.getMethodsCode(caller_md);
+                total_code_size -= getCodeSize(caller_code);
+                callee_code = clel.getMethodsCode(callee_md);
+                caller_locals = clel.getMethodsLocals(caller_md);
+                callee_locals = clel.getMethodsLocals(callee_md);
+                caller_static = callee_static = false;
+                if ((clel.getMethodPermission(caller_md) & CLELMethodFlags.STATIC) == CLELMethodFlags.STATIC)
+                    caller_static = true;
+                if ((clel.getMethodPermission(callee_md) & CLELMethodFlags.STATIC) == CLELMethodFlags.STATIC)
+                    callee_static = true;
+                call_index = findCallIndex(caller_code, callee_md);
+                InlineFunctionExpansion.inlineFunction(caller_code, caller_locals, caller_static, call_index, callee_code, callee_locals, callee_static, callee_md.getParameters(), clel.getMethodReturnType(callee_md));
+                clel.setMethodsCode(caller_md, caller_code, caller_locals);
+            } catch (MethodNotFoundException mnfe) {
+                return false;
+            }
+            // remove arc from graph
+            caller.removeArc(arc_index);
+            // update total code size
+            total_code_size += getCodeSize(caller_code);
+        }
+    }
+    return true;
+}

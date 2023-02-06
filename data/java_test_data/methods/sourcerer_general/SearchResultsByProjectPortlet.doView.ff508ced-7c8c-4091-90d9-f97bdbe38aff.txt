@@ -1,0 +1,96 @@
+public void doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    try {
+        String ctx = request.getContextPath();
+        String defaultView = VIEW_PAGE;
+        // Get portal items
+        String queryString = (String) request.getAttribute(BASE_QUERY_STRING);
+        IIndexerSearch searcher = (IIndexerSearch) request.getAttribute(SEARCHER);
+        ProjectCategoryList categories = (ProjectCategoryList) request.getAttribute(PROJECT_CATEGORY_LIST);
+        SearchBean searchBean = (SearchBean) request.getAttribute(SEARCH_BEAN);
+        // Get preferences
+        String category = request.getPreferences().getValue(PREF_CATEGORY_NAME, null);
+        request.setAttribute(TITLE, request.getPreferences().getValue(TITLE, "Projects"));
+        int recordLimit = Integer.parseInt(request.getPreferences().getValue(PREF_RECORD_LIMIT, "10"));
+        request.setAttribute(RECORD_LIMIT, recordLimit);
+        boolean hasPaging = "true".equals(request.getPreferences().getValue(PREF_HAS_PAGING, null));
+        if (hasPaging) {
+            request.setAttribute(HAS_PAGING, hasPaging);
+        }
+        if (category != null && categories.getIdFromValue(category) == -1) {
+        // don't display anything because the category does not exist in the category list
+        } else {
+            // If the searchbean category is not this category, then provide a link to that category page
+            if (category != null && categories.getIdFromValue(category) != searchBean.getCategoryId()) {
+                request.setAttribute(HAS_MORE_URL, request.getPreferences().getValue(PREF_HAS_MORE_URL, searchBean.getUrlByCategory(categories.getIdFromValue(category))));
+            } else {
+                request.setAttribute(HAS_MORE_URL, request.getPreferences().getValue(PREF_HAS_MORE_URL, ""));
+            }
+            request.setAttribute(HAS_MORE_TITLE, request.getPreferences().getValue(PREF_HAS_MORE_TITLE, "Browse more items"));
+            // Request items
+            request.setAttribute(SEARCH_BEAN_ATTRIBUTE, searchBean);
+            // Customize the string
+            queryString += " AND (type:project) " + (category != null ? "AND (projectCategoryId:" + categories.getIdFromValue(category) + ") " : "");
+            // Efficient unsorted list
+            /*
+        TopDocCollector collector = new TopDocCollector(50);
+        searcher.search(query, collector);
+        ScoreDoc[] hits = collector.topDocs().scoreDocs;
+        */
+            // 
+            IndexerQueryResultList hits = new IndexerQueryResultList();
+            hits.setQueryString(queryString);
+            hits.getPagedListInfo().setItemsPerPage(recordLimit);
+            // Use paging if requested
+            PagedListInfo searchBeanInfo = new PagedListInfo();
+            if (hasPaging) {
+                searchBeanInfo.setLink("/search");
+                String offsetStr = request.getParameter("offset");
+                int offset = offsetStr == null ? 0 : Integer.parseInt(offsetStr);
+                searchBeanInfo.setCurrentOffset(offset);
+                searchBeanInfo.setRenderParameters(searchBean.getParameterMap());
+                searchBeanInfo.setNamespace(response.getNamespace());
+                searchBeanInfo.setContextPath(ctx);
+                searchBeanInfo.setItemsPerPage(recordLimit);
+                hits.setPagedListInfo(searchBeanInfo);
+            }
+            // Configure the parameters for the search results
+            if (searchBean.getFilter() == SearchBean.NEWLY_ADDED) {
+                // Newly Added (parse in reverse)
+                hits.getPagedListInfo().setColumnToSortBy("entered");
+                hits.getPagedListInfo().setSortOrder("desc");
+                searcher.search(hits);
+            } else if (searchBean.getFilter() == SearchBean.HIGHEST_RATED) {
+                // Highest Rated (parse in reverse)
+                hits.getPagedListInfo().setColumnToSortBy("ratingAverage");
+                hits.getPagedListInfo().setSortOrder("desc");
+                searcher.search(hits);
+            } else if (searchBean.getFilter() == SearchBean.MOST_REVIEWED) {
+                // Most Reviewed (parse in reverse)
+                hits.getPagedListInfo().setColumnToSortBy("ratingCount");
+                hits.getPagedListInfo().setSortOrder("desc");
+                searcher.search(hits);
+            } else {
+                // Best Match
+                searcher.search(hits);
+            }
+            if (hits.getPagedListInfo().moreRecordsExist()) {
+                request.setAttribute(HAS_MORE_RECORDS, "true");
+            }
+            // Set the results for the view
+            request.setAttribute(HITS, hits);
+            // This portlet can provide data to other portlets
+            for (String event : PortalUtils.getDashboardPortlet(request).getGenerateDataEvents()) {
+                PortalUtils.setGeneratedData(request, event, hits);
+            }
+            if (hits.size() > 0) {
+                // JSP view
+                PortletContext context = getPortletContext();
+                PortletRequestDispatcher requestDispatcher = context.getRequestDispatcher(defaultView);
+                requestDispatcher.include(request, response);
+            }
+        }
+    } catch (Exception e) {
+        e.printStackTrace(System.out);
+        throw new PortletException(e);
+    }
+}

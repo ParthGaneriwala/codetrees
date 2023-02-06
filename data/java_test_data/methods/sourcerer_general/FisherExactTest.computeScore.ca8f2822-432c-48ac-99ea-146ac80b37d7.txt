@@ -1,0 +1,72 @@
+@Override
+public double computeScore(ContextVariable ctxVar, ContextVariableStats stat) {
+    if (stat.contextCounts.getTotalCount() > MAX_TEST_COUNT) {
+        // do not test large samples, chances are they are good enough
+        return 0.0;
+    }
+    int N = (int) stat.contextCounts.getTotalCount();
+    // enumerate context variables and words
+    Long2IntMap varIndices = new Long2IntMap(stat.contextCounts.size());
+    for (long key : stat.contextCounts.keys()) {
+        varIndices.put(key, varIndices.size());
+    }
+    Long2IntMap wordIndices = new Long2IntMap(stat.wordCounts.size());
+    for (long key : stat.wordCounts.keys()) {
+        wordIndices.put(key, wordIndices.size());
+    }
+    short[] rows = new short[N];
+    short[] columns = new short[N];
+    int pos = 0;
+    long[] keys = stat.x2wDistributions.keys();
+    for (long key : keys) {
+        final short varIdx = (short) varIndices.get(key);
+        final ConstCountDistribution dist = stat.x2wDistributions.get(key);
+        long[] words = dist.keys();
+        long[] counts = dist.values();
+        for (int i = 0; i < words.length; ++i) {
+            short wordIdx = (short) wordIndices.get(words[i]);
+            long count = counts[i];
+            for (long j = 0; j < count; ++j) {
+                rows[pos] = varIdx;
+                columns[pos] = wordIdx;
+                ++pos;
+            }
+        }
+    }
+    // compute the constant factor KF = ln(\prod{R!}*\prod{C!}/N!)
+    double KF = 0;
+    for (long r : stat.contextCounts.values()) {
+        KF += factorialLog((int) r);
+    }
+    for (long c : stat.wordCounts.values()) {
+        KF += factorialLog((int) c);
+    }
+    KF -= factorialLog(N);
+    final int numRows = wordIndices.size();
+    double observedProbability = computeMatrixProb(KF, rows, columns, numRows);
+    int MCC = 0;
+    final Random rnd = new Random();
+    int nrRuns = 0;
+    while (true) {
+        // generate a new sample
+        RandomUtil.shuffleArray(columns, rnd);
+        double prob = computeMatrixProb(KF, rows, columns, numRows);
+        if (prob < observedProbability || ProbMath.approxEqual(prob, observedProbability, 0.001)) {
+            ++MCC;
+        }
+        ++nrRuns;
+        if (nrRuns > MIN_RUNS) {
+            double delta = DELTA_COEFF / Math.sqrt(nrRuns);
+            double pValue = (double) MCC / nrRuns;
+            // but make sure we don't go on indefinitely
+            if (Math.abs(pValue - maxPvalue) > delta || delta < MIN_DELTA) {
+                /*
+					double chi2PValue = chi2.computeScore(stat);
+					System.err.printf("Fisher: %g (+/-%g), Chi2: %g, %dx%d, totalCount=%d (runs=%d)\n", 
+							pValue, delta, chi2PValue, wordIndices.size(), varIndices.size(), N, nrRuns);
+					*/
+                return pValue;
+            }
+        }
+    }
+}

@@ -1,0 +1,66 @@
+public void run() {
+    EventHandler handler = new EventHandler();
+    Buffer buffer = newBuffer(DEFAULT_TCP_MESSAGE);
+    SipParser parser = new SipParser(buffer, this, handler);
+    try {
+        connectionOpened(this);
+        SipMessage message = null;
+        while (isStarted() && !isClosed()) {
+            int size = DEFAULT_TCP_MESSAGE;
+            boolean overflow = false;
+            do {
+                overflow = false;
+                try {
+                    parser.parse();
+                    size = DEFAULT_TCP_MESSAGE;
+                    parser.setBuffer(newBuffer(size));
+                } catch (BufferOverflowException e) {
+                    // System.out.println("Overflow");
+                    overflow = true;
+                    size = size * 2;
+                    if (size > MAX_TCP_MESSAGE)
+                        throw new IOException("Message too large");
+                    Buffer extended = newBuffer(size);
+                    parser.setBuffer(extended, true);
+                }
+            } while (overflow);
+            message = handler.getMessage();
+            message.setConnection(this);
+            /*message.set5uple(
+							getTransportOrdinal(), 
+							getLocalAddress(),
+							getLocalPort(),
+							getRemoteAddress(), 
+							getRemotePort());
+					
+					if (message.isRequest())
+						((SipRequest) message).setEndpoint(this);*/
+            process(message);
+        }
+    } catch (EofException e) {
+        // System.out.println(parser.getState());
+        Log.debug("EOF: {}", this);
+        try {
+            close();
+        } catch (IOException e2) {
+            Log.ignore(e2);
+        }
+    } catch (Throwable e) {
+        System.out.println(parser.getState());
+        if (_statsStartedAt != -1) {
+            synchronized (_statsLock) {
+                _nbParseErrors++;
+            }
+        }
+        Log.warn("TCP handle failed", e);
+        if (handler.hasException())
+            Log.warn(handler.getException());
+        try {
+            close();
+        } catch (IOException e2) {
+            Log.ignore(e2);
+        }
+    } finally {
+        connectionClosed(this);
+    }
+}

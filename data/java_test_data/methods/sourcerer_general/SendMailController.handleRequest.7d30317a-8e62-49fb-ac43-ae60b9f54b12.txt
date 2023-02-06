@@ -1,0 +1,114 @@
+@SuppressWarnings("unchecked")
+public ModelAndView handleRequest(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+    openSession();
+    try {
+        HttpSession session = request.getSession();
+        UserPreferences prefs = (UserPreferences) session.getAttribute("userPreferences");
+        if (prefs == null) {
+            return UNAUTHENTICATED_ERROR;
+        }
+        String id = null;
+        String message = null;
+        String subject = null;
+        String save = null;
+        String templateName = null;
+        Map<Integer, File> attachments = new HashMap<Integer, File>();
+        Set<Integer> saveFileIds = new HashSet<Integer>();
+        Set<File> saveFiles = new HashSet<File>();
+        Set<File> fileExisted = new HashSet<File>();
+        Set<File> selectedFiles = new HashSet<File>();
+        if (ServletFileUpload.isMultipartContent(request)) {
+            List<FileItem> items = upload.parseRequest(request);
+            for (FileItem item : items) {
+                if (item.isFormField()) {
+                    if ("id".equals(item.getFieldName())) {
+                        id = item.getString();
+                    } else if ("subject".equals(item.getFieldName())) {
+                        subject = item.getString();
+                    } else if ("message".equals(item.getFieldName())) {
+                        message = item.getString();
+                    } else if ("save".equals(item.getFieldName())) {
+                        save = item.getString();
+                    } else if ("name".equals(item.getFieldName())) {
+                        templateName = item.getString();
+                    } else if (item.getFieldName().startsWith("save-")) {
+                        int fileId = Integer.parseInt(item.getFieldName().substring(5));
+                        saveFileIds.add(fileId);
+                    } else if (item.getFieldName().startsWith("sf-")) {
+                        long savedFileId = Long.parseLong(item.getFieldName().substring(3));
+                        SavedFile sf = getSavedFileDao().read(savedFileId);
+                        if (sf != null) {
+                            selectedFiles.add(fileService.getFile(prefs, sf.getName()));
+                        }
+                    }
+                } else if (item.getFieldName().startsWith("file-")) {
+                    int fileId = Integer.parseInt(item.getFieldName().substring(5));
+                    File dir = fileService.getRepository(prefs);
+                    dir.mkdirs();
+                    File f = new File(dir, item.getName());
+                    if (f.exists()) {
+                        fileExisted.add(f);
+                    }
+                    item.write(f);
+                    attachments.put(fileId, f);
+                    if (saveFileIds.contains(fileId)) {
+                        saveFiles.add(f);
+                    }
+                }
+            }
+        } else {
+            id = request.getParameter("id");
+            message = request.getParameter("message");
+            subject = request.getParameter("subject");
+            save = request.getParameter("save");
+            templateName = request.getParameter("name");
+            Enumeration en = request.getParameterNames();
+            String name;
+            while (en.hasMoreElements()) {
+                name = (String) en.nextElement();
+                if (name.startsWith("sf-")) {
+                    long savedFileId = Long.parseLong(name.substring(3));
+                    SavedFile sf = getSavedFileDao().read(savedFileId);
+                    if (sf != null) {
+                        selectedFiles.add(fileService.getFile(prefs, sf.getName()));
+                    }
+                }
+            }
+        }
+        if (id != null && id.trim().length() > 0) {
+            Post p = getPostDao().read(Long.parseLong(id));
+            if (p == null) {
+                return new ModelAndView("msg", "msg", "error:no post with id " + id);
+            }
+            selectedFiles.addAll(attachments.values());
+            if ("true".equals(save)) {
+                saveTemplate(prefs, templateName, subject, message, selectedFiles);
+            }
+            subject = replaceTokens(p, subject);
+            message = replaceTokens(p, message);
+            String error = sendMessage(prefs, p, subject, message, selectedFiles);
+            for (File f : attachments.values()) {
+                if (saveFiles.contains(f)) {
+                    saveFile(prefs, f);
+                } else if (!fileExisted.contains(f)) {
+                    f.delete();
+                }
+            }
+            if (error != null && error.length() > 0) {
+                return new ModelAndView("msg", "msg", error);
+            }
+            PostActivities pa = getPostActivities(prefs, p);
+            if (!pa.isResponded()) {
+                pa.setResponded(true);
+                getPostActivitiesDao().update(pa);
+            }
+        }
+        return new ModelAndView("msg", "msg", id);
+    } catch (Exception e) {
+        e.printStackTrace();
+        getLog().error(e);
+        return new ModelAndView("msg", "msg", e.getMessage());
+    } finally {
+        closeSession();
+    }
+}

@@ -1,0 +1,76 @@
+public static FileComparerResults buildDiscrepancyLists(Map filesMap, Map s3ObjectsMap, BytesTransferredWatcher hashWatcher) throws NoSuchAlgorithmException, FileNotFoundException, IOException, ParseException {
+    List onlyOnServerKeys = new ArrayList();
+    List updatedOnServerKeys = new ArrayList();
+    List updatedOnClientKeys = new ArrayList();
+    List alreadySynchronisedKeys = new ArrayList();
+    List onlyOnClientKeys = new ArrayList();
+    // Check files on server against local client files.
+    Iterator s3ObjectsMapIter = s3ObjectsMap.entrySet().iterator();
+    while (s3ObjectsMapIter.hasNext()) {
+        Map.Entry entry = (Map.Entry) s3ObjectsMapIter.next();
+        String keyPath = (String) entry.getKey();
+        S3Object s3Object = (S3Object) entry.getValue();
+        // Check whether local file is already on server
+        if (filesMap.containsKey(keyPath)) {
+            // File has been backed up in the past, is it still up-to-date?
+            File file = (File) filesMap.get(keyPath);
+            if (file.isDirectory()) {
+                // We don't care about directory date changes, as long as it's present.
+                alreadySynchronisedKeys.add(keyPath);
+            } else {
+                // Compare file hashes.
+                InputStream hashInputStream = null;
+                if (hashWatcher != null) {
+                    hashInputStream = new // Report on MD5 hash progress.
+                    ProgressMonitoredInputStream(new FileInputStream(file), hashWatcher);
+                } else {
+                    hashInputStream = new FileInputStream(file);
+                }
+                String fileHashAsBase64 = ServiceUtils.toBase64(ServiceUtils.computeMD5Hash(hashInputStream));
+                // Get the S3 object's Base64 hash.
+                String objectHash = null;
+                if (s3Object.containsMetadata(S3Object.METADATA_HEADER_ORIGINAL_HASH_MD5)) {
+                    // Use the object's *original* hash, as it is an encoded version of a local file.
+                    objectHash = (String) s3Object.getMetadata(S3Object.METADATA_HEADER_ORIGINAL_HASH_MD5);
+                    log.debug("Object in S3 is encoded, using the object's original hash value for: " + s3Object.getKey());
+                } else {
+                    // The object wasn't altered when uploaded, so use its current hash.
+                    objectHash = s3Object.getMd5HashAsBase64();
+                }
+                if (fileHashAsBase64.equals(objectHash)) {
+                    // Hashes match so file is already synchronised.
+                    alreadySynchronisedKeys.add(keyPath);
+                } else {
+                    // File is out-of-synch. Check which version has the latest date.
+                    Date s3ObjectLastModified = null;
+                    String metadataLocalFileDate = (String) s3Object.getMetadata(Constants.METADATA_JETS3T_LOCAL_FILE_DATE);
+                    if (metadataLocalFileDate == null) {
+                        // This is risky as local file times and S3 times don't match!
+                        log.warn("Using S3 last modified date as file date. This is not reliable " + "as the time according to S3 can differ from your local system time. " + "Please use the metadata item " + Constants.METADATA_JETS3T_LOCAL_FILE_DATE);
+                        s3ObjectLastModified = s3Object.getLastModifiedDate();
+                    } else {
+                        s3ObjectLastModified = ServiceUtils.parseIso8601Date(metadataLocalFileDate);
+                    }
+                    if (s3ObjectLastModified.getTime() > file.lastModified()) {
+                        updatedOnServerKeys.add(keyPath);
+                    } else if (s3ObjectLastModified.getTime() < file.lastModified()) {
+                        updatedOnClientKeys.add(keyPath);
+                    } else {
+                        // Dates match exactly but the hash doesn't. Shouldn't ever happen!
+                        throw new IOException("Backed-up S3Object " + s3Object.getKey() + " and local file " + file.getName() + " have the same date but different hash values. " + "This shouldn't happen!");
+                    }
+                }
+            }
+        } else {
+            // File is not in local file system, so it's only on the S3
+            // server.
+            onlyOnServerKeys.add(keyPath);
+        }
+    }
+    // Any local files not already put into another list only exist locally.
+    onlyOnClientKeys.addAll(filesMap.keySet());
+    onlyOnClientKeys.removeAll(updatedOnClientKeys);
+    onlyOnClientKeys.removeAll(alreadySynchronisedKeys);
+    onlyOnClientKeys.removeAll(updatedOnServerKeys);
+    return new FileComparerResults(onlyOnServerKeys, updatedOnServerKeys, updatedOnClientKeys, onlyOnClientKeys, alreadySynchronisedKeys);
+}

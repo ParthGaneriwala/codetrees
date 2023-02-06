@@ -1,0 +1,132 @@
+/**
+ * Rewrites the already prepared statement into a multi-statement
+ * query of 'statementsPerBatch' values and executes the entire batch
+ * using this new statement.
+ *
+ * @return update counts in the same fashion as executeBatch()
+ *
+ * @throws SQLException
+ */
+protected int[] executePreparedBatchAsMultiStatement(int batchTimeout) throws SQLException {
+    synchronized (this.connection.getMutex()) {
+        // This is kind of an abuse, but it gets the job done
+        if (this.batchedValuesClause == null) {
+            this.batchedValuesClause = this.originalSql + ";";
+        }
+        MySQLConnection locallyScopedConn = this.connection;
+        boolean multiQueriesEnabled = locallyScopedConn.getAllowMultiQueries();
+        CancelTask timeoutTask = null;
+        try {
+            clearWarnings();
+            int numBatchedArgs = this.batchedArgs.size();
+            if (this.retrieveGeneratedKeys) {
+                this.batchedGeneratedKeys = new ArrayList(numBatchedArgs);
+            }
+            int numValuesPerBatch = computeBatchSize(numBatchedArgs);
+            if (numBatchedArgs < numValuesPerBatch) {
+                numValuesPerBatch = numBatchedArgs;
+            }
+            java.sql.PreparedStatement batchedStatement = null;
+            int batchedParamIndex = 1;
+            int numberToExecuteAsMultiValue = 0;
+            int batchCounter = 0;
+            int updateCountCounter = 0;
+            int[] updateCounts = new int[numBatchedArgs];
+            SQLException sqlEx = null;
+            try {
+                if (!multiQueriesEnabled) {
+                    locallyScopedConn.getIO().enableMultiQueries();
+                }
+                if (this.retrieveGeneratedKeys) {
+                    batchedStatement = locallyScopedConn.prepareStatement(generateMultiStatementForBatch(numValuesPerBatch), RETURN_GENERATED_KEYS);
+                } else {
+                    batchedStatement = locallyScopedConn.prepareStatement(generateMultiStatementForBatch(numValuesPerBatch));
+                }
+                if (locallyScopedConn.getEnableQueryTimeouts() && batchTimeout != 0 && locallyScopedConn.versionMeetsMinimum(5, 0, 0)) {
+                    timeoutTask = new CancelTask((StatementImpl) batchedStatement);
+                    locallyScopedConn.getCancelTimer().schedule(timeoutTask, batchTimeout);
+                }
+                if (numBatchedArgs < numValuesPerBatch) {
+                    numberToExecuteAsMultiValue = numBatchedArgs;
+                } else {
+                    numberToExecuteAsMultiValue = numBatchedArgs / numValuesPerBatch;
+                }
+                int numberArgsToExecute = numberToExecuteAsMultiValue * numValuesPerBatch;
+                for (int i = 0; i < numberArgsToExecute; i++) {
+                    if (i != 0 && i % numValuesPerBatch == 0) {
+                        try {
+                            batchedStatement.execute();
+                        } catch (SQLException ex) {
+                            sqlEx = handleExceptionForBatch(batchCounter, numValuesPerBatch, updateCounts, ex);
+                        }
+                        updateCountCounter = processMultiCountsAndKeys((StatementImpl) batchedStatement, updateCountCounter, updateCounts);
+                        batchedStatement.clearParameters();
+                        batchedParamIndex = 1;
+                    }
+                    batchedParamIndex = setOneBatchedParameterSet(batchedStatement, batchedParamIndex, this.batchedArgs.get(batchCounter++));
+                }
+                try {
+                    batchedStatement.execute();
+                } catch (SQLException ex) {
+                    sqlEx = handleExceptionForBatch(batchCounter - 1, numValuesPerBatch, updateCounts, ex);
+                }
+                updateCountCounter = processMultiCountsAndKeys((StatementImpl) batchedStatement, updateCountCounter, updateCounts);
+                batchedStatement.clearParameters();
+                numValuesPerBatch = numBatchedArgs - batchCounter;
+            } finally {
+                if (batchedStatement != null) {
+                    batchedStatement.close();
+                }
+            }
+            try {
+                if (numValuesPerBatch > 0) {
+                    if (this.retrieveGeneratedKeys) {
+                        batchedStatement = locallyScopedConn.prepareStatement(generateMultiStatementForBatch(numValuesPerBatch), RETURN_GENERATED_KEYS);
+                    } else {
+                        batchedStatement = locallyScopedConn.prepareStatement(generateMultiStatementForBatch(numValuesPerBatch));
+                    }
+                    if (timeoutTask != null) {
+                        timeoutTask.toCancel = (StatementImpl) batchedStatement;
+                    }
+                    batchedParamIndex = 1;
+                    while (batchCounter < numBatchedArgs) {
+                        batchedParamIndex = setOneBatchedParameterSet(batchedStatement, batchedParamIndex, this.batchedArgs.get(batchCounter++));
+                    }
+                    try {
+                        batchedStatement.execute();
+                    } catch (SQLException ex) {
+                        sqlEx = handleExceptionForBatch(batchCounter - 1, numValuesPerBatch, updateCounts, ex);
+                    }
+                    updateCountCounter = processMultiCountsAndKeys((StatementImpl) batchedStatement, updateCountCounter, updateCounts);
+                    batchedStatement.clearParameters();
+                }
+                if (timeoutTask != null) {
+                    if (timeoutTask.caughtWhileCancelling != null) {
+                        throw timeoutTask.caughtWhileCancelling;
+                    }
+                    timeoutTask.cancel();
+                    locallyScopedConn.getCancelTimer().purge();
+                    timeoutTask = null;
+                }
+                if (sqlEx != null) {
+                    throw new java.sql.BatchUpdateException(sqlEx.getMessage(), sqlEx.getSQLState(), sqlEx.getErrorCode(), updateCounts);
+                }
+                return updateCounts;
+            } finally {
+                if (batchedStatement != null) {
+                    batchedStatement.close();
+                }
+            }
+        } finally {
+            if (timeoutTask != null) {
+                timeoutTask.cancel();
+                locallyScopedConn.getCancelTimer().purge();
+            }
+            resetCancelledState();
+            if (!multiQueriesEnabled) {
+                locallyScopedConn.getIO().disableMultiQueries();
+            }
+            clearBatch();
+        }
+    }
+}

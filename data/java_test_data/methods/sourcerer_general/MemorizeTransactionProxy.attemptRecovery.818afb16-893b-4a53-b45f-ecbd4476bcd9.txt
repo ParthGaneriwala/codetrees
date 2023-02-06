@@ -1,0 +1,98 @@
+private TransactionRecoveryResult attemptRecovery(List<ReplayLog> oldReplayLog) throws SQLException {
+    boolean tryAgain = false;
+    ConnectionHandle con = this.connectionHandle.get();
+    TransactionRecoveryResult recoveryResult = con.recoveryResult;
+    ConnectionHook connectionHook = con.getPool().getConfig().getConnectionHook();
+    int acquireRetryAttempts = con.getPool().getConfig().getAcquireRetryAttempts();
+    int acquireRetryDelay = con.getPool().getConfig().getAcquireRetryDelay();
+    AcquireFailConfig acquireConfig = new AcquireFailConfig();
+    acquireConfig.setAcquireRetryAttempts(new AtomicInteger(acquireRetryAttempts));
+    acquireConfig.setAcquireRetryDelay(acquireRetryDelay);
+    acquireConfig.setLogMessage("Failed to replay transaction");
+    Map<Object, Object> replaceTarget = new HashMap<Object, Object>();
+    do {
+        replaceTarget.clear();
+        // make a copy
+        for (Entry<Object, Object> entry : recoveryResult.getReplaceTarget().entrySet()) {
+            replaceTarget.put(entry.getKey(), entry.getValue());
+        }
+        List<PreparedStatement> prepStatementTarget = new ArrayList<PreparedStatement>();
+        List<CallableStatement> callableStatementTarget = new ArrayList<CallableStatement>();
+        List<Statement> statementTarget = new ArrayList<Statement>();
+        Object result = null;
+        tryAgain = false;
+        // this connection is dead
+        // don't go in a loop of saving our saved log!
+        con.setInReplayMode(true);
+        try {
+            con.clearStatementCaches(true);
+            con.getInternalConnection().close();
+        } catch (Throwable t) {
+        // do nothing - also likely to fail here
+        }
+        con.setInternalConnection(memorize(con.obtainInternalConnection(), con));
+        // track this too.
+        con.getOriginatingPartition().trackConnectionFinalizer(con);
+        for (ReplayLog replay : oldReplayLog) {
+            // we got new connections/statement handles so replace what we've got with the new ones
+            if (replay.getTarget() instanceof Connection) {
+                replaceTarget.put(replay.getTarget(), con.getInternalConnection());
+            } else if (replay.getTarget() instanceof CallableStatement) {
+                if (replaceTarget.get(replay.getTarget()) == null) {
+                    replaceTarget.put(replay.getTarget(), callableStatementTarget.remove(0));
+                }
+            } else if (replay.getTarget() instanceof PreparedStatement) {
+                if (replaceTarget.get(replay.getTarget()) == null) {
+                    replaceTarget.put(replay.getTarget(), prepStatementTarget.remove(0));
+                }
+            } else if (replay.getTarget() instanceof Statement) {
+                if (replaceTarget.get(replay.getTarget()) == null) {
+                    replaceTarget.put(replay.getTarget(), statementTarget.remove(0));
+                }
+            }
+            try {
+                // run again using the new connection/statement
+                // result = replay.getMethod().invoke(, replay.getArgs());
+                result = runWithPossibleProxySwap(replay.getMethod(), replaceTarget.get(replay.getTarget()), replay.getArgs());
+                // remember what we've got last
+                recoveryResult.setResult(result);
+                // if we got a new statement (eg a prepareStatement call), save it, we'll use it for our search/replace
+                if (result instanceof CallableStatement) {
+                    callableStatementTarget.add((CallableStatement) result);
+                } else if (result instanceof PreparedStatement) {
+                    prepStatementTarget.add((PreparedStatement) result);
+                } else if (result instanceof Statement) {
+                    statementTarget.add((Statement) result);
+                }
+            } catch (Throwable t) {
+                // call the hook, if available.
+                if (connectionHook != null) {
+                    tryAgain = connectionHook.onAcquireFail(t, acquireConfig);
+                } else {
+                    logger.error("Failed to replay transaction. Sleeping for " + acquireRetryDelay + "ms and trying again. Attempts left: " + acquireRetryAttempts + ". Exception: " + t.getCause());
+                    try {
+                        Thread.sleep(acquireRetryDelay);
+                        if (acquireRetryAttempts > 0) {
+                            tryAgain = (--acquireRetryAttempts) != 0;
+                        }
+                    } catch (InterruptedException e) {
+                        tryAgain = false;
+                    }
+                }
+                if (!tryAgain) {
+                    throw new SQLException(PoolUtil.stringifyException(t));
+                }
+                break;
+            }
+        }
+    } while (tryAgain);
+    // fill last successful results
+    for (Entry<Object, Object> entry : replaceTarget.entrySet()) {
+        recoveryResult.getReplaceTarget().put(entry.getKey(), entry.getValue());
+    }
+    for (ReplayLog replay : oldReplayLog) {
+        // fix our log
+        replay.setTarget(replaceTarget.get(replay.getTarget()));
+    }
+    return recoveryResult;
+}

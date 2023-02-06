@@ -1,0 +1,138 @@
+// paste
+void paste(String sXML, int mode) throws Exception {
+    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+    factory.setValidating(true);
+    Document doc = factory.newDocumentBuilder().parse(new org.xml.sax.InputSource(new StringReader(sXML)));
+    doc.normalize();
+    // create nodes first
+    NodeList nodelist = doc.getElementsByTagName("VARIABLE");
+    ArrayList<String> sBaseNames = new ArrayList<String>();
+    Instances instances = new Instances(m_Instances, 0);
+    int nBase = instances.numAttributes();
+    for (int iNode = 0; iNode < nodelist.getLength(); iNode++) {
+        // Get element
+        ArrayList<Node> valueslist;
+        // Get the name of the node
+        valueslist = selectElements(nodelist.item(iNode), "OUTCOME");
+        int nValues = valueslist.size();
+        // generate value strings
+        ArrayList<String> nomStrings = new ArrayList<String>(nValues + 1);
+        for (int iValue = 0; iValue < nValues; iValue++) {
+            Node node = valueslist.get(iValue).getFirstChild();
+            String sValue = ((CharacterData) (node)).getData();
+            if (sValue == null) {
+                sValue = "Value" + (iValue + 1);
+            }
+            nomStrings.add(sValue);
+        }
+        ArrayList<Node> nodelist2;
+        // Get the name of the network
+        nodelist2 = selectElements(nodelist.item(iNode), "NAME");
+        if (nodelist2.size() == 0) {
+            throw new Exception("No name specified for variable");
+        }
+        String sBaseName = ((CharacterData) (nodelist2.get(0).getFirstChild())).getData();
+        sBaseNames.add(sBaseName);
+        String sNodeName = sBaseName;
+        if (getNode2(sNodeName) >= 0) {
+            sNodeName = "Copy of " + sBaseName;
+        }
+        int iAttempt = 2;
+        while (getNode2(sNodeName) >= 0) {
+            sNodeName = "Copy (" + iAttempt + ") of " + sBaseName;
+            iAttempt++;
+        }
+        Attribute att = new Attribute(sNodeName, nomStrings);
+        instances.insertAttributeAt(att, instances.numAttributes());
+        valueslist = selectElements(nodelist.item(iNode), "PROPERTY");
+        nValues = valueslist.size();
+        // generate value strings
+        int nPosX = iAttempt * 10;
+        int nPosY = iAttempt * 10;
+        for (int iValue = 0; iValue < nValues; iValue++) {
+            // parsing for strings of the form "position = (73, 165)"
+            Node node = valueslist.get(iValue).getFirstChild();
+            String sValue = ((CharacterData) (node)).getData();
+            if (sValue.startsWith("position")) {
+                int i0 = sValue.indexOf('(');
+                int i1 = sValue.indexOf(',');
+                int i2 = sValue.indexOf(')');
+                String sX = sValue.substring(i0 + 1, i1).trim();
+                String sY = sValue.substring(i1 + 1, i2).trim();
+                try {
+                    nPosX = (Integer.parseInt(sX) + iAttempt * 10);
+                    nPosY = (Integer.parseInt(sY) + iAttempt * 10);
+                } catch (NumberFormatException e) {
+                    System.err.println("Wrong number format in position :(" + sX + "," + sY + ")");
+                }
+            }
+        }
+        if (mode == EXECUTE) {
+            m_nPositionX.add(nPosX);
+            m_nPositionY.add(nPosY);
+        }
+    }
+    ArrayList<Node> nodelist2;
+    Estimator[][] distributions = new Estimator[nBase + sBaseNames.size()][];
+    ParentSet[] parentsets = new ParentSet[nBase + sBaseNames.size()];
+    for (int iNode = 0; iNode < nBase; iNode++) {
+        distributions[iNode] = m_Distributions[iNode];
+        parentsets[iNode] = m_ParentSets[iNode];
+    }
+    if (mode == EXECUTE) {
+        m_Instances = instances;
+    }
+    // create arrows & create distributions
+    for (int iNode = 0; iNode < sBaseNames.size(); iNode++) {
+        // find definition that goes with this node
+        String sName = sBaseNames.get(iNode);
+        Element definition = getDefinition(doc, sName);
+        parentsets[nBase + iNode] = new ParentSet();
+        // get the parents for this node
+        // resolve structure
+        nodelist2 = selectElements(definition, "GIVEN");
+        for (int iParent = 0; iParent < nodelist2.size(); iParent++) {
+            Node parentName = nodelist2.get(iParent).getFirstChild();
+            String sParentName = ((CharacterData) (parentName)).getData();
+            int nParent = -1;
+            for (int iBase = 0; iBase < sBaseNames.size(); iBase++) {
+                if (sParentName.equals(sBaseNames.get(iBase))) {
+                    nParent = nBase + iBase;
+                }
+            }
+            if (nParent < 0) {
+                nParent = getNode(sParentName);
+            }
+            parentsets[nBase + iNode].addParent(nParent, instances);
+        }
+        // resolve conditional probability table
+        int nCardinality = parentsets[nBase + iNode].getCardinalityOfParents();
+        int nValues = instances.attribute(nBase + iNode).numValues();
+        distributions[nBase + iNode] = new Estimator[nCardinality];
+        for (int i = 0; i < nCardinality; i++) {
+            distributions[nBase + iNode][i] = new DiscreteEstimatorBayes(nValues, 0.0f);
+        }
+        String sTable = getContent((Element) selectElements(definition, "TABLE").get(0));
+        sTable = sTable.replaceAll("\\n", " ");
+        StringTokenizer st = new StringTokenizer(sTable.toString());
+        for (int i = 0; i < nCardinality; i++) {
+            DiscreteEstimatorBayes d = (DiscreteEstimatorBayes) distributions[nBase + iNode][i];
+            for (int iValue = 0; iValue < nValues; iValue++) {
+                String sWeight = st.nextToken();
+                d.addValue(iValue, new Double(sWeight).doubleValue());
+            }
+        }
+        if (mode == EXECUTE) {
+            m_nEvidence.add(nBase + iNode, -1);
+            m_fMarginP.add(nBase + iNode, new double[getCardinality(nBase + iNode)]);
+        }
+    }
+    if (mode == EXECUTE) {
+        m_Distributions = distributions;
+        m_ParentSets = parentsets;
+    }
+    // update undo stack
+    if (mode == EXECUTE && m_bNeedsUndoAction) {
+        addUndoAction(new PasteAction(sXML, nBase));
+    }
+}

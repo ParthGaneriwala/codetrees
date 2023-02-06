@@ -1,0 +1,43 @@
+public void dropSchema(Session session, String name, boolean cascade) {
+    Schema schema = (Schema) schemaMap.get(name);
+    if (schema == null) {
+        throw Error.error(ErrorCode.X_42501, name);
+    }
+    if (SqlInvariants.isLobsSchemaName(name)) {
+        throw Error.error(ErrorCode.X_42503, name);
+    }
+    if (!cascade && !schema.isEmpty()) {
+        throw Error.error(ErrorCode.X_2B000);
+    }
+    OrderedHashSet externalReferences = new OrderedHashSet();
+    getCascadingSchemaReferences(schema.getName(), externalReferences);
+    removeSchemaObjects(externalReferences);
+    Iterator tableIterator = schema.schemaObjectIterator(SchemaObject.TABLE);
+    while (tableIterator.hasNext()) {
+        Table table = ((Table) tableIterator.next());
+        Constraint[] list = table.getFKConstraints();
+        for (int i = 0; i < list.length; i++) {
+            Constraint constraint = list[i];
+            if (constraint.getMain().getSchemaName() != schema.getName()) {
+                constraint.getMain().removeConstraint(constraint.getMainName().name);
+            }
+        }
+        removeTable(session, table);
+    }
+    Iterator sequenceIterator = schema.schemaObjectIterator(SchemaObject.SEQUENCE);
+    while (sequenceIterator.hasNext()) {
+        NumberSequence sequence = ((NumberSequence) sequenceIterator.next());
+        database.getGranteeManager().removeDbObject(sequence.getName());
+    }
+    schema.clearStructures();
+    schemaMap.remove(name);
+    if (defaultSchemaHsqlName.name.equals(name)) {
+        HsqlName hsqlName = database.nameManager.newHsqlName(name, false, SchemaObject.SCHEMA);
+        schema = new Schema(hsqlName, database.getGranteeManager().getDBARole());
+        defaultSchemaHsqlName = schema.getName();
+        schemaMap.put(schema.getName().name, schema);
+    }
+    // these are called last and in this particular order
+    database.getUserManager().removeSchemaReference(name);
+    database.getSessionManager().removeSchemaReference(schema);
+}

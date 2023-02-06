@@ -1,0 +1,42 @@
+private void verifyBlock(Block block) {
+    BlockSender blockSender = null;
+    /* In case of failure, attempt to read second time to reduce
+     * transient errors. How do we flush block data from kernel 
+     * buffers before the second read? 
+     */
+    for (int i = 0; i < 2; i++) {
+        boolean second = (i > 0);
+        try {
+            adjustThrottler();
+            blockSender = new BlockSender(block, 0, -1, false, false, true, datanode);
+            DataOutputStream out = new DataOutputStream(new IOUtils.NullOutputStream());
+            blockSender.sendBlock(out, null, throttler);
+            LOG.info((second ? "Second " : "") + "Verification succeeded for " + block);
+            if (second) {
+                totalTransientErrors++;
+            }
+            updateScanStatus(block, ScanType.VERIFICATION_SCAN, true);
+            return;
+        } catch (IOException e) {
+            totalScanErrors++;
+            updateScanStatus(block, ScanType.VERIFICATION_SCAN, false);
+            // If the block does not exists anymore, then its not an error
+            if (dataset.getFile(block) == null) {
+                LOG.info("Verification failed for " + block + ". Its ok since " + "it not in datanode dataset anymore.");
+                deleteBlock(block);
+                return;
+            }
+            LOG.warn((second ? "Second " : "First ") + "Verification failed for " + block + ". Exception : " + StringUtils.stringifyException(e));
+            if (second) {
+                datanode.getMetrics().blockVerificationFailures.inc();
+                handleScanFailure(block);
+                return;
+            }
+        } finally {
+            IOUtils.closeStream(blockSender);
+            datanode.getMetrics().blocksVerified.inc();
+            totalScans++;
+            totalVerifications++;
+        }
+    }
+}

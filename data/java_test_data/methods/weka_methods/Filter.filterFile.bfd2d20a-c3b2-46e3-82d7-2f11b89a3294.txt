@@ -1,0 +1,132 @@
+public static void filterFile(Filter filter, String[] options) throws Exception {
+    boolean debug = false;
+    Instances data = null;
+    DataSource input = null;
+    PrintWriter output = null;
+    boolean helpRequest;
+    String sourceCode = "";
+    int maxDecimalPlaces = 6;
+    try {
+        helpRequest = Utils.getFlag('h', options);
+        if (Utils.getFlag('d', options)) {
+            debug = true;
+        }
+        String infileName = Utils.getOption('i', options);
+        String outfileName = Utils.getOption('o', options);
+        String classIndex = Utils.getOption('c', options);
+        if (filter instanceof Sourcable) {
+            sourceCode = Utils.getOption('z', options);
+        }
+        String tmpStr = Utils.getOption("decimal", options);
+        if (tmpStr.length() > 0) {
+            maxDecimalPlaces = Integer.parseInt(tmpStr);
+        }
+        if (filter instanceof OptionHandler) {
+            ((OptionHandler) filter).setOptions(options);
+        }
+        Utils.checkForRemainingOptions(options);
+        if (helpRequest) {
+            throw new Exception("Help requested.\n");
+        }
+        if (infileName.length() != 0) {
+            input = new DataSource(infileName);
+        } else {
+            input = new DataSource(System.in);
+        }
+        if (outfileName.length() != 0) {
+            output = new PrintWriter(new FileOutputStream(outfileName));
+        } else {
+            output = new PrintWriter(System.out);
+        }
+        data = input.getStructure();
+        if (classIndex.length() != 0) {
+            if (classIndex.equals("first")) {
+                data.setClassIndex(0);
+            } else if (classIndex.equals("last")) {
+                data.setClassIndex(data.numAttributes() - 1);
+            } else {
+                data.setClassIndex(Integer.parseInt(classIndex) - 1);
+            }
+        }
+    } catch (Exception ex) {
+        String filterOptions = "";
+        // Output the error and also the valid options
+        if (filter instanceof OptionHandler) {
+            filterOptions += "\nFilter options:\n\n";
+            Enumeration<Option> enu = ((OptionHandler) filter).listOptions();
+            while (enu.hasMoreElements()) {
+                Option option = enu.nextElement();
+                filterOptions += option.synopsis() + '\n' + option.description() + "\n";
+            }
+        }
+        String genericOptions = "\nGeneral options:\n\n" + "-h\n" + "\tGet help on available options.\n" + "\t(use -b -h for help on batch mode.)\n" + "-i <file>\n" + "\tThe name of the file containing input instances.\n" + "\tIf not supplied then instances will be read from stdin.\n" + "-o <file>\n" + "\tThe name of the file output instances will be written to.\n" + "\tIf not supplied then instances will be written to stdout.\n" + "-c <class index>\n" + "\tThe number of the attribute to use as the class.\n" + "\t\"first\" and \"last\" are also valid entries.\n" + "\tIf not supplied then no class is assigned.\n" + "-decimal <integer>\n" + "\tThe maximum number of digits to print after the decimal\n" + "\tplace for numeric values (default: 6)\n";
+        if (filter instanceof Sourcable) {
+            genericOptions += "-z <class name>\n" + "\tOutputs the source code representing the trained filter.\n";
+        }
+        throw new Exception('\n' + ex.getMessage() + filterOptions + genericOptions);
+    }
+    if (debug) {
+        System.err.println("Setting input format");
+    }
+    boolean printedHeader = false;
+    if (filter.setInputFormat(data)) {
+        if (debug) {
+            System.err.println("Getting output format");
+        }
+        output.println(filter.getOutputFormat().toString());
+        printedHeader = true;
+    }
+    // Pass all the instances to the filter
+    Instance inst;
+    while (input.hasMoreElements(data)) {
+        inst = input.nextElement(data);
+        if (debug) {
+            System.err.println("Input instance to filter");
+        }
+        if (filter.input(inst)) {
+            if (debug) {
+                System.err.println("Filter said collect immediately");
+            }
+            if (!printedHeader) {
+                throw new Error("Filter didn't return true from setInputFormat() " + "earlier!");
+            }
+            if (debug) {
+                System.err.println("Getting output instance");
+            }
+            output.println(filter.output().toStringMaxDecimalDigits(maxDecimalPlaces));
+        }
+    }
+    // Say that input has finished, and print any pending output instances
+    if (debug) {
+        System.err.println("Setting end of batch");
+    }
+    if (filter.batchFinished()) {
+        if (debug) {
+            System.err.println("Filter said collect output");
+        }
+        if (!printedHeader) {
+            if (debug) {
+                System.err.println("Getting output format");
+            }
+            output.println(filter.getOutputFormat().toString());
+        }
+        if (debug) {
+            System.err.println("Getting output instance");
+        }
+        while (filter.numPendingOutput() > 0) {
+            output.println(filter.output().toStringMaxDecimalDigits(maxDecimalPlaces));
+            if (debug) {
+                System.err.println("Getting output instance");
+            }
+        }
+    }
+    if (debug) {
+        System.err.println("Done");
+    }
+    if (output != null) {
+        output.close();
+    }
+    if (sourceCode.length() != 0) {
+        System.out.println(wekaStaticWrapper((Sourcable) filter, sourceCode, data, filter.getOutputFormat()));
+    }
+}

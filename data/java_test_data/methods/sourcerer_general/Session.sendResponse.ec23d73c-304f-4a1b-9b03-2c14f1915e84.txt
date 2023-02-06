@@ -1,0 +1,40 @@
+public void sendResponse(SipResponse response, boolean reliable) throws IOException {
+    ServerTransaction tx = (ServerTransaction) response.getTransaction();
+    if (tx != null) {
+        if (tx.isCompleted())
+            throw new IllegalStateException("transaction terminated for response " + response.getRequestLine());
+        tx.setListener(this);
+    }
+    updateState(response, false);
+    SipRequest request = (SipRequest) response.getRequest();
+    if (request.isInitial() && (response.to().getParameter(SipParams.TAG) == null)) {
+        String tag = _localParty.getParameter(SipParams.TAG);
+        if (tag == null)
+            tag = ID.newTag();
+        response.to().setParameter(SipParams.TAG, tag);
+    }
+    if (request.isInvite() || request.isSubscribe())
+        setRemoteTarget(request);
+    if (request.isInvite()) {
+        int status = response.getStatus();
+        long cseq = response.getCSeq().getNumber();
+        if (200 <= status && (status < 300)) {
+            ServerInvite invite = getServerInvite(cseq, true);
+            invite.set2xx(response);
+        } else if ((100 < status) && (status < 200) && reliable) {
+            ServerInvite invite = getServerInvite(cseq, true);
+            long rseq = _localRSeq++;
+            response.getFields().addString(SipHeaders.REQUIRE_BUFFER, SipParams.REL_100);
+            response.setRSeq(rseq);
+            invite.addReliable1xx(response);
+        } else if (status >= 300) {
+            ServerInvite invite = getServerInvite(cseq, false);
+            if (invite != null)
+                invite.stop1xxRetrans();
+        }
+    }
+    if (tx != null)
+        tx.send(response);
+    else
+        getServer().getConnectorManager().sendResponse(response);
+}

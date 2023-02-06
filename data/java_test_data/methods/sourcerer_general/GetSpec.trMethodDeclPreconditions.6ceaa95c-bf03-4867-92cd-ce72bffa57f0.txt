@@ -1,0 +1,73 @@
+/**
+ * Computes the preconditions, according to section 7.2.0 of ESCJ 16.
+ */
+private static ConditionVec trMethodDeclPreconditions(/* @ non_null */
+DerivedMethodDecl dmd, ExprVec preAssumptions) {
+    ConditionVec pre = ConditionVec.make();
+    // Account for properties about parameters
+    for (int i = 0; i < dmd.args.size(); i++) {
+        FormalParaDecl arg = dmd.args.elementAt(i);
+        if (i == 0 && arg == GC.thisvar.decl) {
+            // the special parameter "this"
+            addFreeTypeCorrectAs(arg, TypeSig.getSig(dmd.getContainingClass()), pre);
+            VariableAccess argAccess = TrAnExpr.makeVarAccess(arg, Location.NULL);
+            Expr nonnull = GC.nary(TagConstants.REFNE, argAccess, GC.nulllit);
+            Condition cond = GC.freeCondition(nonnull, Location.NULL);
+            pre.addElement(cond);
+        } else {
+            // regular parameters
+            addFreeTypeCorrectAs(arg, arg.type, pre);
+        /*
+         * non_null is handled in the desugaring SimpleModifierPragma
+         * nonNullPragma = NonNullPragma(arg); if (nonNullPragma != null) {
+         * VariableAccess argAccess = TrAnExpr.makeVarAccess(arg,
+         * Location.NULL); Expr nonnull = GC.nary(TagConstants.REFNE, argAccess,
+         * GC.nulllit); Condition cond = GC.freeCondition(nonnull,
+         * nonNullPragma.getStartLoc()); pre.addElement(cond); }
+         */
+        }
+    }
+    if (dmd.isConstructor()) {
+        // Free: RES != null && !isAllocated(RES, wt[[alloc]])
+        Expr nonnull = GC.nary(TagConstants.REFNE, GC.resultvar, GC.nulllit);
+        Expr allocated = GC.nary(TagConstants.ISALLOCATED, GC.resultvar, GC.allocvar);
+        // (VariableAccess)wt.get(GC.allocvar.decl));
+        Expr notAllocated = GC.not(allocated);
+        preAssumptions.addElement(nonnull);
+        preAssumptions.addElement(notAllocated);
+    }
+    // Add the declared preconditions
+    // Make the disjunction of all of the preconditions
+    java.util.Set axsToAdd = new java.util.HashSet();
+    if (dmd.requires.size() != 0) {
+        Expr expr = dmd.requires.elementAt(0).expr;
+        int loc = dmd.requires.elementAt(0).getStartLoc();
+        for (int i = 1; i < dmd.requires.size(); ++i) {
+            ExprModifierPragma e = dmd.requires.elementAt(i);
+            if (loc == Location.NULL)
+                loc = e.getStartLoc();
+            expr = BinaryExpr.make(TagConstants.OR, expr, e.expr, loc);
+            javafe.tc.FlowInsensitiveChecks.setType(expr, Types.booleanType);
+        }
+        TrAnExpr.initForClause();
+        Hashtable map = null;
+        if (dmd.isConstructor()) {
+            map = new Hashtable();
+            map.put(GC.thisvar.decl, GC.resultvar);
+        // map.put(GC.thisvar.decl, temporary(GC.resultvar.id.toString(), scall,
+        // scall)
+        }
+        Expr pred = TrAnExpr.trSpecExpr(expr, map, null);
+        // Expr pred = TrAnExpr.trSpecExpr(expr);
+        if (TrAnExpr.extraSpecs) {
+            preAssumptions.append(TrAnExpr.trSpecExprAuxAssumptions);
+            preAssumptions.append(TrAnExpr.trSpecExprAuxConditions);
+            axsToAdd.addAll(TrAnExpr.trSpecAuxAxiomsNeeded);
+            TrAnExpr.closeForClause();
+        }
+        Condition cond = GC.condition(TagConstants.CHKPRECONDITION, pred, loc);
+        pre.addElement(cond);
+    }
+    addAxioms(axsToAdd, preAssumptions);
+    return pre;
+}

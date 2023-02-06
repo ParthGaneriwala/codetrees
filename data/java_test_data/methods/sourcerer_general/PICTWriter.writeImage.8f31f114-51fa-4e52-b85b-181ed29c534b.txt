@@ -1,0 +1,104 @@
+void writeImage() throws JimiException, IOException {
+    // not set
+    int imageMode = -1;
+    ColorModel cm = ji_.getColorModel();
+    int width = ji_.getWidth();
+    int height = ji_.getHeight();
+    if (width > 32767 || height > 32767)
+        throw new JimiException("PICT only saves images < 32767 in width or height");
+    width_ = (short) width;
+    height_ = (short) height;
+    // if color model to save is 16 bit / 24 bit / 32 bit then opcode 9A
+    if (cm instanceof DirectColorModel) {
+        int pixelSize = cm.getPixelSize();
+        DirectColorModel dcm = (DirectColorModel) cm;
+        int redMask = dcm.getRedMask();
+        int greenMask = dcm.getGreenMask();
+        int blueMask = dcm.getBlueMask();
+        if (pixelSize <= 8 && redMask == greenMask && greenMask == blueMask) {
+            imageMode = GRAYSCALE;
+            pixelSize_ = (short) pixelSize;
+        }
+    } else if (cm instanceof IndexColorModel) {
+        // save in output a pixmap structure
+        imageMode = PALETTE;
+        pixelSize_ = (short) cm.getPixelSize();
+    // only pixel sizes of 1, 2, 4, 8 are supported
+    }
+    if (// default case of RGB 24 bit
+    imageMode == -1) {
+        imageMode = RGB;
+        // default output RGB default
+        ji_.setRGBDefault(true);
+        // size of pixels to write to header
+        pixelSize_ = 32;
+    }
+    // Calculate rowBytes for given image mode
+    switch(imageMode) {
+        case GRAYSCALE:
+            if (// Black & White only
+            pixelSize_ == 1) {
+                // 8 bits per byte
+                rowBytes_ = (short) (width_ / 8 + ((width % 8) != 0 ? 1 : 0));
+                break;
+            }
+        case PALETTE:
+            rowBytes_ = (short) (((width_ * 8) / pixelSize_) + (((width * 8) % pixelSize_) != 0 ? 1 : 0));
+            break;
+        case RGB:
+            // 4 components are not supported
+            rowBytes_ = (short) (3 * width_);
+            break;
+    }
+    compress_ = (rowBytes_ >= 8) || pixelSize_ == 32;
+    // output the correct opcode for the image data
+    if (imageMode == RGB)
+        // opcode
+        out_.writeShort(PICT_9A);
+    else {
+        if (compress_)
+            // opcode
+            out_.writeShort(PICT_PACKBITSRECT);
+        else
+            // opcode
+            out_.writeShort(PICT_BITSRECT);
+    }
+    // Output the image data
+    switch(imageMode) {
+        case GRAYSCALE:
+            // only pixel sizes of 1, 2, 4, 8 are supported
+            if (pixelSize_ == 1) {
+                // 8 bits per byte
+                out_.writeShort(rowBytes_);
+                writeBitmap();
+                writeSrcDestMode();
+                // flag true if zero value pixels are White in the image to be encoded
+                // default because DirectColorModel is this
+                boolean zeroIsWhite = false;
+                writeBitmapImageData(zeroIsWhite);
+                // exit switch()
+                break;
+            }
+        case PALETTE:
+            packType_ = 0;
+            // with flag for pixmap
+            out_.writeShort(rowBytes_ | 0x8000);
+            writePixmap();
+            writeColorTable(cm);
+            writeSrcDestMode();
+            writeImageData();
+            break;
+        case RGB:
+            // drop high byte compress based on rowByte length
+            packType_ = 4;
+            // and drop high byte of 32 bits. so Reds, Greens, Blues
+            // rowbytes is not written out for pixmap9A
+            writePixmap9A();
+            writeSrcDestMode();
+            writeDirectImageData();
+            break;
+    }
+    // write out end of data opcode
+    // end opcode
+    out_.writeShort(PICT_END);
+}

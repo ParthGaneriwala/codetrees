@@ -1,0 +1,98 @@
+private static void loadDirFromProject(HashMap<IProject, Boolean> projectSearchMap, boolean isrecursed, IProject project, ArrayList<IPath> srcDirList, ArrayList<URI> targetFileList, ArrayList<URI> classPathList) {
+    // if we already searched this project
+    if (projectSearchMap.get(project) != null) {
+        return;
+    // we haven't searched this project yet
+    } else {
+        // add to cache
+        projectSearchMap.put(project, true);
+    }
+    // stopping condition: project already searched
+    try {
+        IProject[] projectList = project.getReferencedProjects();
+        for (IProject p : projectList) {
+            loadDirFromProject(projectSearchMap, true, p, srcDirList, targetFileList, classPathList);
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+    IJavaProject javaProject = JavaCore.create(project);
+    IPath defaultOutputLocationRelative = null;
+    try {
+        defaultOutputLocationRelative = javaProject.getOutputLocation();
+    } catch (Exception e) {
+        e.printStackTrace();
+        return;
+    }
+    sLogger.info("DEFAULT OUTPUT LOCATION RELATIVE: " + defaultOutputLocationRelative);
+    IPath projectLocationAbsolute = project.getLocation();
+    sLogger.info("PROJECT LOCATION: " + projectLocationAbsolute);
+    // Make path absolute
+    IPath defaultOutputLocationAbsolute = projectLocationAbsolute.append(defaultOutputLocationRelative.removeFirstSegments(1));
+    sLogger.info("DEFAULT OUTPUT LOCATION ABSOLUTE: " + defaultOutputLocationAbsolute);
+    // Work around, stomp over target java files. Instead, just give the
+    // root directory
+    sLogger.info("WORKAROUND: IGNORE CHANGED CLASS FILES< RECHECK EVERYTHING");
+    if (!isrecursed) {
+        URI uri = defaultOutputLocationAbsolute.toFile().toURI();
+        if (uri != null) {
+            targetFileList.add(uri);
+        }
+    }
+    // Add to input
+    URI cURI = defaultOutputLocationAbsolute.toFile().toURI();
+    if (cURI != null) {
+        classPathList.add(cURI);
+    }
+    // Loop through classpath entries and get src directory list
+    IClasspathEntry[] rawClassPathList = null;
+    try {
+        rawClassPathList = javaProject.getRawClasspath();
+    } catch (JavaModelException e) {
+        e.printStackTrace();
+    }
+    if (rawClassPathList != null) {
+        for (IClasspathEntry classPathEntry : rawClassPathList) {
+            switch(classPathEntry.getEntryKind()) {
+                // Source Directory
+                case IClasspathEntry.CPE_SOURCE:
+                    {
+                        if (!isrecursed) {
+                            IPath p = classPathEntry.getPath().removeFirstSegments(1);
+                            if (p != null) {
+                                srcDirList.add(p);
+                                sLogger.info("CPE_SOURCE: " + p);
+                            }
+                        }
+                        break;
+                    }
+                // external libraries used
+                case IClasspathEntry.CPE_LIBRARY:
+                    {
+                        File file = classPathEntry.getPath().toFile();
+                        IPath p;
+                        // or it could be an absolute path to a library.
+                        if (file.isFile() || file.isDirectory()) {
+                            p = classPathEntry.getPath();
+                        } else {
+                            p = projectLocationAbsolute.append(classPathEntry.getPath().removeFirstSegments(1));
+                        }
+                        URI uri = p.toFile().toURI();
+                        if (uri != null) {
+                            classPathList.add(uri);
+                        }
+                        sLogger.info("CPE_LIBRARY: " + uri);
+                        break;
+                    }
+                // ignore
+                case IClasspathEntry.CPE_CONTAINER:
+                    sLogger.info("CPE_CONTAINER: " + classPathEntry);
+                    break;
+                // ignore
+                case IClasspathEntry.CPE_PROJECT:
+                    sLogger.info("CPE_PROJECT: " + classPathEntry);
+                    break;
+            }
+        }
+    }
+}

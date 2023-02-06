@@ -1,0 +1,63 @@
+public ResultSet extractForeignKeyFromCreateTable(String catalog, String tableName) throws SQLException {
+    ArrayList tableList = new ArrayList();
+    java.sql.ResultSet rs = null;
+    java.sql.Statement stmt = null;
+    if (tableName != null) {
+        tableList.add(tableName);
+    } else {
+        try {
+            rs = getTables(catalog, "", "%", new String[] { "TABLE" });
+            while (rs.next()) {
+                tableList.add(rs.getString("TABLE_NAME"));
+            }
+        } finally {
+            if (rs != null) {
+                rs.close();
+            }
+            rs = null;
+        }
+    }
+    ArrayList rows = new ArrayList();
+    Field[] fields = new Field[3];
+    fields[0] = new Field("", "Name", Types.CHAR, Integer.MAX_VALUE);
+    fields[1] = new Field("", "Type", Types.CHAR, 255);
+    fields[2] = new Field("", "Comment", Types.CHAR, Integer.MAX_VALUE);
+    int numTables = tableList.size();
+    stmt = this.conn.getMetadataSafeStatement();
+    String quoteChar = getIdentifierQuoteString();
+    if (quoteChar == null) {
+        quoteChar = "`";
+    }
+    try {
+        for (int i = 0; i < numTables; i++) {
+            String tableToExtract = (String) tableList.get(i);
+            if (tableToExtract.indexOf(quoteChar) > 0) {
+                tableToExtract = StringUtils.escapeQuote(tableToExtract, quoteChar);
+            }
+            String query = new StringBuffer("SHOW CREATE TABLE ").append(quoteChar).append(catalog).append(quoteChar).append(".").append(quoteChar).append(tableToExtract).append(quoteChar).toString();
+            try {
+                rs = stmt.executeQuery(query);
+            } catch (SQLException sqlEx) {
+                // Table might've disappeared on us, not really an error
+                String sqlState = sqlEx.getSQLState();
+                if (!"42S02".equals(sqlState) && sqlEx.getErrorCode() != MysqlErrorNumbers.ER_NO_SUCH_TABLE) {
+                    throw sqlEx;
+                }
+                continue;
+            }
+            while (rs.next()) {
+                extractForeignKeyForTable(rows, rs, catalog);
+            }
+        }
+    } finally {
+        if (rs != null) {
+            rs.close();
+        }
+        rs = null;
+        if (stmt != null) {
+            stmt.close();
+        }
+        stmt = null;
+    }
+    return buildResultSet(fields, rows);
+}

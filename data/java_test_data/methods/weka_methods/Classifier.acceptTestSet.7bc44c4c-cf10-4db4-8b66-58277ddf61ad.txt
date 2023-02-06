@@ -1,0 +1,215 @@
+@Override
+public synchronized void acceptTestSet(TestSetEvent e) {
+    if (m_reject) {
+        if (m_log != null) {
+            m_log.statusMessage(statusMessagePrefix() + "BUSY. Can't accept data " + "at this time.");
+            m_log.logMessage("[Classifier] " + statusMessagePrefix() + " BUSY. Can't accept data at this time.");
+        }
+        return;
+    }
+    Instances testSet = e.getTestSet();
+    if (testSet != null) {
+        if (testSet.classIndex() < 0) {
+            // testSet.setClassIndex(testSet.numAttributes() - 1);
+            // stop all processing
+            stop();
+            String errorMessage = statusMessagePrefix() + "ERROR: no class attribute set in test data!";
+            if (m_log != null) {
+                m_log.statusMessage(errorMessage);
+                m_log.logMessage("[Classifier] " + errorMessage);
+            } else {
+                System.err.println("[Classifier] " + errorMessage);
+            }
+            return;
+        }
+    }
+    if (m_loadModelFileName != null && m_loadModelFileName.length() > 0 && m_state == IDLE && !m_listenees.containsKey("trainingSet") && e.getMaxRunNumber() == 1 && e.getMaxSetNumber() == 1) {
+        // load model (if specified)
+        String resolvedFileName = m_loadModelFileName;
+        if (m_env != null) {
+            try {
+                resolvedFileName = m_env.substitute(resolvedFileName);
+            } catch (Exception ex) {
+            }
+        }
+        File loadFrom = new File(resolvedFileName);
+        try {
+            loadFromFile(loadFrom);
+        } catch (Exception ex) {
+            stop();
+            m_log.statusMessage(statusMessagePrefix() + "ERROR: unable to load " + "model (see log).");
+            m_log.logMessage("[Classifier] " + statusMessagePrefix() + "Problem loading classifier. " + ex.getMessage());
+            return;
+        }
+    }
+    weka.classifiers.Classifier classifierToUse = m_Classifier;
+    // last saved model
+    if (classifierToUse != null && m_state == IDLE && (!m_listenees.containsKey("trainingSet"))) {
+        // if this is structure only then just return at this point
+        if (e.getTestSet() != null && e.isStructureOnly()) {
+            return;
+        }
+        if (classifierToUse instanceof EnvironmentHandler && m_env != null) {
+            ((EnvironmentHandler) classifierToUse).setEnvironment(m_env);
+        }
+        if (classifierToUse instanceof weka.classifiers.misc.InputMappedClassifier) {
+            // is loading a model from a file).
+            try {
+                m_trainingSet = ((weka.classifiers.misc.InputMappedClassifier) classifierToUse).getModelHeader(// this returns the argument if a
+                m_trainingSet);
+            // model is not being loaded
+            } catch (Exception e1) {
+                // TODO Auto-generated catch block
+                e1.printStackTrace();
+            }
+        }
+        // then it means that no model has been loaded
+        if (m_trainingSet == null) {
+            stop();
+            String errorMessage = statusMessagePrefix() + "ERROR: no trained/loaded classifier to use for prediction!";
+            if (m_log != null) {
+                m_log.statusMessage(errorMessage);
+                m_log.logMessage("[Classifier] " + errorMessage);
+            } else {
+                System.err.println("[Classifier] " + errorMessage);
+            }
+            return;
+        }
+        testSet = e.getTestSet();
+        if (e.getRunNumber() == 1 && e.getSetNumber() == 1) {
+            m_currentBatchIdentifier = new Date();
+        }
+        if (testSet != null) {
+            if (!m_trainingSet.equalHeaders(testSet) && !(classifierToUse instanceof weka.classifiers.misc.InputMappedClassifier)) {
+                boolean wrapClassifier = false;
+                if (!Utils.getDontShowDialog("weka.gui.beans.Classifier.AutoWrapInInputMappedClassifier")) {
+                    // .getLocalGraphicsEnvironment();
+                    if (!GraphicsEnvironment.isHeadless()) {
+                        JCheckBox dontShow = new JCheckBox("Do not show this message again");
+                        Object[] stuff = new Object[2];
+                        stuff[0] = "Data used to train model and test set are not compatible.\n" + "Would you like to automatically wrap the classifier in\n" + "an \"InputMappedClassifier\" before proceeding?.\n";
+                        stuff[1] = dontShow;
+                        int result = JOptionPane.showConfirmDialog(this, stuff, "KnowledgeFlow:Classifier", JOptionPane.YES_OPTION);
+                        if (result == JOptionPane.YES_OPTION) {
+                            wrapClassifier = true;
+                        }
+                        if (dontShow.isSelected()) {
+                            String response = (wrapClassifier) ? "yes" : "no";
+                            try {
+                                Utils.setDontShowDialogResponse("weka.gui.explorer.ClassifierPanel.AutoWrapInInputMappedClassifier", response);
+                            } catch (Exception e1) {
+                                // TODO Auto-generated catch block
+                                e1.printStackTrace();
+                            }
+                        }
+                    } else {
+                        // running headless, so just go ahead and wrap anyway
+                        wrapClassifier = true;
+                    }
+                } else {
+                    // What did the user say - do they want to autowrap or not?
+                    String response;
+                    try {
+                        response = Utils.getDontShowDialogResponse("weka.gui.explorer.ClassifierPanel.AutoWrapInInputMappedClassifier");
+                        if (response != null && response.equalsIgnoreCase("yes")) {
+                            wrapClassifier = true;
+                        }
+                    } catch (Exception e1) {
+                        // TODO Auto-generated catch block
+                        e1.printStackTrace();
+                    }
+                }
+                if (wrapClassifier) {
+                    weka.classifiers.misc.InputMappedClassifier temp = new weka.classifiers.misc.InputMappedClassifier();
+                    temp.setClassifier(classifierToUse);
+                    temp.setModelHeader(new Instances(m_trainingSet, 0));
+                    classifierToUse = temp;
+                }
+            }
+            if (m_trainingSet.equalHeaders(testSet) || (classifierToUse instanceof weka.classifiers.misc.InputMappedClassifier)) {
+                BatchClassifierEvent ce = new BatchClassifierEvent(this, classifierToUse, new DataSetEvent(this, m_trainingSet), new DataSetEvent(this, e.getTestSet()), e.getRunNumber(), e.getMaxRunNumber(), e.getSetNumber(), e.getMaxSetNumber());
+                ce.setGroupIdentifier(m_currentBatchIdentifier.getTime());
+                ce.setLabel(getCustomName());
+                if (m_log != null && !e.isStructureOnly()) {
+                    m_log.statusMessage(statusMessagePrefix() + "Finished.");
+                }
+                m_batchStarted = false;
+                notifyBatchClassifierListeners(ce);
+            } else {
+                // all class values are missing
+                if (testSet.numInstances() > 0) {
+                    if (testSet.classIndex() == m_trainingSet.classIndex() && allMissingClass(testSet)) {
+                        // now check the other attributes against the training
+                        // structure
+                        boolean ok = true;
+                        for (int i = 0; i < testSet.numAttributes(); i++) {
+                            if (i != testSet.classIndex()) {
+                                ok = testSet.attribute(i).equals(m_trainingSet.attribute(i));
+                                if (!ok) {
+                                    break;
+                                }
+                            }
+                        }
+                        if (ok) {
+                            BatchClassifierEvent ce = new BatchClassifierEvent(this, classifierToUse, new DataSetEvent(this, m_trainingSet), new DataSetEvent(this, e.getTestSet()), e.getRunNumber(), e.getMaxRunNumber(), e.getSetNumber(), e.getMaxSetNumber());
+                            ce.setGroupIdentifier(m_currentBatchIdentifier.getTime());
+                            ce.setLabel(getCustomName());
+                            if (m_log != null && !e.isStructureOnly()) {
+                                m_log.statusMessage(statusMessagePrefix() + "Finished.");
+                            }
+                            m_batchStarted = false;
+                            notifyBatchClassifierListeners(ce);
+                        } else {
+                            stop();
+                            String errorMessage = statusMessagePrefix() + "ERROR: structure of training and test sets is not compatible!";
+                            if (m_log != null) {
+                                m_log.statusMessage(errorMessage);
+                                m_log.logMessage("[Classifier] " + errorMessage);
+                            } else {
+                                System.err.println("[Classifier] " + errorMessage);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        /*
+       * System.err.println("[Classifier] accepting test set: run " +
+       * e.getRunNumber() + " fold " + e.getSetNumber());
+       */
+        if (e.getRunNumber() == 1 && e.getSetNumber() == 1) {
+            if (!m_batchStarted) {
+                m_outputQueues = new BatchClassifierEvent[e.getMaxRunNumber()][e.getMaxSetNumber()];
+                m_completedSets = new boolean[e.getMaxRunNumber()][e.getMaxSetNumber()];
+                m_currentBatchIdentifier = new Date();
+                m_batchStarted = true;
+            }
+        }
+        if (m_outputQueues[e.getRunNumber() - 1][e.getSetNumber() - 1] == null) {
+            if (!e.isStructureOnly()) {
+                // store an event with a null model and training set (to be filled in
+                // later)
+                m_outputQueues[e.getRunNumber() - 1][e.getSetNumber() - 1] = new BatchClassifierEvent(this, null, null, new DataSetEvent(this, e.getTestSet()), e.getRunNumber(), e.getMaxRunNumber(), e.getSetNumber(), e.getMaxSetNumber());
+                m_outputQueues[e.getRunNumber() - 1][e.getSetNumber() - 1].setLabel(getCustomName());
+                if (e.getRunNumber() == e.getMaxRunNumber() && e.getSetNumber() == e.getMaxSetNumber()) {
+                    /*
+             * System.err.println(
+             * "[Classifier] blocking on last fold of last run..." );
+             * block(true);
+             */
+                    if (e.getMaxSetNumber() != 1) {
+                        m_reject = true;
+                        if (m_block) {
+                            block(true);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Otherwise, there is a model here waiting for a test set...
+            m_outputQueues[e.getRunNumber() - 1][e.getSetNumber() - 1].setTestSet(new DataSetEvent(this, e.getTestSet()));
+            checkCompletedRun(e.getRunNumber(), e.getMaxRunNumber(), e.getMaxSetNumber());
+        }
+    }
+}

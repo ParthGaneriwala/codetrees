@@ -1,0 +1,37 @@
+public TrainingContext loadSnapshot(TrainingContext ctx, BinaryTree<HistoryTreePayload> snapshot) throws IOException {
+    ctx.setTree(snapshot);
+    ctx.putLeaf(snapshot.getPayload().clusterid, snapshot);
+    int numNodes = 0;
+    int maxClusterId = 0;
+    for (BinaryTreeIterator<HistoryTreePayload> it = snapshot.getPreOrderIterator(); it.hasNext(); ) {
+        HistoryTreePayload payload = it.next();
+        ++numNodes;
+        if (payload.clusterid > maxClusterId) {
+            maxClusterId = payload.clusterid;
+        }
+    }
+    System.err.printf("snapshot: %d nodes, max-cluster-id = %d\n", numNodes, maxClusterId);
+    ctx.getLastNodeId().set(maxClusterId);
+    while (true) {
+        TrainingContext newCtx = createNewContext(ctx);
+        ctx.setFile(new RandomAccessFile(ctx.getFilename(), "r"));
+        TrainingDataNodeReader reader = new EagerTrainingDataNodeReader(new OnDiskTrainingDataNodeReader(ctx.getFile().getChannel()));
+        ctx.setDataReader(reader);
+        newCtx.getLastNodeId().set(maxClusterId);
+        TrainingDataNodeWriter writer = new OnDiskTrainingDataNodeWriter(newCtx.getFile().getChannel());
+        writer = new BufferedTrainingDataNodeWriter(writer);
+        newCtx.setDataWriter(writer);
+        int nonLeafNodes = fastForwardOneLevel(ctx, newCtx);
+        // discard data from the previous iteration
+        ctx.getFilename().delete();
+        activeNodeStorage.removeCollection(ctx.getActiveNodes().getName());
+        reader.close();
+        writer.close();
+        newCtx.setDataWriter(null);
+        ctx = newCtx;
+        if (nonLeafNodes == 0) {
+            break;
+        }
+    }
+    return ctx;
+}

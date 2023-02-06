@@ -1,0 +1,55 @@
+public String doView(RenderRequest request, RenderResponse response) throws Exception {
+    // The JSP to show upon success
+    String defaultView = VIEW_PAGE;
+    // Determine the project container to use
+    Project project = findProject(request);
+    // Check the user's permissions
+    User user = getUser(request);
+    if (!ProjectUtils.hasAccess(project.getId(), user, "project-team-view")) {
+        throw new PortletException("Unauthorized to view in this project");
+    }
+    // Add this user's membership level (to allow for edit links and such)
+    request.setAttribute(CURRENT_TEAM_MEMBER, PortalUtils.getCurrentTeamMember(request));
+    // Determine the database connection to use
+    Connection db = useConnection(request);
+    // Determine the paging url
+    PortletURL renderURL = response.createRenderURL();
+    renderURL.setParameter("portlet-action", "show");
+    renderURL.setParameter("portlet-object", "members");
+    String url = renderURL.toString();
+    // Paging will be used for remembering several list view settings
+    PagedListInfo pagedListInfo = getPagedListInfo(request, PAGED_LIST_INFO);
+    pagedListInfo.setLink(url);
+    pagedListInfo.setItemsPerPage(-1);
+    pagedListInfo.setDefaultSort("r.level, last_name", null);
+    // Prepare the role-team map for organizing users into roles
+    Map<LookupElement, TeamMemberList> teamMemberMap = new LinkedHashMap<LookupElement, TeamMemberList>();
+    LookupList roleList = CacheUtils.getLookupList("lookup_project_role");
+    for (LookupElement role : roleList) {
+        teamMemberMap.put(role, new TeamMemberList());
+    }
+    // Load the records
+    TeamMemberList teamMemberList = new TeamMemberList();
+    teamMemberList.setProjectId(project.getId());
+    teamMemberList.setPagedListInfo(pagedListInfo);
+    teamMemberList.buildList(db);
+    // Map the users to a role
+    for (TeamMember thisMember : teamMemberList) {
+        // On the profile page, skip the project's owner
+        if (project.getProfile() && project.getOwner() == thisMember.getUser().getId() && !user.getAccessAdmin()) {
+            continue;
+        }
+        // Put the user into the correct role
+        for (LookupElement role : teamMemberMap.keySet()) {
+            if (thisMember.getRoleId() == role.getLevel()) {
+                TeamMemberList thisList = teamMemberMap.get(role);
+                thisList.add(thisMember);
+            }
+        }
+    }
+    request.setAttribute(TEAM_MEMBER_MAP, teamMemberMap);
+    // Record view
+    PortalUtils.processSelectHook(request, teamMemberList);
+    // JSP view
+    return defaultView;
+}

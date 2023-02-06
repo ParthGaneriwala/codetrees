@@ -1,0 +1,66 @@
+private synchronized void lastDataNodeRun() {
+    long lastHeartbeat = System.currentTimeMillis();
+    boolean lastPacket = false;
+    while (running && datanode.shouldRun && !lastPacket) {
+        long now = System.currentTimeMillis();
+        try {
+            // wait for a packet to be sent to downstream datanode
+            while (running && datanode.shouldRun && ackQueue.size() == 0) {
+                long idle = now - lastHeartbeat;
+                long timeout = (datanode.socketTimeout / 2) - idle;
+                if (timeout <= 0) {
+                    timeout = 1000;
+                }
+                try {
+                    wait(timeout);
+                } catch (InterruptedException e) {
+                    if (running) {
+                        LOG.info("PacketResponder " + numTargets + " for block " + block + " Interrupted.");
+                        running = false;
+                    }
+                    break;
+                }
+                // send a heartbeat if it is time.
+                now = System.currentTimeMillis();
+                if (now - lastHeartbeat > datanode.socketTimeout / 2) {
+                    // send heartbeat
+                    replyOut.writeLong(-1);
+                    replyOut.flush();
+                    lastHeartbeat = now;
+                }
+            }
+            if (!running || !datanode.shouldRun) {
+                break;
+            }
+            Packet pkt = ackQueue.removeFirst();
+            long expected = pkt.seqno;
+            notifyAll();
+            LOG.debug("PacketResponder " + numTargets + " for block " + block + " acking for packet " + expected);
+            // file and finalize the block before responding success
+            if (pkt.lastPacketInBlock) {
+                if (!receiver.finalized) {
+                    receiver.close();
+                    block.setNumBytes(receiver.offsetInBlock);
+                    datanode.data.finalizeBlock(block);
+                    datanode.myMetrics.blocksWritten.inc();
+                    datanode.notifyNamenodeReceivedBlock(block, DataNode.EMPTY_DEL_HINT);
+                    if (ClientTraceLog.isInfoEnabled() && receiver.clientName.length() > 0) {
+                        ClientTraceLog.info(String.format(DN_CLIENTTRACE_FORMAT, receiver.inAddr, receiver.myAddr, block.getNumBytes(), "HDFS_WRITE", receiver.clientName, datanode.dnRegistration.getStorageID(), block));
+                    } else {
+                        LOG.info("Received block " + block + " of size " + block.getNumBytes() + " from " + receiver.inAddr);
+                    }
+                }
+                lastPacket = true;
+            }
+            replyOut.writeLong(expected);
+            replyOut.writeShort(DataTransferProtocol.OP_STATUS_SUCCESS);
+            replyOut.flush();
+        } catch (Exception e) {
+            if (running) {
+                LOG.info("PacketResponder " + block + " " + numTargets + " Exception " + StringUtils.stringifyException(e));
+                running = false;
+            }
+        }
+    }
+    LOG.info("PacketResponder " + numTargets + " for block " + block + " terminating");
+}

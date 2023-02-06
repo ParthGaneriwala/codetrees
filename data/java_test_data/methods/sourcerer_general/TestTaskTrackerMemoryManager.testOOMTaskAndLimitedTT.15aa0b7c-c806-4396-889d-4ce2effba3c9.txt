@@ -1,0 +1,60 @@
+public void testOOMTaskAndLimitedTT() throws Exception {
+    try {
+        if (!ProcfsBasedProcessTree.isAvailable()) {
+            LOG.info("Currently ProcessTree has only one implementation " + "ProcfsBasedProcessTree, which is not available on this " + "system. Not testing");
+            return;
+        }
+    } catch (Exception e) {
+        LOG.info(StringUtils.stringifyException(e));
+        return;
+    }
+    // Enough to kill off WordCount.
+    long PER_TASK_LIMIT = 444;
+    Pattern diagMsgPattern = Pattern.compile("TaskTree \\[pid=[0-9]*,tipID=.*\\] is running beyond " + "memory-limits. Current usage : [0-9]*kB. Limit : " + PER_TASK_LIMIT + "kB. Killing task.");
+    Matcher mat = null;
+    // Start cluster with proper configuration.
+    JobConf fConf = new JobConf();
+    fConf.setMaxVirtualMemoryForTasks(Long.valueOf(100000));
+    fConf.set("mapred.tasktracker.taskmemorymanager.monitoring-interval", String.valueOf(300));
+    // very small value, so that no task escapes to successful completion.
+    startCluster(fConf);
+    // Set up job.
+    JobConf conf = new JobConf();
+    conf.setMaxVirtualMemoryForTask(PER_TASK_LIMIT);
+    JobTracker jt = miniMRCluster.getJobTrackerRunner().getJobTracker();
+    conf.set("mapred.job.tracker", jt.getJobTrackerMachine() + ":" + jt.getTrackerPort());
+    NameNode nn = miniDFSCluster.getNameNode();
+    conf.set("fs.default.name", "hdfs://" + nn.getNameNodeAddress().getHostName() + ":" + nn.getNameNodeAddress().getPort());
+    // Start the job.
+    boolean success = true;
+    try {
+        runWordCount(conf);
+        success = true;
+    } catch (Exception e) {
+        success = false;
+    }
+    // Job has to fail
+    assertFalse(success);
+    // Alas, we don't have a way to get job id/Task completion events from
+    // WordCount
+    JobClient jClient = new JobClient(conf);
+    JobStatus[] jStatus = jClient.getAllJobs();
+    // Our only job
+    JobStatus js = jStatus[0];
+    RunningJob rj = jClient.getJob(js.getJobID());
+    // All events
+    TaskCompletionEvent[] taskComplEvents = rj.getTaskCompletionEvents(0);
+    for (TaskCompletionEvent tce : taskComplEvents) {
+        // Every task HAS to fail
+        assert (tce.getTaskStatus() == TaskCompletionEvent.Status.TIPFAILED || tce.getTaskStatus() == TaskCompletionEvent.Status.FAILED);
+        String[] diagnostics = jClient.jobSubmitClient.getTaskDiagnostics(tce.getTaskAttemptId());
+        // Every task HAS to spit out the out-of-memory errors
+        assert (diagnostics != null);
+        for (String str : diagnostics) {
+            mat = diagMsgPattern.matcher(str);
+            // Every task HAS to spit out the out-of-memory errors in the same
+            // format. And these are the only diagnostic messages.
+            assertTrue(mat.find());
+        }
+    }
+}

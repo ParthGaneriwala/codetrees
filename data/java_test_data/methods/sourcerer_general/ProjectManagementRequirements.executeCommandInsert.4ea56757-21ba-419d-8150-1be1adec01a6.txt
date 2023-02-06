@@ -1,0 +1,47 @@
+public String executeCommandInsert(ActionContext context) {
+    Connection db = null;
+    String projectId = context.getRequest().getParameter("pid");
+    boolean recordInserted = false;
+    try {
+        db = getConnection(context);
+        Project thisProject = retrieveAuthorizedProject(Integer.parseInt(projectId), context);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-plan-outline-add")) {
+            return "PermissionError";
+        }
+        context.getRequest().setAttribute("project", thisProject);
+        context.getRequest().setAttribute("IncludeSection", "requirements_add");
+        Requirement thisRequirement = (Requirement) context.getFormBean();
+        thisRequirement.setProjectId(thisProject.getId());
+        thisRequirement.setEnteredBy(getUserId(context));
+        thisRequirement.setModifiedBy(getUserId(context));
+        recordInserted = thisRequirement.insert(db);
+        indexAddItem(context, thisRequirement);
+        if (!recordInserted) {
+            processErrors(context, thisRequirement.getErrors());
+        } else {
+            context.getRequest().setAttribute("requirement", thisRequirement);
+            // if an attachment list exists, try to import the file
+            if (StringUtils.hasText(thisRequirement.getAttachmentList()) && hasProjectAccess(context, thisProject.getId(), "project-plan-outline-edit")) {
+                // Import all files and append them
+                FileItemList files = Requirement.retrieveFiles(db, thisRequirement.getId());
+                for (FileItem thisFile : files) {
+                    String filePath = this.getPath(context, "projects") + getDatePath(thisFile.getModified()) + thisFile.getFilename();
+                    FileInfo fileInfo = new FileInfo();
+                    fileInfo.setClientFileName(thisFile.getClientFilename());
+                    fileInfo.setFileContents(FileUtils.getBytesFromFile(new File(filePath)));
+                    AssignmentImporter.parse(fileInfo, thisRequirement, db);
+                    thisFile.delete(db, filePath);
+                }
+            }
+        }
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return ("SystemError");
+    } finally {
+        freeConnection(context, db);
+    }
+    if (recordInserted) {
+        return ("AddOK");
+    }
+    return (executeCommandAdd(context));
+}

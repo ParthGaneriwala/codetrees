@@ -1,0 +1,96 @@
+private final ResultSetImpl sendFileToServer(StatementImpl callingStatement, String fileName) throws SQLException {
+    Buffer filePacket = (this.loadFileBufRef == null) ? null : (Buffer) (this.loadFileBufRef.get());
+    int bigPacketLength = Math.min(this.connection.getMaxAllowedPacket() - (HEADER_LENGTH * 3), alignPacketSize(this.connection.getMaxAllowedPacket() - 16, 4096) - (HEADER_LENGTH * 3));
+    int oneMeg = 1024 * 1024;
+    int smallerPacketSizeAligned = Math.min(oneMeg - (HEADER_LENGTH * 3), alignPacketSize(oneMeg - 16, 4096) - (HEADER_LENGTH * 3));
+    int packetLength = Math.min(smallerPacketSizeAligned, bigPacketLength);
+    if (filePacket == null) {
+        try {
+            filePacket = new Buffer((packetLength + HEADER_LENGTH));
+            this.loadFileBufRef = new SoftReference(filePacket);
+        } catch (OutOfMemoryError oom) {
+            throw SQLError.createSQLException("Could not allocate packet of " + packetLength + " bytes required for LOAD DATA LOCAL INFILE operation." + " Try increasing max heap allocation for JVM or decreasing server variable " + "'max_allowed_packet'", SQLError.SQL_STATE_MEMORY_ALLOCATION_FAILURE, getExceptionInterceptor());
+        }
+    }
+    filePacket.clear();
+    send(filePacket, 0);
+    byte[] fileBuf = new byte[packetLength];
+    BufferedInputStream fileIn = null;
+    try {
+        if (!this.connection.getAllowLoadLocalInfile()) {
+            throw SQLError.createSQLException(Messages.getString("MysqlIO.LoadDataLocalNotAllowed"), SQLError.SQL_STATE_GENERAL_ERROR, getExceptionInterceptor());
+        }
+        InputStream hookedStream = null;
+        if (callingStatement != null) {
+            hookedStream = callingStatement.getLocalInfileInputStream();
+        }
+        if (hookedStream != null) {
+            fileIn = new BufferedInputStream(hookedStream);
+        } else if (!this.connection.getAllowUrlInLocalInfile()) {
+            fileIn = new BufferedInputStream(new FileInputStream(fileName));
+        } else {
+            // First look for ':'
+            if (fileName.indexOf(':') != -1) {
+                try {
+                    URL urlFromFileName = new URL(fileName);
+                    fileIn = new BufferedInputStream(urlFromFileName.openStream());
+                } catch (MalformedURLException badUrlEx) {
+                    // we fall back to trying this as a file input stream
+                    fileIn = new BufferedInputStream(new FileInputStream(fileName));
+                }
+            } else {
+                fileIn = new BufferedInputStream(new FileInputStream(fileName));
+            }
+        }
+        int bytesRead = 0;
+        while ((bytesRead = fileIn.read(fileBuf)) != -1) {
+            filePacket.clear();
+            filePacket.writeBytesNoNull(fileBuf, 0, bytesRead);
+            send(filePacket, filePacket.getPosition());
+        }
+    } catch (IOException ioEx) {
+        StringBuffer messageBuf = new StringBuffer(Messages.getString(// $NON-NLS-1$
+        "MysqlIO.60"));
+        if (!this.connection.getParanoid()) {
+            // $NON-NLS-1$
+            messageBuf.append("'");
+            if (fileName != null) {
+                messageBuf.append(fileName);
+            }
+            // $NON-NLS-1$
+            messageBuf.append("'");
+        }
+        // $NON-NLS-1$
+        messageBuf.append(Messages.getString("MysqlIO.63"));
+        if (!this.connection.getParanoid()) {
+            // $NON-NLS-1$
+            messageBuf.append(Messages.getString("MysqlIO.64"));
+            messageBuf.append(Util.stackTraceToString(ioEx));
+        }
+        throw SQLError.createSQLException(messageBuf.toString(), SQLError.SQL_STATE_ILLEGAL_ARGUMENT, getExceptionInterceptor());
+    } finally {
+        if (fileIn != null) {
+            try {
+                fileIn.close();
+            } catch (Exception ex) {
+                SQLException sqlEx = // $NON-NLS-1$
+                SQLError.createSQLException(// $NON-NLS-1$
+                Messages.getString("MysqlIO.65"), SQLError.SQL_STATE_GENERAL_ERROR, getExceptionInterceptor());
+                sqlEx.initCause(ex);
+                throw sqlEx;
+            }
+            fileIn = null;
+        } else {
+            // file open failed, but server needs one packet
+            filePacket.clear();
+            send(filePacket, filePacket.getPosition());
+            // to clear response off of queue
+            checkErrorPacket();
+        }
+    }
+    // send empty packet to mark EOF
+    filePacket.clear();
+    send(filePacket, filePacket.getPosition());
+    Buffer resultPacket = checkErrorPacket();
+    return buildResultSetWithUpdates(callingStatement, resultPacket);
+}

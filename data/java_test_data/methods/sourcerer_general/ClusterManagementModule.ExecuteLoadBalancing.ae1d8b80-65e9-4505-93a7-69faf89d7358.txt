@@ -1,0 +1,58 @@
+// ------------------------------------------------------------------------
+private void ExecuteLoadBalancing(Integer NewMachineID) {
+    SA.AddLogEntry("CMM", "Info - Executing Load Balancing algorythm.");
+    int taskWaterMark = TaskWaterMark();
+    SA.AddLogEntry("CMM", "Info - New Task Watermark is " + taskWaterMark);
+    // Check if Task count in local machine is above the watermark.
+    if (LocalMachineEntry.getTaskCount() <= taskWaterMark) {
+        SA.AddLogEntry("CMM", "Info - Current Task count on local machine is not above the Task Watermark. " + "Local Machine won't transfer any Tasks to the new joined Machine");
+        return;
+    }
+    int TasksToTransfer = LocalMachineEntry.getTaskCount() - taskWaterMark;
+    SA.AddLogEntry("CMM", "Info - Current Task count on local machine is " + TasksToTransfer + " above the Task Watermark.");
+    // Convert the TaskDB from a TreeMap into a Set
+    Set<Map.Entry<Integer, TaskEntry>> TaskSet = TaskDB.entrySet();
+    Iterator<Map.Entry<Integer, TaskEntry>> tIter = TaskSet.iterator();
+    // Go over all the Tasks in the TaskDB
+    while (tIter.hasNext()) {
+        Integer TaskID = null;
+        synchronized (this) {
+            // retrieve the set element
+            Map.Entry<Integer, TaskEntry> tMapEntry = tIter.next();
+            // If this task is not an APPLICATION type
+            if (tMapEntry.getValue().getContext().getType() != TaskType.APPLICATION)
+                // skip it
+                continue;
+            // if Task is not assigned to this local Machine
+            if (!tMapEntry.getValue().getAssignedServerID().equals(MachineDBLocalID)) {
+                // skip it
+                continue;
+            }
+            // if got here: Task is an APPLICATION type assigned to this Machine
+            SA.AddLogEntry("CMM", "Info - Will transfer Application Task " + tMapEntry.getKey() + " to new Machine " + NewMachineID);
+            TaskID = tMapEntry.getKey();
+        }
+        SA.AddLogEntry("CMM", "Info - Notifying the Server Application.");
+        // This mustn't be synchronized, or will cause a dead-lock
+        SA.StopServicingTask(TaskID);
+        // Create an Aplication Transfer Message
+        ClusterMessage_AppTransferTask msg = new ClusterMessage_AppTransferTask();
+        msg.setSenderID(MachineDBLocalID);
+        msg.setTaskID(TaskID);
+        msg.setNewOwnerMachineID(NewMachineID);
+        try {
+            // Send the message to the Cluster
+            SendClusterMessage(msg);
+        } catch (CMMExn_ClusterErr e) {
+            // TODO remove StackPrint
+            e.printStackTrace();
+            SA.AddLogEntry("CMM", "Error - Failed to send \"Application Migration Task\" message to the Cluster.");
+            SA.UnrecoverableClusterError();
+        }
+        TasksToTransfer--;
+        // If transfered enough Tasks to get bellow the new Task Watermark
+        if (TasksToTransfer == 0)
+            break;
+    }
+    SA.AddLogEntry("CMM", "Info - Finished Load Balancing algorythm.");
+}

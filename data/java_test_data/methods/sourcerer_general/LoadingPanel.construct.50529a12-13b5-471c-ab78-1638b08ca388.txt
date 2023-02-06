@@ -1,0 +1,164 @@
+public Boolean construct() {
+    QuantitativeValidationSingelton iQuantitativeValidationSingelton = QuantitativeValidationSingelton.getInstance();
+    iQuantitativeValidationSingelton.setUseOnlyValidRatioForProteinMean(true);
+    Vector<File> lFiles = iParent.getFiles();
+    // update progress bar
+    progressBar.setString("");
+    progressBar.setStringPainted(true);
+    progressBar.setIndeterminate(true);
+    // set checking files
+    lblCheckFiles.setEnabled(true);
+    setIconOnPanel(jpanCheck, "clock.png", 3, 1);
+    // 1.check the MaxQuant files
+    for (int i = 0; i < lFiles.size(); i++) {
+        // update progress bar
+        progressBar.setString("Checked " + lFiles.get(i).getName() + ".");
+    }
+    // update progress bar
+    // Show in the gui that we found all the rov files
+    setIconOnPanel(jpanCheck, "apply.png", 3, 1);
+    // set id loading
+    lblId.setEnabled(true);
+    setIconOnPanel(jpanId, "clock.png", 3, 2);
+    // set quant loading
+    lblQuant.setEnabled(true);
+    setIconOnPanel(jpanQuant, "clock.png", 3, 3);
+    // 3.match ids to quantitations
+    // update progress bar
+    progressBar.setString("");
+    // set id done
+    setIconOnPanel(jpanId, "apply.png", 3, 2);
+    // set quant done
+    setIconOnPanel(jpanQuant, "apply.png", 3, 3);
+    // set match loading
+    lblMatch.setEnabled(true);
+    setIconOnPanel(jpanMatch, "clock.png", 3, 4);
+    Vector<RatioGroupCollection> lRatioGroupCollection = new Vector<RatioGroupCollection>();
+    for (int i = 0; i < lFiles.size(); i++) {
+        // update progress bar
+        progressBar.setString("Matching identification with ratios census file " + (i + 1) + " of " + (lFiles.size() / 2) + " evidence files.");
+        CensusReader lReader;
+        if (lFiles.get(i).getName().endsWith(".txt")) {
+            lReader = new CensusReader(lFiles.get(i), lFiles.get(i + 1), iFlamable);
+        } else {
+            lReader = new CensusReader(lFiles.get(i + 1), lFiles.get(i), iFlamable);
+        }
+        i = i + 1;
+        RatioGroupCollection lTemp = lReader.getRatioGroupCollection();
+        if (lTemp != null) {
+            lTemp.setRoverSource(iParent.getRoverSource());
+            lRatioGroupCollection.add(lTemp);
+        }
+        // _____Do garbage collection______
+        System.gc();
+    }
+    // update progress bar
+    progressBar.setString("");
+    // set match done
+    setIconOnPanel(jpanMatch, "apply.png", 3, 4);
+    // set create loading
+    lblCreate.setEnabled(true);
+    setIconOnPanel(jpanCreate, "clock.png", 3, 5);
+    // 6. get all the protein accessions from the identifications
+    Vector<String> lProteinAccessions = new Vector<String>();
+    for (int i = 0; i < lRatioGroupCollection.size(); i++) {
+        if (i == 0) {
+            iQuantitativeValidationSingelton.setRatioTypes(lRatioGroupCollection.get(i).getRatioTypes());
+            iQuantitativeValidationSingelton.setComponentTypes(lRatioGroupCollection.get(i).getComponentTypes());
+        }
+        for (int j = 0; j < lRatioGroupCollection.get(i).size(); j++) {
+            RatioGroup lRatioGroup = lRatioGroupCollection.get(i).get(j);
+            String[] lAccessionsForRatioGroup = lRatioGroup.getProteinAccessions();
+            for (int k = 0; k < lAccessionsForRatioGroup.length; k++) {
+                // check if it's a new accession
+                boolean lNewAccession = true;
+                for (int l = 0; l < lProteinAccessions.size(); l++) {
+                    if (lProteinAccessions.get(l).equalsIgnoreCase(lAccessionsForRatioGroup[k])) {
+                        lNewAccession = false;
+                    }
+                }
+                if (lNewAccession) {
+                    lProteinAccessions.add(lAccessionsForRatioGroup[k]);
+                }
+            }
+        }
+    }
+    if (lRatioGroupCollection.size() == 0) {
+        // show gui
+        JOptionPane.showMessageDialog(iParent, "No quantitative data could be found!\n The program will close.", "INFO", JOptionPane.INFORMATION_MESSAGE);
+        iParent.close();
+    }
+    // 7.A get the types of the ratios from the first distiller ratio collecion
+    Vector<String> lRatioList = lRatioGroupCollection.get(0).getRatioTypes();
+    String[] lRatioTypes = new String[lRatioList.size()];
+    lRatioList.toArray(lRatioTypes);
+    // 7.B get the types of the ratios from the first distiller ratio collecion
+    Vector<String> lComponentList = lRatioGroupCollection.get(0).getComponentTypes();
+    String[] lComponentTypes = new String[lComponentList.size()];
+    lComponentList.toArray(lComponentTypes);
+    // 8. create all the distiller proteins
+    Vector<QuantitativeProtein> lProtein = new Vector<QuantitativeProtein>();
+    for (int i = 0; i < lProteinAccessions.size(); i++) {
+        lProtein.add(new QuantitativeProtein(lProteinAccessions.get(i), lRatioTypes));
+    }
+    // 9. couple the distiller ratio groups to the distiller proteins
+    for (int i = 0; i < lRatioGroupCollection.size(); i++) {
+        for (int j = 0; j < lRatioGroupCollection.get(i).size(); j++) {
+            // get the ratio group
+            RatioGroup lRatioGroup = lRatioGroupCollection.get(i).get(j);
+            // get all the protein accession linked to this ratiogroup
+            String[] lAccessions = lRatioGroup.getProteinAccessions();
+            for (int k = 0; k < lAccessions.length; k++) {
+                for (int l = 0; l < lProtein.size(); l++) {
+                    if (lAccessions[k].equalsIgnoreCase(lProtein.get(l).getAccession())) {
+                        // add the ratio group to the protein if the accession is the same
+                        lProtein.get(l).addRatioGroup(lRatioGroup);
+                    }
+                }
+            }
+        }
+    }
+    calculateRazorPeptides(lProtein);
+    iQuantitativeValidationSingelton.setAllProteins(lProtein);
+    // 10. create a reference set with the "household" proteins with the most ratiogroups
+    ReferenceSet lReferenceSet = new ReferenceSet(new ArrayList<QuantitativeProtein>(), lRatioTypes, lComponentTypes);
+    MatchRatioWithComponent lMatch = new MatchRatioWithComponent(true);
+    while (lRatioTypes.length > iQuantitativeValidationSingelton.getMatchedRatioTypes().size()) {
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+        // sleep failed
+        }
+    }
+    // sort by the ratio group numbers
+    Collections.sort(lProtein, new QuantitativeProteinSorterByRatioGroupNumbers());
+    // get the reference set size from the singelton
+    int lReferenceSetSize = iQuantitativeValidationSingelton.getNumberOfProteinsInReferenceSet();
+    if (iQuantitativeValidationSingelton.getReferenceSetEnum() == ReferenceSetEnum.ALL) {
+        lReferenceSetSize = lProtein.size();
+    }
+    if (lReferenceSetSize > lProtein.size()) {
+        lReferenceSetSize = lProtein.size();
+    }
+    for (int i = 0; i < lReferenceSetSize; i++) {
+        lReferenceSet.addReferenceProtein(lProtein.get(i));
+    }
+    iQuantitativeValidationSingelton.setReferenceSet(lReferenceSet);
+    // lReferenceSet.calculateStatisticsByRandomSampling();
+    // Show in the gui that the creation of the proteins is done
+    setIconOnPanel(jpanCreate, "apply.png", 3, 5);
+    // download the protein sequence
+    lblDownload.setEnabled(true);
+    setIconOnPanel(jpanDownload, "clock.png", 3, 6);
+    downloadProteinSequences(lProtein);
+    setIconOnPanel(jpanDownload, "apply.png", 3, 6);
+    // sort by the protein accession
+    Collections.sort(lProtein, new QuantitativeProteinSorterByAccession());
+    // _____Do garbage collection______
+    System.gc();
+    // show gui
+    JOptionPane.showMessageDialog(iParent, "All the data is loaded, ready to validate!", "INFO", JOptionPane.INFORMATION_MESSAGE);
+    QuantitationValidationGUI gui = new QuantitationValidationGUI(lProtein, null, iParent.isStandAlone());
+    gui.setVisible(true);
+    return true;
+}

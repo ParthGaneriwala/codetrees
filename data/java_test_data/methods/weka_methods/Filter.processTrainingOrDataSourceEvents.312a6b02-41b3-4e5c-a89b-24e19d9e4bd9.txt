@@ -1,0 +1,92 @@
+private void processTrainingOrDataSourceEvents(final EventObject e) {
+    boolean structureOnly = false;
+    if (e instanceof DataSetEvent) {
+        structureOnly = ((DataSetEvent) e).isStructureOnly();
+        if (structureOnly) {
+            notifyDataOrTrainingListeners(e);
+        }
+    }
+    if (e instanceof TrainingSetEvent) {
+        structureOnly = ((TrainingSetEvent) e).isStructureOnly();
+        if (structureOnly) {
+            notifyDataOrTrainingListeners(e);
+        }
+    }
+    if (structureOnly && !(m_Filter instanceof StreamableFilter)) {
+        // nothing can be done
+        return;
+    }
+    if (m_filterThread == null) {
+        try {
+            if (m_state == IDLE) {
+                synchronized (this) {
+                    m_state = FILTERING_TRAINING;
+                }
+                m_trainingSet = (e instanceof TrainingSetEvent) ? ((TrainingSetEvent) e).getTrainingSet() : ((DataSetEvent) e).getDataSet();
+                // final String oldText = m_visual.getText();
+                m_filterThread = new Thread() {
+
+                    @SuppressWarnings("deprecation")
+                    @Override
+                    public void run() {
+                        try {
+                            if (m_trainingSet != null) {
+                                m_visual.setAnimated();
+                                // m_visual.setText("Filtering training data...");
+                                if (m_log != null) {
+                                    m_log.statusMessage(statusMessagePrefix() + "Filtering training data (" + m_trainingSet.relationName() + ")");
+                                }
+                                m_Filter.setInputFormat(m_trainingSet);
+                                Instances filteredData = weka.filters.Filter.useFilter(m_trainingSet, m_Filter);
+                                // m_visual.setText(oldText);
+                                m_visual.setStatic();
+                                EventObject ne;
+                                if (e instanceof TrainingSetEvent) {
+                                    ne = new TrainingSetEvent(weka.gui.beans.Filter.this, filteredData);
+                                    ((TrainingSetEvent) ne).m_setNumber = ((TrainingSetEvent) e).m_setNumber;
+                                    ((TrainingSetEvent) ne).m_maxSetNumber = ((TrainingSetEvent) e).m_maxSetNumber;
+                                } else {
+                                    ne = new DataSetEvent(weka.gui.beans.Filter.this, filteredData);
+                                }
+                                notifyDataOrTrainingListeners(ne);
+                            }
+                        } catch (Exception ex) {
+                            ex.printStackTrace();
+                            if (m_log != null) {
+                                m_log.logMessage("[Filter] " + statusMessagePrefix() + ex.getMessage());
+                                m_log.statusMessage(statusMessagePrefix() + "ERROR (See log for details).");
+                            // m_log.statusMessage("Problem filtering: see log for details.");
+                            }
+                            // stop all processing
+                            Filter.this.stop();
+                        } finally {
+                            // m_visual.setText(oldText);
+                            m_visual.setStatic();
+                            m_state = IDLE;
+                            if (isInterrupted()) {
+                                m_trainingSet = null;
+                                if (m_log != null) {
+                                    m_log.logMessage("[Filter] " + statusMessagePrefix() + " training set interrupted!");
+                                    m_log.statusMessage(statusMessagePrefix() + "INTERRUPTED");
+                                }
+                            } else {
+                                if (m_log != null) {
+                                    m_log.statusMessage(statusMessagePrefix() + "Finished.");
+                                }
+                            }
+                            block(false);
+                            m_filterThread = null;
+                        }
+                    }
+                };
+                m_filterThread.setPriority(Thread.MIN_PRIORITY);
+                m_filterThread.start();
+                block(true);
+                m_filterThread = null;
+                m_state = IDLE;
+            }
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+    }
+}

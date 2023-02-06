@@ -1,0 +1,121 @@
+private void handlePixmap(AdaptiveRasterImage ji, int rowBytes, int pixelSize, short compCount) throws IOException, JimiException {
+    int row;
+    // number bytes to read to get a row of raw data
+    int rawLen;
+    // row raw byte buffer for data from file
+    byte[] buf;
+    // row uncompressed data - possibly still pixel packed
+    byte[] uBuf;
+    // row uncompressed data for 16 bit pixels
+    int[] uBufI;
+    // buffer size large enough to read one pixel row of raw image data
+    int bufSize;
+    // buffer size of unpacked expanded pixel data into pixel per byte
+    int outBufSize;
+    // used to expand pixel packed uBuf if required
+    byte[] outBuf;
+    // NOTE: that pixelSize 32 will never be non-compressed
+    boolean compressed = (rowBytes >= 8) || (pixelSize == 32);
+    bufSize = rowBytes;
+    uBuf = null;
+    outBuf = null;
+    uBufI = null;
+    int width = ji.getWidth();
+    int height = ji.getHeight();
+    // width of row of pixels in bytes for image
+    outBufSize = width;
+    // Allocate buffers required
+    switch(pixelSize) {
+        case 32:
+            if (// data not compress
+            !compressed)
+                uBufI = new int[width];
+            else
+                uBuf = new byte[bufSize];
+            break;
+        case // image data compressed 16bit pieces
+        16:
+            // special case unpack
+            uBufI = new int[width];
+            break;
+        case 8:
+            uBuf = new byte[bufSize];
+            break;
+        default:
+            // pixelSize < 8
+            // expand pixels upto 1 pixel per byte buffer
+            outBuf = new byte[outBufSize];
+            // buffer to read decompress data to
+            uBuf = new byte[bufSize];
+            break;
+    }
+    if (!compressed) {
+        buf = new byte[bufSize];
+        for (row = 0; row < height; ++row) {
+            dIn.readFully(buf, 0, rowBytes);
+            switch(pixelSize) {
+                case 16:
+                    for (int i = 0; i < width; ++i) uBufI[i] = ((buf[i * 2] & 0xff) << 8) + (buf[i * 2 + 1] & 0xff);
+                    ji.setChannel(row, uBufI);
+                    break;
+                case 8:
+                    ji.setChannel(0, row, buf);
+                    break;
+                default:
+                    // pixelSize < 8
+                    JimiUtil.expandPixels(pixelSize, buf, outBuf, outBuf.length);
+                    ji.setChannel(0, row, outBuf);
+                    break;
+            }
+            setProgress((row * 100) / height);
+        }
+    } else // compressed data
+    {
+        // worst case packed data is 2 bytes larger than unpacked for packbits
+        buf = new byte[bufSize + 1 + bufSize / 128];
+        for (row = 0; row < height; ++row) {
+            // evidence proves that 32 bits was 1 byte raw lengths
+            if (// || pixelSize > 8)
+            rowBytes > 250)
+                rawLen = dIn.readUnsignedShort();
+            else
+                rawLen = dIn.readUnsignedByte();
+            if (// Assertion
+            rawLen > (bufSize + 1 + bufSize / 128))
+                throw new JimiException("**** rawLen " + rawLen + " bufSize " + bufSize);
+            dIn.readFully(buf, 0, rawLen);
+            if (pixelSize == 16) {
+                // different 16 bit unpackbits
+                Packbits.unpackbits(buf, uBufI);
+                ji.setChannel(row, uBufI);
+            } else // for pixelSize 1 to 32 except for 16
+            {
+                try {
+                    Packbits.unpackbitsLimit(buf, rawLen, uBuf);
+                } catch (ArrayIndexOutOfBoundsException e) {
+                    throw new JimiException("Error unpacking data");
+                }
+                if (pixelSize < 8) {
+                    JimiUtil.expandPixels(pixelSize, uBuf, outBuf, outBuf.length);
+                    ji.setChannel(0, row, outBuf);
+                } else if (pixelSize == 8) {
+                    ji.setChannel(0, row, uBuf);
+                } else if (pixelSize == 24 || pixelSize == 32) {
+                    int offset = 0;
+                    if (// alpha channel
+                    compCount == 4) {
+                        ji.setChannel(IntRasterImage.CHANNEL_ALPHA, row, uBuf, offset, width);
+                        offset += width;
+                    }
+                    // set each channel R,G,B
+                    ji.setChannel(IntRasterImage.CHANNEL_RED, row, uBuf, offset, width);
+                    offset += width;
+                    ji.setChannel(IntRasterImage.CHANNEL_GREEN, row, uBuf, offset, width);
+                    offset += width;
+                    ji.setChannel(IntRasterImage.CHANNEL_BLUE, row, uBuf, offset, width);
+                }
+            }
+        }
+        setProgress((row * 100) / height);
+    }
+}

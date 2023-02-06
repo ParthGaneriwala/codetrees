@@ -1,0 +1,113 @@
+/**
+ * Creates a set of new {@link Shadow} objects representing all shadows in the given set of methods.
+ * Shadows, for which the {@link Residue} is {@link NeverMatch} are called inactive. Such inactive shadows are not added.
+ * @param methods any set of (weavable) methods.
+ */
+protected static Set<Shadow> findActiveShadowsInMethod(Set<SootMethod> methods) {
+    GlobalAspectInfo gai = Main.v().getAbcExtension().getGlobalAspectInfo();
+    /*
+		 * First we build a mapping from an advice method to the advice declarations that belong to this advice method.
+		 * There can be multiple such advice declarations, e.g. in the case of PerEventAdviceDecls, which have
+		 * a before and after pointcut and both trigger the same advice methods but in (aspect info) different advice declarations.  
+		 */
+    Map<SootMethod, Set<AdviceDecl>> adviceMethodToAdviceDecls = new HashMap<SootMethod, Set<AdviceDecl>>();
+    for (AbstractAdviceDecl aad : (List<AbstractAdviceDecl>) gai.getAdviceDecls()) {
+        // only care about "real" advice declarations
+        if (aad instanceof AdviceDecl) {
+            AdviceDecl ad = (AdviceDecl) aad;
+            SootMethod adviceMethod = ad.getImpl().getSootMethod();
+            Set<AdviceDecl> adviceDecls = adviceMethodToAdviceDecls.get(adviceMethod);
+            if (adviceDecls == null) {
+                adviceDecls = new HashSet<AdviceDecl>();
+                adviceMethodToAdviceDecls.put(adviceMethod, adviceDecls);
+            }
+            adviceDecls.add(ad);
+        }
+    }
+    Set<Shadow> shadows = new HashSet<Shadow>();
+    for (SootMethod m : methods) {
+        shadows.addAll(findShadowsFromAnnotations(m));
+        Map<Integer, Map<AbstractAdviceDecl, AdviceApplication>> shadowIdToAdviceToAdviceApplication = new HashMap<Integer, Map<AbstractAdviceDecl, AdviceApplication>>();
+        Map<Integer, Stmt> shadowIdToFirstShadowStmt = new HashMap<Integer, Stmt>();
+        MethodAdviceList adviceList = gai.getAdviceList(m);
+        // if there are any advice applications within that method
+        if (adviceList != null) {
+            // build a mapping from shadow ID and advice name to the corresponding advice application
+            List<AdviceApplication> applications = adviceList.allAdvice();
+            for (AdviceApplication aa : applications) {
+                Map<AbstractAdviceDecl, AdviceApplication> adviceToAA = shadowIdToAdviceToAdviceApplication.get(aa.shadowmatch.shadowId);
+                if (adviceToAA == null) {
+                    adviceToAA = new HashMap<AbstractAdviceDecl, AdviceApplication>();
+                    shadowIdToAdviceToAdviceApplication.put(aa.shadowmatch.shadowId, adviceToAA);
+                }
+                adviceToAA.put(aa.advice, aa);
+            }
+            /*
+		         * Walk through all statements in the body, looking for calls to advice methods.
+		         * For each such calls, add a shadow for each advice declaration belonging to that call.
+		         */
+            for (Unit u : m.getActiveBody().getUnits()) {
+                Stmt s = (Stmt) u;
+                if (s.containsInvokeExpr()) {
+                    InvokeExpr ie = s.getInvokeExpr();
+                    Set<AdviceDecl> adviceDecls = adviceMethodToAdviceDecls.get(ie.getMethod());
+                    if (adviceDecls != null) {
+                        for (AdviceDecl ad : adviceDecls) {
+                            InstructionSourceTag sourceTag = (InstructionSourceTag) s.getTag(InstructionSourceTag.NAME);
+                            int sourceId = sourceTag.value();
+                            /*
+								 * In general, there can be multiple AdviceDecl with the same body advice method.
+								 * Therefore we keep the *set* "adviceDecls" above. However, we can always match up
+								 * the correct one of these AdviceDecl by comparing on the sourceId. 
+								 */
+                            if (sourceId == ad.sourceId) {
+                                InstructionShadowTag shadowTag = (InstructionShadowTag) s.getTag(InstructionShadowTag.NAME);
+                                int shadowId = shadowTag.value();
+                                AdviceApplication aa = shadowIdToAdviceToAdviceApplication.get(shadowId).get(ad);
+                                if (aa != null) {
+                                    if (!NeverMatch.neverMatches(aa.getResidue())) {
+                                        // advice is still active
+                                        Map<String, Local> adviceFormalToSootLocal = new HashMap<String, Local>();
+                                        int argIndex = 0;
+                                        for (Formal formal : ad.getFormals()) {
+                                            adviceFormalToSootLocal.put(formal.getName(), (Local) ie.getArg(argIndex));
+                                            argIndex++;
+                                        }
+                                        boolean isDelegateCallShadow = false;
+                                        if (aa.shadowmatch instanceof MethodCallShadowMatch) {
+                                            MethodCallShadowMatch mcsm = (MethodCallShadowMatch) aa.shadowmatch;
+                                            SootMethod calledMethod = mcsm.getMethodRef().resolve();
+                                            if (m.getName().equals(calledMethod.getName()) && m.getParameterTypes().equals(calledMethod.getParameterTypes()) && new HashSet<SootClass>(m.getExceptions()).equals(new HashSet<SootClass>(calledMethod.getExceptions()))) {
+                                                isDelegateCallShadow = true;
+                                            }
+                                        }
+                                        Stmt stmtToAttachTo = s;
+                                        if (aa.shadowmatch instanceof StmtShadowMatch) {
+                                            Stmt firstStmt = shadowIdToFirstShadowStmt.get(shadowId);
+                                            if (firstStmt == null) {
+                                                firstStmt = s;
+                                                shadowIdToFirstShadowStmt.put(shadowId, firstStmt);
+                                            }
+                                            stmtToAttachTo = firstStmt;
+                                        }
+                                        Position pos = extractPosition(aa.shadowmatch.getHost());
+                                        ResidueBox rbox = (ResidueBox) aa.getResidueBoxes().get(0);
+                                        Shadow shadow = new Shadow(shadowId, ad, m, pos, adviceFormalToSootLocal, rbox, s, isDelegateCallShadow, stmtToAttachTo);
+                                        shadows.add(shadow);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (Iterator<Shadow> iterator = shadows.iterator(); iterator.hasNext(); ) {
+        Shadow shadow = iterator.next();
+        if (SymbolNames.v().isArtificialShadow(shadow)) {
+            iterator.remove();
+        }
+    }
+    return shadows;
+}

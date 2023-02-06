@@ -1,0 +1,75 @@
+private void tryRemoveAssignment(NodeTraversal t, Node n, Node exprRoot, FlowState<LiveVariableLattice> state) {
+    Node parent = n.getParent();
+    if (NodeUtil.isAssignmentOp(n) || n.getType() == Token.INC || n.getType() == Token.DEC) {
+        Node lhs = n.getFirstChild();
+        Node rhs = lhs.getNext();
+        // first.
+        if (rhs != null) {
+            tryRemoveAssignment(t, rhs, exprRoot, state);
+            rhs = lhs.getNext();
+        }
+        Scope scope = t.getScope();
+        if (!NodeUtil.isName(lhs)) {
+            // Not a local variable assignment.
+            return;
+        }
+        String name = lhs.getString();
+        if (!scope.isDeclared(name, false)) {
+            return;
+        }
+        Var var = scope.getVar(name);
+        if (liveness.getEscapedLocals().contains(var)) {
+            // Local variable that might be escaped due to closures.
+            return;
+        }
+        // does not change the result afterward.
+        if (rhs != null && NodeUtil.isName(rhs) && rhs.getString().equals(var.name) && NodeUtil.isAssign(n)) {
+            n.removeChild(rhs);
+            n.getParent().replaceChild(n, rhs);
+            compiler.reportCodeChange();
+            return;
+        }
+        if (state.getOut().isLive(var)) {
+            // Variable not dead.
+            return;
+        }
+        if (state.getIn().isLive(var) && isVariableStillLiveWithinExpression(n, exprRoot, var.name)) {
+            // of GEN sets when we recurse here.
+            return;
+        }
+        if (NodeUtil.isAssign(n)) {
+            n.removeChild(rhs);
+            n.getParent().replaceChild(n, rhs);
+        } else if (NodeUtil.isAssignmentOp(n)) {
+            n.removeChild(rhs);
+            n.removeChild(lhs);
+            Node op = new Node(NodeUtil.getOpFromAssignmentOp(n), lhs, rhs);
+            parent.replaceChild(n, op);
+        } else if (n.getType() == Token.INC || n.getType() == Token.DEC) {
+            if (NodeUtil.isExpressionNode(parent)) {
+                parent.replaceChild(n, new Node(Token.VOID, Node.newNumber(0).copyInformationFrom(n)));
+            } else if (n.getType() == Token.COMMA && n != parent.getLastChild()) {
+                parent.removeChild(n);
+            } else if (parent.getType() == Token.FOR && !NodeUtil.isForIn(parent) && NodeUtil.getConditionExpression(parent) != n) {
+                parent.replaceChild(n, new Node(Token.EMPTY));
+            } else {
+                // when a is not a number.
+                return;
+            }
+        } else {
+            // Not reachable.
+            Preconditions.checkState(false, "Unknown statement");
+        }
+        compiler.reportCodeChange();
+        return;
+    } else {
+        for (Node c = n.getFirstChild(); c != null; ) {
+            Node next = c.getNext();
+            if (!ControlFlowGraph.isEnteringNewCfgNode(c)) {
+                tryRemoveAssignment(t, c, exprRoot, state);
+            }
+            c = next;
+        }
+        return;
+    }
+}

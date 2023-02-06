@@ -1,0 +1,65 @@
+private boolean run_protocolSimplexTransport() {
+    // Log.setMessage(1, "Openning UDP connection ...");
+    if (!this._transportOpen(TRANSPORT_SIMPLEX)) {
+        if (DateTime.isTimerExpired(this.lastSimplexErrorTimer, 60L)) {
+            this.lastSimplexErrorTimer = DateTime.getTimerSec();
+            Log.warn(LOG_NAME, "Unable to open Simplex transport");
+            Log.setMessage(1, "UDP failed");
+        }
+        return false;
+    }
+    Log.setMessage(1, "TX UDP ...");
+    /* check for GPS Fix expiration ("stale") */
+    if (GPSReceiver.isGpsStale()) {
+        // queue GPS error message
+        long lastSampleTime = GPSReceiver.getInstance().getLastSampleTime();
+        if (DateTime.getCurrentTimeSec() > (lastSampleTime + GPS_EVENT_INTERVAL)) {
+            // Likely serious GPS problem.
+            // We haven't received ANYTHING from the GPS reciver in the last GPS_EVENT_INTERVAL seconds
+            // The GPS receiver is no longer working!
+            Payload p = new Payload();
+            p.writeULong(ClientErrors.ERROR_GPS_FAILURE, 2);
+            p.writeULong(lastSampleTime, 4);
+            this.queueError(p);
+        } else {
+            // The GPS receiver still appears to be working, the fix is just expired
+            long lastValidTime = GPSReceiver.getInstance().getLastValidTime();
+            Payload p = new Payload();
+            p.writeULong(ClientErrors.ERROR_GPS_EXPIRED, 2);
+            p.writeULong(lastValidTime, 4);
+            this.queueError(p);
+        }
+    }
+    /* send queued packets/events */
+    if (!this._sendAllPackets(TRANSPORT_SIMPLEX, false)) {
+        this._transportClose(TRANSPORT_SIMPLEX, false);
+        // set all to 'unsent'
+        this.getEventQueue().resetSent();
+        Log.setMessage(1, "UDP TX Err");
+        return false;
+    }
+    /* acknowledge sent events */
+    Log.setMessage(1, "");
+    if (this._transportClose(TRANSPORT_SIMPLEX, true)) {
+        // - Data doesn't get transmitted until the close for Simplex connections.
+        // So events should not be auto-acknowledged until the close has occured
+        // and didn't get any errors. (This still doesn't guarantee that the server
+        // received the data).
+        // - Since many/most wireless data services will be placing the device behind
+        // a NAT'ed router, there is no way for the server to send back a UDP
+        // acknowledgement to the device.  As such, no attempt is made to read an
+        // acknowledgement from the server.
+        // remove all pending messages
+        this.getPendingQueue().emptyQueue();
+        // del all 'sent'
+        int delCnt = this.getEventQueue().deleteToSequence(Packet.SEQUENCE_ALL);
+        if (delCnt > 0) {
+            // add to total events sent/ack'ed
+            this.totalEventsSent += delCnt;
+        }
+        Accounting.markSimplexConnection();
+        return true;
+    } else {
+        return false;
+    }
+}

@@ -1,0 +1,108 @@
+private static boolean cg03alarm() {
+    Date now = new Date();
+    long nowtime = now.getTime();
+    String today = dfday.format(now);
+    String exedate = today;
+    String yestarday = dfday.format(nowtime - 24 * 60 * 60 * 1000);
+    boolean canlogin = false;
+    // Timestamp workingtimestamp = new java.sql.Timestamp(nowtime - 10 * 60
+    // * 1000);// working目录就10分钟内
+    // 日期目录就25分钟内
+    Timestamp ggsntimestamp = new java.sql.Timestamp(nowtime - 25 * 60 * 1000);
+    String ggsntime = dfmin.format(ggsntimestamp);
+    // String workingtime = dfmin.format(workingtimestamp);
+    if (!ggsntime.startsWith(today)) {
+        exedate = yestarday;
+    }
+    System.out.println("当天：" + today + ",昨天：" + yestarday + ",执行时间：" + exedate);
+    // String command = COMMONAD + " " + exedate + " " + workingtime + " " +
+    // ggsntime;
+    String command = COMMONAD + " " + exedate;
+    try {
+        Runtime runtime = Runtime.getRuntime();
+        Process p = runtime.exec(command);
+        System.out.println("执行命令:" + command);
+        BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()));
+        String line = null;
+        int workingline = 0;
+        int ggsnline = Integer.MAX_VALUE;
+        int i = 0;
+        while ((line = br.readLine()) != null) {
+            if (line.indexOf("Last login") != -1) {
+                canlogin = true;
+            }
+            if (line.indexOf("/STS/working") != -1) {
+                System.out.println("workingline====" + i);
+                workingline = i;
+            }
+            if (line.indexOf("-GGSNCQ02.J20R4") != -1) {
+                System.out.println("ggsnline====" + i);
+                ggsnline = i;
+            }
+            if (line.indexOf("NO-LABEL") != -1) {
+                System.out.println("line::::::" + line);
+                if (i >= workingline && i < ggsnline)
+                    CG03_WORKING_LAST_FILE = line;
+                if (i >= ggsnline)
+                    CG03_GGSN_LAST_FILE = line;
+            }
+            i++;
+        }
+        System.out.println("CG03_WORKING_LAST_FILE=" + CG03_WORKING_LAST_FILE);
+        System.out.println("CG03_GGSN_LAST_FILE=" + CG03_GGSN_LAST_FILE);
+        if (CG03_WORKING_LAST_FILE != null && !CG03_WORKING_LAST_FILE.equals(""))
+            CG03_LAST_FILE = CG03_WORKING_LAST_FILE;
+        else if (CG03_GGSN_LAST_FILE != null && !CG03_GGSN_LAST_FILE.equals(""))
+            CG03_LAST_FILE = CG03_GGSN_LAST_FILE;
+        br.close();
+        System.out.println("CG03设备的第" + i + "次判断!!!!!!");
+        if (!canlogin) {
+            // 不能登录,下面的不再跑了
+            SmsSend.send("", "CG03在" + dfsec.format(new Date()) + "无法登陆");
+            System.out.println("CG03在" + dfsec.format(new Date()) + "无法登陆");
+            return false;
+        }
+        // 这里对CG03_LAST_FILE进行判断
+        if (CG03_LAST_FILE == null || CG03_LAST_FILE.equals("")) {
+            // 两个地方都没文件的话,当然不去查了啊
+            SmsSend.send("", "CG03在" + dfsec.format(new Date()) + "无话单产生");
+            System.out.println("CG03在" + dfsec.format(new Date()) + "无话单产生");
+            return false;
+        }
+        int idx = CG03_LAST_FILE.lastIndexOf(today);
+        if (idx == -1)
+            idx = CG03_LAST_FILE.lastIndexOf(yestarday);
+        if (idx != -1) {
+            // GGSNCQ02.J20R4:GGSNCQ02_20100715232545_37350:20100715:232529:031:NO-LABEL
+            String date = CG03_LAST_FILE.substring(idx, idx + 8);
+            String time = CG03_LAST_FILE.substring(idx + 9, idx + 9 + 6);
+            boolean isok = false;
+            // 文件的时间
+            long filetime = dfsec1.parse(date + time).getTime();
+            if (CG03_WORKING_LAST_FILE != null && !CG03_WORKING_LAST_FILE.equals("")) {
+                // 看是否10分钟内
+                if (nowtime - filetime < 10 * 60 * 1000)
+                    isok = true;
+                System.out.println("working中的时间差距为::" + ((nowtime - filetime) / 1000) + "秒");
+            } else if (CG03_GGSN_LAST_FILE != null && !CG03_GGSN_LAST_FILE.equals("")) {
+                // 看是否25分钟内
+                if (nowtime - filetime < 25 * 60 * 1000)
+                    isok = true;
+                System.out.println("ggsn中的时间差距为::" + ((nowtime - filetime) / 1000) + "秒");
+            }
+            if (!isok) {
+                SmsSend.send("", "CG03在" + dfsec.format(new Date()) + "无话单产生,最近产生时间为:" + (date + time));
+                System.out.println("CG03在" + dfsec.format(new Date()) + "无话单产生,最近为:" + CG03_LAST_FILE);
+            }
+            return isok;
+        } else {
+            SmsSend.send("", "CG03在" + dfsec.format(new Date()) + "话单文件有异常");
+            System.out.println("CG03在" + dfsec.format(new Date()) + "话单文件有异常：" + CG03_LAST_FILE);
+            return false;
+        }
+    } catch (Exception e) {
+        System.out.println(command + "执行失败!" + e);
+    }
+    // }
+    return true;
+}

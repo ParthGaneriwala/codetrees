@@ -1,0 +1,160 @@
+protected void directRefreshTree() {
+    int[] rowCounts;
+    DefaultMutableTreeNode propertiesNode;
+    // Added: (weconsultants@users) Moved tableNode here for visibiity nd new DECFM
+    DefaultMutableTreeNode tableNode;
+    DecimalFormat DECFMT = new DecimalFormat(" ( ####,###,####,##0 )");
+    // over the root node's children and removing them one by one.
+    while (treeModel.getChildCount(rootNode) > 0) {
+        DefaultMutableTreeNode child = (DefaultMutableTreeNode) treeModel.getChild(rootNode, 0);
+        treeModel.removeNodeFromParent(child);
+        child.removeAllChildren();
+        child.removeFromParent();
+    }
+    treeModel.nodeStructureChanged(rootNode);
+    treeModel.reload();
+    tScrollPane.repaint();
+    ResultSet result = null;
+    // Now rebuild the tree below its root
+    try {
+        // Start by naming the root node from its URL:
+        rootNode.setUserObject(dMeta.getURL());
+        // get metadata about user tables by building a vector of table names
+        result = dMeta.getTables(null, null, null, (showSys ? usertables : nonSystables));
+        Vector tables = new Vector();
+        Vector schemas = new Vector();
+        // sqlbob@users Added remarks.
+        Vector remarks = new Vector();
+        String schema;
+        while (result.next()) {
+            schema = result.getString(2);
+            if ((!showSys) && isOracle && oracleSysUsers.contains(schema)) {
+                continue;
+            }
+            if (schemaFilter == null || schema.equals(schemaFilter)) {
+                schemas.addElement(schema);
+                tables.addElement(result.getString(3));
+                remarks.addElement(result.getString(5));
+                continue;
+            }
+        }
+        result.close();
+        result = null;
+        // Added: (weconsultants@users)
+        // Sort not to go into production. Have to sync with 'remarks Vector' for DBMS that has it
+        // Collections.sort(tables);
+        // Added: (weconsultants@users) - Add rowCounts if needed.
+        rowCounts = new int[tables.size()];
+        try {
+            rowCounts = getRowCounts(tables, schemas);
+        } catch (Exception e) {
+            // Added: (weconsultants@users)
+            CommonSwing.errorMessage(e);
+        }
+        ResultSet col;
+        // For each table, build a tree node with interesting info
+        for (int i = 0; i < tables.size(); i++) {
+            col = null;
+            String name;
+            try {
+                name = (String) tables.elementAt(i);
+                if (isOracle && name.startsWith("BIN$")) {
+                    continue;
+                // Oracle Recyle Bin tables.
+                // Contains metacharacters which screw up metadata
+                // queries below.
+                }
+                schema = (String) schemas.elementAt(i);
+                String schemaname = "";
+                if (schema != null && showSchemas) {
+                    schemaname = schema + '.';
+                }
+                String rowcount = displayRowCounts ? (" " + DECFMT.format(rowCounts[i])) : "";
+                String displayedName = schemaname + name + rowcount;
+                // weconsul@ptd.net Add rowCounts if needed.
+                tableNode = makeNode(displayedName, rootNode);
+                col = dMeta.getColumns(null, schema, name, null);
+                if ((schema != null) && !schema.trim().equals("")) {
+                    makeNode(schema, tableNode);
+                }
+                // sqlbob@users Added remarks.
+                String remark = (String) remarks.elementAt(i);
+                if ((remark != null) && !remark.trim().equals("")) {
+                    makeNode(remark, tableNode);
+                }
+                // With a child for each column containing pertinent attributes
+                while (col.next()) {
+                    String c = col.getString(4);
+                    DefaultMutableTreeNode columnNode = makeNode(c, tableNode);
+                    String type = col.getString(6);
+                    makeNode("Type: " + type, columnNode);
+                    boolean nullable = col.getInt(11) != DatabaseMetaData.columnNoNulls;
+                    makeNode("Nullable: " + nullable, columnNode);
+                }
+            } finally {
+                if (col != null) {
+                    try {
+                        col.close();
+                    } catch (SQLException se) {
+                    }
+                }
+            }
+            DefaultMutableTreeNode indexesNode = makeNode("Indices", tableNode);
+            if (showIndexDetails) {
+                ResultSet ind = null;
+                try {
+                    ind = dMeta.getIndexInfo(null, schema, name, false, false);
+                    String oldiname = null;
+                    DefaultMutableTreeNode indexNode = null;
+                    // A child node to contain each index - and its attributes
+                    while (ind.next()) {
+                        boolean nonunique = ind.getBoolean(4);
+                        String iname = ind.getString(6);
+                        if ((oldiname == null || !oldiname.equals(iname))) {
+                            indexNode = makeNode(iname, indexesNode);
+                            makeNode("Unique: " + !nonunique, indexNode);
+                            oldiname = iname;
+                        }
+                        // And the ordered column list for index components
+                        makeNode(ind.getString(9), indexNode);
+                    }
+                } catch (SQLException se) {
+                    // Workaround for Oracle
+                    if (se.getMessage() == null || ((!se.getMessage().startsWith("ORA-25191:")) && (!se.getMessage().startsWith("ORA-01702:")) && !se.getMessage().startsWith("ORA-01031:"))) {
+                        throw se;
+                    }
+                } finally {
+                    if (ind != null) {
+                        ind.close();
+                        ind = null;
+                    }
+                }
+            }
+        }
+        // Finally - a little additional metadata on this connection
+        propertiesNode = makeNode("Properties", rootNode);
+        makeNode("User: " + dMeta.getUserName(), propertiesNode);
+        makeNode("ReadOnly: " + cConn.isReadOnly(), propertiesNode);
+        makeNode("AutoCommit: " + cConn.getAutoCommit(), propertiesNode);
+        makeNode("Driver: " + dMeta.getDriverName(), propertiesNode);
+        makeNode("Product: " + dMeta.getDatabaseProductName(), propertiesNode);
+        makeNode("Version: " + dMeta.getDatabaseProductVersion(), propertiesNode);
+    } catch (SQLException se) {
+        propertiesNode = makeNode("Error getting metadata:", rootNode);
+        makeNode(se.getMessage(), propertiesNode);
+        makeNode(se.getSQLState(), propertiesNode);
+        CommonSwing.errorMessage(se);
+    } finally {
+        if (result != null) {
+            try {
+                result.close();
+            } catch (SQLException se) {
+            }
+        }
+    }
+    treeModel.nodeStructureChanged(rootNode);
+    treeModel.reload();
+    tScrollPane.repaint();
+    // We want the Schema List to always be in sync with the displayed tree
+    updateSchemaList();
+}

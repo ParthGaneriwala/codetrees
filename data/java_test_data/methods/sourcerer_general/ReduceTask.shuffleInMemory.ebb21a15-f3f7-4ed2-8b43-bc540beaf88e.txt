@@ -1,0 +1,80 @@
+private MapOutput shuffleInMemory(MapOutputLocation mapOutputLoc, URLConnection connection, InputStream input, int mapOutputLength, int compressedLength) throws IOException, InterruptedException {
+    // Reserve ram for the map-output
+    boolean createdNow = ramManager.reserve(mapOutputLength, input);
+    // Reconnect if we need to
+    if (!createdNow) {
+        // Reconnect
+        try {
+            connection = mapOutputLoc.getOutputLocation().openConnection();
+            input = getInputStream(connection, DEFAULT_READ_TIMEOUT, STALLED_COPY_TIMEOUT);
+        } catch (IOException ioe) {
+            LOG.info("Failed reopen connection to fetch map-output from " + mapOutputLoc.getHost());
+            // Inform the ram-manager
+            ramManager.closeInMemoryFile(mapOutputLength);
+            ramManager.unreserve(mapOutputLength);
+            throw ioe;
+        }
+    }
+    IFileInputStream checksumIn = new IFileInputStream(input, compressedLength);
+    input = checksumIn;
+    // Are map-outputs compressed?
+    if (codec != null) {
+        decompressor.reset();
+        input = codec.createInputStream(input, decompressor);
+    }
+    // Copy map-output into an in-memory buffer
+    byte[] shuffleData = new byte[mapOutputLength];
+    MapOutput mapOutput = new MapOutput(mapOutputLoc.getTaskId(), mapOutputLoc.getTaskAttemptId(), shuffleData);
+    int bytesRead = 0;
+    try {
+        int n = input.read(shuffleData, 0, shuffleData.length);
+        while (n > 0) {
+            bytesRead += n;
+            shuffleClientMetrics.inputBytes(n);
+            // indicate we're making progress
+            reporter.progress();
+            n = input.read(shuffleData, bytesRead, (shuffleData.length - bytesRead));
+        }
+        LOG.info("Read " + bytesRead + " bytes from map-output for " + mapOutputLoc.getTaskAttemptId());
+        input.close();
+    } catch (IOException ioe) {
+        LOG.info("Failed to shuffle from " + mapOutputLoc.getTaskAttemptId(), ioe);
+        // Inform the ram-manager
+        ramManager.closeInMemoryFile(mapOutputLength);
+        ramManager.unreserve(mapOutputLength);
+        // Discard the map-output
+        try {
+            mapOutput.discard();
+        } catch (IOException ignored) {
+            LOG.info("Failed to discard map-output from " + mapOutputLoc.getTaskAttemptId(), ignored);
+        }
+        mapOutput = null;
+        // Close the streams
+        IOUtils.cleanup(LOG, input);
+        // Re-throw
+        throw ioe;
+    }
+    // Close the in-memory file
+    ramManager.closeInMemoryFile(mapOutputLength);
+    // Sanity check
+    if (bytesRead != mapOutputLength) {
+        // Inform the ram-manager
+        ramManager.unreserve(mapOutputLength);
+        // Discard the map-output
+        try {
+            mapOutput.discard();
+        } catch (IOException ignored) {
+            // IGNORED because we are cleaning up
+            LOG.info("Failed to discard map-output from " + mapOutputLoc.getTaskAttemptId(), ignored);
+        }
+        mapOutput = null;
+        throw new IOException("Incomplete map output received for " + mapOutputLoc.getTaskAttemptId() + " from " + mapOutputLoc.getOutputLocation() + " (" + bytesRead + " instead of " + mapOutputLength + ")");
+    }
+    // TODO: Remove this after a 'fix' for HADOOP-3647
+    if (mapOutputLength > 0) {
+        DataInputBuffer dib = new DataInputBuffer();
+        dib.reset(shuffleData, 0, shuffleData.length);
+        LOG.info("Rec #1 from " + mapOutputLoc.getTaskAttemptId() + " -> (" + WritableUtils.readVInt(dib) + ", " + WritableUtils.readVInt(dib) + ") from " + mapOutputLoc.getHost());
+    }
+    return mapOutput;
+}

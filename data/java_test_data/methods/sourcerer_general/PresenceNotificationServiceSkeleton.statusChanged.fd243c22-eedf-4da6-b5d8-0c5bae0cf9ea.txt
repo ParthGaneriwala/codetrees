@@ -1,0 +1,236 @@
+public es.tid.www.schema.parlayx.presence.notification.v1_1.StatusChangedResponse7 statusChanged(es.tid.www.schema.parlayx.presence.notification.v1_1.StatusChanged4 statusChanged0) {
+    // get the data receceived as parameter. This data is the change in the status
+    StatusChanged param = statusChanged0.getStatusChanged();
+    String correlator = param.getCorrelator();
+    URI presentity = param.getPresentity();
+    PresenceAttribute[] attributes = param.getChangedAttributes();
+    // set line state as free, as default param value
+    String stateLine = "free";
+    // take the pidf value as string from pidf attribute
+    String pidf = null;
+    for (int e = 0; e < attributes.length; e++) {
+        if (attributes[e].getTypeAndValue().getUnionElement().getValue().equals("PIDF")) {
+            pidf = attributes[e].getTypeAndValue().getPIDF();
+        }
+    }
+    // if value for pidf is not null, interpret it
+    if (pidf != null) {
+        // parse pidf to get needed attributes for guess status line
+        try {
+            // define schemas vars.
+            String JAXP_SCHEMA_LANGUAGE = "http://java.sun.com/xml/jaxp/properties/schemaLanguage";
+            String W3C_XML_SCHEMA = "http://www.w3.org/2001/XMLSchema";
+            String JAXP_SCHEMA_SOURCE = "http://java.sun.com/xml/jaxp/properties/schemaSource";
+            String SCHEMA_SOURCE;
+            // read source schema to validate pidf in conf folder, using 'CATALINA_BASE' var as base path
+            StringBuffer sb = new StringBuffer();
+            sb.append(System.getenv("CATALINA_BASE"));
+            sb.append("/conf/pidf.xsd");
+            SCHEMA_SOURCE = sb.toString();
+            System.out.println("Busco en: " + SCHEMA_SOURCE);
+            // create needed objects for parse pidf
+            javax.xml.parsers.DocumentBuilderFactory factory;
+            javax.xml.parsers.DocumentBuilder builder;
+            // instanciate factory object and configurate it
+            factory = javax.xml.parsers.DocumentBuilderFactory.newInstance();
+            factory.setValidating(true);
+            factory.setAttribute(JAXP_SCHEMA_LANGUAGE, W3C_XML_SCHEMA);
+            factory.setAttribute(JAXP_SCHEMA_SOURCE, SCHEMA_SOURCE);
+            factory.setNamespaceAware(true);
+            factory.setIgnoringElementContentWhitespace(true);
+            factory.setIgnoringComments(true);
+            // instanciate document builder to read as DOM
+            builder = factory.newDocumentBuilder();
+            // create error handler
+            org.xml.sax.ErrorHandler errorHandler = new org.xml.sax.ErrorHandler() {
+
+                public void warning(org.xml.sax.SAXParseException e) {
+                    System.out.println("Warning : " + e.getMessage());
+                }
+
+                public void error(org.xml.sax.SAXParseException e) throws SAXParseException {
+                    System.out.println("Error : " + e.getMessage());
+                    throw (e);
+                }
+
+                public void fatalError(org.xml.sax.SAXParseException e) throws SAXParseException {
+                    System.out.println("FatalError : " + e.getMessage());
+                    throw (e);
+                }
+            };
+            builder.setErrorHandler(errorHandler);
+            // parse pidf string to dom object
+            Document presenceInfoDom = builder.parse(new org.xml.sax.InputSource(new StringReader(pidf)));
+            // get the document element and search for tuples with lineState information
+            Node raiz = presenceInfoDom.getDocumentElement();
+            NodeList nivel1 = raiz.getChildNodes();
+            boolean type1 = false;
+            boolean type2 = false;
+            // define vars for the three types of lineState information to check.
+            // statusBasic indicates the sipAddress is registered in ims
+            // imsSession indicates which media types are beeing used during call. If audio is used, the line will be busy
+            // note indicates the SCP line state.
+            String statusBasic = "";
+            String[] imsSession = null;
+            String note = "";
+            for (int i = 0; i < nivel1.getLength(); ++i) {
+                // searching for a 'tuple' tag
+                if (nivel1.item(i).getNodeName().contains("tuple")) {
+                    NodeList nivel2 = nivel1.item(i).getChildNodes();
+                    for (int o = 0; o < nivel2.getLength(); o++) {
+                        if (nivel2.item(o).getNodeName().indexOf("contact") > -1) {
+                            // depending on included contact sip address, the type of tuple will be type1 or type2
+                            if (nivel2.item(o).getFirstChild().getNodeValue().equals(presentity.toString())) {
+                                type1 = true;
+                            } else {
+                                type2 = true;
+                            }
+                        }
+                    }
+                    // if the tuple is type1, it's needed to check status.basic and status.ims-session
+                    if (type1) {
+                        for (int o = 0; o < nivel2.getLength(); o++) {
+                            if (nivel2.item(o).getNodeName().indexOf("status") > -1) {
+                                NodeList nivel3 = nivel2.item(o).getChildNodes();
+                                for (int y = 0; y < nivel3.getLength(); y++) {
+                                    // take basic and ims-session
+                                    if (nivel3.item(y).getNodeName().indexOf("basic") > -1) {
+                                        statusBasic = nivel3.item(y).getFirstChild().getNodeValue();
+                                    } else if (nivel3.item(y).getNodeName().contains("ims-session")) {
+                                        NodeList childsIms = nivel3.item(y).getChildNodes();
+                                        imsSession = new String[childsIms.getLength()];
+                                        for (int m = 0; m < childsIms.getLength(); m++) {
+                                            String name = childsIms.item(m).getNodeName();
+                                            int ind = name.indexOf(":");
+                                            imsSession[m] = name.substring(ind + 1);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else // if tuple is type2, take the note
+                    if (type2) {
+                        for (int o = 0; o < nivel2.getLength(); o++) {
+                            if (nivel2.item(o).getNodeName().indexOf("note") > -1) {
+                                note = nivel2.item(o).getFirstChild().getNodeValue();
+                            }
+                        }
+                    }
+                }
+            }
+            // once the pidf is parsed, depending on note, ims-session and statusBasic recovered, evaluate status line
+            if (type1) {
+                // depending on configuration parameters, perhaps some of the three information souces is not valid.
+                // Let's take a look to the 'ignore.register.linestate' configuration parameter. Default is false, this is,
+                // Default is to take register status as valid, but perhaps that configuration parameter says the opposite
+                boolean ignoreRegisterLinestate = false;
+                String sIgnoreRegisterLinestate = PresenceNotificationConfigInfo.getInstance().getConfigProperty("ignore.register.linestate");
+                if (sIgnoreRegisterLinestate != null) {
+                    try {
+                        ignoreRegisterLinestate = Boolean.parseBoolean(sIgnoreRegisterLinestate);
+                    } catch (NumberFormatException nfe) {
+                        ignoreRegisterLinestate = false;
+                    }
+                }
+                // miramos el config para ver si se toma como v�lida la informaci�n venida del estado de sesi�n ims del usuario
+                // The same way as with register information source, 'ignore.imssesion.linestate' says if ims-session source has to be
+                // ignored or taken into account to be as a valid information source. Default is not to ignore
+                boolean ignoreImssessionLinestate = false;
+                String sIgnoreImssessionLinestate = PresenceNotificationConfigInfo.getInstance().getConfigProperty("ignore.imssession.linestate");
+                if (sIgnoreImssessionLinestate != null) {
+                    try {
+                        ignoreImssessionLinestate = Boolean.parseBoolean(sIgnoreImssessionLinestate);
+                    } catch (NumberFormatException nfe) {
+                        ignoreImssessionLinestate = false;
+                    }
+                }
+                // suppose line be free. If some information says us that is busy, change state
+                stateLine = "free";
+                // if register state is taken into account and status is not 'open', change stateLine to busy
+                if ((!ignoreRegisterLinestate) && (!statusBasic.equals("open"))) {
+                    stateLine = "busy";
+                } else // if imssession state is taken into account and some of the media's is audio, change stateLine to busy
+                if (!ignoreImssessionLinestate) {
+                    if (imsSession != null) {
+                        for (int r = 0; r < imsSession.length; r++) {
+                            if (imsSession[r].equals("audio")) {
+                                stateLine = "busy";
+                            }
+                        }
+                    }
+                }
+            } else if (type2) {
+                // in case the tuple is type2 tuple, the SCP information is evaluated. This way, a list of several
+                // presentities can be configured to be ignored. If current evaluating presentity is in that list,
+                // this information source must be ignored. Default is not to ignore any presentity
+                // boolean flag to take cs status line as valid
+                boolean validCS = true;
+                // retrieve presentities whose cs line state should be ignored
+                if (csIgnorePresentities == null) {
+                    csIgnorePresentities = new HashSet();
+                    String csIgnorePresentitiesProperty = PresenceNotificationConfigInfo.getInstance().getConfigProperty("ignore.cs.linestate.for");
+                    if (csIgnorePresentitiesProperty != null) {
+                        String[] csIgnorePresentitiesArray = csIgnorePresentitiesProperty.split(",");
+                        if (csIgnorePresentitiesArray != null) {
+                            int size = csIgnorePresentitiesArray.length;
+                            for (int i = 0; i < size; i++) {
+                                csIgnorePresentities.add(csIgnorePresentitiesArray[i].trim());
+                            }
+                        }
+                    }
+                }
+                // if presentity is in the set, don't take cs state line as valid. Only take the other sources.
+                if (csIgnorePresentities.contains(presentity.toString())) {
+                    validCS = false;
+                }
+                // if CS tuple is valid, evaluate it, free line otherwise
+                if (validCS) {
+                    if (note.equals("Available")) {
+                        stateLine = "free";
+                    } else
+                        stateLine = "busy";
+                } else {
+                    stateLine = "free";
+                }
+            } else {
+                stateLine = "busy";
+            }
+        } catch (Exception e) {
+            System.out.println("Exception parsing pidf: " + e.toString());
+        }
+    }
+    Connection con = null;
+    Statement stm = null;
+    try {
+        // at this point we know the line state and we must store it in database for others to query it
+        String sDriver = "com.mysql.jdbc.Driver";
+        String sURL = "jdbc:mysql://" + PresenceNotificationConfigInfo.getInstance().getConfigProperty("database.host") + ":" + PresenceNotificationConfigInfo.getInstance().getConfigProperty("database.port") + "/" + PresenceNotificationConfigInfo.getInstance().getConfigProperty("database.name");
+        String user = PresenceNotificationConfigInfo.getInstance().getConfigProperty("database.user");
+        String password = PresenceNotificationConfigInfo.getInstance().getConfigProperty("database.password");
+        try {
+            // ejecuto la query
+            Class.forName(sDriver).newInstance();
+            con = DriverManager.getConnection(sURL, user, password);
+            stm = con.createStatement();
+            stm.execute("UPDATE PRES_INFO set STATUS='" + stateLine + "', VALID=TRUE WHERE URI='" + presentity.toString() + "'");
+        } catch (SQLException sqle) {
+            System.out.println("Exception updating database");
+        }
+    } catch (Exception e) {
+        System.out.println("Exception connecting database: " + e.toString());
+        e.printStackTrace();
+    } finally {
+        try {
+            if (stm != null)
+                stm.close();
+            if (con != null)
+                con.close();
+        } catch (SQLException sqle) {
+        }
+    }
+    // create a response object to be returned to webservice client.
+    StatusChangedResponse resp = new StatusChangedResponse();
+    StatusChangedResponse7 response = new StatusChangedResponse7();
+    response.setStatusChangedResponse(resp);
+    return response;
+}

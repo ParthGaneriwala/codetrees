@@ -1,0 +1,72 @@
+@Override
+public void trainOnInstanceImpl(Instance inst) {
+    DenPoint point = new DenPoint(inst, timestamp);
+    numProcessedPerUnit++;
+    /* Controlling the stream speed */
+    if (numProcessedPerUnit % processingSpeed == 0) {
+        timestamp++;
+        currentTimestamp.setTimestamp(timestamp);
+    }
+    // ////////////////
+    if (!initialized) {
+        initBuffer.add(point);
+        if (initBuffer.size() >= initPointsOption.getValue()) {
+            initialDBScan();
+            initialized = true;
+        }
+    } else {
+        // ////////////
+        // Merging(p)//
+        // ////////////
+        boolean merged = false;
+        if (p_micro_cluster.getClustering().size() != 0) {
+            MicroCluster x = nearestCluster(point, p_micro_cluster);
+            MicroCluster xCopy = x.copy();
+            xCopy.insert(point, timestamp);
+            if (xCopy.getRadius(timestamp) <= epsilon) {
+                x.insert(point, timestamp);
+                merged = true;
+            }
+        }
+        if (!merged && (o_micro_cluster.getClustering().size() != 0)) {
+            MicroCluster x = nearestCluster(point, o_micro_cluster);
+            MicroCluster xCopy = x.copy();
+            xCopy.insert(point, timestamp);
+            if (xCopy.getRadius(timestamp) <= epsilon) {
+                x.insert(point, timestamp);
+                merged = true;
+                if (x.getWeight() > beta * mu) {
+                    o_micro_cluster.getClustering().remove(x);
+                    p_micro_cluster.getClustering().add(x);
+                }
+            }
+        }
+        if (!merged) {
+            o_micro_cluster.getClustering().add(new MicroCluster(point.toDoubleArray(), point.toDoubleArray().length, timestamp, lambda, currentTimestamp));
+        }
+        // //////////////////////////
+        if (timestamp % tp == 0) {
+            ArrayList<MicroCluster> removalList = new ArrayList<MicroCluster>();
+            for (Cluster c : p_micro_cluster.getClustering()) {
+                if (((MicroCluster) c).getWeight() < beta * mu) {
+                    removalList.add((MicroCluster) c);
+                }
+            }
+            for (Cluster c : removalList) {
+                p_micro_cluster.getClustering().remove(c);
+            }
+            for (Cluster c : o_micro_cluster.getClustering()) {
+                long t0 = ((MicroCluster) c).getCreationTime();
+                double xsi1 = Math.pow(2, (-lambda * (timestamp - t0 + tp))) - 1;
+                double xsi2 = Math.pow(2, -lambda * tp) - 1;
+                double xsi = xsi1 / xsi2;
+                if (((MicroCluster) c).getWeight() < xsi) {
+                    removalList.add((MicroCluster) c);
+                }
+            }
+            for (Cluster c : removalList) {
+                o_micro_cluster.getClustering().remove(c);
+            }
+        }
+    }
+}

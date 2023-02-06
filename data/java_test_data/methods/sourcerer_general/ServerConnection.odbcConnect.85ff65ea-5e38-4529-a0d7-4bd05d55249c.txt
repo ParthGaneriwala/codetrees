@@ -1,0 +1,116 @@
+private void odbcConnect(int firstInt) throws IOException, HsqlException {
+    /* Until client receives teh ReadyForQuery packet at the end of this
+         * method, we (the server) initiate all packet exchanges. */
+    int major = dataInput.readUnsignedShort();
+    int minor = dataInput.readUnsignedShort();
+    // Can just return to fail, until the value of "session" is set below.
+    if (major == 1 && minor == 7) {
+        // This is what old HyperSQL versions always send
+        // TODO:  Consider sending client a 1.8-compatible SQLException
+        server.print("A pre-9.0 client attempted to connect.  " + "We rejected them.");
+        return;
+    }
+    if (major == 1234 && minor == 5679) {
+        // No reason to pay any attention to the size header in this case.
+        // SSL not supported yet
+        dataOutput.writeByte('N');
+        // TODO:  Implement SSL here (and reply with 'S')
+        odbcConnect(dataInput.readInt());
+        return;
+    }
+    if (major == 1234 && minor == 5678) {
+        // No reason to pay any attention to the size header in this case.
+        if (firstInt != 16) {
+            server.print("ODBC cancellation request sent wrong packet length: " + firstInt);
+        }
+        server.print("Got an ODBC cancelation request for thread ID " + dataInput.readInt() + ", but we don't support " + "OOB cancellation yet.  " + "Ignoring this request and closing the connection.");
+        // N.b.,  Spec says to NOT reply to client in this case.
+        return;
+    }
+    server.printWithThread("ODBC client connected.  " + "ODBC Protocol Compatibility Version " + major + '.' + minor);
+    OdbcPacketInputStream inPacket = OdbcPacketInputStream.newOdbcPacketInputStream('\0', dataInput, firstInt - 8);
+    // - 4 for size of firstInt - 2 for major - 2 for minor
+    java.util.Map stringPairs = inPacket.readStringPairs();
+    if (server.isTrace()) {
+        server.print("String Pairs from ODBC client: " + stringPairs);
+    }
+    try {
+        try {
+            OdbcUtil.validateInputPacketSize(inPacket);
+        } catch (RecoverableOdbcFailure rf) {
+            // In this case, we do not treat it as recoverable
+            throw new ClientFailure(rf.getMessage(), rf.getClientMessage());
+        }
+        inPacket.close();
+        if (!stringPairs.containsKey("database")) {
+            throw new ClientFailure("Client did not identify database", "Target database not identified");
+        }
+        if (!stringPairs.containsKey("user")) {
+            throw new ClientFailure("Client did not identify user", "Target account not identified");
+        }
+        String databaseName = (String) stringPairs.get("database");
+        user = (String) stringPairs.get("user");
+        if (databaseName.equals("/")) {
+            // Work-around because ODBC doesn't allow "" for Database name
+            databaseName = "";
+        }
+        /* Unencoded/unsalted authentication */
+        dataOutput.writeByte('R');
+        // size
+        dataOutput.writeInt(8);
+        dataOutput.writeInt(OdbcUtil.ODBC_AUTH_REQ_PASSWORD);
+        dataOutput.flush();
+        // areq of auth. mode.
+        char c = '\0';
+        try {
+            c = (char) dataInput.readByte();
+        } catch (EOFException eofe) {
+            server.printWithThread("Looks like we got a goofy psql no-auth attempt.  " + "Will probably retry properly very shortly");
+            return;
+        }
+        if (c != 'p') {
+            throw new ClientFailure("Expected password prefix 'p', " + "but got '" + c + "'", "Password value not prefixed with 'p'");
+        }
+        int len = dataInput.readInt() - 5;
+        // Is password len after -4 for count int -1 for null term
+        if (len < 0) {
+            throw new ClientFailure("Client submitted invalid password length " + len, "Invalid password length " + len);
+        }
+        String password = ServerConnection.readNullTermdUTF(len, dataInput);
+        dbIndex = server.getDBIndex(databaseName);
+        dbID = server.dbID[dbIndex];
+        if (!server.isSilent()) {
+            server.printWithThread(mThread + ":Trying to connect user '" + user + "' to DB (" + databaseName + ')');
+        }
+        try {
+            session = DatabaseManager.newSession(dbID, user, password, null, 0);
+        // TODO:  Find out what updateCount, the last para, is for:
+        // resultIn.getUpdateCount());
+        } catch (Exception e) {
+            throw new ClientFailure("User name or password denied: " + e, "Login attempt rejected");
+        }
+    } catch (ClientFailure cf) {
+        server.print(cf.getMessage());
+        // Code below means CONNECTION FAILURE
+        OdbcUtil.alertClient(OdbcUtil.ODBC_SEVERITY_FATAL, cf.getClientMessage(), "08006", dataOutput);
+        return;
+    }
+    outPacket = OdbcPacketOutputStream.newOdbcPacketOutputStream();
+    // success
+    outPacket.writeInt(OdbcUtil.ODBC_AUTH_REQ_OK);
+    // Notify client of success
+    outPacket.xmit('R', dataOutput);
+    for (int i = 0; i < OdbcUtil.hardcodedParams.length; i++) {
+        OdbcUtil.writeParam(OdbcUtil.hardcodedParams[i][0], OdbcUtil.hardcodedParams[i][1], dataOutput);
+    }
+    // If/when we implement OOB cancellation, we would send the
+    // Session identifier and key here, with a 'K' packet.
+    // Trans. status = Not in transaction
+    outPacket.writeByte('I');
+    // Notify client of success
+    outPacket.xmit('Z', dataOutput);
+    // This ReadyForQuery turns over responsibility to initiate packet
+    // exchanges to the client.
+    OdbcUtil.alertClient(OdbcUtil.ODBC_SEVERITY_INFO, "MHello\nYou have connected to HyperSQL ODBC Server", dataOutput);
+    dataOutput.flush();
+}

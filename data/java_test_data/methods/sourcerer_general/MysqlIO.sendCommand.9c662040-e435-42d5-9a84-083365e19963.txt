@@ -1,0 +1,112 @@
+/**
+ * Send a command to the MySQL server If data is to be sent with command,
+ * it should be put in extraData.
+ *
+ * Raw packets can be sent by setting queryPacket to something other
+ * than null.
+ *
+ * @param command the MySQL protocol 'command' from MysqlDefs
+ * @param extraData any 'string' data for the command
+ * @param queryPacket a packet pre-loaded with data for the protocol (i.e.
+ * from a client-side prepared statement).
+ * @param skipCheck do not call checkErrorPacket() if true
+ * @param extraDataCharEncoding the character encoding of the extraData
+ * parameter.
+ *
+ * @return the response packet from the server
+ *
+ * @throws SQLException if an I/O error or SQL error occurs
+ */
+final Buffer sendCommand(int command, String extraData, Buffer queryPacket, boolean skipCheck, String extraDataCharEncoding, int timeoutMillis) throws SQLException {
+    this.commandCount++;
+    // 
+    // We cache these locally, per-command, as the checks
+    // for them are in very 'hot' sections of the I/O code
+    // and we save 10-15% in overall performance by doing this...
+    // 
+    this.enablePacketDebug = this.connection.getEnablePacketDebug();
+    this.readPacketSequence = 0;
+    int oldTimeout = 0;
+    if (timeoutMillis != 0) {
+        try {
+            oldTimeout = this.mysqlConnection.getSoTimeout();
+            this.mysqlConnection.setSoTimeout(timeoutMillis);
+        } catch (SocketException e) {
+            throw SQLError.createCommunicationsException(this.connection, lastPacketSentTimeMs, lastPacketReceivedTimeMs, e, getExceptionInterceptor());
+        }
+    }
+    try {
+        checkForOutstandingStreamingData();
+        // Clear serverStatus...this value is guarded by an
+        // external mutex, as you can only ever be processing
+        // one command at a time
+        this.oldServerStatus = this.serverStatus;
+        this.serverStatus = 0;
+        this.hadWarnings = false;
+        this.warningCount = 0;
+        this.queryNoIndexUsed = false;
+        this.queryBadIndexUsed = false;
+        this.serverQueryWasSlow = false;
+        // 
+        if (this.useCompression) {
+            int bytesLeft = this.mysqlInput.available();
+            if (bytesLeft > 0) {
+                this.mysqlInput.skip(bytesLeft);
+            }
+        }
+        try {
+            clearInputStream();
+            // 
+            if (queryPacket == null) {
+                int packLength = HEADER_LENGTH + COMP_HEADER_LENGTH + 1 + ((extraData != null) ? extraData.length() : 0) + 2;
+                if (this.sendPacket == null) {
+                    this.sendPacket = new Buffer(packLength);
+                }
+                this.packetSequence = -1;
+                this.readPacketSequence = 0;
+                this.checkPacketSequence = true;
+                this.sendPacket.clear();
+                this.sendPacket.writeByte((byte) command);
+                if ((command == MysqlDefs.INIT_DB) || (command == MysqlDefs.CREATE_DB) || (command == MysqlDefs.DROP_DB) || (command == MysqlDefs.QUERY) || (command == MysqlDefs.COM_PREPARE)) {
+                    if (extraDataCharEncoding == null) {
+                        this.sendPacket.writeStringNoNull(extraData);
+                    } else {
+                        this.sendPacket.writeStringNoNull(extraData, extraDataCharEncoding, this.connection.getServerCharacterEncoding(), this.connection.parserKnowsUnicode(), this.connection);
+                    }
+                } else if (command == MysqlDefs.PROCESS_KILL) {
+                    long id = Long.parseLong(extraData);
+                    this.sendPacket.writeLong(id);
+                }
+                send(this.sendPacket, this.sendPacket.getPosition());
+            } else {
+                this.packetSequence = -1;
+                // packet passed by PreparedStatement
+                send(queryPacket, queryPacket.getPosition());
+            }
+        } catch (SQLException sqlEx) {
+            // don't wrap SQLExceptions
+            throw sqlEx;
+        } catch (Exception ex) {
+            throw SQLError.createCommunicationsException(this.connection, this.lastPacketSentTimeMs, this.lastPacketReceivedTimeMs, ex, getExceptionInterceptor());
+        }
+        Buffer returnPacket = null;
+        if (!skipCheck) {
+            if ((command == MysqlDefs.COM_EXECUTE) || (command == MysqlDefs.COM_RESET_STMT)) {
+                this.readPacketSequence = 0;
+                this.packetSequenceReset = true;
+            }
+            returnPacket = checkErrorPacket(command);
+        }
+        return returnPacket;
+    } catch (IOException ioEx) {
+        throw SQLError.createCommunicationsException(this.connection, this.lastPacketSentTimeMs, this.lastPacketReceivedTimeMs, ioEx, getExceptionInterceptor());
+    } finally {
+        if (timeoutMillis != 0) {
+            try {
+                this.mysqlConnection.setSoTimeout(oldTimeout);
+            } catch (SocketException e) {
+                throw SQLError.createCommunicationsException(this.connection, lastPacketSentTimeMs, lastPacketReceivedTimeMs, e, getExceptionInterceptor());
+            }
+        }
+    }
+}

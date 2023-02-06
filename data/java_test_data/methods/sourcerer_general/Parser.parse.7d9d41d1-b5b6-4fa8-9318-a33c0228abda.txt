@@ -1,0 +1,71 @@
+private AstRoot parse() throws IOException {
+    int pos = 0;
+    AstRoot root = new AstRoot(pos);
+    currentScope = currentScriptOrFn = root;
+    // line number where source starts
+    int baseLineno = ts.lineno;
+    // in case source is empty
+    int end = pos;
+    boolean inDirectivePrologue = true;
+    boolean savedStrictMode = inUseStrictDirective;
+    // TODO: eval code should get strict mode from invoking code
+    inUseStrictDirective = false;
+    try {
+        for (; ; ) {
+            int tt = peekToken();
+            if (tt <= Token.EOF) {
+                break;
+            }
+            AstNode n;
+            if (tt == Token.FUNCTION) {
+                consumeToken();
+                try {
+                    n = function(calledByCompileFunction ? FunctionNode.FUNCTION_EXPRESSION : FunctionNode.FUNCTION_STATEMENT);
+                } catch (ParserException e) {
+                    break;
+                }
+            } else {
+                n = statement();
+                if (inDirectivePrologue) {
+                    String directive = getDirective(n);
+                    if (directive == null) {
+                        inDirectivePrologue = false;
+                    } else if (directive.equals("use strict")) {
+                        inUseStrictDirective = true;
+                        root.setInStrictMode(true);
+                    }
+                }
+            }
+            end = getNodeEnd(n);
+            root.addChildToBack(n);
+            n.setParent(root);
+        }
+    } catch (StackOverflowError ex) {
+        String msg = lookupMessage("msg.too.deep.parser.recursion");
+        if (!compilerEnv.isIdeMode())
+            throw Context.reportRuntimeError(msg, sourceURI, ts.lineno, null, 0);
+    } finally {
+        inUseStrictDirective = savedStrictMode;
+    }
+    if (this.syntaxErrorCount != 0) {
+        String msg = String.valueOf(this.syntaxErrorCount);
+        msg = lookupMessage("msg.got.syntax.errors", msg);
+        if (!compilerEnv.isIdeMode())
+            throw errorReporter.runtimeError(msg, sourceURI, baseLineno, null, 0);
+    }
+    // add comments to root in lexical order
+    if (scannedComments != null) {
+        // If we find a comment beyond end of our last statement or
+        // function, extend the root bounds to the end of that comment.
+        int last = scannedComments.size() - 1;
+        end = Math.max(end, getNodeEnd(scannedComments.get(last)));
+        for (Comment c : scannedComments) {
+            root.addComment(c);
+        }
+    }
+    root.setLength(end - pos);
+    root.setSourceName(sourceURI);
+    root.setBaseLineno(baseLineno);
+    root.setEndLineno(ts.lineno);
+    return root;
+}

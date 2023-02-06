@@ -1,0 +1,41 @@
+protected AeInboundReceive createCreateMessage(IAeBusinessProcessInternal aImpl, Element aElement) throws AeBusinessProcessException {
+    long replyId = getAttributeLong(aElement, STATE_REPLY_ID);
+    Element root = AeXmlUtil.getFirstSubElement(aElement);
+    AeInboundReceive createMessage;
+    if (root.getTagName() == IAeImplStateNames.STATE_MESSAGEDATA) {
+        // This is the legacy case. We used to synthesize the inbound receive
+        // from just the partner link, operation, and message data.
+        String partnerLink = getAttribute(aElement, STATE_PLINK);
+        String operation = getAttribute(aElement, STATE_OPERATION);
+        // Deserialize the message data.
+        AeMessageDataDeserializer deserializer = new AeMessageDataDeserializer();
+        deserializer.setMessageDataElement(root);
+        IAeMessageData messageData = deserializer.getMessageData();
+        IAeMessageContext context = new AeMessageContext(partnerLink, operation);
+        AeProcessDef processDef = aImpl.getProcessDefinition();
+        AePartnerLinkDef plDef = processDef.findPartnerLink(partnerLink);
+        AePartnerLinkOpKey plOpKey = new AePartnerLinkOpKey(plDef, context.getOperation());
+        // Construct the create message with enough attributes to allow the
+        // process to match a message receiver to the create message: partner
+        // link, port type, and operation (see
+        // AeMessageReceiver.matches(AeCorrelatedReceive aCorrelatedReceive)).
+        createMessage = new AeInboundReceive(plOpKey, // correlation map
+        null, aImpl.getProcessPlan(), messageData, context);
+    } else {
+        AeInboundReceiveDeserializer deserializer = new AeInboundReceiveDeserializer();
+        deserializer.setInboundReceiveElement(root);
+        deserializer.setProcessPlan(aImpl.getProcessPlan());
+        deserializer.setTypeMapping(aImpl.getEngine().getTypeMapping());
+        createMessage = deserializer.getInboundReceive();
+        boolean replyWaiting = !createMessage.isOneway();
+        // create reply receiver.
+        if (replyWaiting) {
+            IAeReplyReceiver replyReceiver = null;
+            IAeDurableReplyFactory factory = aImpl.getEngine().getTransmissionTracker().getDurableReplyFactory();
+            replyReceiver = factory.createReplyReceiver(createMessage.getReplyId(), deserializer.getDurableReplyInfo());
+            createMessage.setReplyReceiver(replyReceiver);
+        }
+    }
+    createMessage.setReplyId(replyId);
+    return createMessage;
+}

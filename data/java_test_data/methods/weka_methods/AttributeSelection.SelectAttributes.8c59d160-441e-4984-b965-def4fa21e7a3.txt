@@ -1,0 +1,161 @@
+public void SelectAttributes(Instances data) throws Exception {
+    int[] attributeSet;
+    m_transformer = null;
+    m_attributeFilter = null;
+    m_trainInstances = data;
+    if (m_doXval == true && (m_ASEvaluator instanceof AttributeTransformer)) {
+        throw new Exception("Can't cross validate an attribute transformer.");
+    }
+    if (m_ASEvaluator instanceof SubsetEvaluator && m_searchMethod instanceof Ranker) {
+        throw new Exception(m_ASEvaluator.getClass().getName() + " must use a search method other than Ranker");
+    }
+    if (m_ASEvaluator instanceof AttributeEvaluator && !(m_searchMethod instanceof Ranker)) {
+        // m_searchMethod = new Ranker();
+        throw new Exception("AttributeEvaluators must use the Ranker search " + "method");
+    }
+    if (m_searchMethod instanceof RankedOutputSearch) {
+        m_doRank = ((RankedOutputSearch) m_searchMethod).getGenerateRanking();
+    }
+    if (m_ASEvaluator instanceof UnsupervisedAttributeEvaluator || m_ASEvaluator instanceof UnsupervisedSubsetEvaluator) {
+    // unset the class index
+    // m_trainInstances.setClassIndex(-1);
+    } else {
+        // check that a class index has been set
+        if (m_trainInstances.classIndex() < 0) {
+            m_trainInstances.setClassIndex(m_trainInstances.numAttributes() - 1);
+        }
+    }
+    // Initialize the attribute evaluator
+    m_ASEvaluator.buildEvaluator(m_trainInstances);
+    if (m_ASEvaluator instanceof AttributeTransformer) {
+        m_trainInstances = ((AttributeTransformer) m_ASEvaluator).transformedHeader();
+        m_transformer = (AttributeTransformer) m_ASEvaluator;
+    }
+    int fieldWidth = (int) (Math.log(m_trainInstances.numAttributes()) + 1.0);
+    // Do the search
+    attributeSet = m_searchMethod.search(m_ASEvaluator, m_trainInstances);
+    // using PrincipalComponents as its attribute ranker
+    try {
+        BeanInfo bi = Introspector.getBeanInfo(m_searchMethod.getClass());
+        PropertyDescriptor[] properties;
+        // methods = bi.getMethodDescriptors();
+        properties = bi.getPropertyDescriptors();
+        for (PropertyDescriptor propertie : properties) {
+            propertie.getDisplayName();
+            Method meth = propertie.getReadMethod();
+            Object retType = meth.getReturnType();
+            if (retType.equals(ASEvaluation.class)) {
+                Class<?>[] args = {};
+                ASEvaluation tempEval = (ASEvaluation) (meth.invoke(m_searchMethod, (Object[]) args));
+                if (tempEval instanceof AttributeTransformer) {
+                    // grab the transformed data header
+                    m_trainInstances = ((AttributeTransformer) tempEval).transformedHeader();
+                    m_transformer = (AttributeTransformer) tempEval;
+                }
+            }
+        }
+    } catch (IntrospectionException ex) {
+        System.err.println("AttributeSelection: Couldn't " + "introspect");
+    }
+    // Do any postprocessing that a attribute selection method might require
+    attributeSet = m_ASEvaluator.postProcess(attributeSet);
+    if (!m_doRank) {
+        m_selectionResults.append(printSelectionResults());
+    }
+    if ((m_searchMethod instanceof RankedOutputSearch) && m_doRank == true) {
+        try {
+            m_attributeRanking = ((RankedOutputSearch) m_searchMethod).rankedAttributes();
+        } catch (Exception ex) {
+            ex.printStackTrace();
+            throw ex;
+        }
+        m_selectionResults.append(printSelectionResults());
+        m_selectionResults.append("Ranked attributes:\n");
+        // retrieve the number of attributes to retain
+        m_numToSelect = ((RankedOutputSearch) m_searchMethod).getCalculatedNumToSelect();
+        // determine fieldwidth for merit
+        int f_p = 0;
+        int w_p = 0;
+        for (int i = 0; i < m_numToSelect; i++) {
+            double precision = (Math.abs(m_attributeRanking[i][1]) - (int) (Math.abs(m_attributeRanking[i][1])));
+            double intPart = (int) (Math.abs(m_attributeRanking[i][1]));
+            if (precision > 0) {
+                precision = Math.abs((Math.log(Math.abs(precision)) / Math.log(10))) + 3;
+            }
+            if (precision > f_p) {
+                f_p = (int) precision;
+            }
+            if (intPart == 0) {
+                if (w_p < 2) {
+                    w_p = 2;
+                }
+            } else if ((Math.abs((Math.log(Math.abs(m_attributeRanking[i][1])) / Math.log(10))) + 1) > w_p) {
+                if (m_attributeRanking[i][1] > 0) {
+                    w_p = (int) Math.abs((Math.log(Math.abs(m_attributeRanking[i][1])) / Math.log(10))) + 1;
+                }
+            }
+        }
+        for (int i = 0; i < m_numToSelect; i++) {
+            m_selectionResults.append(Utils.doubleToString(m_attributeRanking[i][1], f_p + w_p + 1, f_p) + Utils.doubleToString((m_attributeRanking[i][0] + 1), fieldWidth + 1, 0) + " " + m_trainInstances.attribute((int) m_attributeRanking[i][0]).name() + "\n");
+        }
+        // whatever
+        if (m_trainInstances.classIndex() >= 0) {
+            if ((!(m_ASEvaluator instanceof UnsupervisedSubsetEvaluator) && !(m_ASEvaluator instanceof UnsupervisedAttributeEvaluator)) || m_ASEvaluator instanceof AttributeTransformer) {
+                // one more for the class
+                m_selectedAttributeSet = new int[m_numToSelect + 1];
+                m_selectedAttributeSet[m_numToSelect] = m_trainInstances.classIndex();
+            } else {
+                m_selectedAttributeSet = new int[m_numToSelect];
+            }
+        } else {
+            m_selectedAttributeSet = new int[m_numToSelect];
+        }
+        m_selectionResults.append("\nSelected attributes: ");
+        for (int i = 0; i < m_numToSelect; i++) {
+            m_selectedAttributeSet[i] = (int) m_attributeRanking[i][0];
+            if (i == m_numToSelect - 1) {
+                m_selectionResults.append(((int) m_attributeRanking[i][0] + 1) + " : " + (i + 1) + "\n");
+            } else {
+                m_selectionResults.append(((int) m_attributeRanking[i][0] + 1));
+                m_selectionResults.append(",");
+            }
+        }
+    } else {
+        // whatever
+        if ((!(m_ASEvaluator instanceof UnsupervisedSubsetEvaluator) && !(m_ASEvaluator instanceof UnsupervisedAttributeEvaluator)) || m_trainInstances.classIndex() >= 0) // one more for the class
+        {
+            m_selectedAttributeSet = new int[attributeSet.length + 1];
+            m_selectedAttributeSet[attributeSet.length] = m_trainInstances.classIndex();
+        } else {
+            m_selectedAttributeSet = new int[attributeSet.length];
+        }
+        for (int i = 0; i < attributeSet.length; i++) {
+            m_selectedAttributeSet[i] = attributeSet[i];
+        }
+        m_selectionResults.append("Selected attributes: ");
+        for (int i = 0; i < attributeSet.length; i++) {
+            if (i == (attributeSet.length - 1)) {
+                m_selectionResults.append((attributeSet[i] + 1) + " : " + attributeSet.length + "\n");
+            } else {
+                m_selectionResults.append((attributeSet[i] + 1) + ",");
+            }
+        }
+        for (int element : attributeSet) {
+            m_selectionResults.append("                     " + m_trainInstances.attribute(element).name() + "\n");
+        }
+    }
+    // Cross validation should be called from here
+    if (m_doXval == true) {
+        m_selectionResults.append(CrossValidateAttributes());
+    }
+    // set up the attribute filter with the selected attributes
+    if (m_selectedAttributeSet != null && !m_doXval) {
+        m_attributeFilter = new Remove();
+        m_attributeFilter.setAttributeIndicesArray(m_selectedAttributeSet);
+        m_attributeFilter.setInvertSelection(true);
+        m_attributeFilter.setInputFormat(m_trainInstances);
+    }
+    // Save space
+    m_trainInstances = new Instances(m_trainInstances, 0);
+    m_ASEvaluator.clean();
+}

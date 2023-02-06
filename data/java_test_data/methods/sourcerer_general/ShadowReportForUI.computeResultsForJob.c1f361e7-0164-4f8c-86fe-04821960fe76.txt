@@ -1,0 +1,46 @@
+public Set<TransitionInfo> computeResultsForJob(AnalysisJob job) {
+    SourceFileTag sourceFileTag = (SourceFileTag) job.method().getDeclaringClass().getTag("SourceFileTag");
+    if (sourceFileTag == null) {
+        G.v().out.println("Cannot find source file for class " + job.method().getDeclaringClass().getName());
+        return Collections.emptySet();
+    }
+    String path = sourceFileTag.getAbsolutePath();
+    Set<Shadow> allShadows = new HashSet<Shadow>(job.allEnabledTMShadowsInMethod());
+    // compute for every statement, which states can reach this statement from the program entry
+    ReachingStatesAnalysis forwardAnalysis = new ReachingStatesAnalysis(job, true);
+    forwardAnalysis.doAnalysis();
+    // compute for every statement the set of states from which one could reach a final state using the remainder of the program
+    ReachingStatesAnalysis backwardAnalysis = new ReachingStatesAnalysis(job, false);
+    backwardAnalysis.doAnalysis();
+    // find unnecessary shadows
+    UnnecessaryShadowsAnalysis unnecessaryShadowsAnalysis = new UnnecessaryShadowsAnalysis(job, forwardAnalysis, backwardAnalysis);
+    Set<TransitionInfo> result = new HashSet<TransitionInfo>();
+    for (Unit unit : job.unitGraph()) {
+        boolean hasShadow = false;
+        for (Shadow shadow : allShadows) {
+            if (shadow.getStmtToAttachTo().equals(unit)) {
+                hasShadow = true;
+                break;
+            }
+        }
+        if (!hasShadow)
+            continue;
+        for (Shadow shadow : allShadows) {
+            if (shadow.getStmtToAttachTo().equals(unit)) {
+                Set<Shadow> relatedShadowsInSameMethod = relatedSuccessorShadowsInSameMethod(shadow, job);
+                Set<TransitionInfo> relatedTransInfosInSameMethod = transitionInfosForShadows(relatedShadowsInSameMethod);
+                Set<Shadow> overlappingShadowsInOtherMethods = new HashSet<Shadow>(AdviceDependency.getAllEnabledShadowsOverlappingWith(Collections.singleton(shadow)));
+                for (Iterator<Shadow> iterator = overlappingShadowsInOtherMethods.iterator(); iterator.hasNext(); ) {
+                    Shadow s = iterator.next();
+                    if (s.getContainer().equals(job.method()))
+                        iterator.remove();
+                }
+                Set<TransitionInfo> overlappingTransInfosInOtherMethods = transitionInfosForShadows(overlappingShadowsInOtherMethods);
+                TransitionInfo ti = shadowToInfo.get(shadow);
+                ti.initialize(path, job.symbolNameForShadow(shadow), unnecessaryShadowsAnalysis.transitions(shadow), unnecessaryShadowsAnalysis.liveStatesSetsAfterTransition(shadow), shadow, relatedTransInfosInSameMethod, overlappingTransInfosInOtherMethods);
+                result.add(ti);
+            }
+        }
+    }
+    return result;
+}

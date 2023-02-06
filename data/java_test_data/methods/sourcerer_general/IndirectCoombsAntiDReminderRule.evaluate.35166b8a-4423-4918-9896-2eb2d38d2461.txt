@@ -1,0 +1,48 @@
+@Override
+protected Result evaluate(final LogicContext context, final Integer patientId, final Map<String, Object> parameters) throws LogicException {
+    Result result = new Result();
+    PregnancyDateRule pregnancyDateRule = new PregnancyDateRule();
+    Result pregnancyDateResults = pregnancyDateRule.eval(context, patientId, parameters);
+    // you can't do anything if you can't find the pregnancy start date
+    if (CollectionUtils.isNotEmpty(pregnancyDateResults)) {
+        Result pregnancyDateResult = pregnancyDateResults.latest();
+        Date pregnancyDate = pregnancyDateResult.toDatetime();
+        Long gestationalAge = GestationalReminderUtils.calculateGestationalAge(patientId, pregnancyDate);
+        ObsWithRestrictionRule obsWithRestrictionRule = new ObsWithStringRestrictionRule();
+        // get the negative rhesus factor
+        parameters.put(EvaluableConstants.OBS_FETCH_SIZE, 1);
+        parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.RHESUS_FACTOR));
+        parameters.put(EvaluableConstants.OBS_VALUE_CODED, Arrays.asList(EvaluableNameConstants.NEGATIVE));
+        Result negativeRhesusResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+        if (gestationalAge >= 28 && CollectionUtils.isNotEmpty(negativeRhesusResults)) {
+            Boolean displayReminder = Boolean.FALSE;
+            // check any indirect coombs, remove the value coded parameter
+            parameters.remove(EvaluableConstants.OBS_VALUE_CODED);
+            parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.INDIRECT_COOMBS_TEST));
+            Result indirectCoombsResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+            // if no result or before 28 weeks then display reminder
+            if (CollectionUtils.isNotEmpty(indirectCoombsResults)) {
+                Result indirectCoombsResult = indirectCoombsResults.latest();
+                Calendar calendar = Calendar.getInstance();
+                calendar.setTime(pregnancyDate);
+                calendar.add(Calendar.DATE, 210);
+                // don't display when there's result after the 28 weeks
+                if (indirectCoombsResult.getResultDate().after(calendar.getTime())) {
+                    displayReminder = Boolean.TRUE;
+                    // check the anti-d, if no result or before 28 weeks then display reminder
+                    parameters.put(EvaluableConstants.OBS_CONCEPT, Arrays.asList(EvaluableNameConstants.ANTI_D_RH_IGG_GIVEN_AT_28_GESTATION_WEEKS));
+                    Result antiDResults = obsWithRestrictionRule.eval(context, patientId, parameters);
+                    if (CollectionUtils.isNotEmpty(antiDResults)) {
+                        Result antiDResult = antiDResults.latest();
+                        Concept yesConcept = CacheUtils.getConcept(EvaluableNameConstants.YES);
+                        if (OpenmrsUtil.nullSafeEquals(antiDResult.toConcept(), yesConcept))
+                            displayReminder = Boolean.FALSE;
+                    }
+                }
+            }
+            if (displayReminder)
+                result.add(new Result(String.valueOf(parameters.get(ReminderParameters.DISPLAYED_REMINDER_TEXT))));
+        }
+    }
+    return result;
+}

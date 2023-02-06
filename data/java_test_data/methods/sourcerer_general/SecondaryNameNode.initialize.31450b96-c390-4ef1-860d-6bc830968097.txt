@@ -1,0 +1,34 @@
+private void initialize(Configuration conf) throws IOException {
+    // initiate Java VM metrics
+    JvmMetrics.init("SecondaryNameNode", conf.get("session.id"));
+    // Create connection to the namenode.
+    shouldRun = true;
+    nameNodeAddr = NameNode.getAddress(conf);
+    this.conf = conf;
+    this.namenode = (NamenodeProtocol) RPC.waitForProxy(NamenodeProtocol.class, NamenodeProtocol.versionID, nameNodeAddr, conf);
+    // initialize checkpoint directories
+    fsName = getInfoServer();
+    checkpointDirs = FSImage.getCheckpointDirs(conf, "/tmp/org.fit.hiai.hadoop/dfs/namesecondary");
+    checkpointEditsDirs = FSImage.getCheckpointEditsDirs(conf, "/tmp/org.fit.hiai.hadoop/dfs/namesecondary");
+    checkpointImage = new CheckpointStorage();
+    checkpointImage.recoverCreate(checkpointDirs, checkpointEditsDirs);
+    // Initialize other scheduling parameters from the configuration
+    checkpointPeriod = conf.getLong("fs.checkpoint.period", 3600);
+    checkpointSize = conf.getLong("fs.checkpoint.size", 4194304);
+    // initialize the webserver for uploading files.
+    String infoAddr = NetUtils.getServerAddress(conf, "dfs.secondary.info.bindAddress", "dfs.secondary.info.port", "dfs.secondary.http.address");
+    InetSocketAddress infoSocAddr = NetUtils.createSocketAddr(infoAddr);
+    infoBindAddress = infoSocAddr.getHostName();
+    int tmpInfoPort = infoSocAddr.getPort();
+    infoServer = new HttpServer("secondary", infoBindAddress, tmpInfoPort, tmpInfoPort == 0, conf);
+    infoServer.setAttribute("name.system.image", checkpointImage);
+    this.infoServer.setAttribute("name.conf", conf);
+    infoServer.addInternalServlet("getimage", "/getimage", GetImageServlet.class);
+    infoServer.start();
+    // The web-server port can be ephemeral... ensure we have the correct info
+    infoPort = infoServer.getPort();
+    conf.set("dfs.secondary.http.address", infoBindAddress + ":" + infoPort);
+    LOG.info("Secondary Web-server up at: " + infoBindAddress + ":" + infoPort);
+    LOG.warn("Checkpoint Period   :" + checkpointPeriod + " secs " + "(" + checkpointPeriod / 60 + " min)");
+    LOG.warn("Log Size Trigger    :" + checkpointSize + " bytes " + "(" + checkpointSize / 1024 + " KB)");
+}

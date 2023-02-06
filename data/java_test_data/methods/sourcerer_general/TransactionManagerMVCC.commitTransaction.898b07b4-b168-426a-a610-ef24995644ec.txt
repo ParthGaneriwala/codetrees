@@ -1,0 +1,49 @@
+public boolean commitTransaction(Session session) {
+    if (session.abortTransaction) {
+        return false;
+    }
+    int limit = session.rowActionList.size();
+    Object[] list = session.rowActionList.getArray();
+    writeLock.lock();
+    try {
+        for (int i = 0; i < limit; i++) {
+            RowAction rowact = (RowAction) list[i];
+            if (!rowact.canCommit(session, session.tempSet)) {
+                // System.out.println("commit conflicts " + session + " " + session.actionTimestamp);
+                return false;
+            }
+        }
+        endTransaction(session);
+        // new actionTimestamp used for commitTimestamp
+        session.actionTimestamp = nextChangeTimestamp();
+        for (int i = 0; i < limit; i++) {
+            RowAction action = (RowAction) list[i];
+            action.commit(session);
+        }
+        for (int i = 0; i < session.tempSet.size(); i++) {
+            Session current = (Session) session.tempSet.get(i);
+            current.abortTransaction = true;
+        }
+        persistCommit(session, list, limit);
+        // session.actionTimestamp is the committed tx timestamp
+        if (getFirstLiveTransactionTimestamp() > session.actionTimestamp) {
+            mergeTransaction(session, list, 0, limit, session.actionTimestamp);
+            finaliseRows(session, list, 0, limit, true);
+        } else {
+            list = session.rowActionList.toArray();
+            addToCommittedQueue(session, list);
+        }
+        endTransactionTPL(session);
+        // 
+        countDownLatches(session);
+    } finally {
+        writeLock.unlock();
+    }
+    session.tempSet.clear();
+    if (session != lobSession && lobSession.rowActionList.size() > 0) {
+        lobSession.isTransaction = true;
+        lobSession.actionIndex = lobSession.rowActionList.size();
+        lobSession.commit(false);
+    }
+    return true;
+}

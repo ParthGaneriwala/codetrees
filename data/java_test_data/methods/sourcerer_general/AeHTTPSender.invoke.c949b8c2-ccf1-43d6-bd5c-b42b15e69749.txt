@@ -1,0 +1,176 @@
+public void invoke(MessageContext msgContext) throws AxisFault {
+    HttpMethodBase method = null;
+    if (log.isDebugEnabled()) {
+        log.debug(// $NON-NLS-1$
+        Messages.getMessage(// $NON-NLS-1$
+        "enter00", // $NON-NLS-1$
+        "CommonsHTTPSender::invoke"));
+    }
+    try {
+        URL targetURL = new URL(msgContext.getStrProp(MessageContext.TRANS_URL));
+        // no need to retain these, as the cookies/credentials are
+        // stored in the message context across multiple requests.
+        // the underlying connection manager, however, is retained
+        // so sockets get recycled when possible.
+        HttpClient httpClient = new HttpClient(connectionManager);
+        // the timeout value for allocation of connections from the pool
+        httpClient.setHttpConnectionFactoryTimeout(clientProperties.getConnectionPoolTimeout());
+        HostConfiguration hostConfiguration = getHostConfiguration(httpClient, targetURL);
+        httpClient.setHostConfiguration(hostConfiguration);
+        // look for option to send credentials preemptively (w/out challenge)
+        // Control of Preemptive is controlled via policy on a per call basis.
+        // $NON-NLS-1$
+        String preemptive = (String) msgContext.getProperty("HTTPPreemptive");
+        if (// $NON-NLS-1$
+        "true".equals(preemptive)) {
+            httpClient.getParams().setAuthenticationPreemptive(true);
+        }
+        String webMethod = null;
+        boolean posting = true;
+        // MessageContext.
+        if (msgContext.getSOAPConstants() == SOAPConstants.SOAP12_CONSTANTS) {
+            webMethod = msgContext.getStrProp(SOAP12Constants.PROP_WEBMETHOD);
+            if (webMethod != null) {
+                posting = webMethod.equals(HTTPConstants.HEADER_POST);
+            }
+        }
+        Message reqMessage = msgContext.getRequestMessage();
+        if (posting) {
+            method = new PostMethod(targetURL.toString());
+            addContextInfo(method, httpClient, msgContext, targetURL);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            reqMessage.writeTo(baos);
+            ((PostMethod) method).setRequestBody(new ByteArrayInputStream(baos.toByteArray()));
+            // workaround for
+            ((PostMethod) method).setUseExpectHeader(false);
+        } else {
+            method = new GetMethod(targetURL.toString());
+            addContextInfo(method, httpClient, msgContext, targetURL);
+        }
+        // overwrites the cookies from HttpState
+        if (msgContext.getMaintainSession()) {
+            HttpState state = httpClient.getState();
+            state.setCookiePolicy(CookiePolicy.COMPATIBILITY);
+            String host = hostConfiguration.getHost();
+            String path = targetURL.getPath();
+            boolean secure = hostConfiguration.getProtocol().isSecure();
+            String ck1 = (String) msgContext.getProperty(HTTPConstants.HEADER_COOKIE);
+            String ck2 = (String) msgContext.getProperty(HTTPConstants.HEADER_COOKIE2);
+            if (ck1 != null) {
+                int index = ck1.indexOf('=');
+                state.addCookie(new Cookie(host, ck1.substring(0, index), ck1.substring(index + 1), path, null, secure));
+            }
+            if (ck2 != null) {
+                int index = ck2.indexOf('=');
+                state.addCookie(new Cookie(host, ck2.substring(0, index), ck2.substring(index + 1), path, null, secure));
+            }
+            httpClient.setState(state);
+        }
+        boolean hasSoapFault = false;
+        int returnCode = httpClient.executeMethod(method);
+        String contentType = null;
+        String contentLocation = null;
+        String contentLength = null;
+        if (method.getResponseHeader(HTTPConstants.HEADER_CONTENT_TYPE) != null) {
+            contentType = method.getResponseHeader(HTTPConstants.HEADER_CONTENT_TYPE).getValue();
+        }
+        if (method.getResponseHeader(HTTPConstants.HEADER_CONTENT_LOCATION) != null) {
+            contentLocation = method.getResponseHeader(HTTPConstants.HEADER_CONTENT_LOCATION).getValue();
+        }
+        if (method.getResponseHeader(HTTPConstants.HEADER_CONTENT_LENGTH) != null) {
+            contentLength = method.getResponseHeader(HTTPConstants.HEADER_CONTENT_LENGTH).getValue();
+        }
+        contentType = (null == contentType) ? null : contentType.trim();
+        if ((returnCode > 199) && (returnCode < 300)) {
+        // SOAP return is OK - so fall through
+        } else if (msgContext.getSOAPConstants() == SOAPConstants.SOAP12_CONSTANTS) {
+        // For now, if we're SOAP 1.2, fall through, since the range of
+        // valid result codes is much greater
+        } else if (// $NON-NLS-1$
+        (contentType != null) && !contentType.equals("text/html") && ((returnCode > 499) && (returnCode < 600))) {
+            // SOAP Fault should be in here - so fall through
+            hasSoapFault = true;
+        } else {
+            String statusMessage = method.getStatusText();
+            AxisFault fault = new // $NON-NLS-1$
+            AxisFault(// $NON-NLS-1$
+            "HTTP", // $NON-NLS-1$ //$NON-NLS-2$
+            "(" + returnCode + ")" + statusMessage, null, null);
+            try {
+                fault.setFaultDetailString(// $NON-NLS-1$
+                Messages.getMessage(// $NON-NLS-1$
+                "return01", "" + returnCode, // $NON-NLS-1$
+                method.getResponseBodyAsString()));
+                fault.addFaultDetail(Constants.QNAME_FAULTDETAIL_HTTPERRORCODE, Integer.toString(returnCode));
+                throw fault;
+            } finally {
+                // release connection back to pool.
+                method.releaseConnection();
+            }
+        }
+        // wrap the response body stream so that close() also releases the connection back to the pool.
+        InputStream releaseConnectionOnCloseStream = createConnectionReleasingInputStream(method);
+        Message outMsg = new Message(releaseConnectionOnCloseStream, false, contentType, contentLocation);
+        // Transfer HTTP headers of HTTP message to MIME headers of SOAP message
+        Header[] responseHeaders = method.getResponseHeaders();
+        MimeHeaders responseMimeHeaders = outMsg.getMimeHeaders();
+        for (int i = 0; i < responseHeaders.length; i++) {
+            Header responseHeader = responseHeaders[i];
+            responseMimeHeaders.addHeader(responseHeader.getName(), responseHeader.getValue());
+        }
+        OperationDesc operation = msgContext.getOperation();
+        if (hasSoapFault || operation.getMep().equals(OperationType.REQUEST_RESPONSE)) {
+            msgContext.setResponseMessage(outMsg);
+        } else {
+            // Change #1
+            // 
+            // If the operation is a one-way, then don't set the response
+            // on the msg context. Doing so will cause Axis to attempt to
+            // read from a non-existent SOAP message which causes errors.
+            // 
+            // Note: also checking to see if the return type is our "VOID"
+            // QName from the AeInvokeHandler since that's our workaround
+            // for avoiding Axis's Thread creation in Call.invokeOneWay()
+            // 
+            // Since the message context won't have a chance to consume the
+            // response stream (which closes the connection), close the
+            // connection here.
+            method.releaseConnection();
+        }
+        if (log.isDebugEnabled()) {
+            if (null == contentLength) {
+                log.debug(// $NON-NLS-1$
+                "\n" + // $NON-NLS-1$ //$NON-NLS-2$
+                Messages.getMessage("no00", "Content-Length"));
+            }
+            // $NON-NLS-1$ //$NON-NLS-2$
+            log.debug("\n" + Messages.getMessage("xmlRecd00"));
+            // $NON-NLS-1$
+            log.debug("-----------------------------------------------");
+            log.debug(outMsg.getSOAPPartAsString());
+        }
+        // handle cookies (if any)
+        if (msgContext.getMaintainSession()) {
+            Header[] headers = method.getResponseHeaders();
+            for (int i = 0; i < headers.length; i++) {
+                if (headers[i].getName().equalsIgnoreCase(HTTPConstants.HEADER_SET_COOKIE))
+                    msgContext.setProperty(HTTPConstants.HEADER_COOKIE, cleanupCookie(headers[i].getValue()));
+                else if (headers[i].getName().equalsIgnoreCase(HTTPConstants.HEADER_SET_COOKIE2))
+                    msgContext.setProperty(HTTPConstants.HEADER_COOKIE2, cleanupCookie(headers[i].getValue()));
+            }
+        }
+    } catch (Throwable t) {
+        log.debug(t);
+        if (method != null) {
+            method.releaseConnection();
+        }
+        // construct the AxisFault directly.
+        throw (t instanceof Exception) ? AxisFault.makeFault((Exception) t) : new AxisFault(t.getLocalizedMessage(), t);
+    }
+    if (log.isDebugEnabled()) {
+        log.debug(// $NON-NLS-1$
+        Messages.getMessage(// $NON-NLS-1$
+        "exit00", // $NON-NLS-1$
+        "CommonsHTTPSender::invoke"));
+    }
+}

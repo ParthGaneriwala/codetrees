@@ -1,0 +1,105 @@
+public static void main(String[] args) throws DatabaseException, IOException, InterruptedException, ClassNotFoundException {
+    final MemoryMXBean memoryBean = ManagementFactory.getMemoryMXBean();
+    MemoryUsage memuse;
+    OptionParser optParser = new OptionParser(Options.class);
+    final Options opts = (Options) optParser.parse(args, true);
+    if (opts.upper && opts.lower) {
+        System.err.println("Lowercase AND uppercase? doesn't sound right.");
+        return;
+    }
+    if (opts.meminfo) {
+        memuse = memoryBean.getHeapMemoryUsage();
+        System.out.printf("MEMUSE: initial: %dM/%dM\n", memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+    }
+    LMDecodingOptions lmOpts = new LMDecodingOptions();
+    lmOpts.config = opts.config;
+    lmOpts.debug = opts.debug;
+    if (opts.jobs > 0)
+        lmOpts.jobs = opts.jobs;
+    if (opts.host != null)
+        lmOpts.host = opts.host;
+    if (opts.port > 0)
+        lmOpts.port = opts.port;
+    if (opts.coarse > 0)
+        lmOpts.coarseThreshold = opts.coarse;
+    if (opts.forest != null)
+        lmOpts.forest = opts.forest;
+    if (opts.host != null && opts.port > 0)
+        lmOpts.storage = LMDecodingOptions.Storage.REMOTE;
+    if (opts.useJerboa)
+        lmOpts.storage = LMDecodingOptions.Storage.JERBOA;
+    if (opts.useBDB)
+        lmOpts.storage = LMDecodingOptions.Storage.BDB;
+    if (opts.useCompact)
+        lmOpts.storage = LMDecodingOptions.Storage.COMPACT;
+    if (opts.meminfo) {
+        memuse = memoryBean.getHeapMemoryUsage();
+        System.out.printf("MEMUSE: initial: %dM/%dM\n", memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+    }
+    LanguageModel.initDecoding(lmOpts);
+    Experiment experiment = Experiment.getInstance();
+    if (opts.meminfo) {
+        memuse = memoryBean.getHeapMemoryUsage();
+        System.out.printf("MEMUSE: after Experiment.initialize(): %dM/%dM\n", memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+    }
+    // final InputParser parser = new PlainInputParser(experiment.getTupleDescription());
+    /*	
+		{
+			long[] endTuples = new long[1];
+			endTuples[0] = experiment.getTupleDescription().createEndTuple(); 
+			parser.setEndTuples(endTuples);
+		}
+		*/
+    final ForestModel forest = experiment.getForest(opts.forest);
+    if (opts.meminfo) {
+        memuse = memoryBean.getHeapMemoryUsage();
+        System.out.printf("MEMUSE: after loading LMs: %dM/%dM\n", memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+    }
+    final NgramMarginalization marginalizer = new NgramMarginalization(forest, opts.ngramCacheSize, opts.trellisCacheSize, opts.memcached);
+    marginalizer.setMaxForestStarts(opts.maxForestStarts);
+    if (opts.dumpNgramsFile != null) {
+        marginalizer.setDumpNgramsFile(opts.dumpNgramsFile);
+    }
+    if (opts.dummylm) {
+        if (opts.dumpNgramsFile != null) {
+            DummyLMNgramProtocolHandler.dumpNgramsWriter = IO.getWriter(IO.getOutputStream(opts.dumpNgramsFile));
+        } else {
+            throw new Error("If dummylm is set, so must be dumpNgramsFile");
+        }
+    }
+    ServerSocket server = new ServerSocket(opts.listenPort);
+    while (true) {
+        final Socket socket = server.accept();
+        socket.setTcpNoDelay(true);
+        Runnable run = new Runnable() {
+
+            @Override
+            public void run() {
+                try {
+                    NgramProtocolHandler handler;
+                    if (opts.dummylm) {
+                        handler = new DummyLMNgramProtocolHandler(socket, marginalizer, opts);
+                    } else if (opts.srilmProtocol) {
+                        handler = new SRILMNgramProtocolHandler(socket, marginalizer, opts);
+                    } else {
+                        handler = new SimpleNgramProtocolHandler(socket, marginalizer, opts);
+                    }
+                    handler.processInput();
+                    handler.finish();
+                    if (opts.debug > 0) {
+                        System.err.println(forest.getName() + " stats: \n" + forest.getDecoder().getStatistics() + "\n");
+                    }
+                } catch (IOException e) {
+                    e.printStackTrace();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+                try {
+                    socket.close();
+                } catch (IOException e) {
+                }
+            }
+        };
+        new Thread(run, "serving " + socket.getInetAddress().toString()).start();
+    }
+}

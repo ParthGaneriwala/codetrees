@@ -1,0 +1,101 @@
+void addColumn(ColumnSchema column, int colIndex, HsqlArrayList constraints) {
+    Index index = null;
+    Table originalTable = table;
+    Constraint mainConstraint = null;
+    boolean addFK = false;
+    boolean addUnique = false;
+    boolean addCheck = false;
+    checkAddColumn(column);
+    Constraint c = (Constraint) constraints.get(0);
+    if (c.getConstraintType() == SchemaObject.ConstraintTypes.PRIMARY_KEY) {
+        if (column.getDataType().isLobType()) {
+            throw Error.error(ErrorCode.X_42534);
+        }
+        c.core.mainCols = new int[] { colIndex };
+        database.schemaManager.checkSchemaObjectNotExists(c.getName());
+        if (table.hasPrimaryKey()) {
+            throw Error.error(ErrorCode.X_42530);
+        }
+        addUnique = true;
+    } else {
+        c = null;
+    }
+    table = table.moveDefinition(session, table.tableType, column, c, null, colIndex, 1, emptySet, emptySet);
+    for (int i = 1; i < constraints.size(); i++) {
+        c = (Constraint) constraints.get(i);
+        switch(c.constType) {
+            case SchemaObject.ConstraintTypes.UNIQUE:
+                {
+                    if (addUnique) {
+                        throw Error.error(ErrorCode.X_42522);
+                    }
+                    if (column.getDataType().isLobType()) {
+                        throw Error.error(ErrorCode.X_42534);
+                    }
+                    addUnique = true;
+                    c.core.mainCols = new int[] { colIndex };
+                    database.schemaManager.checkSchemaObjectNotExists(c.getName());
+                    HsqlName indexName = database.nameManager.newAutoName("IDX", c.getName().name, table.getSchemaName(), table.getName(), SchemaObject.INDEX);
+                    // create an autonamed index
+                    index = table.createAndAddIndexStructure(session, indexName, c.getMainColumns(), null, null, true, true, false);
+                    c.core.mainTable = table;
+                    c.core.mainIndex = index;
+                    table.addConstraint(c);
+                    break;
+                }
+            case SchemaObject.ConstraintTypes.FOREIGN_KEY:
+                {
+                    if (addFK) {
+                        throw Error.error(ErrorCode.X_42528);
+                    }
+                    addFK = true;
+                    c.core.refCols = new int[] { colIndex };
+                    boolean isSelf = originalTable == c.core.mainTable;
+                    if (isSelf) {
+                        c.core.mainTable = table;
+                    }
+                    c.setColumnsIndexes(table);
+                    checkCreateForeignKey(c);
+                    Constraint uniqueConstraint = c.core.mainTable.getUniqueConstraintForColumns(c.core.mainCols, c.core.refCols);
+                    boolean isForward = c.core.mainTable.getSchemaName() != table.getSchemaName();
+                    int offset = database.schemaManager.getTableIndex(originalTable);
+                    if (!isSelf && offset < database.schemaManager.getTableIndex(c.core.mainTable)) {
+                        isForward = true;
+                    }
+                    HsqlName indexName = database.nameManager.newAutoName("IDX", c.getName().name, table.getSchemaName(), table.getName(), SchemaObject.INDEX);
+                    index = table.createAndAddIndexStructure(session, indexName, c.getRefColumns(), null, null, false, true, isForward);
+                    c.core.uniqueName = uniqueConstraint.getName();
+                    c.core.mainName = database.nameManager.newAutoName("REF", c.core.refName.name, table.getSchemaName(), table.getName(), SchemaObject.INDEX);
+                    c.core.mainIndex = uniqueConstraint.getMainIndex();
+                    c.core.refIndex = index;
+                    c.isForward = isForward;
+                    table.addConstraint(c);
+                    mainConstraint = new Constraint(c.core.mainName, c);
+                    break;
+                }
+            case SchemaObject.ConstraintTypes.CHECK:
+                if (addCheck) {
+                    throw Error.error(ErrorCode.X_42528);
+                }
+                addCheck = true;
+                c.prepareCheckConstraint(session, table, false);
+                table.addConstraint(c);
+                if (c.isNotNull()) {
+                    column.setNullable(false);
+                    table.setColumnTypeVars(colIndex);
+                }
+                break;
+        }
+    }
+    column.compile(session, table);
+    moveData(originalTable, table, colIndex, 1);
+    if (mainConstraint != null) {
+        mainConstraint.getMain().addConstraint(mainConstraint);
+    }
+    registerConstraintNames(constraints);
+    setNewTableInSchema(table);
+    updateConstraints(table, emptySet);
+    database.schemaManager.addSchemaObject(column);
+    database.schemaManager.recompileDependentObjects(table);
+    table.compile(session, null);
+}

@@ -1,0 +1,121 @@
+public Message respondTo(Message requestMessage) {
+    // needs request_seq and command at the end
+    JSONObject content;
+    try {
+        content = JsonUtil.jsonObjectFromJson(requestMessage.getContent());
+    } catch (ParseException e) {
+        throw new RuntimeException(e);
+    }
+    String protocolCommand = JsonUtil.getAsString(content, V8Protocol.KEY_COMMAND);
+    String response = null;
+    boolean success = true;
+    if (DebuggerToolCommand.DEBUGGER_COMMAND.commandName.equals(protocolCommand)) {
+        JSONObject responseMessage = new JSONObject();
+        JSONObject data = JsonUtil.getAsJSON(content, "data");
+        Map<String, Object> nameToJsonValue = new HashMap<String, Object>();
+        Long seq = JsonUtil.getAsLong(data, V8Protocol.KEY_SEQ);
+        String debuggerCommandString = JsonUtil.getAsString(data, V8Protocol.KEY_COMMAND);
+        DebuggerCommand debuggerCommand = DebuggerCommand.forString(debuggerCommandString);
+        JSONObject args = JsonUtil.getAsJSON(data, "arguments");
+        switch(debuggerCommand) {
+            case LOOKUP:
+                {
+                    JSONArray handles = JsonUtil.getAsJSONArray(args, "handles");
+                    JSONObject jsonBody = putJsonValue("body", new JSONObject(), nameToJsonValue);
+                    for (int i = 0; i < handles.size(); i++) {
+                        Long ref = (Long) handles.get(i);
+                        String objectData = refToObjectMap.get(ref);
+                        if (args.get("maxStringLength") != null) {
+                            String fullVersion = refToFullVersionMap.get(ref);
+                            if (fullVersion != null) {
+                                objectData = fullVersion;
+                            }
+                        }
+                        if (objectData != null) {
+                            try {
+                                jsonBody.put(String.valueOf(ref), JsonUtil.jsonObjectFromJson(objectData));
+                            } catch (ParseException e) {
+                                throw new RuntimeException(e);
+                            }
+                        } else {
+                            success = false;
+                        }
+                    }
+                    JSONArray jsonRefs = putJsonValue("refs", new JSONArray(), nameToJsonValue);
+                    jsonRefs.add(getJsonObjectByRef(getNumber3Ref()));
+                }
+                break;
+            case EVALUATE:
+                success = handleEvaluate(args, nameToJsonValue);
+                break;
+            case SETBREAKPOINT:
+            case CHANGEBREAKPOINT:
+                {
+                    long id = (debuggerCommand == DebuggerCommand.SETBREAKPOINT) ? nextBreakpointId() : JsonUtil.getAsLong(args, "breakpoint");
+                    Breakpoint.Target target = new Breakpoint.Target.ScriptName("abcde.js");
+                    breakpoints.put(id, new FakeBreakpoint(id, target, JsonUtil.getAsBoolean(args, "enabled"), JsonUtil.getAsString(args, "condition")));
+                    JSONObject jsonBody = putJsonValue("body", new JSONObject(), nameToJsonValue);
+                    jsonBody.put("type", "script");
+                    jsonBody.put("breakpoint", id);
+                    break;
+                }
+            case CLEARBREAKPOINT:
+                {
+                    long id = JsonUtil.getAsLong(args, "breakpoint");
+                    breakpoints.remove(id);
+                    JSONObject jsonBody = putJsonValue("body", new JSONObject(), nameToJsonValue);
+                    jsonBody.put("type", "script");
+                    jsonBody.put("breakpoint", id);
+                    break;
+                }
+            case CONTINUE:
+                isRunning = true;
+                break;
+            case BACKTRACE:
+                JSONObject jsonBody = putJsonValue("body", new JSONObject(), nameToJsonValue);
+                constructBacktrace(responseMessage, jsonBody);
+                break;
+            case SCRIPTS:
+                nameToJsonValue.put("body", constructScripts(JsonUtil.getAsJSONArray(args, "ids")));
+                nameToJsonValue.put("refs", constructScriptRefsJson());
+                break;
+            case SOURCE:
+                // constructSource();
+                break;
+            case SCOPE:
+                constructScopeResponse(nameToJsonValue);
+                break;
+            default:
+                success = false;
+        }
+        responseMessage.put("seq", nextSeq());
+        responseMessage.put("request_seq", seq);
+        responseMessage.put("command", debuggerCommandString);
+        responseMessage.put("type", "response");
+        if (success) {
+            responseMessage.put("success", true);
+            responseMessage.put("running", isRunning);
+            for (Entry<String, Object> entry : nameToJsonValue.entrySet()) {
+                responseMessage.put(entry.getKey(), entry.getValue());
+            }
+        } else {
+            responseMessage.put("success", false);
+            responseMessage.put("message", "An error occurred");
+        }
+        response = responseMessage.toJSONString();
+        response = createDebuggerCommandResponse(response);
+    } else if (DebuggerToolCommand.ATTACH.commandName.equals(protocolCommand)) {
+        response = "{\"command\":\"attach\",\"result\":0}";
+    } else if (DebuggerToolCommand.DETACH.commandName.equals(protocolCommand)) {
+        response = "{\"command\":\"detach\",\"result\":0}";
+    } else if (DevToolsServiceCommand.LIST_TABS.commandName.equals(protocolCommand)) {
+        response = "{\"command\":\"list_tabs\",\"data\":[[" + secondTabId + ",\"file:///C:/1.html\"],[4,\"file:///C:/1.html\"]],\"result\":0}";
+    } else if (DevToolsServiceCommand.VERSION.commandName.equals(protocolCommand)) {
+        response = "{\"command\":\"version\",\"data\":\"0.1\",\"result\":0}";
+    }
+    if (response == null) {
+        // Unhandled request
+        return null;
+    }
+    return MessageFactory.createMessage(requestMessage.getTool(), requestMessage.getDestination(), response);
+}

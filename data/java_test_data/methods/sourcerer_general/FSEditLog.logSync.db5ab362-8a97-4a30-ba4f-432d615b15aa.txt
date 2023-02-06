@@ -1,0 +1,57 @@
+// 
+// Sync all modifications done by this thread.
+public void logSync() throws IOException {
+    ArrayList<EditLogOutputStream> errorStreams = null;
+    long syncStart = 0;
+    // Fetch the transactionId of this thread.
+    TransactionId id = myTransactionId.get();
+    long mytxid = id.txid;
+    synchronized (this) {
+        assert this.getNumEditStreams() > 0 : "no editlog streams";
+        printStatistics(false);
+        // if somebody is already syncing, then wait
+        while (mytxid > synctxid && isSyncRunning) {
+            try {
+                wait(1000);
+            } catch (InterruptedException ie) {
+            }
+        }
+        // 
+        if (mytxid <= synctxid) {
+            return;
+        }
+        // now, this thread will do the sync
+        syncStart = txid;
+        isSyncRunning = true;
+        // swap buffers
+        for (int idx = 0; idx < editStreams.size(); idx++) {
+            EditLogOutputStream eStream = editStreams.get(idx);
+            eStream.setReadyToFlush();
+        }
+    }
+    // do the sync
+    long start = FSNamesystem.now();
+    for (int idx = 0; idx < editStreams.size(); idx++) {
+        EditLogOutputStream eStream = editStreams.get(idx);
+        try {
+            eStream.flush();
+        } catch (IOException ie) {
+            // 
+            if (errorStreams == null) {
+                errorStreams = new ArrayList<EditLogOutputStream>(1);
+            }
+            errorStreams.add(eStream);
+            FSNamesystem.LOG.error("Unable to sync edit log. " + "Fatal Error.");
+        }
+    }
+    long elapsed = FSNamesystem.now() - start;
+    synchronized (this) {
+        processIOError(errorStreams);
+        synctxid = syncStart;
+        isSyncRunning = false;
+        this.notifyAll();
+    }
+    if (// Metrics is non-null only when used inside name node
+    metrics != null)
+        metrics.syncs.inc(elapsed);
+}

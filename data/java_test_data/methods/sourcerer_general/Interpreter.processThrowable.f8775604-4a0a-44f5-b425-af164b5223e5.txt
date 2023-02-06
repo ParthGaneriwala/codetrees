@@ -1,0 +1,70 @@
+private static CallFrame processThrowable(Context cx, Object throwable, CallFrame frame, int indexReg, boolean instructionCounting) {
+    if (indexReg >= 0) {
+        if (frame.frozen) {
+            // XXX Deal with exceptios!!!
+            frame = frame.cloneFrozen();
+        }
+        int[] table = frame.idata.itsExceptionTable;
+        frame.pc = table[indexReg + EXCEPTION_HANDLER_SLOT];
+        if (instructionCounting) {
+            frame.pcPrevBranch = frame.pc;
+        }
+        frame.savedStackTop = frame.emptyStackTop;
+        int scopeLocal = frame.localShift + table[indexReg + EXCEPTION_SCOPE_SLOT];
+        int exLocal = frame.localShift + table[indexReg + EXCEPTION_LOCAL_SLOT];
+        frame.scope = (Scriptable) frame.stack[scopeLocal];
+        frame.stack[exLocal] = throwable;
+        throwable = null;
+    } else {
+        // Continuation restoration
+        ContinuationJump cjump = (ContinuationJump) throwable;
+        // Clear throwable to indicate that exceptions are OK
+        throwable = null;
+        if (cjump.branchFrame != frame)
+            Kit.codeBug();
+        // unwind code ensure that
+        if (cjump.capturedFrame == null)
+            Kit.codeBug();
+        // Need to rewind branchFrame, capturedFrame
+        // and all frames in between
+        int rewindCount = cjump.capturedFrame.frameIndex + 1;
+        if (cjump.branchFrame != null) {
+            rewindCount -= cjump.branchFrame.frameIndex;
+        }
+        int enterCount = 0;
+        CallFrame[] enterFrames = null;
+        CallFrame x = cjump.capturedFrame;
+        for (int i = 0; i != rewindCount; ++i) {
+            if (!x.frozen)
+                Kit.codeBug();
+            if (isFrameEnterExitRequired(x)) {
+                if (enterFrames == null) {
+                    // Allocate enough space to store the rest
+                    // of rewind frames in case all of them
+                    // would require to enter
+                    enterFrames = new CallFrame[rewindCount - i];
+                }
+                enterFrames[enterCount] = x;
+                ++enterCount;
+            }
+            x = x.parentFrame;
+        }
+        while (enterCount != 0) {
+            // execute enter: walk enterFrames in the reverse
+            // order since they were stored starting from
+            // the capturedFrame, not branchFrame
+            --enterCount;
+            x = enterFrames[enterCount];
+            enterFrame(cx, x, ScriptRuntime.emptyArgs, true);
+        }
+        // Continuation jump is almost done: capturedFrame
+        // points to the call to the function that captured
+        // continuation, so clone capturedFrame and
+        // emulate return that function with the suplied result
+        frame = cjump.capturedFrame.cloneFrozen();
+        setCallResult(frame, cjump.result, cjump.resultDbl);
+    // restart the execution
+    }
+    frame.throwable = throwable;
+    return frame;
+}

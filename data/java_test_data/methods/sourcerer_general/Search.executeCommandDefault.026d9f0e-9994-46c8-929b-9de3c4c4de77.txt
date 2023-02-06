@@ -1,0 +1,150 @@
+public String executeCommandDefault(ActionContext context) {
+    /* if (getUser(context).getId() < 0) {
+      return "PermissionError";
+    } */
+    setMaximized(context);
+    SearchBean search = (SearchBean) context.getFormBean();
+    PagedListInfo searchBeanInfo = this.getPagedListInfo(context, "searchBeanInfo");
+    searchBeanInfo.setLink(context, ctx(context) + "/search");
+    Connection db = null;
+    try {
+        search.parseQuery();
+        if (!search.isValid()) {
+            return "SearchResultsERROR";
+        }
+        // Save the location in a cookie
+        if (StringUtils.hasText(search.getLocation())) {
+            Cookie locationCookie = new Cookie(Constants.COOKIE_USER_SEARCH_LOCATION, search.getLocation());
+            locationCookie.setPath("/");
+            // 21 day cookie
+            locationCookie.setMaxAge(21 * 24 * 60 * 60);
+            context.getResponse().addCookie(locationCookie);
+        } else {
+            // Cleanup the cookie
+            Cookie userCookie = new Cookie(Constants.COOKIE_USER_SEARCH_LOCATION, "");
+            userCookie.setPath("/");
+            userCookie.setMaxAge(0);
+            context.getResponse().addCookie(userCookie);
+        }
+        // Perform the search...
+        // get the core Indexer
+        IIndexerService indexer = IndexerFactory.getInstance().getIndexerService();
+        IIndexerSearch searcher = indexer.getIndexerSearch(Constants.INDEXER_FULL);
+        db = getConnection(context);
+        long start = System.currentTimeMillis();
+        // Create a query string based on the user input and compare with project access
+        if (search.getScope() != SearchBean.THIS) {
+            search.setProjectId(-1);
+        }
+        if (search.getProjectId() > -1) {
+            Project thisProject = retrieveAuthorizedProject(search.getProjectId(), context);
+            context.getRequest().setAttribute("project", thisProject);
+            search.setProjectId(thisProject.getId());
+        }
+        // Base the search on project categories
+        ProjectCategoryList categories = new ProjectCategoryList();
+        categories.setEnabled(true);
+        categories.setTopLevelOnly(true);
+        // Limit the categories to the ones that are available to the user
+        if (!getUser(context).isLoggedIn()) {
+            categories.setSensitive(Constants.FALSE);
+        }
+        categories.buildList(db);
+        // Pass the query string and let the portlet customize it
+        DashboardPage page = null;
+        // Try the specific one first
+        if (search.getCategoryId() > -1) {
+            page = DashboardUtils.loadDashboardPage(DashboardTemplateList.TYPE_SEARCH, categories.getValueFromId(search.getCategoryId()));
+        }
+        // Default to the "All" page
+        if (page == null) {
+            page = DashboardUtils.loadDashboardPage(DashboardTemplateList.TYPE_SEARCH, "All");
+        }
+        if (page != null) {
+            context.getRequest().setAttribute("dashboardPage", page);
+            // Determine if the directory specific indexer is ready to be used
+            IIndexerSearch projectSearcher = null;
+            if ("true".equals(context.getServletContext().getAttribute(Constants.DIRECTORY_INDEX_INITIALIZED))) {
+                // Search public projects only
+                LOG.debug("Using directory index...");
+                projectSearcher = indexer.getIndexerSearch(Constants.INDEXER_DIRECTORY);
+            } else {
+                // Use the full index because the directory hasn't loaded
+                LOG.debug("Using full index...");
+                projectSearcher = indexer.getIndexerSearch(Constants.INDEXER_FULL);
+            }
+            // Retrieve the user's allowed projects
+            String projectListings = SearchUtils.generateValidProjects(db, getUserId(context), -1);
+            // Generate a valid project title query string
+            String queryString = SearchUtils.generateProjectQueryString(search, getUserId(context), getInstance(context).getId(), projectListings);
+            // Generate a valid data query string
+            String dataQueryString = SearchUtils.generateDataQueryString(search, getUserId(context), getInstance(context).getId(), projectListings);
+            // provide other common items to the portlets
+            context.getRequest().setAttribute("searchBean", search);
+            context.getRequest().setAttribute("projectCategoryList", categories);
+            // data searcher
+            context.getRequest().setAttribute("searcher", searcher);
+            context.getRequest().setAttribute("dataQueryString", dataQueryString);
+            // project searcher
+            context.getRequest().setAttribute("projectSearcher", projectSearcher);
+            context.getRequest().setAttribute("baseQueryString", queryString);
+            boolean isAction = PortletManager.processPage(context, db, page);
+            // Show duration
+            long end = System.currentTimeMillis();
+            long duration = end - start;
+            context.getRequest().setAttribute("duration", duration);
+            if (System.getProperty("DEBUG") != null) {
+                System.out.println("Duration: " + duration + " ms");
+            }
+            return "SearchResultsPortalOK";
+        } else {
+            // The search portal IS NOT being used... so the search results are of mixed content
+            String queryString = null;
+            if (search.getProjectId() > -1) {
+                queryString = "(" + buildProjectList(search, db, getUserId(context), search.getProjectId()) + ") AND (" + search.getParsedQuery() + ")";
+            } else {
+                queryString = "(" + buildProjectList(search, db, getUserId(context), -1) + ") AND (" + search.getParsedQuery() + ")";
+            }
+            // Embed the various values in the query object...
+            String tmpItemsPerPage = context.getRequest().getParameter("items");
+            if (tmpItemsPerPage != null) {
+                searchBeanInfo.setItemsPerPage(tmpItemsPerPage);
+            }
+            if ("true".equals(context.getRequest().getParameter("auto-populate"))) {
+                searchBeanInfo.setCurrentOffset(0);
+            }
+            // Execute the query
+            IndexerQueryResultList hits = new IndexerQueryResultList(queryString);
+            hits.setPagedListInfo(searchBeanInfo);
+            searcher.search(hits);
+            context.getRequest().setAttribute("hits", hits);
+            // System.out.println("Found " + hits.size() + " document(s) that matched query '" + queryString + "':");
+            // context.getRequest().setAttribute("queryString", queryString);
+            // Get unique project id's from hits
+            /*
+        ArrayList<String> projectIdList = new ArrayList<String>();
+        for (int i = 0; i < hits.size(); i++) {
+          Document document = hits.doc(i);
+          String projectId = document.get("projectId");
+          if (projectId != null && !projectIdList.contains(projectId)) {
+            projectIdList.add(projectId);
+          }
+        }
+        context.getRequest().setAttribute("projectIdList", projectIdList);
+        */
+            // Show duration
+            long end = System.currentTimeMillis();
+            long duration = end - start;
+            context.getRequest().setAttribute("duration", duration);
+            if (System.getProperty("DEBUG") != null) {
+                System.out.println("Duration: " + duration + " ms");
+            }
+        }
+    } catch (Exception e) {
+        context.getRequest().setAttribute("Error", e);
+        return "SearchResultsERROR";
+    } finally {
+        freeConnection(context, db);
+    }
+    return "SearchResultsOK";
+}

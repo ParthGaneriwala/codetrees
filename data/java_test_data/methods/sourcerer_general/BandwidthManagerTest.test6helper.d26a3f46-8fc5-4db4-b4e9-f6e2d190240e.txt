@@ -1,0 +1,65 @@
+private long test6helper(int kiloBitsPerSec, int megs) throws Exception {
+    Network.getInstance().clear();
+    Scheduler.getInstance().clear();
+    Node node1 = new Node(1, 0, 10000);
+    Node node2 = new Node(2, 10000, 0);
+    Network.getInstance().add(node1);
+    Network.getInstance().add(node2);
+    // in millisec
+    long currentTime = 0;
+    long bytesLeft = megs * 1024 * 1024;
+    // also bytesPerPacket or bytesPerTransfer
+    long bytesPerSec = (long) UnitConversion.kilobitToByte(kiloBitsPerSec);
+    long totalBytes = bytesLeft;
+    long bytesSent = 0;
+    long bytesReceived = 0;
+    TreeMap<Long, ArrayList<Transfer>> /*receive time*/
+    schedule = new TreeMap<Long, ArrayList<Transfer>>();
+    while (bytesLeft > 0 || !schedule.isEmpty()) {
+        Scheduler.getInstance().setTime(currentTime);
+        while (!schedule.isEmpty() && currentTime >= schedule.firstKey()) {
+            Scheduler.getInstance().setTime(schedule.firstKey());
+            // the pollFirstEntry also removes it from the tree map
+            Map.Entry<Long, ArrayList<Transfer>> entry = schedule.pollFirstEntry();
+            A.ssert(entry.getKey() == Scheduler.getInstance().now);
+            for (Transfer t : entry.getValue()) {
+                if (entry.getKey() != t.deliveryEvent.time) {
+                    // have been changed due to the last reception
+                    if (schedule.get(t.deliveryEvent.time) == null)
+                        schedule.put(t.deliveryEvent.time, new ArrayList<Transfer>());
+                    schedule.get(t.deliveryEvent.time).add(t);
+                    continue;
+                }
+                t.getDestBandwidthManager().receive(t);
+                bytesReceived += t.originalBytes;
+                // the reception have changed the bandwidth of other transfer, so we need to create an new schedule
+                schedule = update_schedule(schedule);
+            }
+        }
+        Scheduler.getInstance().setTime(currentTime);
+        if (bytesLeft > 0) {
+            long bytesToSend = 0;
+            if (bytesLeft >= bytesPerSec)
+                bytesToSend = bytesPerSec;
+            else
+                bytesToSend = bytesLeft;
+            Transfer t1 = node1.sendBytes(2, new Message(), bytesToSend);
+            // the sending have changed the bandwidth of other transfer, so we need to create an new schedule
+            schedule = update_schedule(schedule);
+            bytesSent += bytesToSend;
+            long timeItTakes = (long) UnitConversion.secToMilliSec(bytesToSend / t1.bandwidthInBPS);
+            long receptionTime = currentTime + timeItTakes;
+            if (schedule.get(receptionTime) == null)
+                schedule.put(receptionTime, new ArrayList<Transfer>());
+            schedule.get(receptionTime).add(t1);
+            bytesLeft -= bytesToSend;
+        }
+        // millisec
+        currentTime += 1000;
+    }
+    assertEquals(totalBytes, bytesSent);
+    assertEquals(totalBytes, bytesReceived);
+    Network.getInstance().clear();
+    Scheduler.getInstance().clear();
+    return currentTime - 1000;
+}

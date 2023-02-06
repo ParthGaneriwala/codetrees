@@ -1,0 +1,73 @@
+@Override
+public void acceptClassifier(BatchClassifierEvent ce) {
+    if (ce.getTestSet() == null || ce.getTestSet().isStructureOnly()) {
+        // can't evaluate empty/non-existent test instances
+        return;
+    }
+    Classifier classifier = ce.getClassifier();
+    try {
+        if (ce.getGroupIdentifier() != m_currentBatchIdentifier) {
+            if (m_setsComplete > 0) {
+                if (m_logger != null) {
+                    m_logger.statusMessage(statusMessagePrefix() + "BUSY. Can't accept data " + "at this time.");
+                    m_logger.logMessage("[ClassifierPerformanceEvaluator] " + statusMessagePrefix() + " BUSY. Can't accept data at this time.");
+                }
+                return;
+            }
+            if (ce.getTrainSet().getDataSet() == null || ce.getTrainSet().getDataSet().numInstances() == 0) {
+                // we have no training set to estimate majority class
+                // or mean of target from
+                Evaluation eval = new Evaluation(ce.getTestSet().getDataSet());
+                m_PlotInstances = ExplorerDefaults.getClassifierErrorsPlotInstances();
+                m_PlotInstances.setInstances(ce.getTestSet().getDataSet());
+                m_PlotInstances.setClassifier(ce.getClassifier());
+                m_PlotInstances.setClassIndex(ce.getTestSet().getDataSet().classIndex());
+                m_PlotInstances.setEvaluation(eval);
+                eval = adjustForInputMappedClassifier(eval, ce.getClassifier(), ce.getTestSet().getDataSet(), m_PlotInstances);
+                eval.useNoPriors();
+                m_eval = new AggregateableEvaluation(eval);
+                m_eval.setMetricsToDisplay(m_metricsList);
+            } else {
+                // we can set up with the training set here
+                Evaluation eval = new Evaluation(ce.getTrainSet().getDataSet());
+                m_PlotInstances = ExplorerDefaults.getClassifierErrorsPlotInstances();
+                m_PlotInstances.setInstances(ce.getTrainSet().getDataSet());
+                m_PlotInstances.setClassifier(ce.getClassifier());
+                m_PlotInstances.setClassIndex(ce.getTestSet().getDataSet().classIndex());
+                m_PlotInstances.setEvaluation(eval);
+                eval = adjustForInputMappedClassifier(eval, ce.getClassifier(), ce.getTrainSet().getDataSet(), m_PlotInstances);
+                m_eval = new AggregateableEvaluation(eval);
+                m_eval.setMetricsToDisplay(m_metricsList);
+            }
+            m_PlotInstances.setUp();
+            m_currentBatchIdentifier = ce.getGroupIdentifier();
+            m_setsComplete = 0;
+            m_aggregatedPlotInstances = null;
+            String msg = "[ClassifierPerformanceEvaluator] " + statusMessagePrefix() + " starting executor pool (" + getExecutionSlots() + " slots)...";
+            // start the execution pool
+            startExecutorPool();
+            m_tasks = new ArrayList<EvaluationTask>();
+            if (m_logger != null) {
+                m_logger.logMessage(msg);
+            } else {
+                System.out.println(msg);
+            }
+        }
+        // if m_tasks == null then we've been stopped
+        if (m_setsComplete < ce.getMaxSetNumber() && m_tasks != null) {
+            EvaluationTask newTask = new EvaluationTask(classifier, ce.getTrainSet().getDataSet(), ce.getTestSet().getDataSet(), ce.getSetNumber(), ce.getMaxSetNumber(), ce.getLabel());
+            String msg = "[ClassifierPerformanceEvaluator] " + statusMessagePrefix() + " scheduling " + " evaluation of fold " + ce.getSetNumber() + " for execution...";
+            if (m_logger != null) {
+                m_logger.logMessage(msg);
+            } else {
+                System.out.println(msg);
+            }
+            m_tasks.add(newTask);
+            m_executorPool.execute(newTask);
+        }
+    } catch (Exception ex) {
+        ex.printStackTrace();
+        // stop everything
+        stop();
+    }
+}

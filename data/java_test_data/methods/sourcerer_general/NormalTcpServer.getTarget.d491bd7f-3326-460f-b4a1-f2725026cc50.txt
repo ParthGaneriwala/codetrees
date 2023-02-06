@@ -1,0 +1,72 @@
+private synchronized String getTarget(String sourcePort) {
+    String result = "";
+    // 在表中查找已匹配项目
+    if (connReq.containsKey(sourcePort)) {
+        result = connReq.get(sourcePort);
+        connReq.remove(sourcePort);
+        return result;
+    }
+    // 副作用未知
+    final String command = "dmesg -c";
+    DataOutputStream os = null;
+    InputStream out = null;
+    try {
+        Process process = new ProcessBuilder().command("su").redirectErrorStream(true).start();
+        os = new DataOutputStream(process.getOutputStream());
+        os.writeBytes(command + Utils.LINEBREAK);
+        os.flush();
+        os.writeBytes("exit" + Utils.LINEBREAK);
+        os.flush();
+        out = process.getInputStream();
+        BufferedReader outR = new BufferedReader(new InputStreamReader(out));
+        String line = "";
+        // 根据输出构建以源端口为key的地址表
+        while ((line = outR.readLine()) != null) {
+            boolean match = false;
+            if (line.contains("CMWRAP")) {
+                String addr = "", destPort = "", srcPort = "";
+                String[] parmArr = line.split(" ");
+                for (String parm : parmArr) {
+                    String trimParm = parm.trim();
+                    if (trimParm.startsWith("DST")) {
+                        addr = getValue(trimParm);
+                    }
+                    if (trimParm.startsWith("SPT")) {
+                        if (sourcePort.equals(getValue(trimParm))) {
+                            match = true;
+                        } else {
+                            srcPort = getValue(trimParm);
+                        }
+                    }
+                    if (trimParm.startsWith("DPT")) {
+                        destPort = getValue(trimParm);
+                    }
+                }
+                if (match)
+                    result = addr + ":" + destPort;
+                else
+                    connReq.put(srcPort, addr + ":" + destPort);
+            }
+        }
+        int execResult = process.waitFor();
+        if (execResult == 0)
+            Logger.d(TAG, command + " exec success");
+        else {
+            Logger.d(TAG, command + " exec with result " + execResult);
+        }
+        os.close();
+        process.destroy();
+    } catch (IOException e) {
+        Logger.e(TAG, "Failed to exec command", e);
+    } catch (InterruptedException e) {
+        Logger.e(TAG, "线程意外终止", e);
+    } finally {
+        try {
+            if (os != null) {
+                os.close();
+            }
+        } catch (IOException e) {
+        }
+    }
+    return result;
+}

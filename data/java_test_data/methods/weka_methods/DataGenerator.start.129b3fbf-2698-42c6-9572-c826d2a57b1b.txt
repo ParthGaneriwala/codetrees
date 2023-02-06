@@ -1,0 +1,68 @@
+@Override
+public void start() throws WekaException {
+    if (getStepManager().numOutgoingConnections() > 0) {
+        weka.datagenerators.DataGenerator generator = getDataGenerator();
+        if (getStepManager().numOutgoingConnectionsOfType(StepManager.CON_DATASET) > 0) {
+            getStepManager().processing();
+            StringWriter output = new StringWriter();
+            try {
+                generator.setOutput(new PrintWriter(output));
+                getStepManager().statusMessage("Generating...");
+                getStepManager().logBasic("Generating data");
+                weka.datagenerators.DataGenerator.makeData(generator, generator.getOptions());
+                Instances instances = new Instances(new StringReader(output.toString()));
+                if (!isStopRequested()) {
+                    Data outputData = new Data(StepManager.CON_DATASET, instances);
+                    getStepManager().outputData(outputData);
+                }
+            } catch (Exception ex) {
+                throw new WekaException(ex);
+            }
+            if (isStopRequested()) {
+                getStepManager().interrupted();
+            } else {
+                getStepManager().finished();
+            }
+        } else {
+            // streaming case
+            try {
+                if (!generator.getSingleModeFlag()) {
+                    throw new WekaException("Generator does not support " + "incremental generation, so cannot be used with " + "outgoing 'instance' connections");
+                }
+            } catch (Exception ex) {
+                throw new WekaException(ex);
+            }
+            String stm = getName() + "$" + hashCode() + 99 + "| overall flow throughput -|";
+            m_flowThroughput = new StreamThroughput(stm, "Starting flow...", ((StepManagerImpl) getStepManager()).getLog());
+            try {
+                getStepManager().logBasic("Generating...");
+                generator.setDatasetFormat(generator.defineDataFormat());
+                for (int i = 0; i < generator.getNumExamplesAct(); i++) {
+                    m_flowThroughput.updateStart();
+                    getStepManager().throughputUpdateStart();
+                    if (isStopRequested()) {
+                        getStepManager().interrupted();
+                        return;
+                    }
+                    // over all examples to be produced
+                    Instance inst = generator.generateExample();
+                    m_incrementalData.setPayloadElement(StepManager.CON_INSTANCE, inst);
+                    getStepManager().throughputUpdateEnd();
+                    getStepManager().outputData(m_incrementalData);
+                    m_flowThroughput.updateEnd(((StepManagerImpl) getStepManager()).getLog());
+                }
+                if (isStopRequested()) {
+                    ((StepManagerImpl) getStepManager()).getLog().statusMessage(stm + "remove");
+                    getStepManager().interrupted();
+                    return;
+                }
+                m_flowThroughput.finished(((StepManagerImpl) getStepManager()).getLog());
+                // signal end of input
+                m_incrementalData.clearPayload();
+                getStepManager().throughputFinished(m_incrementalData);
+            } catch (Exception ex) {
+                throw new WekaException(ex);
+            }
+        }
+    }
+}

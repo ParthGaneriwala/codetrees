@@ -1,0 +1,77 @@
+@Override
+protected String doInBackground(String... arg0) {
+    init();
+    final String userNickName = arg0[0];
+    stopSendingData = false;
+    // we'll leave this at false - meaning that we won't delete anything (as I would like users to double check
+    // before we clear the data)
+    boolean deleteDatabase = false;
+    // this will be the id we send the server as the user id:
+    final long userId = System.currentTimeMillis();
+    // now let's send off all of our geo points in one post:
+    // Sets up a connection to the database.
+    db = GeoDBConnector.open(WebPushView.this);
+    final ArrayList<Integer> geoIds = new ArrayList<Integer>();
+    final ArrayList<NameValuePair> nameValuePairs = new ArrayList<NameValuePair>();
+    int counter = 0;
+    for (GeoStamp g : db.getGeoStamps()) {
+        nameValuePairs.add(new BasicNameValuePair("geo" + (++counter), userId + "," + g.getDatabaseID() + "," + g.getLatitude() + "," + g.getLongitude()));
+        geoIds.add(g.getDatabaseID());
+    }
+    // let's put our nick name in:
+    nameValuePairs.add(new BasicNameValuePair("userNickName", userId + "," + userNickName));
+    // let's also send our log along:
+    nameValuePairs.add(new BasicNameValuePair("log", CSLog.getLog()));
+    nameValuePairs.add(new BasicNameValuePair("logUserId", "" + userId));
+    publishProgress("sending geopoints");
+    try {
+        postMe(nameValuePairs);
+        // now delete log:
+        // let's not just yet...make the user do it
+        // CSLog.saveLog();
+        publishProgress("geopoints sent");
+    } catch (Exception e) {
+        final String msg = "something went wrong sending geopoints: " + e.toString();
+        publishProgress(msg);
+        CSLog.i(TAG, msg);
+        deleteDatabase = false;
+        // we should quit:
+        return "something went wrong";
+    }
+    // send audio:
+    counter = 0;
+    for (int gId : geoIds) {
+        for (String fName : db.getRecordingFilePaths(gId)) {
+            publishProgress("sending audio: " + (++counter));
+            if (postMeData(userId, gId, "audio", fName, NUM_DATA_RETRIES)) {
+                publishProgress("audio " + counter + " sent");
+            } else {
+                publishProgress("something went wrong with audio " + counter);
+                deleteDatabase = false;
+                // we should quit:
+                return "something went wrong";
+            }
+        }
+    }
+    // send images:
+    counter = 0;
+    for (int gId : geoIds) {
+        for (String fName : db.getPictureFilePaths(gId)) {
+            publishProgress("sending image: " + (++counter));
+            if (postMeData(userId, gId, "image", fName, NUM_DATA_RETRIES)) {
+                publishProgress("image " + counter + " sent");
+            } else {
+                publishProgress("something went wrong with image " + counter);
+                deleteDatabase = false;
+                // we should quit:
+                return "something went wrong";
+            }
+        }
+    }
+    if (deleteDatabase) {
+        // they all made it, so clear:
+        db.recreateTables();
+    }
+    // send message that we are done:
+    return "done working";
+}

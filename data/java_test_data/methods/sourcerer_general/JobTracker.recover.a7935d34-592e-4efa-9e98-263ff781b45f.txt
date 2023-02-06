@@ -1,0 +1,71 @@
+public void recover() throws IOException {
+    // I. Init the jobs and cache the recovered job history filenames
+    Map<JobID, Path> jobHistoryFilenameMap = new HashMap<JobID, Path>();
+    for (JobID id : jobsToRecover) {
+        // 1. Create the job object
+        JobInProgress job = new JobInProgress(id, JobTracker.this, conf);
+        // 2. Get the log file and the file path
+        String logFileName = JobHistory.JobInfo.getJobHistoryFileName(job.getJobConf(), id);
+        Path jobHistoryFilePath = JobHistory.JobInfo.getJobHistoryLogLocation(logFileName);
+        // 3. Recover the history file. This involved
+        // - deleting file.recover if file exists
+        // - renaming file.recover to file if file doesnt exist
+        // This makes sure that the (master) file exists
+        JobHistory.JobInfo.recoverJobHistoryFile(job.getJobConf(), jobHistoryFilePath);
+        // 4. Cache the history file name as it costs one dfs access
+        jobHistoryFilenameMap.put(job.getJobID(), jobHistoryFilePath);
+        // 5. Sumbit the job to the jobtracker
+        addJob(id, job);
+    }
+    long recoveryStartTime = System.currentTimeMillis();
+    // II. Recover each job
+    for (JobID id : jobsToRecover) {
+        JobInProgress pJob = getJob(id);
+        // 1. Get the required info
+        // Get the recovered history file
+        Path jobHistoryFilePath = jobHistoryFilenameMap.get(pJob.getJobID());
+        String logFileName = jobHistoryFilePath.getName();
+        FileSystem fs = jobHistoryFilePath.getFileSystem(conf);
+        // 2. Parse the history file
+        // Note that this also involves job update
+        JobRecoveryListener listener = new JobRecoveryListener(pJob);
+        try {
+            JobHistory.parseHistoryFromFS(jobHistoryFilePath.toString(), listener, fs);
+        } catch (IOException e) {
+            LOG.info("JobTracker failed to recover job " + pJob + "." + " Ignoring it.", e);
+            continue;
+        }
+        // 3. Close the listener
+        listener.close();
+        // 4. Update the recovery metric
+        totalEventsRecovered += listener.getNumEventsRecovered();
+        // should be used in future
+        synchronized (pJob) {
+            JobHistory.JobInfo.checkpointRecovery(logFileName, pJob.getJobConf());
+        }
+        // 6. Inform the jobtracker as to how much of the data is recovered.
+        // This is done so that TT should rollback to account for lost
+        // updates
+        lastSeenEventMapOnRestart.put(pJob.getStatus().getJobID(), pJob.getNumTaskCompletionEvents());
+    }
+    recoveryDuration = System.currentTimeMillis() - recoveryStartTime;
+    hasRecovered = true;
+    // III. Finalize the recovery
+    // Make sure that the tracker statuses in the expiry-tracker queue
+    // are updated
+    long now = System.currentTimeMillis();
+    int size = trackerExpiryQueue.size();
+    for (int i = 0; i < size; ++i) {
+        // Get the first status
+        TaskTrackerStatus status = trackerExpiryQueue.first();
+        // Remove it
+        trackerExpiryQueue.remove(status);
+        // Set the new time
+        status.setLastSeen(now);
+        // Add back to get the sorted list
+        trackerExpiryQueue.add(status);
+    }
+    // IV. Cleanup
+    jobsToRecover.clear();
+    LOG.info("Restoration complete");
+}

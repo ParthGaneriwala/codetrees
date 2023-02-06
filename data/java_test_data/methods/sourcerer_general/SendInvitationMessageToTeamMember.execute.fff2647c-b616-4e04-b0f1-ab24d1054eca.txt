@@ -1,0 +1,92 @@
+public boolean execute(ComponentContext context) {
+    TeamMember thisTeamMember = (TeamMember) context.getThisObject();
+    User user = UserUtils.loadUser(thisTeamMember.getEnteredBy());
+    User teamMemberUser = null;
+    Project project = null;
+    Connection db = null;
+    try {
+        db = getConnection(context);
+        if (thisTeamMember.getUserId() > 0 && user.getId() > 0) {
+            teamMemberUser = UserUtils.loadUser(thisTeamMember.getUserId());
+            project = ProjectUtils.loadProject(thisTeamMember.getProjectId());
+            String url = context.getParameter(URL);
+            if (teamMemberUser != null) {
+                Map<String, String> prefs = context.getApplicationPrefs();
+                Key key = (Key) context.getAttribute("TEAM.KEY");
+                // Initialize the message template
+                freemarker.template.Template inviteSubject = null;
+                freemarker.template.Template inviteBody = null;
+                // Set the data model
+                Map subjectMappings = new HashMap();
+                Map bodyMappings = new HashMap();
+                bodyMappings.put("site", new HashMap());
+                ((Map) bodyMappings.get("site")).put("title", prefs.get("TITLE"));
+                bodyMappings.put("project", project);
+                bodyMappings.put("user", user);
+                bodyMappings.put("link", new HashMap());
+                bodyMappings.put("invite", new HashMap());
+                ((Map) bodyMappings.get("invite")).put("firstName", teamMemberUser.getFirstName());
+                ((Map) bodyMappings.get("invite")).put("lastName", teamMemberUser.getLastName());
+                ((Map) bodyMappings.get("invite")).put("name", teamMemberUser.getNameFirstLast());
+                bodyMappings.put("optional", new HashMap());
+                ((Map) bodyMappings.get("optional")).put("message", thisTeamMember.getCustomInvitationMessage() != null ? StringUtils.toHtmlValue(thisTeamMember.getCustomInvitationMessage(), false, true) : "");
+                Configuration freeMarkerConfiguration = (Configuration) context.getAttribute(ComponentContext.FREEMARKER_CONFIGURATION);
+                if (freeMarkerConfiguration == null) {
+                    LOG.error("freeMarkerConfiguration is null");
+                }
+                if (teamMemberUser.getRegistered()) {
+                    // User IS registered with site
+                    inviteSubject = freeMarkerConfiguration.getTemplate("project_invitation_email_subject-text.ftl");
+                    inviteBody = freeMarkerConfiguration.getTemplate("project_invitation_email_body-html.ftl");
+                    ((Map) bodyMappings.get("link")).put("info", url);
+                    ((Map) bodyMappings.get("link")).put("invitations", url + "/show/" + teamMemberUser.getProfileProject().getUniqueId());
+                } else {
+                    // User IS NOT registered
+                    inviteSubject = freeMarkerConfiguration.getTemplate("project_invitation_for_new_user_email_subject-text.ftl");
+                    inviteBody = freeMarkerConfiguration.getTemplate("project_invitation_for_new_user_email_body-html.ftl");
+                    String data = URLEncoder.encode(PrivateString.encrypt(key, "id=" + teamMemberUser.getId() + ",pid=" + project.getId()), "UTF-8");
+                    ((Map) bodyMappings.get("link")).put("accept", url + "/LoginAccept.do?data=" + data);
+                    ((Map) bodyMappings.get("link")).put("reject", url + "/LoginReject.do?data=" + data);
+                    ((Map) bodyMappings.get("link")).put("info", url);
+                }
+                // Send the message
+                SMTPMessage message = SMTPMessageFactory.createSMTPMessageInstance(prefs);
+                message.setFrom(prefs.get("EMAILADDRESS"));
+                message.addReplyTo(user.getEmail(), user.getNameFirstLast());
+                message.addTo(teamMemberUser.getEmail());
+                // Set the subject from the template
+                StringWriter inviteSubjectTextWriter = new StringWriter();
+                inviteSubject.process(subjectMappings, inviteSubjectTextWriter);
+                message.setSubject(inviteSubjectTextWriter.toString());
+                // Set the body from the template
+                StringWriter inviteBodyTextWriter = new StringWriter();
+                inviteBody.process(bodyMappings, inviteBodyTextWriter);
+                message.setBody(inviteBodyTextWriter.toString());
+                // Send the invitations
+                message.setType("text/html");
+                int result = message.send();
+                if (result == 0) {
+                    // Record that message was delivered
+                    LOG.debug("email sent successfully to " + teamMemberUser.getNameFirstLast());
+                    thisTeamMember.setStatus(TeamMember.STATUS_PENDING);
+                } else {
+                    LOG.debug("email not sent to " + teamMemberUser.getNameFirstLast());
+                    // Record that message was not delivered
+                    thisTeamMember.setStatus(TeamMember.STATUS_MAILERROR);
+                }
+                LOG.debug("updating team member status ");
+                thisTeamMember.updateStatus(db);
+            } else {
+                LOG.error("could not find user profile for or team member " + thisTeamMember.getId());
+            }
+        } else {
+            LOG.error("user or team member is null: teammember user Id " + thisTeamMember.getId() + " userId: " + user.getId());
+        }
+    } catch (Exception e) {
+        LOG.error("Exception when sending invitation message to " + teamMemberUser.getNameFirstLast() + " for " + project.getTitle());
+        e.printStackTrace(System.out);
+    } finally {
+        freeConnection(context, db);
+    }
+    return false;
+}

@@ -1,0 +1,104 @@
+private void handleWrite(TFTPWriteRequestPacket twrp) throws IOException, TFTPPacketException {
+    OutputStream bos = null;
+    try {
+        if (mode_ == ServerMode.GET_ONLY) {
+            transferTftp_.bufferedSend(new TFTPErrorPacket(twrp.getAddress(), twrp.getPort(), TFTPErrorPacket.ILLEGAL_OPERATION, "Write not allowed by server."));
+            return;
+        }
+        int lastBlock = 0;
+        String fileName = twrp.getFilename();
+        try {
+            File temp = buildSafeFile(serverWriteDirectory_, fileName, true);
+            if (temp.exists()) {
+                transferTftp_.bufferedSend(new TFTPErrorPacket(twrp.getAddress(), twrp.getPort(), TFTPErrorPacket.FILE_EXISTS, "File already exists"));
+                return;
+            }
+            bos = new BufferedOutputStream(new FileOutputStream(temp));
+            if (twrp.getMode() == TFTP.NETASCII_MODE) {
+                bos = new FromNetASCIIOutputStream(bos);
+            }
+        } catch (Exception e) {
+            transferTftp_.bufferedSend(new TFTPErrorPacket(twrp.getAddress(), twrp.getPort(), TFTPErrorPacket.UNDEFINED, e.getMessage()));
+            return;
+        }
+        TFTPAckPacket lastSentAck = new TFTPAckPacket(twrp.getAddress(), twrp.getPort(), 0);
+        transferTftp_.bufferedSend(lastSentAck);
+        while (true) {
+            // get the response - ensure it is from the right place.
+            TFTPPacket dataPacket = null;
+            int timeoutCount = 0;
+            while (!shutdownTransfer && (dataPacket == null || !dataPacket.getAddress().equals(twrp.getAddress()) || dataPacket.getPort() != twrp.getPort())) {
+                // listen for an answer.
+                if (dataPacket != null) {
+                    // The data that we got didn't come from the
+                    // expected source, fire back an error, and continue
+                    // listening.
+                    log_.println("TFTP Server ignoring message from unexpected source.");
+                    transferTftp_.bufferedSend(new TFTPErrorPacket(dataPacket.getAddress(), dataPacket.getPort(), TFTPErrorPacket.UNKNOWN_TID, "Unexpected Host or Port"));
+                }
+                try {
+                    dataPacket = transferTftp_.bufferedReceive();
+                } catch (SocketTimeoutException e) {
+                    if (timeoutCount >= maxTimeoutRetries_) {
+                        throw e;
+                    }
+                    // It didn't get our ack. Resend it.
+                    transferTftp_.bufferedSend(lastSentAck);
+                    timeoutCount++;
+                    continue;
+                }
+            }
+            if (dataPacket != null && dataPacket instanceof TFTPWriteRequestPacket) {
+                // it must have missed our initial ack. Send another.
+                lastSentAck = new TFTPAckPacket(twrp.getAddress(), twrp.getPort(), 0);
+                transferTftp_.bufferedSend(lastSentAck);
+            } else if (dataPacket == null || !(dataPacket instanceof TFTPDataPacket)) {
+                if (!shutdownTransfer) {
+                    logError_.println("Unexpected response from tftp client during transfer (" + dataPacket + ").  Transfer aborted.");
+                }
+                break;
+            } else {
+                int block = ((TFTPDataPacket) dataPacket).getBlockNumber();
+                byte[] data = ((TFTPDataPacket) dataPacket).getData();
+                int dataLength = ((TFTPDataPacket) dataPacket).getDataLength();
+                int dataOffset = ((TFTPDataPacket) dataPacket).getDataOffset();
+                if (block > lastBlock || (lastBlock == 65535 && block == 0)) {
+                    // it might resend a data block if it missed our ack
+                    // - don't rewrite the block.
+                    bos.write(data, dataOffset, dataLength);
+                    lastBlock = block;
+                }
+                lastSentAck = new TFTPAckPacket(twrp.getAddress(), twrp.getPort(), block);
+                transferTftp_.bufferedSend(lastSentAck);
+                if (dataLength < TFTPDataPacket.MAX_DATA_LENGTH) {
+                    // end of stream signal - The tranfer is complete.
+                    bos.close();
+                    // need to resend the ack.
+                    for (int i = 0; i < maxTimeoutRetries_; i++) {
+                        try {
+                            dataPacket = transferTftp_.bufferedReceive();
+                        } catch (SocketTimeoutException e) {
+                            // shouldn't be sending any more packets.
+                            break;
+                        }
+                        if (dataPacket != null && (!dataPacket.getAddress().equals(twrp.getAddress()) || dataPacket.getPort() != twrp.getPort())) {
+                            // make sure it was from the right client...
+                            transferTftp_.bufferedSend(new TFTPErrorPacket(dataPacket.getAddress(), dataPacket.getPort(), TFTPErrorPacket.UNKNOWN_TID, "Unexpected Host or Port"));
+                        } else {
+                            // This means they sent us the last
+                            // datapacket again, must have missed our
+                            // ack. resend it.
+                            transferTftp_.bufferedSend(lastSentAck);
+                        }
+                    }
+                    // all done.
+                    break;
+                }
+            }
+        }
+    } finally {
+        if (bos != null) {
+            bos.close();
+        }
+    }
+}

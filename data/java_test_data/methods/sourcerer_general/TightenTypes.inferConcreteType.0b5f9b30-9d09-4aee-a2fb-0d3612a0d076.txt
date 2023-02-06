@@ -1,0 +1,110 @@
+ConcreteType inferConcreteType(ConcreteScope scope, Node expr) {
+    Preconditions.checkNotNull(scope);
+    Preconditions.checkNotNull(expr);
+    ConcreteType ret;
+    switch(expr.getType()) {
+        case Token.NAME:
+            StaticSlot<ConcreteType> slot = scope.getSlot(expr.getString());
+            if (slot != null) {
+                ret = slot.getType();
+            } else {
+                // This should occur only for extern variables, which we are assuming
+                // do not ever get assigned instances of user types.
+                ret = ConcreteType.ALL;
+            }
+            break;
+        case Token.THIS:
+            ret = scope.getTypeOfThis();
+            break;
+        case Token.ASSIGN:
+            // Using the right-hand side is more specific since the left hand side
+            // is a variable of some sort that can be assigned elsewhere.
+            ret = inferConcreteType(scope, expr.getLastChild());
+            break;
+        case Token.COMMA:
+            ret = inferConcreteType(scope, expr.getLastChild());
+            break;
+        case Token.AND:
+            // Since a reference type is always true, only the right hand side could
+            // actually be returned.
+            ret = inferConcreteType(scope, expr.getLastChild());
+            break;
+        case Token.OR:
+            ret = inferConcreteType(scope, expr.getFirstChild()).unionWith(inferConcreteType(scope, expr.getLastChild()));
+            break;
+        case Token.HOOK:
+            ret = inferConcreteType(scope, expr.getFirstChild().getNext()).unionWith(inferConcreteType(scope, expr.getLastChild()));
+            break;
+        case Token.GETPROP:
+            ConcreteType recvType = inferConcreteType(scope, expr.getFirstChild());
+            if (recvType.isAll()) {
+                ret = recvType;
+                break;
+            }
+            Node prop = expr.getLastChild();
+            String propName = prop.getString();
+            ConcreteType type = recvType.getPropertyType(propName);
+            if ("prototype".equals(propName)) {
+                for (ConcreteFunctionType funType : recvType.getFunctions()) {
+                    type = type.unionWith(funType.getPrototypeType());
+                }
+            } else if (compiler.getCodingConvention().isSuperClassReference(propName)) {
+                for (ConcreteFunctionType superType : recvType.getSuperclassTypes()) {
+                    type = type.unionWith(superType.getPrototypeType());
+                }
+            } else if ("call".equals(propName)) {
+                type = recvType;
+            }
+            ret = type;
+            break;
+        case Token.GETELEM:
+            ret = ConcreteType.ALL;
+            break;
+        case Token.CALL:
+            // TODO(user): Support apply on functions.
+            // TODO(user): Create goog.bind that curries some arguments.
+            ConcreteType targetType = inferConcreteType(scope, expr.getFirstChild());
+            if (targetType.isAll()) {
+                ret = targetType;
+                break;
+            }
+            ret = ConcreteType.NONE;
+            for (ConcreteFunctionType funType : targetType.getFunctions()) {
+                ret = ret.unionWith(funType.getReturnSlot().getType());
+            }
+            break;
+        case Token.NEW:
+            ConcreteType constructorType = inferConcreteType(scope, expr.getFirstChild());
+            if (constructorType.isAll()) {
+                throw new AssertionError("Attempted new call on all type!");
+            }
+            ret = ConcreteType.NONE;
+            for (ConcreteInstanceType instType : constructorType.getFunctionInstanceTypes()) {
+                ret = ret.unionWith(instType);
+            }
+            allInstantiatedTypes.add(ret);
+            break;
+        case Token.FUNCTION:
+            ret = createConcreteFunction(expr, scope);
+            break;
+        case Token.OBJECTLIT:
+            if ((expr.getJSType() != null) && !expr.getJSType().isUnknownType()) {
+                JSType exprType = expr.getJSType().restrictByNotNullOrUndefined();
+                ConcreteType inst = createConcreteInstance(exprType.toObjectType());
+                allInstantiatedTypes.add(inst);
+                ret = inst;
+            } else {
+                ret = ConcreteType.ALL;
+            }
+            break;
+        case Token.ARRAYLIT:
+            ObjectType arrayType = (ObjectType) getTypeRegistry().getNativeType(JSTypeNative.ARRAY_TYPE);
+            ConcreteInstanceType inst = createConcreteInstance(arrayType);
+            allInstantiatedTypes.add(inst);
+            ret = inst;
+            break;
+        default:
+            ret = ConcreteType.NONE;
+    }
+    return createTypeIntersection(ret, expr.getJSType());
+}

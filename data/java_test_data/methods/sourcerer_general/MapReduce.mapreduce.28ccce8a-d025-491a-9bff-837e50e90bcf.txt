@@ -1,0 +1,73 @@
+public void mapreduce(Mapper map, Reducer reduce, int numReduceQs, int numSetupNodes, Reducer combiner) {
+    // TODO, move it into the constructor??
+    this.numReduceQs = numReduceQs;
+    SimpleQueue masterReduceQueue = queueManager.getQueue(getReduceQueueName(jobID), false, 1, QueueManager.QueueType.MASTERREDUCE, null, null, queueWorkers);
+    ReduceCollector reduceCollector = new ReduceCollector(outputQueue);
+    // Setup
+    setup(numReduceQs, numSetupNodes);
+    // assign task ID
+    taskID = "task" + Global.clientID;
+    // count overall MapReduce time
+    long mapReduceTime = perf.getStartTime();
+    // MAP phase
+    long mapPhase = perf.getStartTime();
+    logger.info("start map phase");
+    // read from input SQS
+    try {
+        do {
+            // while input SQS not empty, dequeue, then map
+            for (Message msg : inputQueue) {
+                String value = msg.getBody();
+                // get the key for the key/value pair, in our case, key is the mapId
+                // first separator
+                int separator = value.indexOf(Global.separator);
+                int mapId = Integer.parseInt(value.substring(0, separator));
+                value = value.substring(separator + Global.separator.length());
+                logger.debug(mapId + ".");
+                mapWorkers.push(new MapRunnable(map, combiner, Integer.toString(mapId), value, perf, mapId, msg.getReceiptHandle()));
+                // only generate work when have capacity, could sleep here
+                mapWorkers.waitForEmpty();
+            }
+        // SQS appears to be empty, but really should make sure we processed all in the queue
+        } while (// if still has work left in theory, go back bang the queue again
+        !dbManager.isStageFinished(jobID, Global.STAGE.MAP));
+    } catch (Exception e) {
+        logger.warn("Map Exception: " + e.getMessage());
+    }
+    // not needed anymore, we wait in getReduceQsize for all counts
+    // sync all maps to make sure they finish updateCompletedReduce
+    // dbManager.completeTask(jobID, taskID, "map");
+    // dbManager.waitForPhaseComplete(jobID, "map", 0);
+    // Get list of valid reduce messages
+    committedMap = dbManager.getCommittedTask(jobID, Global.STAGE.MAP);
+    // stop map phase
+    // queueManager.report();
+    perf.stopTimer("mapPhase", mapPhase);
+    // REDUCE phase
+    long reducePhase = perf.getStartTime();
+    logger.info("start reduce phase");
+    try {
+        do {
+            // dequeue one reduce key , generate a iterator of values
+            for (Message msg : masterReduceQueue) {
+                String bucket = msg.getBody();
+                reduceWorkers.push(new ReduceRunnable(jobID, bucket, reduce, reduceCollector, msg.getReceiptHandle()));
+                // only generate work when have capacity, could sleep here
+                reduceWorkers.waitForEmpty();
+            }
+        } while (!dbManager.isStageFinished(jobID, Global.STAGE.REDUCE));
+        reduceWorkers.waitForFinish();
+    } catch (Exception ex) {
+        logger.warn("Reduce Exception: " + ex.getMessage());
+    }
+    // stop reduce phase
+    // dbManager.completeTask(jobID, taskID, "reduce");
+    // dbManager.waitForPhaseComplete(jobID, "reduce");
+    // output queue is an efficient queue, need to flush to clear
+    outputQueue.flush();
+    perf.stopTimer("reducePhase", reducePhase);
+    perf.stopTimer("mapReduce", mapReduceTime);
+    queueManager.perf.report();
+    perf.report();
+    dbManager.perf.report();
+}

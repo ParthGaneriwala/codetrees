@@ -1,0 +1,98 @@
+WizardLogic create(final List<? extends ScriptTargetMapping> targetList) {
+    Scope scope = updater.rootScope();
+    final boolean skipSingleTargetSelection = true;
+    // Wizard logic is described from the first page toward the last pages.
+    final PageImpl<PushChangesWizard.ChooseVmPageElements> chooseVmPage = pageSet.getChooseVmPage();
+    // A value corresponding to selected VMs on 'choose vm' page.
+    final ValueSource<List<ScriptTargetMapping>> selectedVmInput = new ValueSource<List<ScriptTargetMapping>>() {
+
+        private final ChooseVmControl.Logic chooseVmControl = chooseVmPage.getPageElements().getChooseVm();
+
+        {
+            chooseVmControl.setData(targetList);
+            chooseVmControl.selectAll();
+            final ValueSource<?> thisSource = this;
+            ChooseVmControl.Logic.Listener listener = new ChooseVmControl.Logic.Listener() {
+
+                public void checkStateChanged() {
+                    updater.reportChanged(thisSource);
+                    updater.update();
+                }
+            };
+            chooseVmControl.addListener(listener);
+        }
+
+        public List<ScriptTargetMapping> getValue() {
+            return chooseVmControl.getSelected();
+        }
+    };
+    updater.addSource(scope, selectedVmInput);
+    // A derived value of selected VMs list; the list is non-empty or the value is error.
+    final ValueProcessor<? extends Optional<List<ScriptTargetMapping>>> selectedVmValue = createProcessor(new Gettable<Optional<List<ScriptTargetMapping>>>() {
+
+        public Optional<List<ScriptTargetMapping>> getValue() {
+            List<ScriptTargetMapping> vmList = selectedVmInput.getValue();
+            if (vmList.isEmpty()) {
+                return createErrorOptional(new Message("Choose at least one VM", MessagePriority.BLOCKING_INFO));
+            } else {
+                return createOptional(vmList);
+            }
+        }
+    });
+    updater.addSource(scope, selectedVmValue);
+    updater.addConsumer(scope, selectedVmValue);
+    updater.addDependency(selectedVmValue, selectedVmInput);
+    // A condition value for up-coming fork between 'single vm' and 'multiple vm' paths.
+    Gettable<? extends Optional<? extends Boolean>> singleVmSelectedExpression = handleErrors(new NormalExpression<Boolean>() {
+
+        @Calculate
+        public Boolean calculate(List<ScriptTargetMapping> selectedVm) {
+            return selectedVm.size() == 1;
+        }
+
+        @DependencyGetter
+        public ValueSource<? extends Optional<List<ScriptTargetMapping>>> getSelectVmSource() {
+            return selectedVmValue;
+        }
+    });
+    // A switch between 2 paths: 'single vm' and 'multiple vm'.
+    OptionalSwitcher<Boolean> singleVmSelectedSwitch = scope.addOptionalSwitch(singleVmSelectedExpression);
+    final PreviewAndOptionPath singleVmPath = createSingleVmPath(chooseVmPage, singleVmSelectedSwitch, selectedVmValue);
+    final PreviewAndOptionPath multipleVmPath = createMultipleVmPath(chooseVmPage, singleVmSelectedSwitch, selectedVmValue);
+    final PreviewAndOptionPath switchBlockItems = DialogUtils.mergeBranchVariables(PreviewAndOptionPath.class, singleVmSelectedSwitch, singleVmPath, multipleVmPath);
+    // A simple value converter that wraps wizard delegate as UI-aware wizard finisher.
+    ValueProcessor<Optional<? extends WizardFinisher>> finisherValue = createProcessor(handleErrors(new NormalExpression<WizardFinisher>() {
+
+        @Calculate
+        public WizardFinisher calculate(FinisherDelegate finisherDelegate) {
+            return new PushChangesWizard.FinisherImpl(finisherDelegate);
+        }
+
+        @DependencyGetter
+        public ValueSource<? extends Optional<? extends FinisherDelegate>> getWizardFinisherDelegateSource() {
+            return switchBlockItems.getFinisherDelegateValue();
+        }
+    }));
+    updater.addConsumer(scope, finisherValue);
+    updater.addSource(scope, finisherValue);
+    updater.addDependency(finisherValue, switchBlockItems.getFinisherDelegateValue());
+    // A controller that ties finisher value and other warnings to a wizard UI.
+    WizardFinishController finishController = new WizardFinishController(finisherValue, switchBlockItems.getWarningValue(), wizardImpl);
+    updater.addConsumer(scope, finishController);
+    updater.addDependency(finishController, switchBlockItems.getFinisherDelegateValue());
+    updater.addDependency(finishController, switchBlockItems.getWarningValue());
+    return new WizardLogic() {
+
+        public void updateAll() {
+            updater.updateAll();
+        }
+
+        public PageImpl<?> getStartingPage() {
+            return chooseVmPage;
+        }
+
+        public void dispose() {
+            updater.stopAsync();
+        }
+    };
+}

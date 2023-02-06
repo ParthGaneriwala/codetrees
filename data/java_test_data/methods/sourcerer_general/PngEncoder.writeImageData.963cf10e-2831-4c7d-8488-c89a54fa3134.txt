@@ -1,0 +1,100 @@
+protected boolean writeImageData() {
+    // number of rows remaining to write
+    int rowsLeft = height;
+    // starting row to process this time through
+    int startRow = 0;
+    // how many rows to grab at a time
+    int nRows;
+    // the scan lines to be compressed
+    byte[] scanLines;
+    // where we are in the scan lines
+    int scanPos;
+    // where this line's actual pixels start (used for filtering)
+    int startPos;
+    // the resultant compressed lines
+    byte[] compressedLines;
+    // how big is the compressed area?
+    int nCompressed;
+    // int depth;              // color depth ( handle only 8 or 32 )
+    PixelGrabber pg;
+    bytesPerPixel = (encodeAlpha) ? 4 : 3;
+    Deflater scrunch = new Deflater(compressionLevel);
+    ByteArrayOutputStream outBytes = new ByteArrayOutputStream(1024);
+    DeflaterOutputStream compBytes = new DeflaterOutputStream(outBytes, scrunch);
+    try {
+        while (rowsLeft > 0) {
+            nRows = Math.min(32767 / (width * (bytesPerPixel + 1)), rowsLeft);
+            nRows = Math.max(nRows, 1);
+            int[] pixels = new int[width * nRows];
+            pg = new PixelGrabber(image, 0, startRow, width, nRows, pixels, 0, width);
+            try {
+                pg.grabPixels();
+            } catch (Exception e) {
+                System.err.println("interrupted waiting for pixels!");
+                return false;
+            }
+            if ((pg.getStatus() & ImageObserver.ABORT) != 0) {
+                System.err.println("image fetch aborted or errored");
+                return false;
+            }
+            /*
+                 * Create a data chunk. scanLines adds "nRows" for
+                 * the filter bytes.
+                 */
+            scanLines = new byte[width * nRows * bytesPerPixel + nRows];
+            if (filter == FILTER_SUB) {
+                leftBytes = new byte[16];
+            }
+            if (filter == FILTER_UP) {
+                priorRow = new byte[width * bytesPerPixel];
+            }
+            scanPos = 0;
+            startPos = 1;
+            for (int i = 0; i < width * nRows; i++) {
+                if (i % width == 0) {
+                    scanLines[scanPos++] = (byte) filter;
+                    startPos = scanPos;
+                }
+                scanLines[scanPos++] = (byte) ((pixels[i] >> 16) & 0xff);
+                scanLines[scanPos++] = (byte) ((pixels[i] >> 8) & 0xff);
+                scanLines[scanPos++] = (byte) ((pixels[i]) & 0xff);
+                if (encodeAlpha) {
+                    scanLines[scanPos++] = (byte) ((pixels[i] >> 24) & 0xff);
+                }
+                if ((i % width == width - 1) && (filter != FILTER_NONE)) {
+                    if (filter == FILTER_SUB) {
+                        filterSub(scanLines, startPos, width);
+                    }
+                    if (filter == FILTER_UP) {
+                        filterUp(scanLines, startPos, width);
+                    }
+                }
+            }
+            /*
+                 * Write these lines to the output area
+                 */
+            compBytes.write(scanLines, 0, scanPos);
+            startRow += nRows;
+            rowsLeft -= nRows;
+        }
+        compBytes.close();
+        /*
+             * Write the compressed bytes
+             */
+        compressedLines = outBytes.toByteArray();
+        nCompressed = compressedLines.length;
+        crc.reset();
+        bytePos = writeInt4(nCompressed, bytePos);
+        bytePos = writeBytes(IDAT, bytePos);
+        crc.update(IDAT);
+        bytePos = writeBytes(compressedLines, nCompressed, bytePos);
+        crc.update(compressedLines, 0, nCompressed);
+        crcValue = crc.getValue();
+        bytePos = writeInt4((int) crcValue, bytePos);
+        scrunch.finish();
+        return true;
+    } catch (IOException e) {
+        System.err.println(e.toString());
+        return false;
+    }
+}

@@ -1,0 +1,59 @@
+private void visitClass(ClassNode classNode) throws ChromatticASTTransformationException {
+    try {
+        constructor.setProtectedDefaultConstructor(classNode);
+    } catch (NoSuchDefaultConstructor e) {
+        constructor.generateProtectedDefaultConstructor(classNode);
+    }
+    constructor.generatePublicHandlerConstructor(classNode);
+    annotationMover.applyGroovyInstrumentor(classNode);
+    // Browse children to adapt groovy structure
+    for (FieldNode fieldNode : classNode.getFields()) {
+        if (GroovyUtils.isChromatticAnnoted(fieldNode)) {
+            // 
+            try {
+                annotationMover.addSetterDelegationAnnotation(classNode, fieldNode);
+            } catch (NoSuchSetterException e) {
+                annotationMover.generateSetter(classNode, fieldNode);
+            }
+            for (AnnotationNode annotationNode : (List<AnnotationNode>) fieldNode.getAnnotations()) {
+                if (annotationNode.getClassNode().getName().startsWith(GroovyUtils.ANNOTATIONS_PACKAGE)) {
+                    fieldChecker.checkChromaticFieldType(fieldNode);
+                    // 
+                    try {
+                        annotationMover.addFieldAnnotationToMethod(classNode, fieldNode, annotationNode);
+                    } catch (NoSuchGetterException e) {
+                        annotationMover.generateGetter(classNode, fieldNode, annotationNode);
+                    }
+                }
+            }
+        } else if (GroovyUtils.isChromatticAnnotedInHierarchy(null, fieldNode)) {
+            annotationMover.generateGetter(classNode, fieldNode, new AnnotationNode(new ClassNode(ChromatticDelegation.class)));
+            annotationMover.generateSetter(classNode, fieldNode);
+        }
+        annotationMover.removeChromatticAnnotation(fieldNode);
+    }
+    // Transform GroovyObject to ChromatticObject
+    delegate.setGroovyInterceptable(classNode);
+    delegate.addInvokerField(classNode);
+    try {
+        delegate.plugGetProperty(classNode);
+    } catch (NoSuchMethodException e) {
+        delegate.generateGetProperty(classNode);
+    }
+    try {
+        delegate.plugSetProperty(classNode);
+    } catch (NoSuchMethodException e) {
+        delegate.generateSetProperty(classNode);
+    }
+    try {
+        delegate.plugInvokeMethod(classNode);
+    } catch (NoSuchMethodException e) {
+        delegate.generateInvokeMethod(classNode);
+    }
+    delegate.removeChromatticField(classNode);
+    for (MethodNode methodNode : classNode.getMethods()) {
+        if (methodNode.isAbstract()) {
+            implementor.implement(methodNode);
+        }
+    }
+}

@@ -1,0 +1,60 @@
+@SuppressWarnings("unchecked")
+public void run() {
+    try {
+        LOG.info(reduceTask.getTaskID() + " Thread started: " + getName());
+        while (!exitLocalFSMerge) {
+            synchronized (mapOutputFilesOnDisk) {
+                while (!exitLocalFSMerge && mapOutputFilesOnDisk.size() < (2 * ioSortFactor - 1)) {
+                    LOG.info(reduceTask.getTaskID() + " Thread waiting: " + getName());
+                    mapOutputFilesOnDisk.wait();
+                }
+            }
+            if (exitLocalFSMerge) {
+                // to avoid running one extra time in the end
+                break;
+            }
+            List<Path> mapFiles = new ArrayList<Path>();
+            long approxOutputSize = 0;
+            int bytesPerSum = reduceTask.getConf().getInt("io.bytes.per.checksum", 512);
+            LOG.info(reduceTask.getTaskID() + "We have  " + mapOutputFilesOnDisk.size() + " map outputs on disk. " + "Triggering merge of " + ioSortFactor + " files");
+            // io.sort.factor files into 1.
+            synchronized (mapOutputFilesOnDisk) {
+                for (int i = 0; i < ioSortFactor; ++i) {
+                    FileStatus filestatus = mapOutputFilesOnDisk.first();
+                    mapOutputFilesOnDisk.remove(filestatus);
+                    mapFiles.add(filestatus.getPath());
+                    approxOutputSize += filestatus.getLen();
+                }
+            }
+            // sanity check
+            if (mapFiles.size() == 0) {
+                return;
+            }
+            // add the checksum length
+            approxOutputSize += ChecksumFileSystem.getChecksumLength(approxOutputSize, bytesPerSum);
+            // 2. Start the on-disk merge process
+            Path outputPath = lDirAlloc.getLocalPathForWrite(mapFiles.get(0).toString(), approxOutputSize, conf).suffix(".merged");
+            Writer writer = new Writer(conf, rfs, outputPath, conf.getMapOutputKeyClass(), conf.getMapOutputValueClass(), codec);
+            RawKeyValueIterator iter = null;
+            Path tmpDir = new Path(reduceTask.getTaskID().toString());
+            final Reporter reporter = getReporter(umbilical);
+            try {
+                iter = Merger.merge(conf, rfs, conf.getMapOutputKeyClass(), conf.getMapOutputValueClass(), codec, mapFiles.toArray(new Path[mapFiles.size()]), true, ioSortFactor, tmpDir, conf.getOutputKeyComparator(), reporter);
+                Merger.writeFile(iter, writer, reporter);
+                writer.close();
+            } catch (Exception e) {
+                localFileSys.delete(outputPath, true);
+                throw new IOException(StringUtils.stringifyException(e));
+            }
+            synchronized (mapOutputFilesOnDisk) {
+                addToMapOutputFilesOnDisk(localFileSys.getFileStatus(outputPath));
+            }
+            LOG.info(reduceTask.getTaskID() + " Finished merging " + mapFiles.size() + " map output files on disk of total-size " + approxOutputSize + "." + " Local output file is " + outputPath + " of size " + localFileSys.getFileStatus(outputPath).getLen());
+        }
+    } catch (Throwable t) {
+        LOG.warn(reduceTask.getTaskID() + " Merging of the local FS files threw an exception: " + StringUtils.stringifyException(t));
+        if (mergeThrowable == null) {
+            mergeThrowable = t;
+        }
+    }
+}

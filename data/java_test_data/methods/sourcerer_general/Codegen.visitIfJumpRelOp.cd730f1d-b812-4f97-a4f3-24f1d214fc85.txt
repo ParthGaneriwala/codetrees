@@ -1,0 +1,79 @@
+private void visitIfJumpRelOp(Node node, Node child, int trueGOTO, int falseGOTO) {
+    if (trueGOTO == -1 || falseGOTO == -1)
+        throw Codegen.badTree();
+    int type = node.getType();
+    Node rChild = child.getNext();
+    if (type == Token.INSTANCEOF || type == Token.IN) {
+        generateExpression(child, node);
+        generateExpression(rChild, node);
+        cfw.addALoad(contextLocal);
+        addScriptRuntimeInvoke((type == Token.INSTANCEOF) ? "instanceOf" : "in", "(Ljava/lang/Object;" + "Ljava/lang/Object;" + "Lorg/mozilla/javascript/Context;" + ")Z");
+        cfw.add(ByteCode.IFNE, trueGOTO);
+        cfw.add(ByteCode.GOTO, falseGOTO);
+        return;
+    }
+    int childNumberFlag = node.getIntProp(Node.ISNUMBER_PROP, -1);
+    int left_dcp_register = nodeIsDirectCallParameter(child);
+    int right_dcp_register = nodeIsDirectCallParameter(rChild);
+    if (childNumberFlag != -1) {
+        if (childNumberFlag != Node.RIGHT) {
+            // Left already has number content
+            generateExpression(child, node);
+        } else if (left_dcp_register != -1) {
+            dcpLoadAsNumber(left_dcp_register);
+        } else {
+            generateExpression(child, node);
+            addObjectToDouble();
+        }
+        if (childNumberFlag != Node.LEFT) {
+            // Right already has number content
+            generateExpression(rChild, node);
+        } else if (right_dcp_register != -1) {
+            dcpLoadAsNumber(right_dcp_register);
+        } else {
+            generateExpression(rChild, node);
+            addObjectToDouble();
+        }
+        genSimpleCompare(type, trueGOTO, falseGOTO);
+    } else {
+        if (left_dcp_register != -1 && right_dcp_register != -1) {
+            // Generate code to dynamically check for number content
+            // if both operands are dcp
+            short stack = cfw.getStackTop();
+            int leftIsNotNumber = cfw.acquireLabel();
+            cfw.addALoad(left_dcp_register);
+            cfw.add(ByteCode.GETSTATIC, "java/lang/Void", "TYPE", "Ljava/lang/Class;");
+            cfw.add(ByteCode.IF_ACMPNE, leftIsNotNumber);
+            cfw.addDLoad(left_dcp_register + 1);
+            dcpLoadAsNumber(right_dcp_register);
+            genSimpleCompare(type, trueGOTO, falseGOTO);
+            if (stack != cfw.getStackTop())
+                throw Codegen.badTree();
+            cfw.markLabel(leftIsNotNumber);
+            int rightIsNotNumber = cfw.acquireLabel();
+            cfw.addALoad(right_dcp_register);
+            cfw.add(ByteCode.GETSTATIC, "java/lang/Void", "TYPE", "Ljava/lang/Class;");
+            cfw.add(ByteCode.IF_ACMPNE, rightIsNotNumber);
+            cfw.addALoad(left_dcp_register);
+            addObjectToDouble();
+            cfw.addDLoad(right_dcp_register + 1);
+            genSimpleCompare(type, trueGOTO, falseGOTO);
+            if (stack != cfw.getStackTop())
+                throw Codegen.badTree();
+            cfw.markLabel(rightIsNotNumber);
+            // Load both register as objects to call generic cmp_*
+            cfw.addALoad(left_dcp_register);
+            cfw.addALoad(right_dcp_register);
+        } else {
+            generateExpression(child, node);
+            generateExpression(rChild, node);
+        }
+        if (type == Token.GE || type == Token.GT) {
+            cfw.add(ByteCode.SWAP);
+        }
+        String routine = ((type == Token.LT) || (type == Token.GT)) ? "cmp_LT" : "cmp_LE";
+        addScriptRuntimeInvoke(routine, "(Ljava/lang/Object;" + "Ljava/lang/Object;" + ")Z");
+        cfw.add(ByteCode.IFNE, trueGOTO);
+        cfw.add(ByteCode.GOTO, falseGOTO);
+    }
+}

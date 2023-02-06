@@ -1,0 +1,81 @@
+public void storeTripleAR(Triple t, IDBID graphID, Node reifNode, boolean hasType, boolean isBatch, Hashtable batchedPreparedStatements) {
+    String objURI;
+    Object obj_val;
+    boolean isReif = reifNode != null;
+    // if database doesn't perform duplicate check
+    if (!SKIP_DUPLICATE_CHECK && !isReif) {
+        // if statement already in table
+        if (statementTableContains(graphID, t)) {
+            return;
+        }
+    }
+    String obj_res, obj_lex, obj_lit;
+    // TODO: Node.NULL is only valid for reif triple stores. should check this.
+    String subj = t.getSubject().equals(Node.NULL) ? null : m_driver.nodeToRDBString(t.getSubject(), true);
+    String pred = t.getPredicate().equals(Node.NULL) ? null : m_driver.nodeToRDBString(t.getPredicate(), true);
+    String obj = t.getObject().equals(Node.NULL) ? null : m_driver.nodeToRDBString(t.getObject(), true);
+    // String gid = graphID.getID().toString();
+    int gid = ((DBIDInt) graphID).getIntID();
+    int argc = 1;
+    String stmtStr;
+    if ((subj == null) || (pred == null) || (obj == null)) {
+        if (!isReif)
+            throw new JenaException("Attempt to assert triple with missing values");
+    }
+    // get statement string
+    PreparedStatement ps = null;
+    stmtStr = isReif ? "insertReified" : "insertStatement";
+    try {
+        ps = getPreparedStatement(stmtStr, getTblName(), isBatch, batchedPreparedStatements);
+    // ps.clearParameters();
+    } catch (SQLException e1) {
+        logger.debug("SQLException caught " + e1.getErrorCode(), e1);
+        // Rethrow in case there is a recovery option
+        throw new JenaException("Exception during database access", e1);
+    }
+    // now fill in parameters
+    try {
+        if (subj == null)
+            ps.setNull(argc++, java.sql.Types.VARCHAR);
+        else
+            ps.setString(argc++, subj);
+        if (pred == null)
+            ps.setNull(argc++, java.sql.Types.VARCHAR);
+        else
+            ps.setString(argc++, pred);
+        if (obj == null)
+            ps.setNull(argc++, java.sql.Types.VARCHAR);
+        else
+            ps.setString(argc++, obj);
+        // add graph id and, if reifying, stmturi and hastype
+        ps.setInt(argc++, gid);
+        if (isReif) {
+            String stmtURI = m_driver.nodeToRDBString(reifNode, true);
+            ps.setString(argc++, stmtURI);
+            if (hasType == true)
+                ps.setString(argc++, "T");
+            else
+                // not nullable
+                ps.setString(argc++, " ");
+        }
+    } catch (SQLException e1) {
+        logger.debug("SQLException caught " + e1.getErrorCode(), e1);
+        // Rethrow in case there is a recovery option
+        throw new JenaException("Exception during database access", e1);
+    }
+    try {
+        if (isBatch) {
+            ps.addBatch();
+        } else {
+            ps.executeUpdate();
+            m_sql.returnPreparedSQLStatement(ps);
+        }
+    // ps.close();
+    } catch (SQLException e1) {
+        // we let Oracle handle duplicate checking
+        if (!((e1.getErrorCode() == 1) && (m_driver.getDatabaseType().equalsIgnoreCase("oracle")))) {
+            logger.error("SQLException caught during insert" + e1.getErrorCode(), e1);
+            throw new JenaException("Exception during database access", e1);
+        }
+    }
+}

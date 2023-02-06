@@ -1,0 +1,64 @@
+@SuppressWarnings("nls")
+private OperatorInfoList genBodyPlan(QB qb, OperatorInfoList input) throws SemanticException {
+    QBParseInfo qbp = qb.getParseInfo();
+    OperatorInfoList output = new OperatorInfoList();
+    TreeSet<String> ks = new TreeSet<String>();
+    ks.addAll(qbp.getClauseNames());
+    String distinctText = null;
+    CommonTree distn = null;
+    OperatorInfoList opList = null;
+    boolean grpBy = false;
+    // In case of a multiple group bys, all of them should have the same distinct key
+    for (String dest : ks) {
+        // is it a group by
+        if ((qbp.getAggregationExprsForClause(dest).size() != 0) || (getGroupByForClause(qbp, dest).size() > 0)) {
+            grpBy = true;
+            // If there is a distinctFuncExp, add all parameters to the reduceKeys.
+            if (qbp.getDistinctFuncExprForClause(dest) != null) {
+                CommonTree value = qbp.getDistinctFuncExprForClause(dest);
+                if (value.getChildCount() != 2)
+                    throw new SemanticException(ErrorMsg.UNSUPPORTED_MULTIPLE_DISTINCTS.getMsg(value));
+                distn = (CommonTree) value.getChild(1);
+                String dist = distn.toStringTree();
+                ;
+                if (distinctText == null)
+                    distinctText = dist;
+                if (!distinctText.equals(dist))
+                    throw new SemanticException(ErrorMsg.UNSUPPORTED_MULTIPLE_DISTINCTS.getMsg(value));
+            }
+        }
+    }
+    // evaluate expressions that occur frequently
+    if (grpBy) {
+        OperatorInfo reduceSinkOperatorInfo = genGroupByPlanReduceSinkOperator(qbp, input.get(0), distn, ks);
+        // ////// 2. Generate GroupbyOperator
+        OperatorInfo forwardOperatorInfo = genGroupByPlanForwardOperator(qbp, reduceSinkOperatorInfo);
+        opList = new OperatorInfoList();
+        opList.add(forwardOperatorInfo);
+    }
+    // Go over all the destination tables
+    for (String dest : ks) {
+        boolean groupByExpr = false;
+        if (qbp.getAggregationExprsForClause(dest).size() != 0 || getGroupByForClause(qbp, dest).size() > 0)
+            groupByExpr = true;
+        OperatorInfoList curr = input;
+        if (groupByExpr)
+            curr = opList;
+        if (qbp.getWhrForClause(dest) != null) {
+            curr = genFilterPlan(dest, qb, curr);
+        }
+        if (qbp.getAggregationExprsForClause(dest).size() != 0 || getGroupByForClause(qbp, dest).size() > 0)
+            curr = genGroupByPlan3MR(dest, qb, curr);
+        else
+            curr = genSelectPlan(dest, qb, curr);
+        if (qbp.getClusterByForClause(dest) != null) {
+            curr = genReduceSinkPlan(dest, qb, curr);
+        } else if (!qbp.getIsSubQ()) {
+            curr = genConversionOps(dest, qb, curr);
+            curr = genFileSinkPlan(dest, qb, curr);
+        }
+        output.addAll(curr);
+    }
+    LOG.debug("Created Body Plan for Query Block " + qb.getId());
+    return output;
+}

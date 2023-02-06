@@ -1,0 +1,53 @@
+protected void processXVal(Instances train, Instances test, Integer setNum, Integer maxSetNum) throws WekaException {
+    if (train != null) {
+        try {
+            ASEvaluation evalCopy = ASEvaluation.makeCopies(m_evaluatorTemplate, 1)[0];
+            ASSearch searchCopy = ASSearch.makeCopies(m_searchTemplate, 1)[0];
+            if (!isStopRequested()) {
+                String message = "Selecting attributes x-val mode (" + train.relationName();
+                if (setNum != null && maxSetNum != null) {
+                    message += ", set " + setNum + " of " + maxSetNum;
+                }
+                message += ")";
+                getStepManager().statusMessage(message);
+                getStepManager().logBasic(message);
+                evalCopy.buildEvaluator(train);
+                if (evalCopy instanceof AttributeTransformer) {
+                    m_transformerStore.put(setNum != null ? setNum : -1, ((AttributeTransformer) evalCopy));
+                }
+                int[] selectedAtts = searchCopy.search(evalCopy, train);
+                selectedAtts = evalCopy.postProcess(selectedAtts);
+                if (m_isRanking) {
+                    double[][] ranked = ((RankedOutputSearch) searchCopy).rankedAttributes();
+                    selectedAtts = new int[ranked.length];
+                    for (int i = 0; i < ranked.length; i++) {
+                        selectedAtts[i] = (int) ranked[i][0];
+                    }
+                }
+                updateXValStats(train, evalCopy, searchCopy, selectedAtts);
+                // > 2 here because the info connection counts as 1
+                if (getStepManager().numIncomingConnections() > 2) {
+                    m_selectedAttsStore.put(setNum, selectedAtts);
+                }
+                if (m_isRanking) {
+                    m_numToSelectStore.put(setNum, ((RankedOutputSearch) searchCopy).getCalculatedNumToSelect());
+                }
+                applyFiltering(StepManager.CON_TRAININGSET, selectedAtts, train, setNum, maxSetNum);
+                // > 2 here because the info connection counts as 1
+                if (getStepManager().numIncomingConnections() > 2) {
+                    Instances waitingTest = m_waitingTestData.get(setNum);
+                    if (waitingTest != null) {
+                        checkTestFiltering(waitingTest, setNum, maxSetNum);
+                    }
+                } else {
+                    m_setCount.decrementAndGet();
+                }
+                evalCopy.clean();
+            }
+        } catch (Exception ex) {
+            throw new WekaException(ex);
+        }
+    } else {
+        checkTestFiltering(test, setNum, maxSetNum);
+    }
+}

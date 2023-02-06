@@ -1,0 +1,77 @@
+private Iq handleSetPubSubOptions(JID from, XmlStanza stanza, Iq iq, PubSubExtension pubSubExtension) {
+    Iq iqResponse = null;
+    PubSubOptions pubSubOptions = (PubSubOptions) stanza;
+    String node = pubSubOptions.getNode();
+    JID jid = pubSubOptions.getJid();
+    String subId = pubSubOptions.getSubId();
+    if (!from.equalsWithBareJid(jid)) {
+        iqResponse = PacketUtils.createErrorIq(iq);
+        XmppError error = new XmppError(XmppError.Condition.bad_request);
+        error.addOtherCondition("invalid-jid", "http://jabber.org/protocol/pubsub#errors");
+        iqResponse.setError(error);
+    } else if (subId == null) {
+        iqResponse = PacketUtils.createErrorIq(iq);
+        XmppError error = new XmppError(XmppError.Condition.bad_request);
+        error.addOtherCondition("subid-required", "http://jabber.org/protocol/pubsub#errors");
+        iqResponse.setError(error);
+    } else {
+        try {
+            DataForm dataForm = pubSubOptions.getDataForm();
+            Map<String, Object> config = new HashMap<String, Object>();
+            if (dataForm != null && dataForm.getType() == DataForm.Type.submit) {
+                for (FormField field : dataForm.getFields()) {
+                    String var = field.getVariable();
+                    if ("pubsub#deliver".equals(var)) {
+                        String valueStr = field.getValues().next();
+                        int value = parseBoolean(valueStr);
+                        config.put("deliver", value);
+                    } else if ("pubsub#digest".equals(var)) {
+                        String valueStr = field.getValues().next();
+                        int value = parseBoolean(valueStr);
+                        config.put("digest", value);
+                    } else if ("pubsub#digest_frequency".equals(var)) {
+                        String valueStr = field.getValues().next();
+                        config.put("digest_frequency", Integer.parseInt(valueStr));
+                    } else if ("pubsub#expire".equals(var)) {
+                        String valueStr = field.getValues().next();
+                        config.put("expire", Integer.parseInt(valueStr));
+                    } else if ("pubsub#include_body".equals(var)) {
+                        String valueStr = field.getValues().next();
+                        int value = parseBoolean(valueStr);
+                        config.put("includeBody", value);
+                    } else if ("pubsub#show-values".equals(var)) {
+                        Iterator<String> it = field.getValues();
+                        StringBuilder value = new StringBuilder();
+                        while (it.hasNext()) {
+                            value.append(it.next() + ";");
+                        }
+                        config.put("showValues", value);
+                    } else if ("pubsub#subscription_depth".equals(var)) {
+                        String value = field.getValues().next();
+                        config.put("subscriptionDepth", value);
+                    }
+                }
+                // TODO check case sentity
+                pubSubEngine.updateSubscriptionConfigure(jid.toPrepedBareJID(), node, subId, config);
+                iqResponse = PacketUtils.createResultIq(iq);
+            } else {
+                iqResponse = PacketUtils.createErrorIq(iq);
+                iqResponse.setError(new XmppError(XmppError.Condition.bad_request));
+            }
+        } catch (NodeNotExistException e) {
+            iqResponse = PacketUtils.createErrorIq(iq);
+            iqResponse.setError(new XmppError(XmppError.Condition.item_not_found));
+        } catch (TooManySubscriptionsException e) {
+            iqResponse = PacketUtils.createErrorIq(iq);
+            XmppError error = new XmppError(XmppError.Condition.policy_violation);
+            error.addOtherCondition("too-many-subscriptions", "http://jabber.org/protocol/pubsub#errors");
+            iqResponse.setError(error);
+        } catch (Exception e) {
+            // TODO
+            e.printStackTrace();
+            iqResponse = PacketUtils.createErrorIq(iq);
+            iqResponse.setError(new XmppError(XmppError.Condition.internal_server_error));
+        }
+    }
+    return iqResponse;
+}

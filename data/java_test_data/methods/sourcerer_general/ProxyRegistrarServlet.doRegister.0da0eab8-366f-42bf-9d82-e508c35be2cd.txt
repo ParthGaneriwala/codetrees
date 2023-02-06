@@ -1,0 +1,109 @@
+@Override
+protected void doRegister(SipServletRequest register) throws IOException, ServletException {
+    try {
+        String aor = getAor(register.getTo());
+        SortedSet<Binding> bindings = getBindings(aor, true);
+        synchronized (bindings) {
+            Iterator<Address> it = register.getAddressHeaders("Contact");
+            if (it.hasNext()) {
+                List<Address> contacts = new ArrayList<Address>();
+                boolean wildcard = false;
+                while (it.hasNext()) {
+                    Address contact = it.next();
+                    if (contact.isWildcard()) {
+                        wildcard = true;
+                        if (it.hasNext() || contacts.size() > 0 || register.getExpires() > 0) {
+                            register.createResponse(SipServletResponse.SC_BAD_REQUEST, "Invalid wildcard").send();
+                            return;
+                        }
+                    }
+                    contacts.add(contact);
+                }
+                String callId = register.getCallId();
+                int cseq;
+                try {
+                    String s = register.getHeader("cseq");
+                    cseq = Integer.parseInt(s.substring(0, s.indexOf(' ')));
+                } catch (Exception e) {
+                    register.createResponse(SipServletResponse.SC_BAD_REQUEST, e.getMessage()).send();
+                    return;
+                }
+                if (wildcard) {
+                    for (Binding binding : bindings) {
+                        if (callId.equals(binding.getCallId()) && cseq < binding.getCseq()) {
+                            register.createResponse(SipServletResponse.SC_SERVER_INTERNAL_ERROR, "Lower cseq").send();
+                            return;
+                        }
+                        bindings.remove(binding);
+                    }
+                } else {
+                    for (Address contact : contacts) {
+                        int expires = -1;
+                        expires = contact.getExpires();
+                        if (expires < 0)
+                            expires = register.getExpires();
+                        if (expires != 0) {
+                            if (expires < 0)
+                                expires = _defaultExpires;
+                            if (expires > _maxExpires) {
+                                expires = _maxExpires;
+                            } else if (expires < _minExpires) {
+                                SipServletResponse response = register.createResponse(423);
+                                response.addHeader("Min-Expires", Integer.toString(_minExpires));
+                                response.send();
+                                return;
+                            }
+                        }
+                        boolean exist = false;
+                        Iterator<Binding> it2 = bindings.iterator();
+                        while (it2.hasNext()) {
+                            Binding binding = it2.next();
+                            if (contact.getURI().equals(binding.getContact())) {
+                                exist = true;
+                                if (callId.equals(binding.getCallId()) && cseq < binding.getCseq()) {
+                                    register.createResponse(SipServletResponse.SC_SERVER_INTERNAL_ERROR, "Lower CSeq").send();
+                                    return;
+                                }
+                                if (expires == 0) {
+                                    it2.remove();
+                                } else {
+                                    binding.setCallId(callId);
+                                    binding.setCseq(cseq);
+                                    binding.setExpires(expires);
+                                    binding.setQ(contact.getQ());
+                                }
+                            }
+                        }
+                        if (!exist && expires != 0) {
+                            Binding binding = new Binding(aor, contact.getURI());
+                            binding.setCallId(callId);
+                            binding.setCseq(cseq);
+                            binding.setExpires(expires);
+                            binding.setQ(contact.getQ());
+                            bindings.add(binding);
+                        }
+                    }
+                }
+            }
+            // Empty bindings set are removed in the scavenger to prevent deadlocks.
+            SipServletResponse ok = register.createResponse(SipServletResponse.SC_OK);
+            if (bindings.size() > 0) {
+                for (Binding binding : bindings) {
+                    Address address = _sipFactory.createAddress(binding.getContact());
+                    address.setExpires(binding.getExpires());
+                    address.setQ(binding.getQ());
+                    ok.addAddressHeader("contact", address, false);
+                }
+            }
+            ok.addHeader("Date", _dateFormat.format(new Date()));
+            ok.send();
+        }
+    } catch (Throwable e) {
+        log("Caught unexpected exception on REGISTER processing", e);
+        SipServletResponse response = register.createResponse(SipServletResponse.SC_SERVER_INTERNAL_ERROR);
+        response.setContent(e, "text/stackTrace");
+        response.send();
+    } finally {
+        register.getApplicationSession().invalidate();
+    }
+}

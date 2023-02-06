@@ -1,0 +1,52 @@
+void rotate() {
+    calendar.setTimeInMillis(System.currentTimeMillis());
+    log.info("start Date [" + calendar.getTime() + "]");
+    // granularity of rollover directory structure is hourly
+    String newDir = new java.text.SimpleDateFormat("yyyy_dd_HH").format(calendar.getTime());
+    log.info("Rotate from " + Thread.currentThread().getName());
+    Path newDirPath = new Path(outputDir + "/" + newDir);
+    log.info("Rotate directory[" + newDirPath.toString() + "]");
+    try {
+        if (!fs.exists(newDirPath)) {
+            log.info("Create new directory:" + newDirPath.toString());
+            try {
+                fs.mkdirs(newDirPath);
+            } catch (Exception e) {
+                if (!fs.exists(newDirPath)) {
+                    log.info("Failed to create new directory:" + newDirPath.toString() + "] ", e);
+                }
+            }
+        } else // use the existing directory, because we haven't hit a new hour yet
+        {
+            log.info("Rotate from [" + Thread.currentThread().getName() + "] directory (" + newDirPath + ") already exists.");
+        }
+        String newName = new java.text.SimpleDateFormat("yyyy_dd_HH_mm_ss_SSS").format(calendar.getTime());
+        newName += "_" + new java.rmi.server.UID().toString();
+        newName = newName.replace("-", "");
+        newName = newName.replace(":", "");
+        newName = newName.replace(".", "");
+        newName = newDirPath + "/" + newName.trim();
+        Path newOutputPath = new Path(newName + ".chukwa");
+        FSDataOutputStream newOutputStr = fs.create(newOutputPath);
+        FSDataOutputStream previousOutputStr = null;
+        Path previousPath = null;
+        String previousFileName = null;
+        synchronized (this) {
+            previousOutputStr = currentOutputStr;
+            previousPath = currentPath;
+            previousFileName = currentFileName;
+            currentOutputStr = newOutputStr;
+            currentPath = newOutputPath;
+            currentFileName = newName;
+            if (previousOutputStr != null) {
+                previousOutputStr.close();
+                fs.rename(previousPath, new Path(previousFileName + ".done"));
+            }
+            // Turn compression ON if the 5 mins archives are big
+            seqFileWriter = SequenceFile.createWriter(conf, newOutputStr, ChukwaArchiveKey.class, ChunkImpl.class, SequenceFile.CompressionType.NONE, null);
+        }
+    } catch (IOException e) {
+        log.error("failed to do rotate", e);
+    }
+    log.debug("finished rotate()");
+}

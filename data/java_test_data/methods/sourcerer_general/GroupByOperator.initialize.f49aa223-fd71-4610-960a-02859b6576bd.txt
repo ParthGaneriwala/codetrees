@@ -1,0 +1,73 @@
+public void initialize(Configuration hconf) throws HiveException {
+    super.initialize(hconf);
+    try {
+        // init keyFields
+        keyFields = new ExprNodeEvaluator[conf.getKeys().size()];
+        for (int i = 0; i < keyFields.length; i++) {
+            keyFields[i] = ExprNodeEvaluatorFactory.get(conf.getKeys().get(i));
+        }
+        // init aggregationParameterFields
+        aggregationParameterFields = new ExprNodeEvaluator[conf.getAggregators().size()][];
+        for (int i = 0; i < aggregationParameterFields.length; i++) {
+            ArrayList<exprNodeDesc> parameters = conf.getAggregators().get(i).getParameters();
+            aggregationParameterFields[i] = new ExprNodeEvaluator[parameters.size()];
+            for (int j = 0; j < parameters.size(); j++) {
+                aggregationParameterFields[i][j] = ExprNodeEvaluatorFactory.get(parameters.get(j));
+            }
+        }
+        // init aggregationIsDistinct
+        aggregationIsDistinct = new boolean[conf.getAggregators().size()];
+        for (int i = 0; i < aggregationIsDistinct.length; i++) {
+            aggregationIsDistinct[i] = conf.getAggregators().get(i).getDistinct();
+        }
+        // init aggregationClasses
+        aggregationClasses = (Class<? extends UDAF>[]) new Class[conf.getAggregators().size()];
+        for (int i = 0; i < conf.getAggregators().size(); i++) {
+            aggregationDesc agg = conf.getAggregators().get(i);
+            aggregationClasses[i] = agg.getAggregationClass();
+        }
+        // init aggregations, aggregationsAggregateMethods,
+        // aggregationsEvaluateMethods
+        aggregationsAggregateMethods = new Method[aggregationClasses.length];
+        aggregationsEvaluateMethods = new Method[aggregationClasses.length];
+        String aggregateMethodName = (conf.getMode() == groupByDesc.Mode.PARTIAL2 ? "aggregatePartial" : "aggregate");
+        String evaluateMethodName = ((conf.getMode() == groupByDesc.Mode.PARTIAL1 || conf.getMode() == groupByDesc.Mode.HASH) ? "evaluatePartial" : "evaluate");
+        for (int i = 0; i < aggregationClasses.length; i++) {
+            // aggregationsAggregateMethods
+            for (Method m : aggregationClasses[i].getMethods()) {
+                if (m.getName().equals(aggregateMethodName) && m.getParameterTypes().length == aggregationParameterFields[i].length) {
+                    aggregationsAggregateMethods[i] = m;
+                    break;
+                }
+            }
+            if (null == aggregationsAggregateMethods[i]) {
+                throw new RuntimeException("Cannot find " + aggregateMethodName + " method of UDAF class " + aggregationClasses[i].getName() + " that accepts " + aggregationParameterFields[i].length + " parameters!");
+            }
+            // aggregationsEvaluateMethods
+            aggregationsEvaluateMethods[i] = aggregationClasses[i].getMethod(evaluateMethodName);
+            if (null == aggregationsEvaluateMethods[i]) {
+                throw new RuntimeException("Cannot find " + evaluateMethodName + " method of UDAF class " + aggregationClasses[i].getName() + "!");
+            }
+            assert (aggregationsEvaluateMethods[i] != null);
+        }
+        if (conf.getMode() != groupByDesc.Mode.HASH) {
+            aggregationsParametersLastInvoke = new Object[conf.getAggregators().size()][];
+            aggregations = newAggregations();
+        } else {
+            hashAggregations = new HashMap<ArrayList<Object>, UDAF[]>();
+        }
+        // init objectInspectors
+        int totalFields = keyFields.length + aggregationClasses.length;
+        objectInspectors = new ArrayList<ObjectInspector>(totalFields);
+        for (int i = 0; i < keyFields.length; i++) {
+            objectInspectors.add(null);
+        }
+        for (int i = 0; i < aggregationClasses.length; i++) {
+            objectInspectors.add(ObjectInspectorFactory.getStandardPrimitiveObjectInspector(aggregationsEvaluateMethods[i].getReturnType()));
+        }
+        firstRow = true;
+    } catch (Exception e) {
+        e.printStackTrace();
+        throw new RuntimeException(e);
+    }
+}

@@ -1,0 +1,305 @@
+public void forwardRequest(Vector targetsURIList, SipProvider sipProvider, Request request, ServerTransaction serverTransaction, boolean statefullForwarding) {
+    // logger.setLevel(Level.INFO);
+    logger.info("**********" + sipProvider + "\n*****" + request + "\n*****" + serverTransaction);
+    /*
+		 * RFC 3261: 16.6. Request Forwarding For each target, the proxy
+		 * forwards the request following these steps:
+		 * 
+		 * 1. Make a copy of the received request
+		 * 
+		 * 2. Update the Request-URI
+		 * 
+		 * 3. Update the Max-Forwards header field
+		 * 
+		 * 4. Optionally add a Record-route header field value
+		 * 
+		 * 5. Optionally add additional header fields
+		 * 
+		 * 6. Postprocess routing information
+		 * 
+		 * 7. Determine the next-hop address, port, and transport
+		 * 
+		 * 8. Add a Via header field value
+		 * 
+		 * 9. Add a Content-Length header field if necessary
+		 * 
+		 * 10. Forward the new request
+		 * 
+		 * 11. Set timer C
+		 */
+    MessageFactory messageFactory = proxy.getMessageFactory();
+    HeaderFactory headerFactory = proxy.getHeaderFactory();
+    SipStack sipStack = proxy.getSipStack();
+    AddressFactory addressFactory = proxy.getAddressFactory();
+    // Get the parameters and the transport of the request URI
+    URI requestURI = request.getRequestURI();
+    logger.info("RequestForwardingrequestURI" + requestURI);
+    Iterator parametersNames = null;
+    /*
+		 * String transport=null; System.out.debug(requestURI.toString());
+		 * if(requestURI.isSipURI()){
+		 * parametersNames=((SipURI)requestURI).getParameterNames();
+		 * transport=((SipURI)requestURI).getTransportParam(); }
+		 */
+    try {
+        for (int i = 0; i < targetsURIList.size(); i++) {
+            URI targetURI = (URI) targetsURIList.elementAt(i);
+            // Copy the parameters and the transport in the new Request URI
+            // of the cloned Request
+            /**
+             * **********************************************************************
+             */
+            /**
+             * *********** 1. Make a of received request *********
+             */
+            /**
+             * **********************************************************************
+             */
+            Request clonedRequest = (Request) request.clone();
+            logger.info("RequestForwarding��clonedRequest" + clonedRequest);
+            if (logger.isDebugEnabled())
+                logger.debug("RequestForwarding, forwardRequest() (STEP 1)," + " the request is cloned");
+            // All the targets URI are already canonicalized
+            if (requestURI.isSipURI()) {
+                if (proxy.managesDomain(((SipURI) requestURI).getHost())) {
+                    clonedRequest.setRequestURI(targetURI);
+                    logger.info("*******����clonedRequest��targetURI" + clonedRequest);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("RequestForwarding, forwardRequest() (STEP 2)," + " The Request-URI in the copy's start line is replaced with" + " the URI for this target");
+                    }
+                } else {
+                    logger.info("RequestForwarding, forwardRequest() (STEP 2)," + "the proxy does not manage the domain " + ((SipURI) targetURI).getHost());
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("RequestForwarding, forwardRequest() (STEP 2)," + "the proxy does not manage the domain " + ((SipURI) targetURI).getHost());
+                    }
+                }
+            }
+            /**
+             * **********************************************************************
+             */
+            /**
+             * *********** 3. Max-Forwards *********
+             */
+            /**
+             * **********************************************************************
+             */
+            /*
+				 * If the copy contains a Max-Forwards header field, the proxy
+				 * MUST decrement its value by one (1). If the copy does not
+				 * contain a Max-Forwards header field, the proxy MUST add one
+				 * with a field value, which SHOULD be 70.
+				 */
+            // RequestValidation took already care
+            // to check if the header has
+            // reached 0.
+            MaxForwardsHeader mf = (MaxForwardsHeader) clonedRequest.getHeader(MaxForwardsHeader.NAME);
+            logger.info("MaxForwardsHeader***" + mf);
+            if (mf == null) {
+                if (logger.isDebugEnabled())
+                    logger.debug("RequestForwarding, forwardRequest() " + " (STEP 3), MaxForwardHeader " + " created and added to the cloned request");
+                mf = headerFactory.createMaxForwardsHeader(70);
+                clonedRequest.addHeader(mf);
+            } else {
+                // if (logger.isDebugEnabled())
+                logger.debug("RequestForwarding, forwardRequest(), " + " (STEP 3) MaxForwardHeader " + " decremented by one.");
+                mf.setMaxForwards(mf.getMaxForwards() - 1);
+                logger.info("MaxForwardsHeader��һ" + mf);
+            }
+            /**
+             * ***********************************************************************
+             */
+            /**
+             * *********** 4. Record-Route *********
+             */
+            /**
+             * ***********************************************************************
+             */
+            /*
+				 * The URI placed in the Record-Route header field value MUST be
+				 * a SIP or SIPS URI. This URI MUST contain an lr parameter (see
+				 * Section 19.1.1). This URI MAY be different for each
+				 * destination the request is forwarded to. The URI SHOULD NOT
+				 * contain the transport parameter.
+				 */
+            // Only in statefull forwarding
+            // We add our proxy RecordRoute header to the top of the list
+            // We take the first listening point.
+            String stackIPAddress = sipStack.getIPAddress();
+            logger.info(stackIPAddress);
+            ListeningPoint[] lpa = sipProvider.getListeningPoints();
+            ListeningPoint lp = lpa[0];
+            logger.info(lpa);
+            if (statefullForwarding) {
+                try {
+                    SipURI sipURI = addressFactory.createSipURI(null, stackIPAddress);
+                    sipURI.setPort(lp.getPort());
+                    Address address = addressFactory.createAddress(null, sipURI);
+                    RecordRouteHeader recordRouteHeader = headerFactory.createRecordRouteHeader(address);
+                    // lr parameter to add:
+                    recordRouteHeader.setParameter("lr", null);
+                    ListIterator recordRouteHeaders = clonedRequest.getHeaders(RecordRouteHeader.NAME);
+                    clonedRequest.removeHeader(RecordRouteHeader.NAME);
+                    Vector v = new Vector();
+                    v.addElement(recordRouteHeader);
+                    // add the other record route headers.
+                    while (recordRouteHeaders != null && recordRouteHeaders.hasNext()) {
+                        recordRouteHeader = (RecordRouteHeader) recordRouteHeaders.next();
+                        v.addElement(recordRouteHeader);
+                    }
+                    for (int j = 0; j < v.size(); j++) {
+                        recordRouteHeader = (RecordRouteHeader) v.elementAt(j);
+                        clonedRequest.addHeader(recordRouteHeader);
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+                // if (logger.isDebugEnabled())
+                logger.debug("RequestForwarding, forwardRequest(), (STEP 4)" + " record-route header created and added to the " + " cloned request");
+                logger.info("RequestForwarding, forwardRequest(), (STEP 4)" + " record-route header created and added to the " + " cloned request");
+            } else {
+                if (logger.isDebugEnabled())
+                    logger.debug("RequestForwarding, forwardRequest(), (STEP 4)" + " record-route header not added to the cloned request " + " (stateless)");
+                logger.info("RequestForwarding, forwardRequest(), (STEP 4)" + " record-route header not added to the cloned request " + " (stateless)");
+            }
+            // No Additional headers to add...
+            if (logger.isDebugEnabled())
+                logger.debug("RequestForwarding, forwardRequest(), (STEP 5)" + " No Additional headers to add...");
+            /**
+             * ***********************************************************************
+             */
+            /**
+             * *********** 6. Postprocess routing information *********
+             */
+            /**
+             * ***********************************************************************
+             */
+            /*
+				 * If the copy contains a Route header field, the proxy MUST
+				 * inspect the URI in its first value. If that URI does not
+				 * contain an lr parameter, the proxy MUST modify the copy as
+				 * follows: - The proxy MUST place the Request-URI into the
+				 * Route header field as the last value. - The proxy MUST then
+				 * place the first Route header field value into the Request-URI
+				 * and remove that value from the Route header field.
+				 */
+            // Strip first route if it is the proxy UIR adn lr parameter
+            logger.info("��¡clonedRequest" + clonedRequest);
+            ListIterator routes = clonedRequest.getHeaders(RouteHeader.NAME);
+            if (routes != null && routes.hasNext()) {
+                RouteHeader routeHeader = (RouteHeader) routes.next();
+                Address routeAddress = routeHeader.getAddress();
+                URI routeURI = routeAddress.getURI();
+                if (routeURI.isSipURI() && ((SipURI) routeURI).hasLrParam()) {
+                    String host = ((SipURI) routeURI).getHost();
+                    if (stackIPAddress.equals(host)) {
+                        routes.remove();
+                        if (logger.isDebugEnabled())
+                            logger.debug("Proxy, forwardRequest(), (STEP 6) we removed" + " the first Route header field value: it contained" + " the proxy address and a lr parameter");
+                    } else {
+                        if (logger.isDebugEnabled())
+                            logger.debug("RequestForwarding, forwardRequest(), (STEP 6)" + "lr parameter detected but no match...");
+                    }
+                } else if (logger.isDebugEnabled())
+                    logger.debug("RequestForwarding, forwardRequest(), (STEP 6)" + " no Postprocess routing information to do " + "(the route has no lr parameter)...");
+            } else {
+                if (logger.isDebugEnabled())
+                    logger.debug("RequestForwarding, forwardRequest(), (STEP 6)" + " no Postprocess routing information to do (No routes detected)...");
+            }
+            /*
+				 * the proxy applies the procedures listed in [4] as follows to
+				 * determine where to send the request. If the proxy has
+				 * reformatted the request to send to a strict-routing element
+				 * as described in step 6 above, the proxy MUST apply those
+				 * procedures to the Request-URI of the request. Otherwise, the
+				 * proxy MUST apply the procedures to the first value in the
+				 * Route header field, if present, else the Request-URI. The
+				 * procedures will produce an ordered set of (address, port,
+				 * transport) tuples. Independently of which URI is being used
+				 * as input to the procedures of [4], if the Request-URI
+				 * specifies a SIPS resource, the proxy MUST follow the
+				 * procedures of [4] as if the input URI were a SIPS URI.
+				 */
+            if (logger.isDebugEnabled())
+                logger.debug("RequestForwarding, forwardRequest(), (STEP 7)" + " Determine Next-Hop Address, Port, and Transport will be done by the stack...");
+            /**
+             * ***************************************************************************
+             */
+            /**
+             * *********** 8. Add a Via header field value *********
+             */
+            /**
+             * ***************************************************************************
+             */
+            /*
+				 * The proxy MUST insert a Via header field value into the copy
+				 * before the existing Via header field values.
+				 */
+            Iterator lps = sipStack.getListeningPoints();
+            lp = (ListeningPoint) lps.next();
+            stackIPAddress = lp.getIPAddress();
+            ViaHeader viaHeader = null;
+            if (clonedRequest.getMethod().equals(Request.CANCEL)) {
+                // Branch Id will be assigned by the stack.
+                viaHeader = headerFactory.createViaHeader(stackIPAddress, lp.getPort(), lp.getTransport(), null);
+                if (clonedRequest.getMethod().equals(Request.CANCEL)) {
+                    // Cancel is hop by hop so remove all other via headers.
+                    clonedRequest.removeHeader(ViaHeader.NAME);
+                }
+            } else {
+                viaHeader = headerFactory.createViaHeader(stackIPAddress, lp.getPort(), /*lp.getTransport()*/
+                "UDP", ProxyUtilities.generateBranchId());
+                logger.info("**********viaHeader" + viaHeader);
+            }
+            if (viaHeader != null)
+                clonedRequest.addHeader(viaHeader);
+            if (logger.isDebugEnabled())
+                logger.debug("RequestForwarding, forwardRequest(), (STEP 8)" + " the proxy inserts a Via header field value into the copy" + " before the existing Via header field values");
+            // Not yet implemented
+            if (logger.isDebugEnabled())
+                logger.debug("RequestForwarding, forwardRequest(), (STEP 8)" + " Loop detection not implemented");
+            try {
+                ContentTypeHeader contentTypeHeader = (ContentTypeHeader) clonedRequest.getHeader(ContentTypeHeader.NAME);
+                if (contentTypeHeader == null) {
+                    if (logger.isDebugEnabled())
+                        logger.debug("RequestForwarding, forwardRequest()," + " no Content-Type header," + " we don't stripe any parameters!!!");
+                } else
+                    contentTypeHeader.removeParameter("msgr");
+            } catch (Exception e) {
+                logger.debug("RequestForwarding, forwardRequest(), Stripe" + " Parameter failed!!!!");
+                logger.info("RequestForwarding, forwardRequest(), Stripe" + " Parameter failed!!!!");
+            }
+            if (statefullForwarding) {
+                logger.info("ת��********statefullForwarding��" + statefullForwarding);
+                forwardRequestStatefully(sipProvider, clonedRequest, request, serverTransaction);
+            } else {
+                logger.info("ת��********statefullForwarding��" + statefullForwarding);
+                forwardRequestStatelessly(sipProvider, clonedRequest, request, serverTransaction);
+            }
+        /**
+         * ***********************************************************************
+         */
+        /**
+         * ******* 11. Set timer C *********
+         */
+        /**
+         * ***********************************************************************
+         */
+        // Not Implemented....
+        }
+    } catch (Exception ex) {
+        try {
+            logger.error("***RequestForwarding, forwardRequest(), " + " internal error, " + "exception raised:", ex);
+            // This is an internal error:
+            // Let's return a 500 SERVER_INTERNAL_ERROR
+            Response response = messageFactory.createResponse(Response.SERVER_INTERNAL_ERROR, request);
+            if (serverTransaction != null)
+                serverTransaction.sendResponse(response);
+            else
+                sipProvider.sendResponse(response);
+            if (logger.isDebugEnabled())
+                logger.debug("RequestForwarding, forwardRequest(), " + " 500 SERVER_INTERNAL_ERROR replied:\n" + response.toString());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}

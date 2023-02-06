@@ -1,0 +1,109 @@
+// ------------------------------------------------------------------------
+// Parsing
+// ------------------------------------------------------------------------
+Node parseInputs() {
+    boolean devMode = options.devMode != DevMode.OFF;
+    // individual file parse trees.
+    if (externsRoot != null) {
+        externsRoot.detachChildren();
+    }
+    if (jsRoot != null) {
+        jsRoot.detachChildren();
+    }
+    // Parse main js sources.
+    jsRoot = new Node(Token.BLOCK);
+    jsRoot.setIsSyntheticBlock(true);
+    externsRoot = new Node(Token.BLOCK);
+    externsRoot.setIsSyntheticBlock(true);
+    externAndJsRoot = new Node(Token.BLOCK, externsRoot, jsRoot);
+    externAndJsRoot.setIsSyntheticBlock(true);
+    if (options.tracer.isOn()) {
+        tracker = new PerformanceTracker(jsRoot, options.tracer == TracerMode.ALL);
+        addChangeHandler(tracker.getCodeChangeHandler());
+    }
+    Tracer tracer = newTracer("parseInputs");
+    try {
+        // Parse externs sources.
+        for (CompilerInput input : externs) {
+            Node n = input.getAstRoot(this);
+            if (hasErrors()) {
+                return null;
+            }
+            externsRoot.addChildToBack(n);
+        }
+        // Check if the sources need to be re-ordered.
+        if (options.manageClosureDependencies) {
+            for (CompilerInput input : inputs) {
+                input.setCompiler(this);
+                // are not flagged even if they are dropped from the process.
+                for (String provide : input.getProvides()) {
+                    getTypeRegistry().forwardDeclareType(provide);
+                }
+            }
+            try {
+                inputs = (moduleGraph == null ? new JSModuleGraph(modules) : moduleGraph).manageDependencies(options.manageClosureDependenciesEntryPoints, inputs);
+            } catch (CircularDependencyException e) {
+                report(JSError.make(JSModule.CIRCULAR_DEPENDENCY_ERROR, e.getMessage()));
+                return null;
+            } catch (MissingProvideException e) {
+                report(JSError.make(MISSING_ENTRY_ERROR, e.getMessage()));
+                return null;
+            }
+        }
+        // Check if inputs need to be rebuilt from modules.
+        boolean staleInputs = false;
+        for (CompilerInput input : inputs) {
+            Node n = input.getAstRoot(this);
+            // Inputs can have a null AST during initial parse.
+            if (n == null) {
+                continue;
+            }
+            if (n.getJSDocInfo() != null) {
+                JSDocInfo info = n.getJSDocInfo();
+                if (info.isExterns()) {
+                    // If the input file is explicitly marked as an externs file, then
+                    // assume the programmer made a mistake and throw it into
+                    // the externs pile anyways.
+                    externsRoot.addChildToBack(n);
+                    input.setIsExtern(true);
+                    input.getModule().remove(input);
+                    externs.add(input);
+                    staleInputs = true;
+                } else if (info.isNoCompile()) {
+                    input.getModule().remove(input);
+                    staleInputs = true;
+                }
+            }
+        }
+        if (staleInputs) {
+            fillEmptyModules(modules);
+            rebuildInputsFromModules();
+        }
+        // Build the AST.
+        for (CompilerInput input : inputs) {
+            Node n = input.getAstRoot(this);
+            if (n == null) {
+                continue;
+            }
+            if (devMode) {
+                runSanityCheck();
+                if (hasErrors()) {
+                    return null;
+                }
+            }
+            if (options.sourceMapOutputPath != null || options.nameReferenceReportPath != null) {
+                // Annotate the nodes in the tree with information from the
+                // input file. This information is used to construct the SourceMap.
+                SourceInformationAnnotator sia = new SourceInformationAnnotator(input.getName(), options.devMode != DevMode.OFF);
+                NodeTraversal.traverse(this, n, sia);
+            }
+            jsRoot.addChildToBack(n);
+        }
+        if (hasErrors()) {
+            return null;
+        }
+        return externAndJsRoot;
+    } finally {
+        stopTracer(tracer, "parseInputs");
+    }
+}

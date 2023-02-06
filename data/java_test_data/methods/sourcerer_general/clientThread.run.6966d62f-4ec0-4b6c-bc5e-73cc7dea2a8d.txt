@@ -1,0 +1,115 @@
+public void run() {
+    while (// keep running until the user no longer wants to run any more experiments from this client
+    !runnerGui.noMoreBoxChecked()) {
+        threadGui.setMessageText("Waiting for connection");
+        try {
+            ObjectInputStream in = null;
+            while (// while contact has not been able to be made (needed incase the server goes offline, times out, etc
+            in == null) {
+                try {
+                    client = new Socket(hostIP, 3010);
+                    in = new ObjectInputStream(client.getInputStream());
+                } catch (Exception e) {
+                    threadGui.setMessageText(e.toString());
+                }
+            }
+            // load the runConfig
+            runConfig assignment = (runConfig) in.readObject();
+            File location = new File(workingFolder.toString() + File.separatorChar + "executeMe.nLogo");
+            threadGui.setMessageText("Downloading executable");
+            // download the .nLogo file
+            tools.fileTransfer.getFile(location, in, threadGui.getTransferBar());
+            in.close();
+            client.close();
+            threadGui.setMessageText("Configuring file");
+            // start NetLogo in headless mode
+            final HeadlessWorkspace app = HeadlessWorkspace.newInstance();
+            // open the nLogo file
+            app.open(location.toString());
+            long length;
+            length = assignment.getLength();
+            for (// for the number of commands
+            int ct = 0; // for the number of commands
+            ct < assignment.getCommands().size(); // for the number of commands
+            ct++) // set the commands
+            app.command("set " + assignment.getCommands().elementAt(ct));
+            app.command("setup");
+            threadGui.setMessageText("Running Experiment");
+            for (// for each tick
+            long ct = 0; // for each tick
+            ct < length; // for each tick
+            ct++) {
+                if (// check for roughly being a percentage point in (the +1 is needed to avoid divided by zero issues when length<100
+                ct % (length / 100 + 1) == 0)
+                    // update the status bar
+                    threadGui.getCurrentBar().setValue((int) (100 * ct / length));
+                // press the go button
+                app.command("go");
+            }
+            threadGui.getCurrentBar().setValue(100);
+            app.dispose();
+            threadGui.setMessageText("Compressing Data");
+            // base on http://java.sun.com/developer/technicalArticles/Programming/compression/
+            File dataFileTmp = new File(workingFolder.toString() + File.separatorChar + "data.dat");
+            ZipOutputStream zout = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(dataFileTmp.toString() + ".zip")));
+            byte[] buffer = new byte[4096];
+            BufferedInputStream zin = new BufferedInputStream(new FileInputStream(dataFileTmp), 4096);
+            zout.putNextEntry(new ZipEntry(dataFileTmp.toString()));
+            int count;
+            while ((count = zin.read(buffer, 0, 4096)) != -1) {
+                zout.write(buffer, 0, count);
+            }
+            zout.flush();
+            zout.close();
+            zin.close();
+            ObjectOutputStream out = null;
+            threadGui.setMessageText("Waiting to upload file");
+            while (out == null) {
+                // see above on why these loops are necessary
+                try {
+                    client = new Socket(hostIP, 3011);
+                    out = new ObjectOutputStream(client.getOutputStream());
+                } catch (Exception e) {
+                    threadGui.setMessageText("Still waiting to connect: " + e.toString());
+                }
+            }
+            threadGui.setMessageText("Uploading file");
+            File dataFile = new File(workingFolder.toString() + File.separatorChar + "data.dat.zip");
+            System.out.println(dataFile);
+            while (!client.isClosed()) {
+                try {
+                    // upload the assignment
+                    out.writeObject(assignment);
+                    // upload the compressed file
+                    tools.fileTransfer.sendFile(dataFile, out, threadGui.getTransferBar());
+                    out.close();
+                    client.close();
+                } catch (Exception e) {
+                    threadGui.setMessageText(e.toString());
+                }
+            }
+            threadGui.setMessageText("Cleaning up");
+            // Delete the temp files
+            dataFile.delete();
+            dataFileTmp.delete();
+            location.delete();
+            runnerGui.increaseDoneCount();
+        } catch (UnknownHostException ex) {
+            threadGui.setMessageText("Could not connect to host: " + ex.getMessage());
+            break;
+        } catch (IOException ex) {
+            threadGui.setMessageText("IO Error: " + ex.getMessage());
+            break;
+        } catch (ClassNotFoundException ex) {
+            Logger.getLogger(clientThread.class.getName()).log(Level.SEVERE, null, ex);
+        } catch (CompilerException ex) {
+            Logger.getLogger(clientThread.class.getName()).log(Level.SEVERE, null, ex);
+        } catch (LogoException ex) {
+            Logger.getLogger(clientThread.class.getName()).log(Level.SEVERE, null, ex);
+        } catch (InterruptedException ex) {
+            Logger.getLogger(clientThread.class.getName()).log(Level.SEVERE, null, ex);
+        }
+    }
+    if (runnerGui.noMoreBoxChecked())
+        threadGui.setMessageText("Thread terminated by user");
+}

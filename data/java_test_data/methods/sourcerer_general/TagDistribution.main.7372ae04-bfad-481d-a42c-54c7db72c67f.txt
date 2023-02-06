@@ -1,0 +1,51 @@
+public static void main(String[] args) throws Exception {
+    // TODO Auto-generated method stub
+    OptionParser optParser = new OptionParser(Options.class);
+    final Options opts = (Options) optParser.parse(args, true);
+    Experiment.initialize(opts.config);
+    Experiment experiment = Experiment.getInstance();
+    experiment.buildPrefixes();
+    experiment.buildWordPrefixes();
+    FactorTupleDescription desc = experiment.getTupleDescription();
+    final LanguageModel lm = experiment.getLM("unigram");
+    InputParser parser = new FLMInputParser(desc);
+    Experiment.Files files = experiment.getFiles();
+    Environment env = BDBProbTreeStorage.createEnvironment(files.getDb(), false);
+    BDBProbTreeStorage dbStorage = new BDBProbTreeStorage(env);
+    dbStorage.open(lm.getId(), lm.getIdNum(), false);
+    DecoderCompactProbTree emptyTree = DecoderCompactProbTree.constructEmptyTree(Experiment.getInstance().getHFT().getTree());
+    DecoderCompactProbTree.setEmptyTree(emptyTree);
+    long[] words = parser.parseSentence(opts.word);
+    OnDiskCompactProbTree diskProbTree = dbStorage.getProbTree(lm.getIdNum(), lm.getHistoryTree().getPayload().clusterid, words[0]);
+    ProbTree probTree = ProbTree.makeProbTree(diskProbTree).compact();
+    Map<FactorTuple, BinaryPrefix> binaryPrefixes = experiment.getHiddenPrefixes();
+    Dictionary tagDict = experiment.getTupleDescription().getDictionary(opts.tag);
+    byte tagIndex = desc.getFactorIndex(opts.tag);
+    TreeMap<Double, FactorTuple> bestTags = new TreeMap<Double, FactorTuple>();
+    for (DictionaryIterator it = tagDict.iterator(false); it.hasNext(); ) {
+        int tag = it.next();
+        BinaryPrefix thePrefix = null;
+        for (Map.Entry<FactorTuple, BinaryPrefix> entry : binaryPrefixes.entrySet()) {
+            if (entry.getKey().getValue(tagIndex) == tag) {
+                BinaryPrefix prefix = entry.getValue();
+                // System.err.printf("(%s) %s matched\n", entry.getKey().toStringNoNull(), prefix);
+                if (thePrefix == null) {
+                    thePrefix = prefix;
+                } else {
+                    thePrefix = BinaryPrefix.getCommonPrefix(thePrefix, prefix);
+                }
+            }
+        }
+        ProbTree tagProbTree = probTree.cut(thePrefix);
+        double prob = tagProbTree == null ? 0 : tagProbTree.getTreeProb();
+        if (prob == 0)
+            continue;
+        long tuple = FactorTuple.setValue(0, tagIndex, tag);
+        // eliminate equal probabilities
+        prob += 1e-9 * new Random().nextDouble();
+        bestTags.put(prob, new FactorTuple(tuple));
+    }
+    for (Map.Entry<Double, FactorTuple> entry : bestTags.descendingMap().entrySet()) {
+        System.out.printf("p(%s|%s) = %g\n", entry.getValue().toStringNoNull(), opts.word, entry.getKey());
+    }
+}

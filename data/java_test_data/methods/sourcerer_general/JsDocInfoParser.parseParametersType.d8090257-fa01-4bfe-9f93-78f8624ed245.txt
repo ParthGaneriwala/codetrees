@@ -1,0 +1,78 @@
+/**
+ * ParametersType := RestParameterType | NonRestParametersType
+ * | NonRestParametersType ',' RestParameterType
+ * RestParameterType := '...' Identifier
+ * NonRestParametersType := ParameterType ',' NonRestParametersType
+ * | ParameterType
+ * | OptionalParametersType
+ * OptionalParametersType := OptionalParameterType
+ * | OptionalParameterType, OptionalParametersType
+ * OptionalParameterType := ParameterType=
+ * ParameterType := TypeExpression | Identifier ':' TypeExpression
+ */
+// NOTE(nicksantos): The official ES4 grammar forces optional and rest
+// arguments to come after the required arguments. Our parser does not
+// enforce this. Instead we allow them anywhere in the function at parse-time,
+// and then warn about them during type resolution.
+// 
+// In theory, it might be mathematically nicer to do the order-checking here.
+// But in practice, the order-checking for structural functions is exactly
+// the same as the order-checking for @param annotations. And the latter
+// has to happen during type resolution. Rather than duplicate the
+private Node parseParametersType(JsDocToken token) {
+    Node paramsType = newNode(Token.LP);
+    boolean isVarArgs = false;
+    Node paramType = null;
+    if (token != JsDocToken.RP) {
+        do {
+            if (paramType != null) {
+                // skip past the comma
+                next();
+                skipEOLs();
+                token = next();
+            }
+            if (token == JsDocToken.ELLIPSIS) {
+                // In the latest ES4 proposal, there are no type constraints allowed
+                // on variable arguments. We support the old syntax for backwards
+                // compatibility, but we should gradually tear it out.
+                skipEOLs();
+                if (match(JsDocToken.RP)) {
+                    paramType = newNode(Token.ELLIPSIS);
+                } else {
+                    skipEOLs();
+                    if (!match(JsDocToken.LB)) {
+                        return reportTypeSyntaxWarning("msg.jsdoc.missing.lb");
+                    }
+                    next();
+                    skipEOLs();
+                    paramType = wrapNode(Token.ELLIPSIS, parseTypeExpression(next()));
+                    skipEOLs();
+                    if (!match(JsDocToken.RB)) {
+                        return reportTypeSyntaxWarning("msg.jsdoc.missing.rb");
+                    }
+                    skipEOLs();
+                    next();
+                }
+                isVarArgs = true;
+            } else {
+                paramType = parseTypeExpression(token);
+                if (match(JsDocToken.EQUALS)) {
+                    skipEOLs();
+                    next();
+                    paramType = wrapNode(Token.EQUALS, paramType);
+                }
+            }
+            if (paramType == null) {
+                return null;
+            }
+            paramsType.addChildToBack(paramType);
+            if (isVarArgs) {
+                break;
+            }
+        } while (match(JsDocToken.COMMA));
+    }
+    if (isVarArgs && match(JsDocToken.COMMA)) {
+        return reportTypeSyntaxWarning("msg.jsdoc.function.varargs");
+    }
+    return paramsType;
+}

@@ -1,0 +1,73 @@
+protected static void addStepJSONtoFlowArray(JSONNode stepArray, StepManagerImpl stepManager) throws WekaException {
+    JSONNode step = stepArray.addObjectArrayElement();
+    step.addPrimitive("class", stepManager.getManagedStep().getClass().getCanonicalName());
+    // step.addPrimitive(STEP_NAME, stepManager.getManagedStep().getName());
+    JSONNode properties = step.addObject(PROPERTIES);
+    try {
+        Step theStep = stepManager.getManagedStep();
+        BeanInfo bi = Introspector.getBeanInfo(theStep.getClass());
+        PropertyDescriptor[] stepProps = bi.getPropertyDescriptors();
+        for (PropertyDescriptor p : stepProps) {
+            if (p.isHidden() || p.isExpert()) {
+                continue;
+            }
+            String name = p.getDisplayName();
+            Method getter = p.getReadMethod();
+            Method setter = p.getWriteMethod();
+            if (getter == null || setter == null) {
+                continue;
+            }
+            boolean skip = false;
+            for (Annotation a : getter.getAnnotations()) {
+                if (a instanceof NotPersistable) {
+                    skip = true;
+                    break;
+                }
+            }
+            if (skip) {
+                continue;
+            }
+            Object[] args = {};
+            Object propValue = getter.invoke(theStep, args);
+            if (propValue == null) {
+                properties.addNull(name);
+            } else if (propValue instanceof Boolean) {
+                properties.addPrimitive(name, (Boolean) propValue);
+            } else if (propValue instanceof Integer || propValue instanceof Long) {
+                properties.addPrimitive(name, new Integer(((Number) propValue).intValue()));
+            } else if (propValue instanceof Double) {
+                properties.addPrimitive(name, (Double) propValue);
+            } else if (propValue instanceof Number) {
+                properties.addPrimitive(name, new Double(((Number) propValue).doubleValue()));
+            } else if (propValue instanceof weka.core.converters.Loader) {
+                addLoader(name, (weka.core.converters.Loader) propValue, properties);
+            } else if (propValue instanceof weka.core.converters.Saver) {
+                addSaver(name, (weka.core.converters.Saver) propValue, properties);
+            } else if (propValue instanceof OptionHandler) {
+                addOptionHandler(name, (OptionHandler) propValue, properties);
+            } else if (propValue instanceof Enum) {
+                addEnum(name, (Enum) propValue, properties);
+            } else if (propValue instanceof File) {
+                String fString = propValue.toString();
+                fString = fString.replace('\\', '/');
+                properties.addPrimitive(name, fString);
+            } else {
+                properties.addPrimitive(name, propValue.toString());
+            }
+        }
+    } catch (Exception ex) {
+        throw new WekaException(ex);
+    }
+    JSONNode connections = step.addObject(CONNECTIONS);
+    for (Map.Entry<String, List<StepManager>> e : stepManager.m_connectedByTypeOutgoing.entrySet()) {
+        String connName = e.getKey();
+        JSONNode connTypeArray = connections.addArray(connName);
+        for (StepManager c : e.getValue()) {
+            connTypeArray.addArrayElement(c.getName());
+        }
+    }
+    if (stepManager.getStepVisual() != null) {
+        String coords = "" + stepManager.getStepVisual().getX() + "," + stepManager.getStepVisual().getY();
+        step.addPrimitive(COORDINATES, coords);
+    }
+}

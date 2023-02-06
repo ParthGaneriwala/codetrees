@@ -1,0 +1,87 @@
+protected void crossValidate() {
+    try {
+        if (m_NNSearch instanceof weka.core.neighboursearch.CoverTree)
+            throw new Exception("CoverTree doesn't support hold-one-out " + "cross-validation. Use some other NN " + "method.");
+        double[] performanceStats = new double[m_kNNUpper];
+        double[] performanceStatsSq = new double[m_kNNUpper];
+        for (int i = 0; i < m_kNNUpper; i++) {
+            performanceStats[i] = 0;
+            performanceStatsSq[i] = 0;
+        }
+        m_kNN = m_kNNUpper;
+        Instance instance;
+        Instances neighbours;
+        double[] origDistances, convertedDistances;
+        for (int i = 0; i < m_Train.numInstances(); i++) {
+            if (m_Debug && (i % 50 == 0)) {
+                System.err.print("Cross validating " + i + "/" + m_Train.numInstances() + "\r");
+            }
+            instance = m_Train.instance(i);
+            neighbours = m_NNSearch.kNearestNeighbours(instance, m_kNN);
+            origDistances = m_NNSearch.getDistances();
+            for (int j = m_kNNUpper - 1; j >= 0; j--) {
+                // Update the performance stats
+                convertedDistances = new double[origDistances.length];
+                System.arraycopy(origDistances, 0, convertedDistances, 0, origDistances.length);
+                double[] distribution = makeDistribution(neighbours, convertedDistances);
+                double thisPrediction = Utils.maxIndex(distribution);
+                if (m_Train.classAttribute().isNumeric()) {
+                    thisPrediction = distribution[0];
+                    double err = thisPrediction - instance.classValue();
+                    // Squared error
+                    performanceStatsSq[j] += err * err;
+                    // Absolute error
+                    performanceStats[j] += Math.abs(err);
+                } else {
+                    if (thisPrediction != instance.classValue()) {
+                        // Classification error
+                        performanceStats[j]++;
+                    }
+                }
+                if (j >= 1) {
+                    neighbours = pruneToK(neighbours, convertedDistances, j);
+                }
+            }
+        }
+        // Display the results of the cross-validation
+        for (int i = 0; i < m_kNNUpper; i++) {
+            if (m_Debug) {
+                System.err.print("Hold-one-out performance of " + (i + 1) + " neighbors ");
+            }
+            if (m_Train.classAttribute().isNumeric()) {
+                if (m_Debug) {
+                    if (m_MeanSquared) {
+                        System.err.println("(RMSE) = " + Math.sqrt(performanceStatsSq[i] / m_Train.numInstances()));
+                    } else {
+                        System.err.println("(MAE) = " + performanceStats[i] / m_Train.numInstances());
+                    }
+                }
+            } else {
+                if (m_Debug) {
+                    System.err.println("(%ERR) = " + 100.0 * performanceStats[i] / m_Train.numInstances());
+                }
+            }
+        }
+        // Check through the performance stats and select the best
+        // k value (or the lowest k if more than one best)
+        double[] searchStats = performanceStats;
+        if (m_Train.classAttribute().isNumeric() && m_MeanSquared) {
+            searchStats = performanceStatsSq;
+        }
+        double bestPerformance = Double.NaN;
+        int bestK = 1;
+        for (int i = 0; i < m_kNNUpper; i++) {
+            if (Double.isNaN(bestPerformance) || (bestPerformance > searchStats[i])) {
+                bestPerformance = searchStats[i];
+                bestK = i + 1;
+            }
+        }
+        m_kNN = bestK;
+        if (m_Debug) {
+            System.err.println("Selected k = " + bestK);
+        }
+        m_kNNValid = true;
+    } catch (Exception ex) {
+        throw new Error("Couldn't optimize by cross-validation: " + ex.getMessage());
+    }
+}

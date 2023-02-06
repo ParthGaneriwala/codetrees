@@ -1,0 +1,96 @@
+protected void backfitData(Instances data, double[] classProbs, double totalWeight) throws Exception {
+    // Make leaf if there are no training instances
+    if (data.numInstances() == 0) {
+        m_Attribute = -1;
+        m_ClassDistribution = null;
+        if (data.classAttribute().isNumeric()) {
+            m_Distribution = new double[2];
+        }
+        m_Prop = null;
+        return;
+    }
+    double priorVar = 0;
+    if (data.classAttribute().isNumeric()) {
+        // Compute prior variance
+        double totalSum = 0, totalSumSquared = 0, totalSumOfWeights = 0;
+        for (int i = 0; i < data.numInstances(); i++) {
+            Instance inst = data.instance(i);
+            totalSum += inst.classValue() * inst.weight();
+            totalSumSquared += inst.classValue() * inst.classValue() * inst.weight();
+            totalSumOfWeights += inst.weight();
+        }
+        priorVar = RandomTree.singleVariance(totalSum, totalSumSquared, totalSumOfWeights);
+    }
+    // Check if node doesn't contain enough instances or is pure
+    // or maximum depth reached
+    m_ClassDistribution = classProbs.clone();
+    // Are we at an inner node
+    if (m_Attribute > -1) {
+        // Compute new weights for subsets based on backfit data
+        m_Prop = new double[m_Successors.length];
+        for (int i = 0; i < data.numInstances(); i++) {
+            Instance inst = data.instance(i);
+            if (!inst.isMissing(m_Attribute)) {
+                if (data.attribute(m_Attribute).isNominal()) {
+                    m_Prop[(int) inst.value(m_Attribute)] += inst.weight();
+                } else {
+                    m_Prop[(inst.value(m_Attribute) < m_SplitPoint) ? 0 : 1] += inst.weight();
+                }
+            }
+        }
+        // If we only have missing values we can make this node into a leaf
+        if (Utils.sum(m_Prop) <= 0) {
+            m_Attribute = -1;
+            m_Prop = null;
+            if (data.classAttribute().isNumeric()) {
+                m_Distribution = new double[2];
+                m_Distribution[0] = priorVar;
+                m_Distribution[1] = totalWeight;
+            }
+            return;
+        }
+        // Otherwise normalize the proportions
+        Utils.normalize(m_Prop);
+        // Split data
+        Instances[] subsets = splitData(data);
+        // Go through subsets
+        for (int i = 0; i < subsets.length; i++) {
+            // Compute distribution for current subset
+            double[] dist = new double[data.numClasses()];
+            double sumOfWeights = 0;
+            for (int j = 0; j < subsets[i].numInstances(); j++) {
+                if (data.classAttribute().isNominal()) {
+                    dist[(int) subsets[i].instance(j).classValue()] += subsets[i].instance(j).weight();
+                } else {
+                    dist[0] += subsets[i].instance(j).classValue() * subsets[i].instance(j).weight();
+                    sumOfWeights += subsets[i].instance(j).weight();
+                }
+            }
+            if (sumOfWeights > 0) {
+                dist[0] /= sumOfWeights;
+            }
+            // Backfit subset
+            m_Successors[i].backfitData(subsets[i], dist, totalWeight);
+        }
+        // class distribution
+        if (getAllowUnclassifiedInstances()) {
+            m_ClassDistribution = null;
+            return;
+        }
+        for (int i = 0; i < subsets.length; i++) {
+            if (m_Successors[i].m_ClassDistribution == null) {
+                return;
+            }
+        }
+        m_ClassDistribution = null;
+    // If we have a least two non-empty successors, we should keep this tree
+    /*
+         * int nonEmptySuccessors = 0; for (int i = 0; i < subsets.length; i++)
+         * { if (m_Successors[i].m_ClassDistribution != null) {
+         * nonEmptySuccessors++; if (nonEmptySuccessors > 1) { return; } } }
+         * 
+         * // Otherwise, this node is a leaf or should become a leaf
+         * m_Successors = null; m_Attribute = -1; m_Prop = null; return;
+         */
+    }
+}

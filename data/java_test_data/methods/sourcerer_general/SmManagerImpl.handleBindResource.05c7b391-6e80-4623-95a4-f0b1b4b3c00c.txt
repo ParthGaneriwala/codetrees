@@ -1,0 +1,57 @@
+private void handleBindResource(OnlineUser onlineUser, UserResource userResource, RouteMessage routeMessage, Iq iqRequest, IqBind bind) {
+    String node = routeMessage.getToUserNode();
+    String c2sName = routeMessage.getFrom();
+    String streamId = routeMessage.getStreamId();
+    String resource = bind.getResource();
+    if (resource == null || resource.isEmpty()) {
+        XmppError error = new XmppError(XmppError.Condition.bad_request);
+        Iq iqError = new Iq(Iq.Type.error);
+        iqError.setStanzaId(iqRequest.getStanzaId());
+        iqError.addExtension(bind);
+        iqError.setError(error);
+        RouteMessage responseMessage = new RouteMessage(getName(), c2sName, streamId);
+        responseMessage.setXmlStanza(iqError);
+        sendToRouter(responseMessage);
+        RouteMessage closeRouteMessage = new RouteMessage(getName(), c2sName, streamId);
+        closeRouteMessage.setCloseStream(true);
+        sendToRouter(closeRouteMessage);
+        if (loggerServiceTracker.isDebugEnabled()) {
+            loggerServiceTracker.debug("bind request is bad request:" + routeMessage.toXml());
+        }
+        return;
+    }
+    UserResource userResource2 = getUserResource(node, resource);
+    if (userResource2 != null) {
+        // remove old resource
+        StreamError streamError = new StreamError(StreamError.Condition.conflict);
+        userResource2.sendToSelfClient(streamError);
+        RouteMessage closeRouteMessage = new RouteMessage(getName(), c2sName, streamId);
+        closeRouteMessage.setCloseStream(true);
+        userResource2.sendToSelfClient(closeRouteMessage);
+        removeUserResource(node, resource);
+        if (loggerServiceTracker.isDebugEnabled()) {
+            loggerServiceTracker.debug("remove old resource:" + routeMessage.toXml());
+        }
+    }
+    userResource2 = createUserResource(node, resource, c2sName, streamId, false);
+    if (userResource2 != null) {
+        Iq iqResult = new Iq(Iq.Type.result);
+        iqResult.setStanzaId(iqRequest.getStanzaId());
+        IqBind resultBind = new IqBind();
+        resultBind.setJid(new JID(node, getDomain(), resource));
+        iqResult.addExtension(resultBind);
+        userResource2.sendToSelfClient(iqResult);
+    } else {
+        XmppError error = new XmppError(XmppError.Condition.internal_server_error);
+        Iq iqError = new Iq(Iq.Type.error);
+        iqError.setStanzaId(iqRequest.getStanzaId());
+        iqError.addExtension(bind);
+        iqError.setError(error);
+        RouteMessage responseMessage = new RouteMessage(getName(), routeMessage.getFrom(), routeMessage.getStreamId());
+        responseMessage.setXmlStanza(iqError);
+        sendToRouter(responseMessage);
+        RouteMessage closeRouteMessage = new RouteMessage(getName(), c2sName, streamId);
+        closeRouteMessage.setCloseStream(true);
+        sendToRouter(closeRouteMessage);
+    }
+}

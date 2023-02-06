@@ -1,0 +1,102 @@
+public static void main(String[] args) {
+    OptionParser optParser = new OptionParser(Options.class);
+    final Options opts = (Options) optParser.parse(args, true);
+    JobManager.initialize(opts.jobs);
+    JobManager manager = JobManager.getInstance();
+    Thread thread = new Thread(manager, "Job Manager");
+    thread.setDaemon(true);
+    thread.start();
+    Experiment.initialize(opts.config);
+    Experiment experiment = Experiment.getInstance();
+    FactorTupleDescription desc = experiment.getTupleDescription();
+    final byte tagFactorIdx = desc.getFactorIndex("T");
+    final byte mainFactorIdx = desc.getMainFactorIndex();
+    Dictionary tagDict = desc.getDictionary("T");
+    final Long2IntMap[] tag2wordCounts = new Long2IntMap[tagDict.size()];
+    for (int i = 0; i < tag2wordCounts.length; ++i) {
+        tag2wordCounts[i] = new Long2IntMap();
+    }
+    String[] dataFiles = opts.data.split(",");
+    JobGroup group = manager.createJobGroup("getting counts");
+    for (int i = 0; i < dataFiles.length; ++i) {
+        final String fname = dataFiles[i];
+        Runnable run = new Runnable() {
+
+            @Override
+            public void run() {
+                try {
+                    FileChannel channel = new FileInputStream(fname).getChannel();
+                    TrainingDataReader reader = new OnDiskTrainingDataReader(channel);
+                    ReadableTrainingData inputData = new ReadableTrainingData(reader);
+                    while (inputData.hasNext()) {
+                        TrainingDataBlock block = inputData.next();
+                        for (ContextFuturesPair pair : block) {
+                            long[] context = pair.getContext().data;
+                            int tag = FactorTuple.getValue(context[context.length - 1], tagFactorIdx);
+                            Long2IntMap wordCounts = tag2wordCounts[tag];
+                            synchronized (wordCounts) {
+                                for (TupleCountPair tc : pair.getFutures()) {
+                                    int word = FactorTuple.getValue(tc.tuple, mainFactorIdx);
+                                    wordCounts.addAndGet(word, tc.count);
+                                }
+                            }
+                        }
+                    }
+                    channel.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        };
+        Job job = new Job(run, "a job");
+        manager.addJob(group, job);
+    }
+    group.join();
+    final double[] finalEntropies = new double[opts.numSplits + 1];
+    final double[] initialEntropies = new double[opts.numSplits + 1];
+    final double[] sigmas = new double[opts.numSplits + 1];
+    final int[] splits = new int[opts.numSplits + 1];
+    for (int split = 0; split <= opts.numSplits; ++split) {
+        // int nway = split+1;
+        int nway = 1 << split;
+        splits[split] = nway;
+    }
+    for (int i = 0; i <= opts.numSplits; ++i) {
+        final int split = i;
+        Runnable run = new Runnable() {
+
+            @Override
+            public void run() {
+                int nway = splits[split];
+                double[] entropyReductions = new double[opts.nrExperiments];
+                double avgReduction = 0;
+                for (int i = 0; i < opts.nrExperiments; ++i) {
+                    Long2IntMap[] counts = nway == 1 ? tag2wordCounts : splitCounts(tag2wordCounts, nway);
+                    Pair<Double, Double> pair = doExchange(counts, 1);
+                    entropyReductions[i] = pair.getFirst() - pair.getSecond();
+                    avgReduction += entropyReductions[i];
+                // initialEntropies[split] = pair.getFirst();
+                // finalEntropies[split] = pair.getSecond();
+                }
+                avgReduction /= entropyReductions.length;
+                finalEntropies[split] = avgReduction;
+                double sd = 0;
+                for (int i = 0; i < entropyReductions.length; ++i) {
+                    sd += (avgReduction - entropyReductions[i]) * (avgReduction - entropyReductions[i]);
+                }
+                sd /= entropyReductions.length - 1;
+                sd = Math.sqrt(sd);
+                sigmas[split] = sd;
+            }
+        };
+        Job job = new Job(run, "a job");
+        manager.addJob(group, job);
+    }
+    group.join();
+    for (int split = 0; split <= opts.numSplits; ++split) {
+        final int nway = splits[split];
+        double avgReduction = finalEntropies[split];
+        double sigma = sigmas[split];
+        System.out.printf("%d-way split: reduction=%f, standard deviation = %f\n", nway, avgReduction, sigma);
+    }
+}

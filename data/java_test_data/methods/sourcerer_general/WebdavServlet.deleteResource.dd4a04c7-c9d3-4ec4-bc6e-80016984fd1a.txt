@@ -1,0 +1,60 @@
+private boolean deleteResource(String path, HttpServletRequest req, HttpServletResponse resp, boolean setStatus) throws ServletException, IOException {
+    if ((path.toUpperCase().startsWith("/WEB-INF")) || (path.toUpperCase().startsWith("/META-INF"))) {
+        resp.sendError(WebdavStatus.SC_FORBIDDEN);
+        return false;
+    }
+    String ifHeader = req.getHeader("If");
+    if (ifHeader == null) {
+        ifHeader = "";
+    }
+    String lockTokenHeader = req.getHeader("Lock-Token");
+    if (lockTokenHeader == null) {
+        lockTokenHeader = "";
+    }
+    if (isLocked(path, ifHeader + lockTokenHeader)) {
+        resp.sendError(WebdavStatus.SC_LOCKED);
+        return false;
+    }
+    // Retrieve the resources
+    DirContext resources = getResources();
+    if (resources == null) {
+        resp.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+        return false;
+    }
+    boolean exists = true;
+    Object object = null;
+    try {
+        object = resources.lookup(path);
+    } catch (NamingException e) {
+        exists = false;
+    }
+    if (!exists) {
+        resp.sendError(WebdavStatus.SC_NOT_FOUND);
+        return false;
+    }
+    boolean collection = (object instanceof DirContext);
+    if (!collection) {
+        try {
+            resources.unbind(path);
+        } catch (NamingException e) {
+            resp.sendError(WebdavStatus.SC_INTERNAL_SERVER_ERROR);
+            return false;
+        }
+    } else {
+        Hashtable errorList = new Hashtable();
+        deleteCollection(req, resources, path, errorList);
+        try {
+            resources.unbind(path);
+        } catch (NamingException e) {
+            errorList.put(path, new Integer(WebdavStatus.SC_INTERNAL_SERVER_ERROR));
+        }
+        if (!errorList.isEmpty()) {
+            sendReport(req, resp, errorList);
+            return false;
+        }
+    }
+    if (setStatus) {
+        resp.setStatus(WebdavStatus.SC_NO_CONTENT);
+    }
+    return true;
+}

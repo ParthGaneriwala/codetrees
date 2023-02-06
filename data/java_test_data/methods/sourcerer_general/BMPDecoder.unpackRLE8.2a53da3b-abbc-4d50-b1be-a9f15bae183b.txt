@@ -1,0 +1,98 @@
+void unpackRLE8(InputStream in) throws JimiException, IOException {
+    int i;
+    int b;
+    int repB;
+    int flagB;
+    boolean oddSkip;
+    byte[] buf;
+    // current row for buf
+    int row = bmpHeader.height - 1;
+    // starting column for buf
+    int col = 0;
+    buf = new byte[bmpHeader.width];
+    // output idx
+    int o = 0;
+    while (true) {
+        b = in.read();
+        if (b < 0)
+            throw new EOFException();
+        else if (b == 0) {
+            // unencoded run
+            flagB = in.read();
+            if (flagB < 0)
+                throw new EOFException();
+            switch(flagB) {
+                case // end of scanline.
+                0:
+                    // output this and go to next row appropriately
+                    if (o > col) {
+                        ji_.setChannel(0, col, row, o - col, 1, buf, col, buf.length);
+                    }
+                    // reset to start for next scanline
+                    o = 0;
+                    col = 0;
+                    --row;
+                    setProgress((bmpHeader.height - 1 - row) * 100 / (bmpHeader.height - 1));
+                    break;
+                case // end of RLE data
+                1:
+                    // done.
+                    return;
+                case // offset marker
+                2:
+                    // first write out what we are working on to JI
+                    ji_.setChannel(0, col, row, o - col, 1, buf, col, buf.length);
+                    int xDelta = in.read();
+                    int yDelta = in.read();
+                    // update where we are upto
+                    col += xDelta;
+                    // update output location as well
+                    o = col;
+                    row += yDelta;
+                    break;
+                default:
+                    // value 3 to 255 - number of bytes to copy
+                    oddSkip = false;
+                    if (// if odd ?
+                    (flagB & 0x1) != 0)
+                        oddSkip = true;
+                    while (--flagB >= 0) {
+                        int b2 = in.read();
+                        if (b2 < 0)
+                            throw new EOFException();
+                        if (// wrap around to next scanline
+                        o == buf.length) {
+                            ji_.setChannel(0, col, row, o - col, 1, buf, col, buf.length);
+                            // reset to start for next scanline
+                            o = 0;
+                            col = 0;
+                            --row;
+                            setProgress((bmpHeader.height - 1 - row) * 100 / (bmpHeader.height - 1));
+                        }
+                        buf[o++] = (byte) b2;
+                    }
+                    if (oddSkip)
+                        // skip filler byte
+                        in.read();
+                    break;
+            }
+        } else {
+            // encoded run
+            repB = in.read();
+            if (repB < 0)
+                throw new EOFException();
+            while (--b >= 0) {
+                if (// wrap around to next scanline
+                o == buf.length) {
+                    // output our data so far
+                    ji_.setChannel(0, col, row, o - col, 1, buf, col, buf.length);
+                    // reset to start for next scanline
+                    o = 0;
+                    col = 0;
+                    --row;
+                }
+                buf[o++] = (byte) repB;
+            }
+        }
+    }
+}

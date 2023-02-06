@@ -1,0 +1,136 @@
+private void initializePropsFromServer() throws SQLException {
+    String connectionInterceptorClasses = getConnectionLifecycleInterceptors();
+    this.connectionLifecycleInterceptors = null;
+    if (connectionInterceptorClasses != null) {
+        this.connectionLifecycleInterceptors = Util.loadExtensions(this, this.props, connectionInterceptorClasses, "Connection.badLifecycleInterceptor", getExceptionInterceptor());
+    }
+    setSessionVariables();
+    if (!versionMeetsMinimum(4, 1, 0)) {
+        setTransformedBitIsBoolean(false);
+    }
+    this.parserKnowsUnicode = versionMeetsMinimum(4, 1, 0);
+    // 
+    if (getUseServerPreparedStmts() && versionMeetsMinimum(4, 1, 0)) {
+        this.useServerPreparedStmts = true;
+        if (versionMeetsMinimum(5, 0, 0) && !versionMeetsMinimum(5, 0, 3)) {
+            // 4.1.2+ style prepared
+            this.useServerPreparedStmts = false;
+        // statements
+        // don't work on these versions
+        }
+    }
+    this.serverVariables.clear();
+    // variables.
+    if (versionMeetsMinimum(3, 21, 22)) {
+        loadServerVariables();
+        if (versionMeetsMinimum(5, 0, 2)) {
+            this.autoIncrementIncrement = getServerVariableAsInt("auto_increment_increment", 1);
+        } else {
+            this.autoIncrementIncrement = 1;
+        }
+        buildCollationMapping();
+        LicenseConfiguration.checkLicenseType(this.serverVariables);
+        String lowerCaseTables = (String) this.serverVariables.get("lower_case_table_names");
+        this.lowerCaseTableNames = "on".equalsIgnoreCase(lowerCaseTables) || "1".equalsIgnoreCase(lowerCaseTables) || "2".equalsIgnoreCase(lowerCaseTables);
+        this.storesLowerCaseTableName = "1".equalsIgnoreCase(lowerCaseTables) || "on".equalsIgnoreCase(lowerCaseTables);
+        configureTimezone();
+        if (this.serverVariables.containsKey("max_allowed_packet")) {
+            int serverMaxAllowedPacket = getServerVariableAsInt("max_allowed_packet", -1);
+            // use server value if maxAllowedPacket hasn't been given, or max_allowed_packet is smaller
+            if (serverMaxAllowedPacket != -1 && (serverMaxAllowedPacket < getMaxAllowedPacket() || getMaxAllowedPacket() <= 0))
+                setMaxAllowedPacket(serverMaxAllowedPacket);
+            else if (serverMaxAllowedPacket == -1 && getMaxAllowedPacket() == -1)
+                setMaxAllowedPacket(65535);
+            int preferredBlobSendChunkSize = getBlobSendChunkSize();
+            int allowedBlobSendChunkSize = Math.min(preferredBlobSendChunkSize, getMaxAllowedPacket()) - ServerPreparedStatement.BLOB_STREAM_READ_BUF_SIZE - 11;
+            setBlobSendChunkSize(String.valueOf(allowedBlobSendChunkSize));
+        }
+        if (this.serverVariables.containsKey("net_buffer_length")) {
+            this.netBufferLength = getServerVariableAsInt("net_buffer_length", 16 * 1024);
+        }
+        checkTransactionIsolationLevel();
+        if (!versionMeetsMinimum(4, 1, 0)) {
+            checkServerEncoding();
+        }
+        this.io.checkForCharsetMismatch();
+        if (this.serverVariables.containsKey("sql_mode")) {
+            int sqlMode = 0;
+            String sqlModeAsString = (String) this.serverVariables.get("sql_mode");
+            try {
+                sqlMode = Integer.parseInt(sqlModeAsString);
+            } catch (NumberFormatException nfe) {
+                // newer versions of the server has this as a string-y
+                // list...
+                sqlMode = 0;
+                if (sqlModeAsString != null) {
+                    if (sqlModeAsString.indexOf("ANSI_QUOTES") != -1) {
+                        sqlMode |= 4;
+                    }
+                    if (sqlModeAsString.indexOf("NO_BACKSLASH_ESCAPES") != -1) {
+                        this.noBackslashEscapes = true;
+                    }
+                }
+            }
+            if ((sqlMode & 4) > 0) {
+                this.useAnsiQuotes = true;
+            } else {
+                this.useAnsiQuotes = false;
+            }
+        }
+    }
+    this.errorMessageEncoding = CharsetMapping.getCharacterEncodingForErrorMessages(this);
+    boolean overrideDefaultAutocommit = isAutoCommitNonDefaultOnServer();
+    configureClientCharacterSet(false);
+    if (versionMeetsMinimum(3, 23, 15)) {
+        this.transactionsSupported = true;
+        if (!overrideDefaultAutocommit) {
+            // to override anything
+            setAutoCommit(true);
+        // the server is set to...reqd
+        // by JDBC spec.
+        }
+    } else {
+        this.transactionsSupported = false;
+    }
+    if (versionMeetsMinimum(3, 23, 36)) {
+        this.hasIsolationLevels = true;
+    } else {
+        this.hasIsolationLevels = false;
+    }
+    this.hasQuotedIdentifiers = versionMeetsMinimum(3, 23, 6);
+    this.io.resetMaxBuf();
+    // "special" key to retrieve it
+    if (this.io.versionMeetsMinimum(4, 1, 0)) {
+        String characterSetResultsOnServerMysql = (String) this.serverVariables.get(JDBC_LOCAL_CHARACTER_SET_RESULTS);
+        if (characterSetResultsOnServerMysql == null || StringUtils.startsWithIgnoreCaseAndWs(characterSetResultsOnServerMysql, "NULL") || characterSetResultsOnServerMysql.length() == 0) {
+            String defaultMetadataCharsetMysql = (String) this.serverVariables.get("character_set_system");
+            String defaultMetadataCharset = null;
+            if (defaultMetadataCharsetMysql != null) {
+                defaultMetadataCharset = CharsetMapping.getJavaEncodingForMysqlEncoding(defaultMetadataCharsetMysql, this);
+            } else {
+                defaultMetadataCharset = "UTF-8";
+            }
+            this.characterSetMetadata = defaultMetadataCharset;
+        } else {
+            this.characterSetResultsOnServer = CharsetMapping.getJavaEncodingForMysqlEncoding(characterSetResultsOnServerMysql, this);
+            this.characterSetMetadata = this.characterSetResultsOnServer;
+        }
+    } else {
+        this.characterSetMetadata = getEncoding();
+    }
+    if (versionMeetsMinimum(4, 1, 0) && !this.versionMeetsMinimum(4, 1, 10) && getAllowMultiQueries()) {
+        if (isQueryCacheEnabled()) {
+            setAllowMultiQueries(false);
+        }
+    }
+    if (versionMeetsMinimum(5, 0, 0) && (getUseLocalTransactionState() || getElideSetAutoCommits()) && isQueryCacheEnabled() && !versionMeetsMinimum(6, 0, 10)) {
+        // Can't trust the server status flag on the wire if query cache is enabled,
+        // due to Bug#36326
+        setUseLocalTransactionState(false);
+        setElideSetAutoCommits(false);
+    }
+    // 
+    // Server can do this more efficiently for us
+    // 
+    setupServerForTruncationChecks();
+}

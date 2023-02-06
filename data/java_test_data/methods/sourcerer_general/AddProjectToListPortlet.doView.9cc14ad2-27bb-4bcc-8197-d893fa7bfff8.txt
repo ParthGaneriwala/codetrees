@@ -1,0 +1,96 @@
+@Override
+public void doView(RenderRequest request, RenderResponse response) throws PortletException, IOException {
+    try {
+        String view = VIEW_FORM_PAGE;
+        String viewType = request.getParameter("viewType");
+        if (viewType == null) {
+            viewType = (String) request.getPortletSession().getAttribute("viewType");
+        }
+        // Set global preferences
+        request.setAttribute(TITLE, request.getPreferences().getValue(PREF_TITLE, null));
+        request.setAttribute(INTRODUCTION_MESSAGE, request.getPreferences().getValue(PREF_INTRODUCTION_MESSAGE, null));
+        User user = PortalUtils.getUser(request);
+        Project project = PortalUtils.getProject(request);
+        Task task = (Task) request.getPortletSession().getAttribute("task");
+        int projectId = project == null ? -1 : project.getId();
+        String projectIdOfLists = request.getParameter(PROJECT_ID_OF_LISTS);
+        int pidOfLists = projectIdOfLists == null ? -1 : Integer.parseInt(projectIdOfLists);
+        LOG.debug("doView: pidOfLists -- " + pidOfLists);
+        // Clean up session
+        request.getPortletSession().removeAttribute(VIEW_TYPE);
+        request.getPortletSession().removeAttribute(PROJECT_ID_OF_LISTS);
+        if (SAVE_FAILURE.equals(viewType)) {
+            // Prep the form to show errors...
+            request.setAttribute(ACTION_ERROR, request.getPreferences().getValue(PREF_FAILURE_MESSAGE, null));
+            // Show the form with any errors provided
+            PortalUtils.processErrors(request, task.getErrors());
+        } else if (SAVE_SUCCESS.equals(viewType)) {
+            // Save Success
+            request.setAttribute(SUCCESS_MESSAGE, request.getPreferences().getValue(PREF_SUCCESS_MESSAGE, null));
+            view = VIEW_MESSAGE_PAGE;
+        } else {
+            if (!user.isLoggedIn()) {
+                // If user is not logged in, redirect
+                view = VIEW_MESSAGE_PAGE;
+                request.setAttribute(ACTION_ERROR, "You need to be logged in to perform this action");
+            } else if (projectId <= 0) {
+                request.setAttribute(ACTION_ERROR, "No project was specified");
+                view = VIEW_MESSAGE_PAGE;
+            } else {
+                view = VIEW_FORM_PAGE;
+                try {
+                    Connection db = PortalUtils.useConnection(request);
+                    int userProfileId = user.getProfileProjectId();
+                    Project userProfile;
+                    if (userProfileId == -1) {
+                        view = VIEW_MESSAGE_PAGE;
+                        request.setAttribute(ACTION_ERROR, "No profile is available to bookmark.");
+                    } else {
+                        userProfile = ProjectUtils.loadProject(userProfileId);
+                        if (pidOfLists == -1) {
+                            pidOfLists = userProfile.getId();
+                        }
+                        // check the user has permissions to add/delete from lists for the project whose lists are being modified
+                        // these will be used by the view to dynamically show/hide functionality
+                        request.setAttribute(CAN_ADD_LIST, ProjectUtils.hasAccess(pidOfLists, user, "project-lists-add"));
+                        request.setAttribute(CAN_DELETE_FROM_LIST, ProjectUtils.hasAccess(pidOfLists, user, "project-lists-delete"));
+                        ProjectList projectList = findUserProjects(db, user);
+                        ProjectList availableProjects = new ProjectList();
+                        // Profile needs to appear on top so remove it from list and don't add twice
+                        availableProjects.add(userProfile);
+                        for (int i = 0; i != projectList.size(); i++) {
+                            Project p = projectList.get(i);
+                            if (p.getId() != userProfile.getId()) {
+                                availableProjects.add(p);
+                            }
+                        }
+                        TaskCategoryList availableLists = getAvailableLists(db, pidOfLists);
+                        String errorMessage = (String) request.getPortletSession().getAttribute(ACTION_ERROR);
+                        if (StringUtils.hasText(errorMessage)) {
+                            request.setAttribute(ACTION_ERROR, errorMessage);
+                        }
+                        Map<Integer, TaskCategory> usedLists = findExistingTaskCategorysForProjects(db, pidOfLists, project.getId());
+                        request.setAttribute(PROJECT_ID_OF_LISTS, pidOfLists);
+                        request.setAttribute(PROJECT, project);
+                        request.setAttribute(AVAILABLE_LISTS, availableLists);
+                        request.setAttribute(USER_PROFILE, userProfile);
+                        request.setAttribute(AVAILABLE_PROJECTS, availableProjects);
+                        request.setAttribute(USED_LIST_MAP, usedLists);
+                    }
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                    view = VIEW_MESSAGE_PAGE;
+                    request.setAttribute(ACTION_ERROR, "An error occurred processing your request. Please try again.");
+                }
+            }
+        }
+        // Clean up session
+        request.getPortletSession().removeAttribute(ACTION_ERROR);
+        PortletContext context = getPortletContext();
+        PortletRequestDispatcher requestDispatcher = context.getRequestDispatcher(view);
+        requestDispatcher.include(request, response);
+    } catch (Exception e) {
+        e.printStackTrace();
+        throw new PortletException(e);
+    }
+}

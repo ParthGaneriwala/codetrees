@@ -1,0 +1,85 @@
+public String executeCommandDownloadAttachment(ActionContext context) {
+    Connection db = null;
+    boolean allowDownload = false;
+    FileItem thisItem = null;
+    int userId = -1;
+    Exception errorMessage = null;
+    try {
+        db = getConnection(context);
+        // Parse params
+        int attachmentId = Integer.parseInt(context.getParameter("id"));
+        String orderHash = context.getParameter("hash");
+        // Load the attachment
+        Attachment thisAttachment = new Attachment(db, attachmentId);
+        // Load the product for verification
+        Product thisProduct = new Product(db, thisAttachment.getProductId());
+        if (thisAttachment.getAllowBeforeCheckout()) {
+            // Always allow this file to be downloaded, if the product is enabled
+            if (!thisProduct.getEnabled()) {
+                return "AttachmentUnavailableError";
+            }
+            allowDownload = true;
+        } else if (thisAttachment.getAllowAfterCheckout()) {
+            if (orderHash != null) {
+                // Verify the order
+                StringTokenizer tokens = new StringTokenizer(orderHash, "-");
+                int orderId = Integer.parseInt(tokens.nextToken());
+                long orderDate = Long.parseLong(tokens.nextToken());
+                OrderRecord thisOrder = new OrderRecord(db, orderId, orderDate);
+                if (thisAttachment.isExpired(thisOrder.getEntered().getTime())) {
+                    return "AttachmentExpiredError";
+                }
+                // Verify the attachment is part of the order
+                ProductList productList = new ProductList();
+                productList.setOrderId(orderId);
+                productList.setProductId(thisAttachment.getProductId());
+                productList.buildList(db);
+                if (productList.size() > 0) {
+                    allowDownload = true;
+                    userId = thisOrder.getUserId();
+                } else {
+                    return "AttachmentDownloadError";
+                }
+            } else {
+                return "AttachmentDownloadError";
+            }
+        }
+        if (allowDownload) {
+            // Load the fileItem for downloading...
+            thisItem = new FileItem(db, thisAttachment.getFileId());
+        }
+    } catch (Exception e) {
+        e.printStackTrace(System.out);
+    } finally {
+        freeConnection(context, db);
+    }
+    if (thisItem != null) {
+        try {
+            FileItem itemToDownload = thisItem;
+            itemToDownload.setEnteredBy(userId);
+            String filePath = this.getPath(context, "projects") + getDatePath(itemToDownload.getModified()) + itemToDownload.getFilename();
+            FileDownload fileDownload = new FileDownload();
+            fileDownload.setFullPath(filePath);
+            fileDownload.setDisplayName(itemToDownload.getClientFilename());
+            if (fileDownload.fileExists()) {
+                fileDownload.sendFile(context);
+                // Get a db connection now that the download is complete
+                db = getConnection(context);
+                itemToDownload.updateCounter(db);
+            }
+        } catch (java.net.SocketException se) {
+        // User either canceled the download or lost connection
+        } catch (Exception e) {
+            errorMessage = e;
+        } finally {
+            this.freeConnection(context, db);
+        }
+        if (errorMessage == null) {
+            return ("-none-");
+        } else {
+            context.getRequest().setAttribute("Error", errorMessage);
+            return ("SystemError");
+        }
+    }
+    return "AttachmentDownloadError";
+}

@@ -1,0 +1,72 @@
+private static Set<GeoRectangle> constructRectangles(final Set<List<GeoPoint>> contours) {
+    final SortedMap<Double, Set<Double>> longs = new TreeMap<Double, Set<Double>>();
+    final SortedSet<Double> lats = new TreeSet<Double>();
+    SortedSet<Double> set = null;
+    for (List<GeoPoint> contour : contours) {
+        for (GeoPoint point : contour) {
+            Set<Double> newSet = set == null ? new TreeSet<Double>() : set;
+            set = (SortedSet<Double>) longs.put(new Double(point.mLongitude), newSet);
+            if (set == newSet)
+                set = null;
+            lats.add(new Double(point.mLatitude));
+        }
+    }
+    longs.put(longs.lastKey(), null);
+    for (List<GeoPoint> contour : contours) {
+        GeoPoint last = contour.get(contour.size() - 1);
+        for (GeoPoint point : contour) {
+            if (last.mLatitude == point.mLatitude)
+                for (Iterator<Set<Double>> edges = longs.subMap(new Double(Math.min(last.mLongitude, point.mLongitude)), new Double(Math.max(last.mLongitude, point.mLongitude))).values().iterator(); edges.hasNext(); ) (((SortedSet<Double>) edges.next())).add(new Double(point.mLatitude));
+            last = point;
+        }
+    }
+    final List<GeoRegion.SubRectangle> subRects = new ArrayList<GeoRegion.SubRectangle>();
+    List<GeoRegion.SubRectangle> lastRects = null;
+    double area = 0.0;
+    for (Double longObj : longs.keySet()) {
+        double longitude = longObj.doubleValue();
+        if (lastRects != null)
+            for (SubRectangle lastRect : lastRects) {
+                lastRect.mMaxLong = longitude;
+                area += (lastRect.mMaxLong - lastRect.mMinLong) * (lastRect.mMaxLat - lastRect.mMinLat);
+            }
+        SortedSet<Double> edges = (SortedSet<Double>) longs.get(longObj);
+        if (edges != null && edges.size() % 2 != 0)
+            throw new IllegalStateException("This should never happen: Bad edges in GeoRegion: " + contours);
+        if (edges != null) {
+            lastRects = new ArrayList<GeoRegion.SubRectangle>();
+            SubRectangle lastRect = null;
+            for (Double lat : lats) {
+                if (edges.contains(lat)) {
+                    if (lastRect == null) {
+                        lastRect = SubRectangle.construct();
+                        lastRect.mMinLong = longitude;
+                        lastRect.mMinLat = lat.doubleValue();
+                        lastRects.add(lastRect);
+                    } else {
+                        lastRect.mMaxLat = lat.doubleValue();
+                        lastRect = null;
+                    }
+                } else if (lastRect != null) {
+                    lastRect.mMaxLat = lat.doubleValue();
+                    lastRect = SubRectangle.construct();
+                    lastRect.mMinLong = longitude;
+                    lastRect.mMinLat = lat.doubleValue();
+                    lastRects.add(lastRect);
+                }
+            }
+            subRects.addAll(lastRects);
+        }
+    }
+    final State state = new State();
+    state.mArea = area;
+    List<SubRectangle> tempRects = SubRectangle.construct(subRects.size());
+    constructRectangles(subRects, new ArrayList<SubRectangle>(), state, tempRects);
+    SubRectangle.destruct(tempRects);
+    final Set<GeoRectangle> rects = new HashSet<GeoRectangle>(state.mSolution.size());
+    for (SubRectangle subRect : state.mSolution.subList(0, state.mSize)) {
+        rects.add(new GeoRectangle(subRect.mMinLong, subRect.mMaxLong, subRect.mMinLat, subRect.mMaxLat));
+    }
+    SubRectangle.destruct(state.mSolution);
+    return rects;
+}

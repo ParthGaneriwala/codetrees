@@ -1,0 +1,47 @@
+protected Buffer fillSendPacket(byte[][] batchedParameterStrings, InputStream[] batchedParameterStreams, boolean[] batchedIsStream, int[] batchedStreamLengths) throws SQLException {
+    Buffer sendPacket = this.connection.getIO().getSharedSendPacket();
+    sendPacket.clear();
+    sendPacket.writeByte((byte) MysqlDefs.QUERY);
+    boolean useStreamLengths = this.connection.getUseStreamLengthsInPrepStmts();
+    // 
+    // Try and get this allocation as close as possible
+    // for BLOBs
+    // 
+    int ensurePacketSize = 0;
+    String statementComment = this.connection.getStatementComment();
+    byte[] commentAsBytes = null;
+    if (statementComment != null) {
+        if (this.charConverter != null) {
+            commentAsBytes = this.charConverter.toBytes(statementComment);
+        } else {
+            commentAsBytes = StringUtils.getBytes(statementComment, this.charConverter, this.charEncoding, this.connection.getServerCharacterEncoding(), this.connection.parserKnowsUnicode(), getExceptionInterceptor());
+        }
+        ensurePacketSize += commentAsBytes.length;
+        // for /*[space] [space]*/
+        ensurePacketSize += 6;
+    }
+    for (int i = 0; i < batchedParameterStrings.length; i++) {
+        if (batchedIsStream[i] && useStreamLengths) {
+            ensurePacketSize += batchedStreamLengths[i];
+        }
+    }
+    if (ensurePacketSize != 0) {
+        sendPacket.ensureCapacity(ensurePacketSize);
+    }
+    if (commentAsBytes != null) {
+        sendPacket.writeBytesNoNull(Constants.SLASH_STAR_SPACE_AS_BYTES);
+        sendPacket.writeBytesNoNull(commentAsBytes);
+        sendPacket.writeBytesNoNull(Constants.SPACE_STAR_SLASH_SPACE_AS_BYTES);
+    }
+    for (int i = 0; i < batchedParameterStrings.length; i++) {
+        checkAllParametersSet(batchedParameterStrings[i], batchedParameterStreams[i], i);
+        sendPacket.writeBytesNoNull(this.staticSqlStrings[i]);
+        if (batchedIsStream[i]) {
+            streamToBytes(sendPacket, batchedParameterStreams[i], true, batchedStreamLengths[i], useStreamLengths);
+        } else {
+            sendPacket.writeBytesNoNull(batchedParameterStrings[i]);
+        }
+    }
+    sendPacket.writeBytesNoNull(this.staticSqlStrings[batchedParameterStrings.length]);
+    return sendPacket;
+}

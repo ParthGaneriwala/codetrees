@@ -1,0 +1,129 @@
+// documentation inherited
+@Override
+protected void updateData() {
+    // get everything in local variables
+    Particle[] particles = _particles;
+    float[] data = _data, source = _source;
+    int stride = _stride, sourceStride = _sourceStride;
+    Transform3D xform = _xform;
+    Quaternion vrot = _vrot, rotation = _rotation;
+    Vector3f s = _s, t = _t, r = _r, view = _view;
+    boolean normals = (_normalOffset >= 0);
+    // figure out the texture coordinate parameters
+    int udivs = _config.textureDivisionsS;
+    float uscale = 1f / udivs;
+    float vscale = 1f / _config.textureDivisionsT;
+    Alignment alignment = _config.alignment;
+    if (alignment == Alignment.VELOCITY) {
+        // find the view vector in local coordinates
+        _transformState.getModelview().invert(_xform).transformVector(Vector3f.UNIT_Z, view);
+    } else if (alignment == Alignment.BILLBOARD) {
+        // get the inverse of the modelview rotation
+        _transformState.getModelview().extractRotation(vrot).invertLocal();
+    }
+    // update the living particles
+    int vpp = _geom.getVertexCount();
+    int texCoordIdx = _texCoordOffset;
+    int colorIdx = _colorOffset;
+    int normalIdx = _normalOffset;
+    int vertexIdx = _vertexOffset;
+    for (int ii = 0, nn = _living.value; ii < nn; ii++) {
+        Particle particle = particles[ii];
+        // determine the texture coordinate offsets
+        int frame = FloatMath.round(particle.getFrame());
+        float uoff = (frame % udivs) * uscale, voff = (frame / udivs) * vscale;
+        // extract the color
+        Color4f color = particle.getColor();
+        float cr = color.r, cg = color.g, cb = color.b, ca = color.a;
+        // compute the particle transform matrix
+        float m00, m10, m20, m30;
+        float m01, m11, m21, m31;
+        float m02, m12, m22, m32;
+        float size = particle.getSize();
+        if (alignment == Alignment.VELOCITY) {
+            Vector3f velocity = particle.getVelocity();
+            view.cross(velocity, t);
+            float length = t.length();
+            if (length > FloatMath.EPSILON) {
+                t.multLocal(1f / length);
+                velocity.normalize(s);
+                s.cross(t, r);
+            } else {
+                s.set(Vector3f.ZERO);
+                t.set(Vector3f.ZERO);
+                r.set(Vector3f.ZERO);
+            }
+            Vector3f position = particle.getPosition();
+            m00 = s.x * size;
+            m10 = t.x * size;
+            m20 = r.x * size;
+            m30 = position.x;
+            m01 = s.y * size;
+            m11 = t.y * size;
+            m21 = r.y * size;
+            m31 = position.y;
+            m02 = s.z * size;
+            m12 = t.z * size;
+            m22 = r.z * size;
+            m32 = position.z;
+        } else {
+            xform.set(particle.getPosition(), (alignment == Alignment.BILLBOARD) ? vrot.mult(particle.getOrientation(), rotation) : particle.getOrientation(), size);
+            xform.update(Transform3D.AFFINE);
+            Matrix4f m = xform.getMatrix();
+            m00 = m.m00;
+            m10 = m.m10;
+            m20 = m.m20;
+            m30 = m.m30;
+            m01 = m.m01;
+            m11 = m.m11;
+            m21 = m.m21;
+            m31 = m.m31;
+            m02 = m.m02;
+            m12 = m.m12;
+            m22 = m.m22;
+            m32 = m.m32;
+        }
+        int sourceTexCoordIdx = _sourceTexCoordOffset;
+        int sourceVertexIdx = _sourceVertexOffset;
+        if (normals) {
+            int sourceNormalIdx = _sourceNormalOffset;
+            float rsize = 1f / particle.getSize();
+            float n00 = m00 * rsize, n10 = m10 * rsize, n20 = m20 * rsize;
+            float n01 = m01 * rsize, n11 = m11 * rsize, n21 = m21 * rsize;
+            float n02 = m02 * rsize, n12 = m12 * rsize, n22 = m22 * rsize;
+            for (int jj = 0; jj < vpp; jj++) {
+                // write the texture coordinates
+                texCoordIdx = write(data, texCoordIdx, stride, uoff + source[sourceTexCoordIdx] * uscale, voff + source[sourceTexCoordIdx + 1] * vscale);
+                sourceTexCoordIdx += sourceStride;
+                // write the color
+                colorIdx = write(data, colorIdx, stride, cr, cg, cb, ca);
+                // write the transformed normal
+                float nx = source[sourceNormalIdx];
+                float ny = source[sourceNormalIdx + 1];
+                float nz = source[sourceNormalIdx + 2];
+                normalIdx = write(data, normalIdx, stride, n00 * nx + n10 * ny + n20 * nz, n01 * nx + n11 * ny + n21 * nz, n02 * nx + n12 * ny + n22 * nz);
+                sourceNormalIdx += sourceStride;
+                // write the transformed vertex
+                float vx = source[sourceVertexIdx];
+                float vy = source[sourceVertexIdx + 1];
+                float vz = source[sourceVertexIdx + 2];
+                vertexIdx = write(data, vertexIdx, stride, m00 * vx + m10 * vy + m20 * vz + m30, m01 * vx + m11 * vy + m21 * vz + m31, m02 * vx + m12 * vy + m22 * vz + m32);
+                sourceVertexIdx += sourceStride;
+            }
+        } else {
+            for (int jj = 0; jj < vpp; jj++) {
+                // write the texture coordinates
+                texCoordIdx = write(data, texCoordIdx, stride, uoff + source[sourceTexCoordIdx] * uscale, voff + source[sourceTexCoordIdx + 1] * vscale);
+                sourceTexCoordIdx += sourceStride;
+                // write the color
+                colorIdx = write(data, colorIdx, stride, cr, cg, cb, ca);
+                // write the transformed vertex
+                float vx = source[sourceVertexIdx];
+                float vy = source[sourceVertexIdx + 1];
+                float vz = source[sourceVertexIdx + 2];
+                vertexIdx = write(data, vertexIdx, stride, m00 * vx + m10 * vy + m20 * vz + m30, m01 * vx + m11 * vy + m21 * vz + m31, m02 * vx + m12 * vy + m22 * vz + m32);
+                sourceVertexIdx += sourceStride;
+            }
+        }
+    }
+}

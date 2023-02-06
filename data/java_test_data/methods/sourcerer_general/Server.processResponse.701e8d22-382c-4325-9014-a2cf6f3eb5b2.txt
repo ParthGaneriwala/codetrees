@@ -1,0 +1,86 @@
+// Processes one response. Returns true if there are no more pending
+// data for this channel.
+private boolean processResponse(LinkedList<Call> responseQueue, boolean inHandler) throws IOException {
+    boolean error = true;
+    // there is more data for this channel.
+    boolean done = false;
+    int numElements = 0;
+    Call call = null;
+    try {
+        synchronized (responseQueue) {
+            // 
+            // If there are no items for this channel, then we are done
+            // 
+            numElements = responseQueue.size();
+            if (numElements == 0) {
+                error = false;
+                // no more data for this channel.
+                return true;
+            }
+            // 
+            // Extract the first call
+            // 
+            call = responseQueue.removeFirst();
+            SocketChannel channel = call.connection.channel;
+            if (LOG.isDebugEnabled()) {
+                LOG.debug(getName() + ": responding to #" + call.id + " from " + call.connection);
+            }
+            // 
+            // Send as much data as we can in the non-blocking fashion
+            // 
+            int numBytes = channel.write(call.response);
+            if (numBytes < 0) {
+                return true;
+            }
+            if (!call.response.hasRemaining()) {
+                call.connection.decRpcCount();
+                if (numElements == 1) {
+                    // last call fully processes.
+                    // no more data for this channel.
+                    done = true;
+                } else {
+                    // more calls pending to be sent.
+                    done = false;
+                }
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug(getName() + ": responding to #" + call.id + " from " + call.connection + " Wrote " + numBytes + " bytes.");
+                }
+            } else {
+                // 
+                // If we were unable to write the entire response out, then
+                // insert in Selector queue.
+                // 
+                call.connection.responseQueue.addFirst(call);
+                if (inHandler) {
+                    // set the serve time when the response has to be sent later
+                    call.timestamp = System.currentTimeMillis();
+                    incPending();
+                    try {
+                        // Wakeup the thread blocked on select, only then can the call
+                        // to channel.register() complete.
+                        writeSelector.wakeup();
+                        channel.register(writeSelector, SelectionKey.OP_WRITE, call);
+                    } catch (ClosedChannelException e) {
+                        // Its ok. channel might be closed else where.
+                        done = true;
+                    } finally {
+                        decPending();
+                    }
+                }
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug(getName() + ": responding to #" + call.id + " from " + call.connection + " Wrote partial " + numBytes + " bytes.");
+                }
+            }
+            // everything went off well
+            error = false;
+        }
+    } finally {
+        if (error && call != null) {
+            LOG.warn(getName() + ", call " + call + ": output error");
+            // error. no more data for this channel.
+            done = true;
+            closeConnection(call.connection);
+        }
+    }
+    return done;
+}

@@ -1,0 +1,73 @@
+public static void main(String[] args) {
+    Connection con = null;
+    System.out.println("============================================================");
+    long begin = System.currentTimeMillis();
+    // 对应的目录
+    String today = args[0];
+    // 此次的标志
+    String flag = args[1];
+    System.out.println(today + "======" + flag);
+    try {
+        // init();
+        HWChrFileHandle filehandle = new HWChrFileHandle();
+        String destdir = "/export/home1/GPRS/JAVABIN/files/chrdest/hw" + today;
+        Map<String, ErrorFile> mapfiles = filehandle.getHWFile(destdir, flag);
+        System.out.println("本次获取的文件个数为：：：" + mapfiles.size());
+        con = DBUtils.getOracleCon();
+        System.out.println("成功获取到数据库连接OK");
+        System.out.println("mapfiles.size():" + mapfiles.size());
+        // 今天星期几
+        int weekday = getWeekOfDay();
+        // 现在几点
+        int thehour = getNowHour();
+        // 今天哪天
+        String thedate = getNowDate();
+        if (thehour == 0) {
+            // 如果现在是0点的话，则数据都入库到昨天的表里面，同时要清掉上周今天的数据,并同时统计好今天的按天数据，即group by sgsnid,kuang,cao,flowid的总数
+            // 0点跑的程序，插入到昨天的数据里面去
+            weekday = getYestardayWeekOfDay();
+            // 这里要清掉表的数据
+            int _today = getWeekOfDay();
+            // truncate 掉这个table
+            String deleteTable = "hwchr_log_" + _today;
+            // 执行truncate..同时这里要统计当天的所有程序数据
+            filehandle.truncateTable(deleteTable);
+            thehour = 23;
+            thedate = getYestardayDate();
+            // 统计一天的数据情况
+            filehandle.statFlowidDay(con, thedate);
+        } else {
+            // 统计的都是前1个小时的数据啊
+            thehour = thehour - 1;
+        }
+        System.out.println("时间:" + thehour + ",日期:" + thedate + ",星期:" + weekday);
+        if (mapfiles.size() > 0) {
+            ReadHandleHistory readHistory = new ReadHandleHistory(con);
+            // readHistory.getFromDB(mapfiles);
+            readHistory.getFromCHRDB(mapfiles);
+            long now = System.currentTimeMillis();
+            java.util.Iterator<ErrorFile> files = mapfiles.values().iterator();
+            List<HWChrLog> cdrs = null;
+            while (files.hasNext()) {
+                ErrorFile file = files.next();
+                cdrs = filehandle.parseHWChrFile(file);
+                System.out.println(df.format(new Date()) + "=>cdrs.size():::" + cdrs.size());
+                filehandle.saveHWChr(con, cdrs, weekday, thehour, thedate);
+                System.out.println("解析并存储" + file.getSgsnid() + "_" + file.getSrcfilename() + "所花时间:" + (System.currentTimeMillis() - now));
+                now = System.currentTimeMillis();
+            }
+            // 然后这里入库，也就是数据
+            readHistory.saveLatestErrors(mapfiles);
+            filehandle.saveFlowidHourDatas(con, thedate, thehour);
+            filehandle.saveFlowidErrorHourDatas(con, thedate, thehour);
+            System.out.println("所有文件处理完毕!!!" + (System.currentTimeMillis() - begin));
+        } else {
+            System.out.println("目录下无文件,跳过处理...");
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+        System.out.println("处理异常:::" + e);
+    } finally {
+        DBUtils.closeConnection(con);
+    }
+}

@@ -1,0 +1,58 @@
+public void run() {
+    boolean gotQuit = false;
+    while (true) {
+        lock.lock();
+        Action action = null;
+        try {
+            while (pendingActions.isEmpty()) {
+                try {
+                    gotSome.await();
+                } catch (InterruptedException e) {
+                }
+            }
+            action = pendingActions.poll();
+        } finally {
+            lock.unlock();
+        }
+        try {
+            switch(action.type) {
+                case ADD:
+                    backend.add(action.node);
+                    break;
+                case START:
+                    backend.start(action.data);
+                    break;
+                case FINISH:
+                    backend.finish(action.data);
+                    break;
+                case WRITE:
+                    backend.write(action.data, action.block);
+                    break;
+                case QUIT:
+                    gotQuit = true;
+                    if (!pendingActions.isEmpty()) {
+                        System.err.printf("There are %d actions past QUIT. they will be dropped!!\n", pendingActions.size());
+                        pendingActions.clear();
+                    }
+                    if (pendingDataSize != 0) {
+                        System.err.printf("pendingDataSize=%d at QUIT, must be 0!\n", pendingDataSize);
+                        pendingDataSize = 0;
+                    }
+                    break;
+            }
+            try {
+                lock.lock();
+                pendingDataSize -= action.size;
+                if (pendingDataSize < maxPendingDataSize) {
+                    canGetSome.signalAll();
+                }
+            } finally {
+                lock.unlock();
+            }
+            if (gotQuit)
+                return;
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+}

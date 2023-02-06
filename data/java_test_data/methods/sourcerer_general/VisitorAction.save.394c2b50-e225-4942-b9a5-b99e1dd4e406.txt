@@ -1,0 +1,75 @@
+public ActionForward save(ActionMapping mapping, ActionForm form, HttpServletRequest request, HttpServletResponse response) throws Exception {
+    if (log.isDebugEnabled()) {
+        log.debug("Entering 'save' method");
+    }
+    ActionMessages errors = form.validate(mapping, request);
+    if (!errors.isEmpty()) {
+        saveErrors(request, errors);
+        return mapping.findForward("failure");
+    }
+    // Extract attributes and parameters we will need
+    ActionMessages messages = new ActionMessages();
+    VisitorForm visitorForm = (VisitorForm) form;
+    Visitor visitor = new Visitor();
+    String id = request.getParameter("id");
+    // Exceptions are caught by ActionExceptionHandler
+    // all we need to persist is the parent object
+    VisitorManager mgr = (VisitorManager) getBean("visitorManager");
+    Visitor v1 = mgr.getVisitorByBarcode(visitorForm.getAttr1());
+    Visitor v2 = mgr.getVisitorByTagId(visitorForm.getTagId());
+    Boolean isNew = true;
+    if (id != null && !id.trim().equals("")) {
+        visitorForm.setId(id);
+        isNew = false;
+        visitor = mgr.getVisitor(id);
+    } else {
+        if (v1 != null || v2 != null) {
+            errors.add(ActionMessages.GLOBAL_MESSAGE, new ActionMessage("visitorForm.existed"));
+            saveErrors(request, errors);
+            updateFormBean(mapping, request, visitorForm);
+            return mapping.findForward("failure");
+        }
+    }
+    BeanUtils.copyProperties(visitor, visitorForm);
+    visitor.initAudit(this.getLoginUser());
+    try {
+        if (!CacheData.contains(visitor.getAttr1() + "_" + visitor.getTagId())) {
+            SmsManager smgr = (SmsManager) SpringUtil.getBean("smsManager");
+            Sms sms = new Sms();
+            sms.setType("P");
+            // TODO
+            // sms.setPhoneNo(Configuration.getInstance().getMobile());
+            sms.setStatus("N");
+            // 感谢您垂询  展台，相关资料已经发送到您的免费邮箱！
+            sms.setMessage(visitor.getAttr1() + ";" + visitor.getUserName() + ";" + visitor.getCompany() + ";" + visitor.getTagId());
+            smgr.saveSms(sms);
+            mgr.saveVisitor(visitor);
+            /**
+             * String remoteIp = Configuration.getInstance().getRemoteIp();
+             * if (StringUtils.isNotEmpty(remoteIp)) {
+             * sendMessage(remoteIp,visitor.getAttr1() + "||" + visitor.getUserName()+"||"+ visitor.getCompany() +"||" + visitor.getTagId() );
+             * }
+             */
+            CacheData.add(visitor.getAttr1() + "_" + visitor.getTagId());
+        }
+    // mgr.saveVisitor(visitor);
+    } catch (Exception e) {
+        log.warn(e.getMessage());
+        errors.add(ActionMessages.GLOBAL_MESSAGE, new ActionMessage("errors.visitorForm.save", e.getMessage()));
+        saveErrors(request, errors);
+        BeanUtils.copyProperties(visitorForm, convert(visitor));
+        updateFormBean(mapping, request, visitorForm);
+        return mapping.findForward("failure");
+    }
+    BeanUtils.copyProperties(visitorForm, visitor);
+    updateFormBean(mapping, request, visitorForm);
+    // add success messages
+    if (isNew) {
+        messages.add(ActionMessages.GLOBAL_MESSAGE, new ActionMessage("visitorForm.added", visitor.getUserName()));
+        saveMessages(request.getSession(), messages);
+    } else {
+        messages.add(ActionMessages.GLOBAL_MESSAGE, new ActionMessage("visitorForm.updated", visitor.getUserName()));
+        saveMessages(request.getSession(), messages);
+    }
+    return mapping.findForward("success");
+}

@@ -1,0 +1,99 @@
+private Set<Shadow> generateInitMethod(SootClass switchClass) {
+    // public void initialize() { ... }
+    SootMethod initMethod = new SootMethod("initialize", Collections.EMPTY_LIST, VoidType.v(), Modifier.PUBLIC);
+    Body body = Jimple.v().newBody(initMethod);
+    initMethod.setActiveBody(body);
+    switchClass.addMethod(initMethod);
+    PatchingChain<Unit> units = body.getUnits();
+    // do not weave into this method
+    MethodCategory.register(initMethod, MethodCategory.IF_EXPR);
+    // thisLocal = @this;
+    Local thisLocal = Jimple.v().newLocal("thisLocal", switchClass.getType());
+    body.getLocals().add(thisLocal);
+    units.addLast(Jimple.v().newIdentityStmt(thisLocal, Jimple.v().newThisRef(switchClass.getType())));
+    // compute and uniquely number all probes
+    Set<Probe> probes = new HashSet<Probe>();
+    DAInfo daInfo = ((HasDAInfo) Main.v().getAbcExtension()).getDependentAdviceInfo();
+    for (AdviceDependency dep : daInfo.getAdviceDependencies()) {
+        if (dep.fulfillsQuickCheck())
+            probes.addAll(dep.computeProbes());
+    }
+    if (Debug.v().debugDA) {
+        System.err.println("Number of probes: " + probes.size());
+    }
+    Set<Shadow> enabledShadows = new HashSet<Shadow>();
+    int number = 0;
+    for (Probe probe : probes) {
+        probe.assignNumber(number++);
+        enabledShadows.addAll(probe.getShadows());
+    }
+    numberShadows(enabledShadows);
+    // save some memory
+    Scene.v().releaseCallGraph();
+    Scene.v().releasePointsToAnalysis();
+    Scene.v().releaseReachableMethods();
+    daInfo.flowInsensitiveAnalysis().cleanup();
+    daInfo.intraProceduralAnalysis().cleanup();
+    // create a new array "probeTable". This is an array of arrays of
+    // boolean, i.e. a 2D array.
+    // probeTable = newarray (boolean[])[|probes|];
+    Local array = Jimple.v().newLocal("probeTable", ArrayType.v(BooleanType.v(), 2));
+    body.getLocals().add(array);
+    NewArrayExpr newArrayExpr = Jimple.v().newNewArrayExpr(ArrayType.v(BooleanType.v(), 1), IntConstant.v(probes.size()));
+    SootFieldRef fieldRef = Scene.v().makeFieldRef(Scene.v().getSootClass(SpatialPartitioner.SHADOW_SWITCH_CLASS_NAME), "probeTable", ArrayType.v(BooleanType.v(), 2), true);
+    AssignStmt assignStmt = Jimple.v().newAssignStmt(array, newArrayExpr);
+    units.add(assignStmt);
+    // assign this array to the field in <SHADOW_SWITCH_CLASS_NAME>
+    // field "probeTable" = probeTable
+    StaticFieldRef staticFieldRef = Jimple.v().newStaticFieldRef(fieldRef);
+    AssignStmt fieldAssignStmt = Jimple.v().newAssignStmt(staticFieldRef, array);
+    units.add(fieldAssignStmt);
+    // create an array of boolean "enabledShadows"
+    // enabled = newarray (boolean)[|enabledShadows|];
+    Local enabledArray = soot.jimple.Jimple.v().newLocal("enabled", ArrayType.v(BooleanType.v(), 1));
+    body.getLocals().add(enabledArray);
+    NewArrayExpr newEnabledArrayExpr = Jimple.v().newNewArrayExpr(BooleanType.v(), IntConstant.v(enabledShadows.size()));
+    assignStmt = Jimple.v().newAssignStmt(enabledArray, newEnabledArrayExpr);
+    units.add(assignStmt);
+    // assign this array to the field in <SHADOW_SWITCH_CLASS_NAME>
+    // field "enabled" = enabled
+    SootFieldRef enabledFieldRef = Scene.v().makeFieldRef(Scene.v().getSootClass(SpatialPartitioner.SHADOW_SWITCH_CLASS_NAME), "enabled", ArrayType.v(BooleanType.v(), 1), true);
+    staticFieldRef = Jimple.v().newStaticFieldRef(enabledFieldRef);
+    fieldAssignStmt = Jimple.v().newAssignStmt(staticFieldRef, enabledArray);
+    units.add(fieldAssignStmt);
+    // create an array of int "counts"
+    // counts = newarray (int)[|enabledShadows|];
+    Local countsArray = soot.jimple.Jimple.v().newLocal("counts", ArrayType.v(IntType.v(), 1));
+    body.getLocals().add(countsArray);
+    NewArrayExpr newCountsArrayExpr = Jimple.v().newNewArrayExpr(IntType.v(), IntConstant.v(enabledShadows.size()));
+    assignStmt = Jimple.v().newAssignStmt(countsArray, newCountsArrayExpr);
+    units.add(assignStmt);
+    // assign this array to the field in <SHADOW_SWITCH_CLASS_NAME>
+    // field "counts" = counts
+    SootFieldRef countsFieldRef = Scene.v().makeFieldRef(Scene.v().getSootClass(SpatialPartitioner.SHADOW_SWITCH_CLASS_NAME), "counts", ArrayType.v(IntType.v(), 1), true);
+    staticFieldRef = Jimple.v().newStaticFieldRef(countsFieldRef);
+    fieldAssignStmt = Jimple.v().newAssignStmt(staticFieldRef, countsArray);
+    units.add(fieldAssignStmt);
+    // for all shadow probes
+    for (Probe probe : probes) {
+        // create a method that initializes the array for this single probe,
+        // i.e. one dimension of the array;
+        // this is done, because otherwise this method could easily grow too
+        // large (>65535 bytes)
+        SootMethod methodForProbe = createMethodForProbe(probe, switchClass, enabledShadows);
+        // create a call to this method
+        VirtualInvokeExpr invokeExpr = Jimple.v().newVirtualInvokeExpr(thisLocal, methodForProbe.makeRef());
+        units.add(Jimple.v().newInvokeStmt(invokeExpr));
+    }
+    // have to add a return statement to make the method complete
+    units.add(Jimple.v().newReturnVoidStmt());
+    Scene.v().addClass(switchClass);
+    switchClass.setApplicationClass();
+    // make sure that the unweaver does not remove the newly added class
+    // again when restoring the state
+    unweaver.retainAddedClass(switchClass);
+    if (Debug.v().doValidate) {
+        body.validate();
+    }
+    return enabledShadows;
+}

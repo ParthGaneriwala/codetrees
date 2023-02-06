@@ -1,0 +1,85 @@
+public int run(String command) {
+    boolean noName = StringUtils.isEmpty(conf.getVar(HiveConf.ConfVars.HADOOPJOBNAME));
+    int maxlen = conf.getIntVar(HiveConf.ConfVars.HIVEJOBNAMELENGTH);
+    int jobs = 0;
+    conf.setVar(HiveConf.ConfVars.HIVEQUERYID, command);
+    try {
+        TaskFactory.resetId();
+        BaseSemanticAnalyzer sem;
+        LOG.info("Starting command: " + command);
+        ctx.clear();
+        resStream = null;
+        pd = new ParseDriver();
+        CommonTree tree = pd.parse(command);
+        while ((tree.getToken() == null) && (tree.getChildCount() > 0)) {
+            tree = (CommonTree) tree.getChild(0);
+        }
+        sem = SemanticAnalyzerFactory.get(conf, tree);
+        // Do semantic analysis and plan generation
+        sem.analyze(tree, ctx);
+        LOG.info("Semantic Analysis Completed");
+        jobs = countJobs(sem.getRootTasks());
+        if (jobs > 0) {
+            console.printInfo("Total MapReduce jobs = " + jobs);
+        }
+        String jobname = Utilities.abbreviate(command, maxlen - 6);
+        int curJob = 0;
+        for (Task<? extends Serializable> rootTask : sem.getRootTasks()) {
+            // assumption that only top level tasks are map-reduce tasks
+            if ((rootTask instanceof ExecDriver) || (rootTask instanceof MapRedTask)) {
+                curJob++;
+                if (noName) {
+                    conf.setVar(HiveConf.ConfVars.HADOOPJOBNAME, jobname + "(" + curJob + "/" + jobs + ")");
+                }
+            }
+            rootTask.initialize(conf);
+        }
+        // A very simple runtime that keeps putting runnable takss
+        // on a list and when a job completes, it puts the children at the back of the list
+        // while taking the job to run from the front of the list
+        Queue<Task<? extends Serializable>> runnable = new LinkedList<Task<? extends Serializable>>();
+        for (Task<? extends Serializable> rootTask : sem.getRootTasks()) {
+            if (runnable.offer(rootTask) == false) {
+                LOG.error("Could not insert the first task into the queue");
+                return (1);
+            }
+        }
+        while (runnable.peek() != null) {
+            Task<? extends Serializable> tsk = runnable.remove();
+            int exitVal = tsk.execute();
+            if (exitVal != 0) {
+                console.printError("FAILED: Execution Error, return code " + exitVal + " from " + tsk.getClass().getName());
+                return 9;
+            }
+            tsk.setDone();
+            if (tsk.getChildTasks() == null) {
+                continue;
+            }
+            for (Task<? extends Serializable> child : tsk.getChildTasks()) {
+                // Check if the child is runnable
+                if (!child.isRunnable()) {
+                    continue;
+                }
+                if (runnable.offer(child) == false) {
+                    LOG.error("Could not add child task to queue");
+                }
+            }
+        }
+    } catch (SemanticException e) {
+        console.printError("FAILED: Error in semantic analysis: " + e.getMessage());
+        return (10);
+    } catch (ParseException e) {
+        console.printError("FAILED: Parse Error: " + e.getMessage());
+        return (11);
+    } catch (Exception e) {
+        // Has to use full name to make sure it does not conflict with org.apache.commons.lang.StringUtils
+        console.printError("FAILED: Unknown exception : " + e.getMessage(), "\n" + org.apache.org.fit.hiai.hadoop.util.StringUtils.stringifyException(e));
+        return (12);
+    } finally {
+        if (noName) {
+            conf.setVar(HiveConf.ConfVars.HADOOPJOBNAME, "");
+        }
+    }
+    console.printInfo("OK");
+    return (0);
+}

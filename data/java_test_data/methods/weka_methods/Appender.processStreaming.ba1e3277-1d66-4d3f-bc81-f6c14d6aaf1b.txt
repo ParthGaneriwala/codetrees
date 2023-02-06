@@ -1,0 +1,91 @@
+protected synchronized void processStreaming(Data data) throws WekaException {
+    if (isStopRequested()) {
+        return;
+    }
+    Step source = data.getSourceStep();
+    Instance inst = data.getPrimaryPayload();
+    if (!m_completed.containsKey(source)) {
+        m_completed.put(source, inst.dataset());
+    }
+    if (m_completed.size() == getStepManager().numIncomingConnections() && m_completeHeader == null) {
+        // create mondo header...
+        getStepManager().logDetailed("Creating output header structure");
+        m_completeHeader = makeOutputHeader();
+        // now check for any buffered instances
+        if (m_incrementalSavers.size() > 0) {
+            // read in and convert these instances now
+            for (Map.Entry<Step, ObjectOutputStream> e : m_incrementalSavers.entrySet()) {
+                // for (ObjectOutputStream s : m_incrementalSavers.values()) {
+                ObjectOutputStream s = e.getValue();
+                // finish off the saving process first
+                try {
+                    // s.writeIncremental(null);
+                    s.flush();
+                    s.close();
+                    // File tmpFile = s.retrieveFile();
+                    File tmpFile = m_incrementalFiles.get(e.getKey());
+                    ObjectInputStream ois = new ObjectInputStream(new BufferedInputStream(new FileInputStream(tmpFile)));
+                    Instance tmpLoaded = null;
+                    do {
+                        try {
+                            tmpLoaded = (Instance) ois.readObject();
+                            Instance converted = makeOutputInstance(m_completeHeader, tmpLoaded);
+                            m_streamingData.setPayloadElement(StepManager.CON_INSTANCE, converted);
+                            getStepManager().outputData(m_streamingData);
+                        } catch (Exception ex) {
+                            // EOF
+                            ois.close();
+                            break;
+                        }
+                    } while (tmpLoaded != null);
+                /*
+             * ArffLoader loader = new ArffLoader(); loader.setFile(tmpFile);
+             * Instances tempStructure = loader.getStructure(); Instance
+             * tempLoaded = loader.getNextInstance(tempStructure); while
+             * (tempLoaded != null) { Instance converted =
+             * makeOutputInstance(m_completeHeader, tempLoaded);
+             * m_streamingData.setPayloadElement(StepManager.CON_INSTANCE,
+             * converted); getStepManager().outputData(data);
+             * 
+             * tempLoaded = loader.getNextInstance(tempStructure); }
+             */
+                } catch (Exception ex) {
+                    throw new WekaException(ex);
+                }
+            }
+            m_incrementalSavers.clear();
+            m_incrementalFiles.clear();
+        }
+    }
+    if (isStopRequested()) {
+        return;
+    }
+    if (getStepManager().isStreamFinished(data)) {
+        m_streamingCountDown.decrementAndGet();
+        return;
+    }
+    if (m_completeHeader == null) {
+        ObjectOutputStream saver = m_incrementalSavers.get(data.getSourceStep());
+        if (saver == null) {
+            try {
+                File tmpFile = File.createTempFile("weka", ".arff");
+                saver = new ObjectOutputStream(new BufferedOutputStream(new FileOutputStream(tmpFile)));
+                m_incrementalSavers.put(data.getSourceStep(), saver);
+                m_incrementalFiles.put(data.getSourceStep(), tmpFile);
+            } catch (IOException ex) {
+                throw new WekaException(ex);
+            }
+        }
+        try {
+            // saver.writeIncremental(inst);
+            saver.writeObject(inst);
+        } catch (IOException e1) {
+            throw new WekaException(e1);
+        }
+    // }
+    } else {
+        Instance newI = makeOutputInstance(m_completeHeader, inst);
+        m_streamingData.setPayloadElement(StepManager.CON_INSTANCE, newI);
+        getStepManager().outputData(m_streamingData);
+    }
+}

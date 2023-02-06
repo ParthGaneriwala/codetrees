@@ -1,0 +1,92 @@
+public static void main(String[] args) throws Exception {
+    OptionParser optParser = new OptionParser(Options.class);
+    Options opts = (Options) optParser.parse(args, true);
+    final MemoryMXBean memoryBean = ManagementFactory.getMemoryMXBean();
+    MemoryUsage memuse;
+    if (opts.meminfo) {
+        memuse = memoryBean.getHeapMemoryUsage();
+        System.out.printf("MEMUSE: initial: %dM/%dM\n", memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+    }
+    try {
+        Experiment.initialize(opts.config);
+        Experiment experiment = Experiment.getInstance();
+        System.out.println("experient loaded");
+        System.out.flush();
+        experiment.buildPrefixes();
+        System.out.println("buildPrefixes() done");
+        System.out.flush();
+        experiment.buildWordPrefixes();
+        System.out.println("buildWordPrefixes() done");
+        System.out.flush();
+        if (opts.shuffle) {
+            experiment.getFiles().reshuffleSmoothData();
+        }
+        if (opts.meminfo) {
+            memuse = memoryBean.getHeapMemoryUsage();
+            System.out.printf("MEMUSE: %dM/%dM\n", memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+        }
+        LanguageModel lm = experiment.getLM(opts.lm);
+        lm.getHistoryTree();
+        System.out.println("getLM() done");
+        System.out.flush();
+        /*
+			if (forest.getBackoffLM() != null) {
+				experiment.getLM(forest.getBackoffLM());
+			}
+			System.out.println("getLM(backoff) done");
+			System.out.flush();
+			*/
+        // AbstractCostFunction costFunction = experiment.getCostFunction();
+        experiment.closeXML();
+        if (opts.meminfo) {
+            memuse = memoryBean.getHeapMemoryUsage();
+            System.out.printf("MEMUSE: %dM/%dM\n", memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+        }
+        JobManager.initialize(opts.jobs);
+        Thread thread = new Thread(JobManager.getInstance(), "Job Manager");
+        thread.setDaemon(true);
+        thread.start();
+        File dbDir = new File(opts.dbdir);
+        File dataDir = new File(opts.datadir);
+        if (!dataDir.isDirectory()) {
+            dataDir.mkdirs();
+        }
+        {
+            Timer timer = new Timer(true);
+            if (opts.meminfo) {
+                TimerTask task = new TimerTask() {
+
+                    public void run() {
+                        MemoryUsage memuse = memoryBean.getHeapMemoryUsage();
+                        DateFormat df = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.LONG);
+                        System.out.printf("MEMUSE: %s: %dM/%dM\n", df.format(new Date()), memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+                    }
+                };
+                timer.scheduleAtFixedRate(task, 0, 10000);
+            }
+            EMSmoother smoother = new EMSmoother(lm, dbDir);
+            if (!opts.skipData) {
+                smoother.initialize(0, dataDir);
+            }
+            if (opts.pruneTree) {
+                smoother.pruneNodes();
+            }
+            smoother.doCrossValidatingSmoothing(opts.maxiter, opts.bucketSize, lm.getPruningThreshold(), false);
+        }
+        System.gc();
+        if (opts.meminfo) {
+            memuse = memoryBean.getHeapMemoryUsage();
+            System.out.printf("MEMUSE: after gc %dM/%dM\n", memuse.getUsed() / 1048576, memuse.getMax() / 1048576);
+        }
+        File backup = new File(lm.getHistoryTreeFilename() + ".bak");
+        if (backup.exists()) {
+            backup.delete();
+        }
+        new File(lm.getHistoryTreeFilename()).renameTo(backup);
+        lm.saveHistoryTree();
+    // experiment.saveConfig(opts.config);
+    // smoother.saveSmoothedClusters();
+    } catch (IOException e) {
+        e.printStackTrace();
+    }
+}

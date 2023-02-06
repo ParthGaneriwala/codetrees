@@ -1,0 +1,235 @@
+private static void installPackageFromRepository(String packageName, String version, boolean force) throws Exception {
+    if (version.equals("Latest")) {
+        // if no version/latest has been specified by the user then
+        // look for the latest version of the package that is compatible
+        // with the installed version of Weka.
+        version = "none";
+        List<Object> availableVersions = PACKAGE_MANAGER.getRepositoryPackageVersions(packageName);
+        // with the base weka install
+        for (Object v : availableVersions) {
+            Package versionedPackage = getRepositoryPackageInfo(packageName, v.toString());
+            if (versionedPackage.isCompatibleBaseSystem()) {
+                version = versionedPackage.getPackageMetaDataElement(VersionPackageConstraint.VERSION_KEY).toString();
+                break;
+            }
+        }
+        if (version.equals("none")) {
+            throw new Exception("Was unable to find a version of '" + packageName + "' that is compatible with Weka " + Version.VERSION);
+        }
+    }
+    Package toInstall = null;
+    try {
+        toInstall = getRepositoryPackageInfo(packageName, version);
+    } catch (Exception ex) {
+        System.err.println("[WekaPackageManager] Package " + packageName + " at version " + version + " doesn't seem to exist!");
+        // System.exit(1);
+        return;
+    }
+    if (!force) {
+        // check to see if it's disabled
+        Object disabled = toInstall.getPackageMetaDataElement(DISABLE_KEY);
+        if (disabled == null) {
+            disabled = toInstall.getPackageMetaDataElement(DISABLED_KEY);
+        }
+        if (disabled != null && disabled.toString().equalsIgnoreCase("true")) {
+            System.err.println("Can't install package " + packageName + " because it " + "has been disabled at the repository.");
+            return;
+        }
+        boolean ok = toInstall.isCompatibleBaseSystem();
+        if (!ok) {
+            List<Dependency> baseSysDep = toInstall.getBaseSystemDependency();
+            StringBuffer depList = new StringBuffer();
+            for (Dependency bd : baseSysDep) {
+                depList.append(bd.getTarget().toString() + " ");
+            }
+            System.err.println("Can't install package " + packageName + " because it requires " + depList.toString());
+            return;
+        }
+        if (!osAndArchCheck(toInstall, System.out)) {
+            // bail out here
+            return;
+        }
+        if (toInstall.isInstalled()) {
+            Package installedVersion = getInstalledPackageInfo(packageName);
+            if (!toInstall.equals(installedVersion)) {
+                System.out.println("Package " + packageName + "[" + installedVersion + "] is already installed. Replace with " + toInstall + " [y/n]?");
+                String response = queryUser();
+                if (response != null && (response.equalsIgnoreCase("n") || response.equalsIgnoreCase("no"))) {
+                    // bail out here
+                    return;
+                }
+            } else {
+                System.out.println("Package " + packageName + "[" + installedVersion + "] is already installed. Install again [y/n]?");
+                String response = queryUser();
+                if (response != null && (response.equalsIgnoreCase("n") || response.equalsIgnoreCase("no"))) {
+                    // bail out here
+                    return;
+                }
+            }
+        }
+        // Now get a full list of dependencies for this package and
+        // check for any conflicts
+        Map<String, List<Dependency>> conflicts = new HashMap<String, List<Dependency>>();
+        List<Dependency> dependencies = getAllDependenciesForPackage(toInstall, conflicts);
+        if (conflicts.size() > 0) {
+            System.err.println("Package " + packageName + " requires the following packages:\n");
+            Iterator<Dependency> depI = dependencies.iterator();
+            while (depI.hasNext()) {
+                Dependency d = depI.next();
+                System.err.println("\t" + d);
+            }
+            System.err.println("\nThere are conflicting dependencies:\n");
+            Set<String> pNames = conflicts.keySet();
+            Iterator<String> pNameI = pNames.iterator();
+            while (pNameI.hasNext()) {
+                String pName = pNameI.next();
+                System.err.println("Conflicts for " + pName);
+                List<Dependency> confsForPackage = conflicts.get(pName);
+                Iterator<Dependency> confs = confsForPackage.iterator();
+                while (confs.hasNext()) {
+                    Dependency problem = confs.next();
+                    System.err.println("\t" + problem);
+                }
+            }
+            System.err.println("Unable to continue with installation.");
+            // bail out here.
+            return;
+        }
+        // Next check all dependencies against what is installed and
+        // inform the user about which installed packages will be altered. Also
+        // build the list of only those packages that need to be installed or
+        // upgraded (excluding those that are already installed and are OK).
+        List<PackageConstraint> needsUpgrade = new ArrayList<PackageConstraint>();
+        List<Package> finalListToInstall = new ArrayList<Package>();
+        Iterator<Dependency> depI = dependencies.iterator();
+        while (depI.hasNext()) {
+            Dependency toCheck = depI.next();
+            if (toCheck.getTarget().getPackage().isInstalled()) {
+                String toCheckName = toCheck.getTarget().getPackage().getPackageMetaDataElement("PackageName").toString();
+                Package installedVersion = PACKAGE_MANAGER.getInstalledPackageInfo(toCheckName);
+                if (!toCheck.getTarget().checkConstraint(installedVersion)) {
+                    needsUpgrade.add(toCheck.getTarget());
+                    Package mostRecent = toCheck.getTarget().getPackage();
+                    if (toCheck.getTarget() instanceof weka.core.packageManagement.VersionPackageConstraint) {
+                        mostRecent = WekaPackageManager.mostRecentVersionWithRespectToConstraint(toCheck.getTarget());
+                    }
+                    finalListToInstall.add(mostRecent);
+                }
+            } else {
+                Package mostRecent = toCheck.getTarget().getPackage();
+                if (toCheck.getTarget() instanceof weka.core.packageManagement.VersionPackageConstraint) {
+                    mostRecent = WekaPackageManager.mostRecentVersionWithRespectToConstraint(toCheck.getTarget());
+                }
+                finalListToInstall.add(mostRecent);
+            }
+        }
+        // then potentially overwrite with what's in the finalListToInstall
+        if (toInstall.getPackageMetaDataElement(PRECLUDES_KEY) != null) {
+            List<Package> installed = getInstalledPackages();
+            Map<String, Package> packageMap = new HashMap<>();
+            for (Package p : installed) {
+                packageMap.put(p.getName(), p);
+            }
+            for (Package p : finalListToInstall) {
+                packageMap.put(p.getName(), p);
+            }
+            List<Package> precluded = toInstall.getPrecludedPackages(new ArrayList<Package>(packageMap.values()));
+            if (precluded.size() > 0) {
+                List<Package> finalPrecluded = new ArrayList<>();
+                Set<String> doNotLoadList = getDoNotLoadList();
+                for (Package p : precluded) {
+                    if (!doNotLoadList.contains(p.getName())) {
+                        finalPrecluded.add(p);
+                    }
+                }
+                if (finalPrecluded.size() > 0) {
+                    System.out.println("\nPackage " + toInstall.getName() + " cannot be " + "installed because it precludes the following packages:\n");
+                    for (Package p : finalPrecluded) {
+                        System.out.println("\n\t" + p.toString());
+                    }
+                    System.out.println("Either uninstall or disable these packages before " + "continuing.");
+                    // bail out here
+                    return;
+                }
+            }
+        }
+        if (needsUpgrade.size() > 0) {
+            System.out.println("The following packages will be upgraded in order to install " + packageName);
+            Iterator<PackageConstraint> upI = needsUpgrade.iterator();
+            while (upI.hasNext()) {
+                PackageConstraint tempC = upI.next();
+                System.out.println("\t" + tempC);
+            }
+            System.out.print("\nOK to continue [y/n]? > ");
+            String response = queryUser();
+            if (response != null && (response.equalsIgnoreCase("n") || response.equalsIgnoreCase("no"))) {
+                // bail out here
+                return;
+            }
+            // now take a look at the other installed packages and see if
+            // any would have a problem when these ones are upgraded
+            boolean conflictsAfterUpgrade = false;
+            List<Package> installed = getInstalledPackages();
+            List<Package> toUpgrade = new ArrayList<Package>();
+            upI = needsUpgrade.iterator();
+            while (upI.hasNext()) {
+                toUpgrade.add(upI.next().getPackage());
+            }
+            // add the actual package the user is wanting to install if it
+            // is going to be an up/downgrade rather than a first install since
+            // other installed packages may depend on the currently installed
+            // version
+            // and thus could be affected after the up/downgrade
+            toUpgrade.add(toInstall);
+            for (int i = 0; i < installed.size(); i++) {
+                Package tempP = installed.get(i);
+                String tempPName = tempP.getName();
+                boolean checkIt = true;
+                for (int j = 0; j < needsUpgrade.size(); j++) {
+                    if (tempPName.equals(needsUpgrade.get(j).getPackage().getName())) {
+                        checkIt = false;
+                        break;
+                    }
+                }
+                if (checkIt) {
+                    List<Dependency> problem = tempP.getIncompatibleDependencies(toUpgrade);
+                    if (problem.size() > 0) {
+                        conflictsAfterUpgrade = true;
+                        System.err.println("Package " + tempP.getName() + " will have a compatibility" + "problem with the following packages after upgrading them:");
+                        Iterator<Dependency> dI = problem.iterator();
+                        while (dI.hasNext()) {
+                            System.err.println("\t" + dI.next().getTarget().getPackage());
+                        }
+                    }
+                }
+            }
+            if (conflictsAfterUpgrade) {
+                System.err.println("Unable to continue with installation.");
+                // bail out here
+                return;
+            }
+        }
+        if (finalListToInstall.size() > 0) {
+            System.out.println("To install " + packageName + " the following packages will" + " be installed/upgraded:\n\n");
+            Iterator<Package> i = finalListToInstall.iterator();
+            while (i.hasNext()) {
+                System.out.println("\t" + i.next());
+            }
+            System.out.print("\nOK to proceed [y/n]? > ");
+            String response = queryUser();
+            if (response != null && (response.equalsIgnoreCase("n") || response.equalsIgnoreCase("no"))) {
+                // bail out here
+                return;
+            }
+        }
+        // OK, now we can download and install everything
+        // First install the final list of dependencies
+        installPackages(finalListToInstall, System.out);
+        // Now install the package itself
+        installPackageFromRepository(packageName, version, System.out);
+    } else {
+        // just install this package without checking/downloading dependencies
+        // etc.
+        installPackageFromRepository(packageName, version, System.out);
+    }
+}

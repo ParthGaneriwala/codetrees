@@ -1,0 +1,133 @@
+private int loadNCFile(File selected, JobProperties props) throws IOException {
+    FileReader fr = null;
+    BufferedReader br = null;
+    int depth = props.getDepth();
+    // int diameter = props.getDiameter();
+    int count = 0;
+    // 240 steps per inch
+    double factor = 240.0D;
+    HashMap tools = new HashMap();
+    // assume we are drilling
+    boolean drillMode = true;
+    int xstart = mill.getXLocation();
+    int ystart = mill.getYLocation();
+    MillingAction action = null;
+    int xoffset = props.getX();
+    int yoffset = props.getY();
+    Tool newTool = new Tool(Tool.DRILL, 0.0256);
+    /*
+;Holesize 1 =   28.0 PLATED MILS
+M48
+INCH
+T01C0.028
+%
+G05
+G90
+T01
+X017000Y003500
+X017000Y002500
+M30
+
+
+2.4 format 01.7000  00.3500  / 00.2500 (diff = .100)
+*/
+    try {
+        fr = new FileReader(selected);
+        br = new BufferedReader(fr);
+        String line = null;
+        // Tool Definition
+        Pattern tooldef = Pattern.compile("T([0-9]+)C([.0-9]+)");
+        // Tool Selection
+        Pattern toolsel = Pattern.compile("T([0-9]+)");
+        // XnnnnnYnnnnn
+        Pattern drillloc = Pattern.compile("X([-]?[0-9]+)Y([-]?[0-9]+)");
+        int lastx = -9999;
+        int lasty = -9999;
+        while ((line = br.readLine()) != null) {
+            if (line.equals("M48")) {
+                // Inch Mode
+                factor = 240.0d;
+                continue;
+            }
+            if (line.equals("M71")) {
+                // Metric Mode .254
+                // steps per millimeter
+                factor = 9.4488D;
+                continue;
+            }
+            if (line.equals("M00")) {
+                // End Program
+                continue;
+            }
+            if (line.equals("M30")) {
+                // End Program and rewind
+                actionsList2.add(action = new MilledMovement(xstart, ystart));
+                action.setDisplayOnly(props.isDisplayOnly());
+                lastx = xstart;
+                lasty = ystart;
+                log.info("Loaded a REWIND movement to " + xstart + "," + ystart);
+                continue;
+            }
+            if (line.equals("G05")) {
+                // Drilling Mode
+                drillMode = true;
+            }
+            if (line.equals("G90")) {
+                // Absolute positioning
+                continue;
+            }
+            Matcher m = tooldef.matcher(line);
+            if (m.matches()) {
+                // T01C0.028
+                Tool tool = showToolSelection("Tool " + m.group(1) + " Diameter = " + m.group(2));
+                tools.put(m.group(1), tool);
+                continue;
+            }
+            m = toolsel.matcher(line);
+            if (m.matches()) {
+                // Tnn - Tool selection - Change to a new tool
+                // This actually just stores it to load before next drill
+                newTool = (Tool) tools.get(m.group(1));
+                continue;
+            }
+            m = drillloc.matcher(line);
+            if (m.matches()) {
+                int xpos = Integer.parseInt(m.group(1));
+                int ypos = Integer.parseInt(m.group(2));
+                // calculate the location/ adjust for factor
+                double xdbl = ((double) xpos) / 10000.0D;
+                double ydbl = ((double) ypos) / 10000.0D;
+                xpos = (int) (xdbl * factor);
+                ypos = (int) (ydbl * factor);
+                xpos += xoffset;
+                ypos += yoffset;
+                lastx = xpos;
+                lasty = ypos;
+                actionsList2.add(action = new DrilledHole(xpos, ypos, depth, newTool));
+                action.setDisplayOnly(props.isDisplayOnly());
+                count++;
+                log.info("Loaded a drilled hole at " + xpos + "," + ypos + " depth = " + depth + " with tool " + newTool);
+                continue;
+            }
+            log.info("bypassing: " + line);
+        }
+        return count;
+    } catch (IOException e) {
+        throw e;
+    } finally {
+        try {
+            if (br != null) {
+                br.close();
+            }
+        } catch (IOException e) {
+            log.error("Error closing br", e);
+        }
+        try {
+            if (fr != null) {
+                fr.close();
+            }
+        } catch (IOException e) {
+            log.error("Error closing fr", e);
+        }
+    }
+}

@@ -1,0 +1,97 @@
+private HsqlArrayList processCreateConstraints(Table t, boolean constraint, int[] primarykeycolumn) throws HsqlException {
+    String token;
+    HsqlArrayList tcList;
+    Constraint tempConst;
+    HsqlName pkHsqlName;
+    // fredt@users 20020225 - comment
+    // HSQLDB relies on primary index to be the first one defined
+    // and needs original or system added primary key before any
+    // non-unique index is created
+    tcList = new HsqlArrayList();
+    tempConst = new Constraint(null, primarykeycolumn, null, null, Constraint.MAIN, Constraint.NO_ACTION, Constraint.NO_ACTION);
+    // tony_lai@users 20020820 - patch 595099
+    pkHsqlName = null;
+    tcList.add(tempConst);
+    if (!constraint) {
+        return tcList;
+    }
+    while (true) {
+        HsqlName cname = null;
+        if (tokenizer.isGetThis(Token.T_CONSTRAINT)) {
+            token = tokenizer.getName();
+            String constraintSchema = tokenizer.getLongNameFirst();
+            if (constraintSchema != null) {
+                constraintSchema = session.getSchemaNameForWrite(tokenizer.getLongNameFirst());
+                if (!t.getSchemaName().equals(constraintSchema)) {
+                    throw Trace.error(Trace.INVALID_SCHEMA_NAME_NO_SUBCLASS, constraintSchema);
+                }
+            }
+            cname = database.nameManager.newHsqlName(token, tokenizer.wasQuotedIdentifier());
+        }
+        token = tokenizer.getSimpleToken();
+        switch(Token.get(token)) {
+            case Token.PRIMARY:
+                {
+                    tokenizer.getThis(Token.T_KEY);
+                    // tony_lai@users 20020820 - patch 595099
+                    pkHsqlName = cname;
+                    int[] cols = processColumnList(t, false);
+                    Constraint mainConst;
+                    mainConst = (Constraint) tcList.get(0);
+                    if (mainConst.core.mainColArray != null) {
+                        if (!ArrayUtil.areEqual(mainConst.core.mainColArray, cols, cols.length, true)) {
+                            throw Trace.error(Trace.SECOND_PRIMARY_KEY);
+                        }
+                    }
+                    mainConst.core.mainColArray = cols;
+                    mainConst.constName = pkHsqlName;
+                    break;
+                }
+            case Token.UNIQUE:
+                {
+                    int[] col = processColumnList(t, false);
+                    if (cname == null) {
+                        cname = database.nameManager.newAutoName("CT");
+                    }
+                    tempConst = new Constraint(cname, col, null, null, Constraint.UNIQUE, Constraint.NO_ACTION, Constraint.NO_ACTION);
+                    tcList.add(tempConst);
+                    break;
+                }
+            case Token.FOREIGN:
+                {
+                    tokenizer.getThis(Token.T_KEY);
+                    tempConst = processCreateFK(t, cname);
+                    if (tempConst.core.refColArray == null) {
+                        Constraint mainConst = (Constraint) tcList.get(0);
+                        tempConst.core.refColArray = mainConst.core.mainColArray;
+                        if (tempConst.core.refColArray == null) {
+                            throw Trace.error(Trace.CONSTRAINT_NOT_FOUND, Trace.TABLE_HAS_NO_PRIMARY_KEY);
+                        }
+                    }
+                    checkFKColumnDefaults(t, tempConst);
+                    t.checkColumnsMatch(tempConst.core.mainColArray, tempConst.core.refTable, tempConst.core.refColArray);
+                    tcList.add(tempConst);
+                    break;
+                }
+            case Token.CHECK:
+                {
+                    if (cname == null) {
+                        cname = database.nameManager.newAutoName("CT");
+                    }
+                    tempConst = new Constraint(cname, null, null, null, Constraint.CHECK, Constraint.NO_ACTION, Constraint.NO_ACTION);
+                    processCreateCheckConstraintCondition(tempConst);
+                    tcList.add(tempConst);
+                    break;
+                }
+        }
+        token = tokenizer.getSimpleToken();
+        if (token.equals(Token.T_COMMA)) {
+            continue;
+        }
+        if (token.equals(Token.T_CLOSEBRACKET)) {
+            break;
+        }
+        throw Trace.error(Trace.UNEXPECTED_TOKEN, token);
+    }
+    return tcList;
+}

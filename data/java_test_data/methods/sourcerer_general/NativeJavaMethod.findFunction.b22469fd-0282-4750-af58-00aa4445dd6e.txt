@@ -1,0 +1,161 @@
+static int findFunction(Context cx, MemberBox[] methodsOrCtors, Object[] args) {
+    if (methodsOrCtors.length == 0) {
+        return -1;
+    } else if (methodsOrCtors.length == 1) {
+        MemberBox member = methodsOrCtors[0];
+        Class<?>[] argTypes = member.argTypes;
+        int alength = argTypes.length;
+        if (member.vararg) {
+            alength--;
+            if (alength > args.length) {
+                return -1;
+            }
+        } else {
+            if (alength != args.length) {
+                return -1;
+            }
+        }
+        for (int j = 0; j != alength; ++j) {
+            if (!NativeJavaObject.canConvert(args[j], argTypes[j])) {
+                if (debug)
+                    printDebug("Rejecting (args can't convert) ", member, args);
+                return -1;
+            }
+        }
+        if (debug)
+            printDebug("Found ", member, args);
+        return 0;
+    }
+    int firstBestFit = -1;
+    int[] extraBestFits = null;
+    int extraBestFitsCount = 0;
+    search: for (int i = 0; i < methodsOrCtors.length; i++) {
+        MemberBox member = methodsOrCtors[i];
+        Class<?>[] argTypes = member.argTypes;
+        int alength = argTypes.length;
+        if (member.vararg) {
+            alength--;
+            if (alength > args.length) {
+                continue search;
+            }
+        } else {
+            if (alength != args.length) {
+                continue search;
+            }
+        }
+        for (int j = 0; j < alength; j++) {
+            if (!NativeJavaObject.canConvert(args[j], argTypes[j])) {
+                if (debug)
+                    printDebug("Rejecting (args can't convert) ", member, args);
+                continue search;
+            }
+        }
+        if (firstBestFit < 0) {
+            if (debug)
+                printDebug("Found first applicable ", member, args);
+            firstBestFit = i;
+        } else {
+            // Compare with all currently fit methods.
+            // The loop starts from -1 denoting firstBestFit and proceed
+            // until extraBestFitsCount to avoid extraBestFits allocation
+            // in the most common case of no ambiguity
+            // number of times member was prefered over
+            int betterCount = 0;
+            // best fits
+            // number of times best fits were prefered
+            int worseCount = 0;
+            // over member
+            for (int j = -1; j != extraBestFitsCount; ++j) {
+                int bestFitIndex;
+                if (j == -1) {
+                    bestFitIndex = firstBestFit;
+                } else {
+                    bestFitIndex = extraBestFits[j];
+                }
+                MemberBox bestFit = methodsOrCtors[bestFitIndex];
+                if (cx.hasFeature(Context.FEATURE_ENHANCED_JAVA_ACCESS) && (bestFit.member().getModifiers() & Modifier.PUBLIC) != (member.member().getModifiers() & Modifier.PUBLIC)) {
+                    // methods in overloading
+                    if ((bestFit.member().getModifiers() & Modifier.PUBLIC) == 0)
+                        ++betterCount;
+                    else
+                        ++worseCount;
+                } else {
+                    int preference = preferSignature(args, argTypes, member.vararg, bestFit.argTypes, bestFit.vararg);
+                    if (preference == PREFERENCE_AMBIGUOUS) {
+                        break;
+                    } else if (preference == PREFERENCE_FIRST_ARG) {
+                        ++betterCount;
+                    } else if (preference == PREFERENCE_SECOND_ARG) {
+                        ++worseCount;
+                    } else {
+                        if (preference != PREFERENCE_EQUAL)
+                            Kit.codeBug();
+                        // We want to call the derived class's method.
+                        if (bestFit.isStatic() && bestFit.getDeclaringClass().isAssignableFrom(member.getDeclaringClass())) {
+                            // We want to call the derived class's method.
+                            if (debug)
+                                printDebug("Substituting (overridden static)", member, args);
+                            if (j == -1) {
+                                firstBestFit = i;
+                            } else {
+                                extraBestFits[j] = i;
+                            }
+                        } else {
+                            if (debug)
+                                printDebug("Ignoring same signature member ", member, args);
+                        }
+                        continue search;
+                    }
+                }
+            }
+            if (betterCount == 1 + extraBestFitsCount) {
+                // member was prefered over all best fits
+                if (debug)
+                    printDebug("New first applicable ", member, args);
+                firstBestFit = i;
+                extraBestFitsCount = 0;
+            } else if (worseCount == 1 + extraBestFitsCount) {
+                // all best fits were prefered over member, ignore it
+                if (debug)
+                    printDebug("Rejecting (all current bests better) ", member, args);
+            } else {
+                // some ambiguity was present, add member to best fit set
+                if (debug)
+                    printDebug("Added to best fit set ", member, args);
+                if (extraBestFits == null) {
+                    // Allocate maximum possible array
+                    extraBestFits = new int[methodsOrCtors.length - 1];
+                }
+                extraBestFits[extraBestFitsCount] = i;
+                ++extraBestFitsCount;
+            }
+        }
+    }
+    if (firstBestFit < 0) {
+        // Nothing was found
+        return -1;
+    } else if (extraBestFitsCount == 0) {
+        // single best fit
+        return firstBestFit;
+    }
+    // report remaining ambiguity
+    StringBuffer buf = new StringBuffer();
+    for (int j = -1; j != extraBestFitsCount; ++j) {
+        int bestFitIndex;
+        if (j == -1) {
+            bestFitIndex = firstBestFit;
+        } else {
+            bestFitIndex = extraBestFits[j];
+        }
+        buf.append("\n    ");
+        buf.append(methodsOrCtors[bestFitIndex].toJavaDeclaration());
+    }
+    MemberBox firstFitMember = methodsOrCtors[firstBestFit];
+    String memberName = firstFitMember.getName();
+    String memberClass = firstFitMember.getDeclaringClass().getName();
+    if (methodsOrCtors[0].isMethod()) {
+        throw Context.reportRuntimeError3("msg.constructor.ambiguous", memberName, scriptSignature(args), buf.toString());
+    } else {
+        throw Context.reportRuntimeError4("msg.method.ambiguous", memberClass, memberName, scriptSignature(args), buf.toString());
+    }
+}

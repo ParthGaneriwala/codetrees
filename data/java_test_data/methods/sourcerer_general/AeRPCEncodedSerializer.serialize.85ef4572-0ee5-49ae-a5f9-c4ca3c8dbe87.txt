@@ -1,0 +1,110 @@
+public void serialize(QName aName, Attributes aAttributes, Object aValue, SerializationContext aContext) throws IOException {
+    try {
+        if (!(aValue instanceof Document || aValue instanceof AeElementHolder))
+            // $NON-NLS-1$
+            throw new IOException(Messages.getMessage("cantSerialize01"));
+        // $NON-NLS-1$
+        boolean encoded = "multiRef".equals(aName.getLocalPart());
+        // step 1: write the multiRef element out
+        Element element = getElement(aValue);
+        QName type = getType(aValue, element);
+        XMLType xmlType = getXMLType(type);
+        Attributes attribs = null;
+        boolean xsiTypeRequired = false;
+        if (xmlType instanceof ComplexType && AeSchemaUtil.isArray(((ComplexType) xmlType))) {
+            // set the array type instead
+            // note: no need to hold onto the return value, the call to get will
+            // cache the prefix within the context.
+            aContext.getPrefixForURI(Constants.URI_SOAP11_ENC, TYPE_PREFIX + mPrefixTypeCount++);
+            attribs = aContext.setTypeAttribute(aAttributes, IAeBPELExtendedWSDLConst.SOAP_ARRAY);
+            xsiTypeRequired = true;
+        /*
+             * TODO (MF) revisit arrayType when Castor supports extension elements within Schema object
+             * 
+             * The soapenc:arrayType attribute is not strictly required by the
+             * SOAP encoding rules. It would be nice to add it to the array
+             * but the problem is that I don't know what the type of the array
+             * is in all cases. 
+             * 
+             * The wsdl:arrayType attribute in the schema is not present in the
+             * Castor's ComplexType for the array. They seem to skip over it
+             * entirely. This attribute would provide info on the child elements.
+             *
+             * AttributesImpl attributes = new AttributesImpl(attribs);
+             * attributes.addAttribute(Constants.URI_SOAP11_ENC, "arrayType", 
+             *             soapEncPrefix + ":arrayType", "CDATA", ?????);
+             * attribs = attributes;  
+             */
+        } else if (AeUtil.isNullOrEmpty(element.getNamespaceURI()) && type != null) {
+            aContext.getPrefixForURI(type.getNamespaceURI(), TYPE_PREFIX + mPrefixTypeCount++);
+            attribs = aContext.setTypeAttribute(aAttributes, type);
+            xsiTypeRequired = true;
+        }
+        if (attribs == null && encoded) {
+            // If we're encoded, then we need to include the attributes passed to
+            // us since they'll include the soap-encoding directive as well as
+            // the id attribute which is used to match the multiRef element to
+            // an href that points to it.
+            attribs = aAttributes;
+        }
+        // copy all attribs (including namespace assignments)
+        NamedNodeMap attrMap = element.getAttributes();
+        if (attrMap != null && attrMap.getLength() > 0) {
+            AttributesImpl attrs = attribs == null ? new AttributesImpl() : new AttributesImpl(attribs);
+            for (int i = 0; i < attrMap.getLength(); ++i) {
+                Node node = attrMap.item(i);
+                if (attribs == null || AeUtil.isNullOrEmpty(attribs.getValue(node.getNamespaceURI(), node.getLocalName())))
+                    // $NON-NLS-1$
+                    attrs.addAttribute(node.getNamespaceURI(), node.getLocalName(), node.getNodeName(), "CDATA", node.getNodeValue());
+            }
+            attribs = attrs;
+        }
+        // serialize the element
+        if (!xsiTypeRequired) {
+            // if we don't know what the type is then we should avoid writing
+            // the wrong xsi:type attribute. This is how that's accomplished.
+            aContext.setWriteXMLType(null);
+        }
+        aContext.startElement(aName, attribs);
+        // If the type is complex we need to recurse into child nodes
+        if (xmlType instanceof ComplexType || hasChildElements(element)) {
+            ComplexType complexType = null;
+            // could be an anyType
+            if (xmlType instanceof ComplexType)
+                complexType = (ComplexType) xmlType;
+            // step two: write all of my children out
+            NodeList children = element.getChildNodes();
+            for (int i = 0; i < children.getLength(); i++) {
+                Node child = children.item(i);
+                if (child instanceof Element) {
+                    writeDOMElement(aContext, complexType, (Element) child, encoded);
+                } else // -----------------------------------------------------------------
+                if (child instanceof CDATASection) {
+                    // $NON-NLS-1$
+                    aContext.writeString("<![CDATA[");
+                    aContext.writeString(((Text) child).getData());
+                    // $NON-NLS-1$
+                    aContext.writeString("]]>");
+                } else if (child instanceof Comment) {
+                    // $NON-NLS-1$
+                    aContext.writeString("<!--");
+                    aContext.writeString(((CharacterData) child).getData());
+                    // $NON-NLS-1$
+                    aContext.writeString("-->");
+                } else if (child instanceof Text) {
+                    aContext.writeSafeString(((Text) child).getData());
+                }
+            }
+        } else {
+            // simple type, just write out the contents
+            aContext.writeSafeString(AeXmlUtil.getText(element));
+        }
+        aContext.endElement();
+    } catch (Throwable t) {
+        AeException.logError(t, t.getLocalizedMessage());
+        if (t instanceof IOException)
+            throw (IOException) t;
+        else
+            throw new IOException(t.getLocalizedMessage());
+    }
+}

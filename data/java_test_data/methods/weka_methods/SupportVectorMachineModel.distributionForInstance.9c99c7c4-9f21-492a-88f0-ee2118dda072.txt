@@ -1,0 +1,85 @@
+public double[] distributionForInstance(Instance inst) throws Exception {
+    if (!m_initialized) {
+        mapToMiningSchema(inst.dataset());
+    }
+    double[] preds = null;
+    if (m_miningSchema.getFieldsAsInstances().classAttribute().isNumeric()) {
+        preds = new double[1];
+    } else {
+        preds = new double[m_miningSchema.getFieldsAsInstances().classAttribute().numValues()];
+        for (int i = 0; i < preds.length; i++) {
+            // mark all entries as not calculated to begin with
+            preds[i] = -1;
+        }
+    }
+    double[] incoming = m_fieldsMap.instanceToSchema(inst, m_miningSchema);
+    boolean hasMissing = false;
+    for (int i = 0; i < incoming.length; i++) {
+        if (i != m_miningSchema.getFieldsAsInstances().classIndex() && Double.isNaN(incoming[i])) {
+            hasMissing = true;
+            // System.err.println("Missing value for att : " + m_miningSchema.getFieldsAsInstances().attribute(i).name());
+            break;
+        }
+    }
+    if (hasMissing) {
+        if (!m_miningSchema.hasTargetMetaData()) {
+            String message = "[SupportVectorMachineModel] WARNING: Instance to predict has missing value(s) but " + "there is no missing value handling meta data and no " + "prior probabilities/default value to fall back to. No " + "prediction will be made (" + ((m_miningSchema.getFieldsAsInstances().classAttribute().isNominal() || m_miningSchema.getFieldsAsInstances().classAttribute().isString()) ? "zero probabilities output)." : "NaN output).");
+            if (m_log == null) {
+                System.err.println(message);
+            } else {
+                m_log.logMessage(message);
+            }
+            if (m_miningSchema.getFieldsAsInstances().classAttribute().isNumeric()) {
+                preds[0] = Utils.missingValue();
+            }
+            return preds;
+        } else {
+            // use prior probablilities/default value
+            TargetMetaInfo targetData = m_miningSchema.getTargetMetaData();
+            if (m_miningSchema.getFieldsAsInstances().classAttribute().isNumeric()) {
+                preds[0] = targetData.getDefaultValue();
+            } else {
+                Instances miningSchemaI = m_miningSchema.getFieldsAsInstances();
+                for (int i = 0; i < miningSchemaI.classAttribute().numValues(); i++) {
+                    preds[i] = targetData.getPriorProbability(miningSchemaI.classAttribute().value(i));
+                }
+            }
+            return preds;
+        }
+    } else {
+        for (SupportVectorMachine m : m_machines) {
+            m.distributionForInstance(incoming, m_kernel, m_vectorDictionary, preds, m_classificationMethod, m_threshold);
+        }
+    }
+    if (m_classificationMethod != classificationMethod.NONE && m_miningSchema.getFieldsAsInstances().classAttribute().isNominal()) {
+        // PMML 4.0
+        if (m_classificationMethod == classificationMethod.ONE_AGAINST_ALL) {
+            // find the minimum value
+            int minI = Utils.minIndex(preds);
+            preds = new double[preds.length];
+            preds[minI] = 1.0;
+        } else {
+        // nothing to do for one-against-one - just normalize the
+        // votes
+        }
+    }
+    if (m_machines.size() == preds.length - 1) {
+        double total = 0;
+        int unset = -1;
+        for (int i = 0; i < preds.length; i++) {
+            if (preds[i] != -1) {
+                total += preds[i];
+            } else {
+                unset = i;
+            }
+        }
+        if (total > 1.0) {
+            throw new Exception("[SupportVectorMachineModel] total of probabilities" + " is greater than 1!");
+        }
+        preds[unset] = 1.0 - total;
+    }
+    if (preds.length > 1) {
+        Utils.normalize(preds);
+    }
+    return preds;
+}

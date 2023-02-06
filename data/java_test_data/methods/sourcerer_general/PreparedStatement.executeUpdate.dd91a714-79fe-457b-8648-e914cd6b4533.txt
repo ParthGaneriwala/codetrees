@@ -1,0 +1,63 @@
+protected int executeUpdate(byte[][] batchedParameterStrings, InputStream[] batchedParameterStreams, boolean[] batchedIsStream, int[] batchedStreamLengths, boolean[] batchedIsNull, boolean isReallyBatch) throws SQLException {
+    checkClosed();
+    MySQLConnection locallyScopedConn = this.connection;
+    if (locallyScopedConn.isReadOnly()) {
+        throw SQLError.createSQLException(// $NON-NLS-1$
+        Messages.getString("PreparedStatement.34") + // $NON-NLS-1$
+        Messages.getString("PreparedStatement.35"), SQLError.SQL_STATE_ILLEGAL_ARGUMENT, getExceptionInterceptor());
+    }
+    if ((this.firstCharOfStmt == 'S') && isSelectQuery()) {
+        // $NON-NLS-1$
+        throw // $NON-NLS-1$
+        SQLError.createSQLException(// $NON-NLS-1$
+        Messages.getString("PreparedStatement.37"), "01S03", // $NON-NLS-1$
+        getExceptionInterceptor());
+    }
+    if (this.results != null) {
+        if (!locallyScopedConn.getHoldResultsOpenOverStatementClose()) {
+            this.results.realClose(false);
+        }
+    }
+    ResultSetInternalMethods rs = null;
+    // on the same mutex that _conn is using
+    synchronized (locallyScopedConn.getMutex()) {
+        Buffer sendPacket = fillSendPacket(batchedParameterStrings, batchedParameterStreams, batchedIsStream, batchedStreamLengths);
+        String oldCatalog = null;
+        if (!locallyScopedConn.getCatalog().equals(this.currentCatalog)) {
+            oldCatalog = locallyScopedConn.getCatalog();
+            locallyScopedConn.setCatalog(this.currentCatalog);
+        }
+        // 
+        if (locallyScopedConn.useMaxRows()) {
+            executeSimpleNonQuery(locallyScopedConn, "SET OPTION SQL_SELECT_LIMIT=DEFAULT");
+        }
+        boolean oldInfoMsgState = false;
+        if (this.retrieveGeneratedKeys) {
+            oldInfoMsgState = locallyScopedConn.isReadInfoMsgEnabled();
+            locallyScopedConn.setReadInfoMsgEnabled(true);
+        }
+        rs = executeInternal(-1, sendPacket, false, false, null, isReallyBatch);
+        if (this.retrieveGeneratedKeys) {
+            locallyScopedConn.setReadInfoMsgEnabled(oldInfoMsgState);
+            rs.setFirstCharOfQuery(this.firstCharOfStmt);
+        }
+        if (oldCatalog != null) {
+            locallyScopedConn.setCatalog(oldCatalog);
+        }
+    }
+    this.results = rs;
+    this.updateCount = rs.getUpdateCount();
+    if (containsOnDuplicateKeyUpdateInSQL() && this.compensateForOnDuplicateKeyUpdate) {
+        if (this.updateCount == 2 || this.updateCount == 0) {
+            this.updateCount = 1;
+        }
+    }
+    int truncatedUpdateCount = 0;
+    if (this.updateCount > Integer.MAX_VALUE) {
+        truncatedUpdateCount = Integer.MAX_VALUE;
+    } else {
+        truncatedUpdateCount = (int) this.updateCount;
+    }
+    this.lastInsertId = rs.getUpdateID();
+    return truncatedUpdateCount;
+}

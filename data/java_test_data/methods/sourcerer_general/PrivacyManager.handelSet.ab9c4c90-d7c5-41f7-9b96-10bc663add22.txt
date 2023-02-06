@@ -1,0 +1,100 @@
+private void handelSet(OnlineUserImpl onlineUser, UserResourceImpl userResource, RouteMessage routeMessage, Iq iq, Privacy privacy) {
+    String node = onlineUser.getNode();
+    // decline active list
+    if (privacy.isDeclineActiveList()) {
+        userResource.setActivePrivacyList(null);
+    } else // set active list
+    if (privacy.getActiveName() != null) {
+        String activeName = privacy.getActiveName();
+        PrivacyList oldActiveList = userResource.getActivePrivacyList();
+        if (oldActiveList == null || !activeName.equals(oldActiveList.getListName())) {
+            UserPrivacyListDbHelper dbHelper = userPrivacyListDbHelperTracker.getUserPrivacyListDbHelper();
+            try {
+                UserPrivacyList userPrivacyList = dbHelper.getUserPrivacyList(node, activeName);
+                if (userPrivacyList == null) {
+                    Iq iqError = PacketUtils.createErrorIq(iq);
+                    iqError.setError(new XmppError(XmppError.Condition.item_not_found));
+                    userResource.sendToSelfClient(iqError);
+                    return;
+                }
+                PrivacyList activePrivacyList = userPrivacyListToPrivacyList(userPrivacyList);
+                userResource.setActivePrivacyList(activePrivacyList);
+            } catch (Exception e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+            }
+        }
+    } else // decline default list
+    if (privacy.isDeclineDefaultList()) {
+        // conflict~!
+        if (onlineUser.getResourceCount() > 1) {
+            Iq iqError = PacketUtils.createErrorIq(iq);
+            iqError.setError(new XmppError(XmppError.Condition.conflict));
+            userResource.sendToSelfClient(iqError);
+            return;
+        }
+        UserPrivacyListDbHelper dbHelper = userPrivacyListDbHelperTracker.getUserPrivacyListDbHelper();
+        try {
+            dbHelper.cancelDefaultPrivacyList(node);
+            onlineUser.setDefaultPrivacyList(null);
+        } catch (Exception e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+        }
+    } else // set default list
+    if (privacy.getDefaultName() != null) {
+        // conflict~!
+        if (onlineUser.getResourceCount() > 1) {
+            Iq iqError = PacketUtils.createErrorIq(iq);
+            iqError.setError(new XmppError(XmppError.Condition.conflict));
+            userResource.sendToSelfClient(iqError);
+            return;
+        }
+        String defaultName = privacy.getDefaultName();
+        PrivacyList oldDefaultPrivacyList = onlineUser.getDefaultPrivacyList();
+        if (oldDefaultPrivacyList == null || defaultName.equals(oldDefaultPrivacyList.getListName())) {
+            UserPrivacyListDbHelper dbHelper = userPrivacyListDbHelperTracker.getUserPrivacyListDbHelper();
+            try {
+                dbHelper.setDefaultPrivacyList(node, defaultName);
+                UserPrivacyList userPrivacyList = dbHelper.getUserPrivacyList(node, defaultName);
+                if (userPrivacyList == null) {
+                    Iq iqError = PacketUtils.createErrorIq(iq);
+                    iqError.setError(new XmppError(XmppError.Condition.item_not_found));
+                    userResource.sendToSelfClient(iqError);
+                    return;
+                }
+                PrivacyList defaultList = userPrivacyListToPrivacyList(userPrivacyList);
+                onlineUser.setDefaultPrivacyList(defaultList);
+            } catch (Exception e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+            }
+        }
+    }
+    Collection<PrivacyList> privacyLists = privacy.getPrivacyLists();
+    if (privacyLists.isEmpty() || privacyLists.size() > 1) {
+        Iq iqError = PacketUtils.createErrorIq(iq);
+        iqError.setError(new XmppError(XmppError.Condition.bad_request));
+        userResource.sendToSelfClient(iqError);
+        return;
+    }
+    PrivacyList privacyList = privacyLists.iterator().next();
+    if (isConflict(onlineUser, userResource, privacyList.getListName())) {
+        Iq iqError = PacketUtils.createErrorIq(iq);
+        iqError.setError(new XmppError(XmppError.Condition.conflict));
+        userResource.sendToSelfClient(iqError);
+        return;
+    }
+    UserPrivacyList userPrivacyList = privacyListToUserPrivacyList(node, privacyList);
+    UserPrivacyListDbHelper dbHelper = userPrivacyListDbHelperTracker.getUserPrivacyListDbHelper();
+    try {
+        dbHelper.updateUserPrivacyList(userPrivacyList);
+        notifyOtherResource(onlineUser, userResource, privacyList.getListName());
+        // return result-iq
+        Iq iqResult = PacketUtils.createResultIq(iq);
+        userResource.sendToSelfClient(iqResult);
+    } catch (Exception e) {
+        // TODO Auto-generated catch block
+        e.printStackTrace();
+    }
+}

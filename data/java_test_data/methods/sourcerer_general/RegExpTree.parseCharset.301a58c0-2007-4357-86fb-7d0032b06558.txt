@@ -1,0 +1,68 @@
+private RegExpTree parseCharset() {
+    Preconditions.checkState(pattern.charAt(pos) == '[');
+    ++pos;
+    boolean isCaseInsensitive = flags.indexOf('i') >= 0;
+    boolean inverse = pos < limit && pattern.charAt(pos) == '^';
+    if (inverse) {
+        ++pos;
+    }
+    CharRanges ranges = CharRanges.EMPTY;
+    CharRanges ieExplicits = CharRanges.EMPTY;
+    while (pos < limit && pattern.charAt(pos) != ']') {
+        char ch = pattern.charAt(pos);
+        char start;
+        if (ch == '\\') {
+            ++pos;
+            char possibleGroupName = pattern.charAt(pos);
+            CharRanges group = NAMED_CHAR_GROUPS.get(possibleGroupName);
+            if (group != null) {
+                ++pos;
+                ranges = ranges.union(group);
+                continue;
+            }
+            start = parseEscapeChar();
+        } else {
+            start = ch;
+            ++pos;
+        }
+        char end = start;
+        if (pos + 1 < limit && pattern.charAt(pos) == '-' && pattern.charAt(pos + 1) != ']') {
+            ++pos;
+            ch = pattern.charAt(pos);
+            if (ch == '\\') {
+                ++pos;
+                end = parseEscapeChar();
+            } else {
+                end = ch;
+                ++pos;
+            }
+        }
+        CharRanges range = CharRanges.inclusive(start, end);
+        ranges = ranges.union(range);
+        if (IE_SPEC_ERRORS.contains(start) && IE_SPEC_ERRORS.contains(end)) {
+            ieExplicits = ieExplicits.union(range.intersection(IE_SPEC_ERRORS));
+        }
+        if (isCaseInsensitive) {
+            // If the flags contain the 'i' flag, then it is not correct to
+            // say that [^a-z] contains the letter 'A', or that [a-z] does not
+            // contain the letter 'A'.
+            // We expand out letter groups here so that parse returns something
+            // that is valid independent of flags.
+            // Calls to simplify(flags) may later reintroduce flag assumptions.
+            // but without this step, later steps might conflate
+            // /[a-z]/i
+            // and
+            // /[^\0-`{-\uffff]/i
+            // which matches nothing because the information about whether the
+            // ^ is present has been lost during optimizations and charset
+            // unioning as in /[...]|[^...]/.
+            ranges = CaseCanonicalize.expandToAllMatched(ranges);
+        }
+    }
+    // Consume ']'
+    ++pos;
+    if (inverse) {
+        ranges = CharRanges.ALL_CODE_UNITS.difference(ranges);
+    }
+    return new Charset(ranges, ieExplicits);
+}

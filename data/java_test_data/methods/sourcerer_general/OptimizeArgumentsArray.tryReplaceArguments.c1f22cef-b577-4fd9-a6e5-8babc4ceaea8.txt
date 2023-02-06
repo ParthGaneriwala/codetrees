@@ -1,0 +1,78 @@
+private boolean tryReplaceArguments(Scope scope) {
+    Node parametersList = scope.getRootNode().getFirstChild().getNext();
+    Preconditions.checkState(parametersList.getType() == Token.LP);
+    // Keep track of rather this function modified the AST and needs to be
+    // reported back to the compiler later.
+    boolean changed = false;
+    // Number of parameter that can be accessed without using the arguments
+    // array.
+    int numNamedParameter = parametersList.getChildCount();
+    // We want to guess what the highest index that has been access from the
+    // arguments array. We will guess that it does not use anything index higher
+    // than the named parameter list first until we see other wise.
+    int highestIndex = numNamedParameter - 1;
+    // determine the real highestIndex.
+    for (Node ref : currentArgumentsAccess) {
+        Node getElem = ref.getParent();
+        // be more cases that we can cover.
+        if (getElem.getType() != Token.GETELEM) {
+            return false;
+        }
+        Node index = ref.getNext();
+        // means at least one of the access is not known.
+        if (index.getType() != Token.NUMBER) {
+            // Give up.
+            return false;
+        }
+        Node getElemParent = getElem.getParent();
+        // different if argument[0] is a function call that refers to 'this'
+        if (NodeUtil.isCall(getElemParent) && getElemParent.getFirstChild() == getElem) {
+            // argument allows shorter alias for other arguments.
+            return false;
+        }
+        // Replace the highest index if we see an access that has a higher index
+        // than all the one we saw before.
+        int value = (int) index.getDouble();
+        if (value > highestIndex) {
+            highestIndex = value;
+        }
+    }
+    // Number of extra arguments we need.
+    // For example: function() { arguments[3] } access index 3 so
+    // it will need 4 extra named arguments to changed into:
+    // function(a,b,c,d) { d }.
+    int numExtraArgs = highestIndex - numNamedParameter + 1;
+    // Temporary holds the new names as string for quick access later.
+    String[] argNames = new String[numExtraArgs];
+    // Example: function() --> function(r0, r1, r2)
+    for (int i = 0; i < numExtraArgs; i++) {
+        String name = getNewName();
+        argNames[i] = name;
+        parametersList.addChildrenToBack(Node.newString(Token.NAME, name));
+        changed = true;
+    }
+    // This loop performs the replacement of arguments[x] -> a if x is known.
+    for (Node ref : currentArgumentsAccess) {
+        Node index = ref.getNext();
+        // Skip if it is unknown.
+        if (index.getType() != Token.NUMBER) {
+            continue;
+        }
+        int value = (int) index.getDouble();
+        // Unnamed parameter.
+        if (value >= numNamedParameter) {
+            ref.getParent().getParent().replaceChild(ref.getParent(), Node.newString(Token.NAME, argNames[value - numNamedParameter]));
+        } else {
+            // Here, for no apparent reason, the user is accessing a named parameter
+            // with arguments[idx]. We can replace it with the actual name for them.
+            Node name = parametersList.getFirstChild();
+            // will not deliberately write code like this.
+            for (int i = 0; i < value; i++) {
+                name = name.getNext();
+            }
+            ref.getParent().getParent().replaceChild(ref.getParent(), Node.newString(Token.NAME, name.getString()));
+        }
+        changed = true;
+    }
+    return changed;
+}

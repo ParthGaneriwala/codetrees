@@ -1,0 +1,86 @@
+private static void analyzeResults() throws IOException {
+    final FileSystem fs = FileSystem.get(config);
+    Path reduceFile = new Path(new Path(baseDir, OUTPUT_DIR_NAME), "part-00000");
+    DataInputStream in;
+    in = new DataInputStream(fs.open(reduceFile));
+    BufferedReader lines;
+    lines = new BufferedReader(new InputStreamReader(in));
+    long totalTimeAL1 = 0l;
+    long totalTimeAL2 = 0l;
+    long totalTimeTPmS = 0l;
+    long lateMaps = 0l;
+    long numOfExceptions = 0l;
+    long successfulFileOps = 0l;
+    long mapStartTimeTPmS = 0l;
+    long mapEndTimeTPmS = 0l;
+    String resultTPSLine1 = null;
+    String resultTPSLine2 = null;
+    String resultALLine1 = null;
+    String resultALLine2 = null;
+    String line;
+    while ((line = lines.readLine()) != null) {
+        StringTokenizer tokens = new StringTokenizer(line, " \t\n\r\f%;");
+        String attr = tokens.nextToken();
+        if (attr.endsWith(":totalTimeAL1")) {
+            totalTimeAL1 = Long.parseLong(tokens.nextToken());
+        } else if (attr.endsWith(":totalTimeAL2")) {
+            totalTimeAL2 = Long.parseLong(tokens.nextToken());
+        } else if (attr.endsWith(":totalTimeTPmS")) {
+            totalTimeTPmS = Long.parseLong(tokens.nextToken());
+        } else if (attr.endsWith(":latemaps")) {
+            lateMaps = Long.parseLong(tokens.nextToken());
+        } else if (attr.endsWith(":numOfExceptions")) {
+            numOfExceptions = Long.parseLong(tokens.nextToken());
+        } else if (attr.endsWith(":successfulFileOps")) {
+            successfulFileOps = Long.parseLong(tokens.nextToken());
+        } else if (attr.endsWith(":mapStartTimeTPmS")) {
+            mapStartTimeTPmS = Long.parseLong(tokens.nextToken());
+        } else if (attr.endsWith(":mapEndTimeTPmS")) {
+            mapEndTimeTPmS = Long.parseLong(tokens.nextToken());
+        }
+    }
+    // Average latency is the average time to perform 'n' number of
+    // operations, n being the number of files
+    double avgLatency1 = (double) totalTimeAL1 / (double) successfulFileOps;
+    double avgLatency2 = (double) totalTimeAL2 / (double) successfulFileOps;
+    // The time it takes for the longest running map is measured. Using that,
+    // cluster transactions per second is calculated. It includes time to
+    // retry any of the failed operations
+    double longestMapTimeTPmS = (double) (mapEndTimeTPmS - mapStartTimeTPmS);
+    double totalTimeTPS = (longestMapTimeTPmS == 0) ? (1000 * successfulFileOps) : (double) (1000 * successfulFileOps) / (double) longestMapTimeTPmS;
+    // The time it takes to perform 'n' operations is calculated (in ms),
+    // n being the number of files. Using that time, the average execution
+    // time is calculated. It includes time to retry any of the
+    // failed operations
+    double AverageExecutionTime = (totalTimeTPmS == 0) ? (double) successfulFileOps : (double) (totalTimeTPmS / successfulFileOps);
+    if (operation.equals(OP_CREATE_WRITE)) {
+        // For create/write/close, it is treated as two transactions,
+        // since a file create from a client perspective involves create and close
+        resultTPSLine1 = "               TPS: Create/Write/Close: " + (int) (totalTimeTPS * 2);
+        resultTPSLine2 = "Avg exec time (ms): Create/Write/Close: " + (double) AverageExecutionTime;
+        resultALLine1 = "            Avg Lat (ms): Create/Write: " + avgLatency1;
+        resultALLine2 = "                   Avg Lat (ms): Close: " + avgLatency2;
+    } else if (operation.equals(OP_OPEN_READ)) {
+        resultTPSLine1 = "                        TPS: Open/Read: " + (int) totalTimeTPS;
+        resultTPSLine2 = "         Avg Exec time (ms): Open/Read: " + (double) AverageExecutionTime;
+        resultALLine1 = "                    Avg Lat (ms): Open: " + avgLatency1;
+        if (readFileAfterOpen) {
+            resultALLine2 = "                  Avg Lat (ms): Read: " + avgLatency2;
+        }
+    } else if (operation.equals(OP_RENAME)) {
+        resultTPSLine1 = "                           TPS: Rename: " + (int) totalTimeTPS;
+        resultTPSLine2 = "            Avg Exec time (ms): Rename: " + (double) AverageExecutionTime;
+        resultALLine1 = "                  Avg Lat (ms): Rename: " + avgLatency1;
+    } else if (operation.equals(OP_DELETE)) {
+        resultTPSLine1 = "                           TPS: Delete: " + (int) totalTimeTPS;
+        resultTPSLine2 = "            Avg Exec time (ms): Delete: " + (double) AverageExecutionTime;
+        resultALLine1 = "                  Avg Lat (ms): Delete: " + avgLatency1;
+    }
+    String[] resultLines = { "-------------- NNBench -------------- : ", "                               Version: " + NNBENCH_VERSION, "                           Date & time: " + sdf.format(new Date(System.currentTimeMillis())), "", "                        Test Operation: " + operation, "                            Start time: " + sdf.format(new Date(startTime)), "                           Maps to run: " + numberOfMaps, "                        Reduces to run: " + numberOfReduces, "                    Block Size (bytes): " + blockSize, "                        Bytes to write: " + bytesToWrite, "                    Bytes per checksum: " + bytesPerChecksum, "                       Number of files: " + numberOfFiles, "                    Replication factor: " + replicationFactorPerFile, "            Successful file operations: " + successfulFileOps, "", "        # maps that missed the barrier: " + lateMaps, "                          # exceptions: " + numOfExceptions, "", resultTPSLine1, resultTPSLine2, resultALLine1, resultALLine2, "", "                 RAW DATA: AL Total #1: " + totalTimeAL1, "                 RAW DATA: AL Total #2: " + totalTimeAL2, "              RAW DATA: TPS Total (ms): " + totalTimeTPmS, "       RAW DATA: Longest Map Time (ms): " + longestMapTimeTPmS, "                   RAW DATA: Late maps: " + lateMaps, "             RAW DATA: # of exceptions: " + numOfExceptions, "" };
+    PrintStream res = new PrintStream(new FileOutputStream(new File(DEFAULT_RES_FILE_NAME), true));
+    // Write to a file and also dump to log
+    for (int i = 0; i < resultLines.length; i++) {
+        LOG.info(resultLines[i]);
+        res.println(resultLines[i]);
+    }
+}

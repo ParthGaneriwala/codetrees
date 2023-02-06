@@ -1,0 +1,89 @@
+boolean recoverTransitionRead(Collection<File> dataDirs, Collection<File> editsDirs, StartupOption startOpt) throws IOException {
+    assert startOpt != StartupOption.FORMAT : "NameNode formatting should be performed before reading the image";
+    // none of the data dirs exist
+    if (dataDirs.size() == 0 || editsDirs.size() == 0)
+        throw new IOException("All specified directories are not accessible or do not exist.");
+    if (startOpt == StartupOption.IMPORT && (checkpointDirs == null || checkpointDirs.isEmpty()))
+        throw new IOException("Cannot import image from a checkpoint. " + "\"fs.checkpoint.dir\" is not set.");
+    if (startOpt == StartupOption.IMPORT && (checkpointEditsDirs == null || checkpointEditsDirs.isEmpty()))
+        throw new IOException("Cannot import image from a checkpoint. " + "\"fs.checkpoint.edits.dir\" is not set.");
+    setStorageDirectories(dataDirs, editsDirs);
+    // 1. For each data directory calculate its state and
+    // check whether all is consistent before transitioning.
+    Map<StorageDirectory, StorageState> dataDirStates = new HashMap<StorageDirectory, StorageState>();
+    boolean isFormatted = false;
+    for (Iterator<StorageDirectory> it = dirIterator(); it.hasNext(); ) {
+        StorageDirectory sd = it.next();
+        StorageState curState;
+        try {
+            curState = sd.analyzeStorage(startOpt);
+            // sd is locked but not opened
+            switch(curState) {
+                case NON_EXISTENT:
+                    // name-node fails if any of the configured storage dirs are missing
+                    throw new InconsistentFSStateException(sd.getRoot(), "storage directory does not exist or is not accessible.");
+                case NOT_FORMATTED:
+                    break;
+                case NORMAL:
+                    break;
+                default:
+                    // recovery is possible
+                    sd.doRecover(curState);
+            }
+            if (curState != StorageState.NOT_FORMATTED && startOpt != StartupOption.ROLLBACK) {
+                // read and verify consistency with other directories
+                sd.read();
+                isFormatted = true;
+            }
+            if (startOpt == StartupOption.IMPORT && isFormatted)
+                // import of a checkpoint is allowed only into empty image directories
+                throw new IOException("Cannot import image from a checkpoint. " + " NameNode already contains an image in " + sd.getRoot());
+        } catch (IOException ioe) {
+            sd.unlock();
+            throw ioe;
+        }
+        dataDirStates.put(sd, curState);
+    }
+    if (!isFormatted && startOpt != StartupOption.ROLLBACK && startOpt != StartupOption.IMPORT)
+        throw new IOException("NameNode is not formatted.");
+    if (layoutVersion < LAST_PRE_UPGRADE_LAYOUT_VERSION) {
+        checkVersionUpgradable(layoutVersion);
+    }
+    if (startOpt != StartupOption.UPGRADE && layoutVersion < LAST_PRE_UPGRADE_LAYOUT_VERSION && layoutVersion != FSConstants.LAYOUT_VERSION)
+        throw new IOException("\nFile system image contains an old layout version " + layoutVersion + ".\nAn upgrade to version " + FSConstants.LAYOUT_VERSION + " is required.\nPlease restart NameNode with -upgrade option.");
+    // check whether distributed upgrade is reguired and/or should be continued
+    verifyDistributedUpgradeProgress(startOpt);
+    // 2. Format unformatted dirs.
+    this.checkpointTime = 0L;
+    for (Iterator<StorageDirectory> it = dirIterator(); it.hasNext(); ) {
+        StorageDirectory sd = it.next();
+        StorageState curState = dataDirStates.get(sd);
+        switch(curState) {
+            case NON_EXISTENT:
+                assert false : StorageState.NON_EXISTENT + " state cannot be here";
+            case NOT_FORMATTED:
+                LOG.info("Storage directory " + sd.getRoot() + " is not formatted.");
+                LOG.info("Formatting ...");
+                // create empty currrent dir
+                sd.clearDirectory();
+                break;
+            default:
+                break;
+        }
+    }
+    // 3. Do transitions
+    switch(startOpt) {
+        case UPGRADE:
+            doUpgrade();
+            // upgrade saved image already
+            return false;
+        case IMPORT:
+            doImportCheckpoint();
+            return true;
+        case ROLLBACK:
+            doRollback();
+            break;
+        case REGULAR:
+    }
+    return loadFSImage();
+}

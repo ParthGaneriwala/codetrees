@@ -1,0 +1,40 @@
+public List<Obs> getPatientObservations(final Integer patientId, final Map<String, Collection<OpenmrsObject>> restrictions, final FetchRestriction fetchRestriction) throws DAOException {
+    Criteria criteria = sessionFactory.getCurrentSession().createCriteria(Obs.class);
+    criteria.add(Restrictions.eq("personId", patientId));
+    criteria.setFirstResult(0);
+    if (fetchRestriction.getStart() != null)
+        criteria.setFirstResult(fetchRestriction.getStart());
+    if (fetchRestriction.getSize() != null && fetchRestriction.getSize() == 1)
+        criteria.setMaxResults(fetchRestriction.getSize());
+    Order order = Order.desc("obsDatetime");
+    if (OpenmrsUtil.nullSafeEquals(FetchOrdering.ORDER_ASCENDING, fetchRestriction.getFetchOrdering()))
+        order = Order.asc("obsDatetime");
+    criteria.addOrder(order);
+    Obs observation = new Obs();
+    for (String property : restrictions.keySet()) {
+        Collection<OpenmrsObject> propertyValues = restrictions.get(property);
+        if (CollectionUtils.isNotEmpty(propertyValues) && PropertyUtils.isReadable(observation, property)) {
+            criteria.add(Restrictions.in(property, propertyValues));
+            criteria.addOrder(Order.asc(property));
+        }
+    }
+    criteria.add(Restrictions.eq("voided", Boolean.FALSE));
+    List<Obs> observations = new ArrayList<Obs>();
+    // TODO: further optimization would be adding start date and end date parameter in the obs restrictions
+    ScrollableResults scrollableResults = criteria.scroll(ScrollMode.FORWARD_ONLY);
+    Integer size = fetchRestriction.getSize();
+    // scroll the results
+    Obs processedObs = null;
+    while (scrollableResults.next() && OpenmrsUtil.compareWithNullAsGreatest(observations.size(), size) == -1) {
+        Obs obs = (Obs) scrollableResults.get(0);
+        // TODO: thanks to Ampath for the duplicate data, we need to sanitize the query results here
+        if (processedObs != null && !obs.isObsGrouping()) {
+            if (DateUtils.isSameDay(processedObs.getObsDatetime(), obs.getObsDatetime()) && OpenmrsUtil.nullSafeEquals(processedObs.getConcept(), obs.getConcept()) && OpenmrsUtil.nullSafeEquals(processedObs.getValueCoded(), obs.getValueCoded()) && (OpenmrsUtil.nullSafeEquals(processedObs.getValueNumeric(), obs.getValueNumeric())))
+                continue;
+        }
+        processedObs = obs;
+        observations.add(obs);
+    }
+    scrollableResults.close();
+    return observations;
+}

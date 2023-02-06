@@ -1,0 +1,166 @@
+private double computeGradientAndCrossEntropy(final double[] params, final double[] gradient) {
+    assert (params.length == gradient.length);
+    JobManager manager = JobManager.getInstance();
+    JobGroup group = manager.createJobGroup("cross entropy");
+    // [dataid][param-position]
+    final double[][] totalEntropies = new double[nrDataFiles][];
+    final double[][] partialGradients = new double[nrDataFiles][];
+    final long[][] totalCounts = new long[nrDataFiles][];
+    final DecodingRuntime runtime = forest.getDecodingRuntime();
+    for (int fold = 0; fold < nrDataFiles; ++fold) {
+        final int dataid = fold;
+        totalCounts[dataid] = new long[params.length];
+        totalEntropies[dataid] = new double[params.length];
+        partialGradients[dataid] = new double[gradient.length];
+        final ObjectInputStream ois;
+        try {
+            ois = new ObjectInputStream(IO.getInputStream(new File(dataDir, makeHeldoutFilename(dataid))));
+        } catch (IOException e1) {
+            e1.printStackTrace();
+            continue;
+        }
+        Runnable run = new Runnable() {
+
+            @Override
+            public void run() {
+                long[] myTotalCounts = new long[params.length];
+                double[] myTotalEntropies = new double[params.length];
+                double[] myPartialGradient = new double[params.length];
+                int nrRecords = 0;
+                try {
+                    while (true) {
+                        try {
+                            HeldoutDataRecord rec;
+                            synchronized (ois) {
+                                rec = new HeldoutDataRecord(ois);
+                                ++nrRecords;
+                            }
+                            long word = rec.word;
+                            FactorTuple tuple = new FactorTuple(word);
+                            Word2ClustersCounts theWordCounts = dataModelCounts.wordCounts.get(tuple);
+                            CompactReadOnlyInt2IntHashMap[] theCounts = theWordCounts.getClusterCounts()[dataid];
+                            CompactReadOnlyInt2DoubleHashMap[] cluster2MLprobs = new CompactReadOnlyInt2DoubleHashMap[nrModels];
+                            CompactReadOnlyInt2DoubleHashMap[] cluster2probs = new CompactReadOnlyInt2DoubleHashMap[nrModels];
+                            for (int lmNum = 0; lmNum < nrModels; ++lmNum) {
+                                CompactReadOnlyInt2IntHashMap clusters2counts = theCounts[lmNum];
+                                long[] totalClusterCounts = dataModelCounts.clusterCounts[dataid][lmNum];
+                                int[] clusters = clusters2counts.keys();
+                                int[] counts = clusters2counts.values();
+                                CompactReadOnlyInt2DoubleHashMap cluster2MLprob = new CompactReadOnlyInt2DoubleHashMap(clusters2counts.getKeysHashSet(), 0.0);
+                                for (int i = 0; i < clusters.length; ++i) {
+                                    int clusterid = clusters[i];
+                                    if (counts[i] > totalClusterCounts[clusterid]) {
+                                        System.err.print("");
+                                    }
+                                    cluster2MLprob.set(clusterid, (double) counts[i] / totalClusterCounts[clusterid]);
+                                }
+                                CompactReadOnlyInt2DoubleHashMap cluster2prob = new CompactReadOnlyInt2DoubleHashMap(clusters2counts.getKeysHashSet(), 0.0);
+                                cluster2MLprobs[lmNum] = cluster2MLprob;
+                                cluster2probs[lmNum] = cluster2prob;
+                            }
+                            for (int i = 0; i < rec.contexts.length; ++i) {
+                                int[] clusters = rec.contexts[i].clusters;
+                                double[] probs = rec.probabilities[i];
+                                int count = rec.counts[i];
+                                for (int lmNum = 0; lmNum < nrModels; ++lmNum) {
+                                    double sumProbs = 0;
+                                    double sumWeights = 0;
+                                    for (int _lmNum = 0; _lmNum < nrModels; ++_lmNum) {
+                                        if (_lmNum != lmNum) {
+                                            double weight = runtime.getWeights(_lmNum)[clusters[_lmNum]];
+                                            sumWeights += weight;
+                                            sumProbs += weight * probs[_lmNum];
+                                        }
+                                    }
+                                    LanguageModel lm = forest.getModels().get(lmNum);
+                                    BinaryTree<HistoryTreePayload>[] nodes = lm.getNodes();
+                                    int leafClusterid = clusters[lmNum];
+                                    BinaryTree<HistoryTreePayload> parent = nodes[leafClusterid].getParent();
+                                    if (parent == null)
+                                        continue;
+                                    CompactReadOnlyInt2DoubleHashMap cluster2MLprob = cluster2MLprobs[lmNum];
+                                    CompactReadOnlyInt2DoubleHashMap cluster2prob = cluster2probs[lmNum];
+                                    fillInterpolatedProbabilities(cluster2MLprob, cluster2prob, parent);
+                                    BinaryTree<HistoryTreePayload> node = parent;
+                                    while (node != null) {
+                                        int clusterid = node.getPayload().clusterid;
+                                        int pos = clusters2paramsMap[lmNum][clusterid];
+                                        myTotalCounts[pos] += count;
+                                        double weight = params[pos];
+                                        if (weight < MIN_WEIGHT) {
+                                            params[pos] = MIN_WEIGHT;
+                                            weight = MIN_WEIGHT;
+                                        // System.err.print("");
+                                        }
+                                        double myProb = cluster2prob.get(clusterid);
+                                        double mySumWeights = sumWeights + weight;
+                                        double mySumProbs = sumProbs + weight * myProb;
+                                        if (mySumProbs <= 0) {
+                                            // oops!
+                                            StringBuilder sb = new StringBuilder();
+                                            sb.append(String.format("sumProbs=%f, sumWeights=%f, word=%s, lmNum=%d\n", mySumProbs, mySumWeights, FactorTuple.toStringNoNull(rec.word), lmNum));
+                                            System.err.print(sb.toString());
+                                        }
+                                        if (mySumWeights > 0) {
+                                            double prob = mySumProbs / mySumWeights;
+                                            double addition = count * ProbMath.log2(prob);
+                                            if (Double.isNaN(addition)) {
+                                                System.err.print("");
+                                            }
+                                            myTotalEntropies[pos] -= addition;
+                                            double update = count / mySumWeights * (myProb / prob - 1);
+                                            myPartialGradient[pos] -= update;
+                                        } else {
+                                            System.err.printf("sumWeights = %f\n", mySumWeights);
+                                        }
+                                        node = node.getParent();
+                                    }
+                                }
+                            }
+                        } catch (IOException e) {
+                            break;
+                        }
+                    }
+                    ois.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+                synchronized (totalCounts[dataid]) {
+                    for (int i = 0; i < params.length; ++i) {
+                        totalCounts[dataid][i] += myTotalCounts[i];
+                    }
+                    for (int i = 0; i < params.length; ++i) {
+                        totalEntropies[dataid][i] += myTotalEntropies[i];
+                    }
+                    for (int i = 0; i < params.length; ++i) {
+                        partialGradients[dataid][i] += myPartialGradient[i];
+                    }
+                }
+            }
+        };
+        for (int i = 0; i < Math.ceil(manager.getNumWorkers() / (double) nrDataFiles); ++i) {
+            Job job = new Job(run, "cross entropy");
+            manager.addJob(group, job);
+        }
+    }
+    group.join();
+    long[] superTotalCounts = new long[params.length];
+    for (long[] totalCount : totalCounts) {
+        for (int i = 0; i < params.length; ++i) {
+            superTotalCounts[i] += totalCount[i];
+        }
+    }
+    Arrays.fill(gradient, 0);
+    double entropy = 0;
+    for (int fold = 0; fold < nrDataFiles; ++fold) {
+        double[] partialGradient = partialGradients[fold];
+        for (int i = 0; i < params.length; ++i) {
+            long totalCount = superTotalCounts[i];
+            if (totalCount > 0) {
+                entropy += totalEntropies[fold][i] / totalCount;
+                gradient[i] += partialGradient[i] / totalCount;
+            }
+        }
+    }
+    return entropy;
+}

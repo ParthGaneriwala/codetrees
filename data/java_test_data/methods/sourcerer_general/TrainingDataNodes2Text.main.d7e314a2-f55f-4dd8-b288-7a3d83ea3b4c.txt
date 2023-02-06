@@ -1,0 +1,56 @@
+public static void main(String[] args) throws IOException {
+    OptionParser optParser = new OptionParser(Options.class);
+    Options opts = (Options) optParser.parse(args, true);
+    Experiment.initialize(opts.config);
+    Experiment experiment = Experiment.getInstance();
+    experiment.buildPrefixes();
+    ReadableByteChannel channel = new FileInputStream(opts.input).getChannel();
+    TrainingDataNodeReader reader = new EagerTrainingDataNodeReader(new OnDiskTrainingDataNodeReader(channel));
+    int nodeCount = 0;
+    int numData = 0;
+    long[] totalBlocks = null;
+    long[] totalCounts = null;
+    long[] totalRecords = null;
+    for (ReadableTrainingDataNode nodeData = reader.getNext(); nodeData != null; nodeData = reader.getNext()) {
+        ++nodeCount;
+        numData = nodeData.getNumData();
+        if (totalCounts == null) {
+            totalCounts = new long[numData];
+            totalRecords = new long[numData];
+            totalBlocks = new long[numData];
+        }
+        System.out.printf("######### Node #%d #########\n", nodeData.getNodeId());
+        for (int num = 0; num < numData; ++num) {
+            ReadableTrainingData data = nodeData.getData(num);
+            System.out.printf("***** DATA #%d *****\n", num);
+            while (data.hasNext()) {
+                TrainingDataBlock block = data.next();
+                for (ContextFuturesPair pair : block) {
+                    System.out.print(pair.getContext().toString());
+                    System.out.print(':');
+                    TupleCountPair tc = pair.getFutures()[0];
+                    System.out.print(' ');
+                    System.out.print(FactorTuple.toStringNoNull(tc.tuple));
+                    System.out.print('*');
+                    System.out.print(tc.count);
+                    for (int i = 1; i < pair.getFutures().length; ++i) {
+                        tc = pair.getFutures()[i];
+                        System.out.print(", ");
+                        System.out.print(FactorTuple.toStringNoNull(tc.tuple));
+                        System.out.print('*');
+                        System.out.print(tc.count);
+                    }
+                    System.out.println();
+                }
+                totalBlocks[num] += 1;
+                totalRecords[num] += block.size();
+                totalCounts[num] += block.getTotalCount();
+            }
+        }
+    }
+    reader.close();
+    System.out.printf("Total nodes: %d\n", nodeCount);
+    for (int i = 0; i < numData; ++i) {
+        System.out.printf("Data #%d has %d blocks, %d records, %d events\n", i, totalBlocks[i], totalRecords[i], totalCounts[i]);
+    }
+}

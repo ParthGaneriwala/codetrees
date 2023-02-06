@@ -1,0 +1,44 @@
+public String executeCommandImportPlan(ActionContext context) {
+    Connection db = null;
+    try {
+        // Parameters (no bean)
+        String projectId = context.getParameter("pid");
+        String requirementId = context.getParameter("rid");
+        String overwrite = context.getParameter("overwrite");
+        String attachmentList = context.getParameter("attachmentList");
+        // Plan is being added to existing Requirement
+        db = this.getConnection(context);
+        // Load the project and permissions
+        Project thisProject = retrieveAuthorizedProject(Integer.parseInt(projectId), context);
+        if (!hasProjectAccess(context, thisProject.getId(), "project-plan-outline-edit")) {
+            return "PermissionError";
+        }
+        context.getRequest().setAttribute("project", thisProject);
+        // Load the requirement to use for saving the plan
+        Requirement thisRequirement = new Requirement(db, Integer.parseInt(requirementId), thisProject.getId());
+        context.getRequest().setAttribute("requirement", thisRequirement);
+        if (DatabaseUtils.parseBoolean(overwrite)) {
+            // Delete the existing project plan before import
+            Requirement.deletePlan(db, thisRequirement.getId());
+        }
+        // Import all files and append them
+        FileItemList.convertTempFiles(db, Constants.PROJECT_REQUIREMENT_FILES, getUserId(context), thisRequirement.getId(), attachmentList);
+        FileItemList files = Requirement.retrieveFiles(db, thisRequirement.getId());
+        for (FileItem thisFile : files) {
+            String filePath = this.getPath(context, "projects") + getDatePath(thisFile.getModified()) + thisFile.getFilename();
+            FileInfo fileInfo = new FileInfo();
+            fileInfo.setClientFileName(thisFile.getClientFilename());
+            fileInfo.setFileContents(FileUtils.getBytesFromFile(new File(filePath)));
+            AssignmentImporter.parse(fileInfo, thisRequirement, db);
+            thisFile.delete(db, filePath);
+        }
+        return ("ImportOK");
+    } catch (Exception e) {
+        e.printStackTrace(System.out);
+        return "ImportERROR";
+    } finally {
+        if (db != null) {
+            this.freeConnection(context, db);
+        }
+    }
+}

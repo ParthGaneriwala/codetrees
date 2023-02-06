@@ -1,0 +1,49 @@
+private void doUpgrade() throws IOException {
+    if (getDistributedUpgradeState()) {
+        // only distributed upgrade need to continue
+        // don't do version upgrade
+        this.loadFSImage();
+        initializeDistributedUpgrade();
+        return;
+    }
+    // no previous fs states in any of the directories
+    for (Iterator<StorageDirectory> it = dirIterator(); it.hasNext(); ) {
+        StorageDirectory sd = it.next();
+        if (sd.getPreviousDir().exists())
+            throw new InconsistentFSStateException(sd.getRoot(), "previous fs state should not exist during upgrade. " + "Finalize or rollback first.");
+    }
+    // load the latest image
+    this.loadFSImage();
+    // Do upgrade for each directory
+    long oldCTime = this.getCTime();
+    // generate new cTime for the state
+    this.cTime = FSNamesystem.now();
+    int oldLV = this.getLayoutVersion();
+    this.layoutVersion = FSConstants.LAYOUT_VERSION;
+    this.checkpointTime = FSNamesystem.now();
+    for (Iterator<StorageDirectory> it = dirIterator(); it.hasNext(); ) {
+        StorageDirectory sd = it.next();
+        LOG.info("Upgrading image directory " + sd.getRoot() + ".\n   old LV = " + oldLV + "; old CTime = " + oldCTime + ".\n   new LV = " + this.getLayoutVersion() + "; new CTime = " + this.getCTime());
+        File curDir = sd.getCurrentDir();
+        File prevDir = sd.getPreviousDir();
+        File tmpDir = sd.getPreviousTmp();
+        assert curDir.exists() : "Current directory must exist.";
+        assert !prevDir.exists() : "prvious directory must not exist.";
+        assert !tmpDir.exists() : "prvious.tmp directory must not exist.";
+        // rename current to tmp
+        rename(curDir, tmpDir);
+        // save new image
+        if (!curDir.mkdir())
+            throw new IOException("Cannot create directory " + curDir);
+        saveFSImage(getImageFile(sd, NameNodeFile.IMAGE));
+        editLog.createEditLogFile(getImageFile(sd, NameNodeFile.EDITS));
+        // write version and time files
+        sd.write();
+        // rename tmp to previous
+        rename(tmpDir, prevDir);
+        isUpgradeFinalized = false;
+        LOG.info("Upgrade of " + sd.getRoot() + " is complete.");
+    }
+    initializeDistributedUpgrade();
+    editLog.open();
+}

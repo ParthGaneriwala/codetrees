@@ -1,0 +1,78 @@
+public void queryList(Connection db, Class objectClass) throws SQLException {
+    PreparedStatement pst = null;
+    ResultSet rs = null;
+    int items = -1;
+    StringBuffer sqlSelect = new StringBuffer();
+    StringBuffer sqlCount = new StringBuffer();
+    StringBuffer sqlFilter = new StringBuffer();
+    StringBuffer sqlOrder = new StringBuffer();
+    // Need to build a base SQL statement for counting records
+    sqlCount.append("SELECT COUNT(*) AS recordcount " + "FROM project_files f " + "WHERE f.item_id > -1 ");
+    createFilter(sqlFilter);
+    if (pagedListInfo != null) {
+        // Get the total number of records matching filter
+        pst = db.prepareStatement(sqlCount.toString() + sqlFilter.toString());
+        items = prepareFilter(pst);
+        rs = pst.executeQuery();
+        if (rs.next()) {
+            int maxRecords = rs.getInt("recordcount");
+            pagedListInfo.setMaxRecords(maxRecords);
+        }
+        rs.close();
+        pst.close();
+        // Determine the offset, based on the filter, for the first record to show
+        if (!pagedListInfo.getCurrentLetter().equals("")) {
+            pst = db.prepareStatement(sqlCount.toString() + sqlFilter.toString() + "AND lower(f.subject) < ? ");
+            items = prepareFilter(pst);
+            pst.setString(++items, pagedListInfo.getCurrentLetter().toLowerCase());
+            rs = pst.executeQuery();
+            if (rs.next()) {
+                int offsetCount = rs.getInt("recordcount");
+                pagedListInfo.setCurrentOffset(offsetCount);
+            }
+            rs.close();
+            pst.close();
+        }
+        // Determine column to sort by
+        pagedListInfo.setDefaultSort("f.subject, f.client_filename", null);
+        pagedListInfo.appendSqlTail(db, sqlOrder);
+    } else {
+        sqlOrder.append("ORDER BY f.default_file desc, f.item_id ");
+    }
+    // Build a base SQL statement for returning records
+    if (pagedListInfo != null) {
+        pagedListInfo.appendSqlSelectHead(db, sqlSelect);
+    } else {
+        sqlSelect.append("SELECT ");
+    }
+    // TODO: Make the following work with SQL Server
+    sqlSelect.append("f.*, t.filename AS thumbnail " + "FROM project_files f " + "LEFT JOIN project_files_thumbnail t ON (f.item_id = t.item_id AND f.version = t.version AND t.filename = f.filename || 'TH') " + "WHERE f.item_id > -1 ");
+    pst = db.prepareStatement(sqlSelect.toString() + sqlFilter.toString() + sqlOrder.toString());
+    items = prepareFilter(pst);
+    rs = pst.executeQuery();
+    if (pagedListInfo != null) {
+        pagedListInfo.doManualOffset(db, rs);
+    }
+    // Process the result set
+    int count = 0;
+    while (rs.next()) {
+        if (pagedListInfo != null && pagedListInfo.getItemsPerPage() > 0 && DatabaseUtils.getType(db) == DatabaseUtils.MSSQL && count >= pagedListInfo.getItemsPerPage()) {
+            break;
+        }
+        ++count;
+        // Cast the item to a file item for storing
+        Object thisItem = ObjectUtils.constructObject(objectClass, rs, "java.sql.ResultSet");
+        ((FileItem) thisItem).setDirectory(fileLibraryPath);
+        if (thisItem instanceof ProjectCategoryLogoFile) {
+            this.add((ProjectCategoryLogoFile) thisItem);
+        } else if (thisItem instanceof WikiFile) {
+            this.add((WikiFile) thisItem);
+        } else if (thisItem instanceof BadgeLogoFile) {
+            this.add((BadgeLogoFile) thisItem);
+        } else {
+            this.add((FileItem) thisItem);
+        }
+    }
+    rs.close();
+    pst.close();
+}

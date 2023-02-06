@@ -1,0 +1,43 @@
+public void process(Connection db, LookupContribution lookupContribution) throws SQLException {
+    lastRun = lookupContribution.getRunDate();
+    currentRun = new Timestamp(System.currentTimeMillis());
+    userPoints = new HashMap<String, Integer>();
+    // Page through the updates just in case there are lots of users do 100 at a time...
+    PagedListInfo pagedListInfo = new PagedListInfo();
+    pagedListInfo.setItemsPerPage(100);
+    pagedListInfo.setDefaultSort("entered", "DESC");
+    // Use the paged list to paged through all users
+    WikiVersionList wikiVersionList = new WikiVersionList();
+    wikiVersionList.setPagedListInfo(pagedListInfo);
+    wikiVersionList.setEnteredRangeStart(lastRun);
+    wikiVersionList.setEnteredRangeEnd(currentRun);
+    wikiVersionList.buildList(db);
+    ArrayList<String> userWikiList = new ArrayList<String>();
+    while (wikiVersionList.size() > 0) {
+        for (WikiVersion wikiVersion : wikiVersionList) {
+            int userId = wikiVersion.getEnteredBy();
+            String userWiki = userId + "-" + wikiVersion.getWikiId();
+            // Insure that multiple versions are not counted.
+            if (!userWikiList.contains(userWiki)) {
+                userWikiList.add(userWiki);
+                Wiki wiki = new Wiki(db, wikiVersion.getWikiId());
+                int projectId = wiki.getProjectId();
+                String userIdAndProjectId = userId + "-" + projectId;
+                if (userPoints.containsKey(userIdAndProjectId)) {
+                    int currentPoints = userPoints.get(userIdAndProjectId);
+                    currentPoints = currentPoints + lookupContribution.getPointsAwarded();
+                    userPoints.put(userIdAndProjectId, currentPoints);
+                } else {
+                    userPoints.put(userIdAndProjectId, lookupContribution.getPointsAwarded());
+                }
+            }
+        }
+        // Always reset the list or else the records are included on buildList again
+        wikiVersionList.clear();
+        if (pagedListInfo.getPage() < pagedListInfo.getNumberOfPages()) {
+            pagedListInfo.setCurrentPage(pagedListInfo.getPage() + 1);
+            wikiVersionList.buildList(db);
+        }
+    }
+    updatePoints(db, lookupContribution);
+}

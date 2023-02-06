@@ -1,0 +1,148 @@
+protected void setJobConf() throws IOException {
+    if (additionalConfSpec_ != null) {
+        LOG.warn("-additionalconfspec option is deprecated, please use -conf instead.");
+        config_.addResource(new Path(additionalConfSpec_));
+    }
+    // general MapRed job properties
+    jobConf_ = new JobConf(config_);
+    // (mapred.working.dir will be lazily initialized ONCE and depends on FS)
+    for (int i = 0; i < inputSpecs_.size(); i++) {
+        FileInputFormat.addInputPaths(jobConf_, (String) inputSpecs_.get(i));
+    }
+    jobConf_.set("stream.numinputspecs", "" + inputSpecs_.size());
+    String defaultPackage = this.getClass().getPackage().getName();
+    Class c;
+    Class fmt = null;
+    if (inReaderSpec_ == null && inputFormatSpec_ == null) {
+        fmt = TextInputFormat.class;
+    } else if (inputFormatSpec_ != null) {
+        if (inputFormatSpec_.equals(TextInputFormat.class.getName()) || inputFormatSpec_.equals(TextInputFormat.class.getCanonicalName()) || inputFormatSpec_.equals(TextInputFormat.class.getSimpleName())) {
+            fmt = TextInputFormat.class;
+        } else if (inputFormatSpec_.equals(KeyValueTextInputFormat.class.getName()) || inputFormatSpec_.equals(KeyValueTextInputFormat.class.getCanonicalName()) || inputFormatSpec_.equals(KeyValueTextInputFormat.class.getSimpleName())) {
+        } else if (inputFormatSpec_.equals(SequenceFileInputFormat.class.getName()) || inputFormatSpec_.equals(org.apache.org.fit.hiai.hadoop.mapred.SequenceFileInputFormat.class.getCanonicalName()) || inputFormatSpec_.equals(org.apache.org.fit.hiai.hadoop.mapred.SequenceFileInputFormat.class.getSimpleName())) {
+        } else if (inputFormatSpec_.equals(SequenceFileAsTextInputFormat.class.getName()) || inputFormatSpec_.equals(SequenceFileAsTextInputFormat.class.getCanonicalName()) || inputFormatSpec_.equals(SequenceFileAsTextInputFormat.class.getSimpleName())) {
+            fmt = SequenceFileAsTextInputFormat.class;
+        } else {
+            c = StreamUtil.goodClassOrNull(inputFormatSpec_, defaultPackage);
+            if (c != null) {
+                fmt = c;
+            } else {
+                fail("-inputformat : class not found : " + inputFormatSpec_);
+            }
+        }
+    }
+    if (fmt == null) {
+        fmt = StreamInputFormat.class;
+    }
+    jobConf_.setInputFormat(fmt);
+    jobConf_.setOutputKeyClass(Text.class);
+    jobConf_.setOutputValueClass(Text.class);
+    jobConf_.set("stream.addenvironment", addTaskEnvironment_);
+    if (mapCmd_ != null) {
+        c = StreamUtil.goodClassOrNull(mapCmd_, defaultPackage);
+        if (c != null) {
+            jobConf_.setMapperClass(c);
+        } else {
+            jobConf_.setMapperClass(PipeMapper.class);
+            jobConf_.set("stream.map.streamprocessor", URLEncoder.encode(mapCmd_, "UTF-8"));
+        }
+    }
+    if (comCmd_ != null) {
+        c = StreamUtil.goodClassOrNull(comCmd_, defaultPackage);
+        if (c != null) {
+            jobConf_.setCombinerClass(c);
+        } else {
+            fail("-combiner : class not found : " + comCmd_);
+        }
+    }
+    boolean reducerNone_ = false;
+    if (redCmd_ != null) {
+        reducerNone_ = redCmd_.equals(REDUCE_NONE);
+        if (redCmd_.compareToIgnoreCase("aggregate") == 0) {
+            jobConf_.setReducerClass(ValueAggregatorReducer.class);
+            jobConf_.setCombinerClass(ValueAggregatorCombiner.class);
+        } else {
+            c = StreamUtil.goodClassOrNull(redCmd_, defaultPackage);
+            if (c != null) {
+                jobConf_.setReducerClass(c);
+            } else {
+                jobConf_.setReducerClass(PipeReducer.class);
+                jobConf_.set("stream.reduce.streamprocessor", URLEncoder.encode(redCmd_, "UTF-8"));
+            }
+        }
+    }
+    if (inReaderSpec_ != null) {
+        String[] args = inReaderSpec_.split(",");
+        String readerClass = args[0];
+        // this argument can only be a Java class
+        c = StreamUtil.goodClassOrNull(readerClass, defaultPackage);
+        if (c != null) {
+            jobConf_.set("stream.recordreader.class", c.getName());
+        } else {
+            fail("-inputreader: class not found: " + readerClass);
+        }
+        for (int i = 1; i < args.length; i++) {
+            String[] nv = args[i].split("=", 2);
+            String k = "stream.recordreader." + nv[0];
+            String v = (nv.length > 1) ? nv[1] : "";
+            jobConf_.set(k, v);
+        }
+    }
+    FileOutputFormat.setOutputPath(jobConf_, new Path(output_));
+    fmt = null;
+    if (outputFormatSpec_ != null) {
+        c = StreamUtil.goodClassOrNull(outputFormatSpec_, defaultPackage);
+        if (c != null) {
+            fmt = c;
+        } else {
+            fail("-outputformat : class not found : " + outputFormatSpec_);
+        }
+    }
+    if (fmt == null) {
+        fmt = TextOutputFormat.class;
+    }
+    jobConf_.setOutputFormat(fmt);
+    if (partitionerSpec_ != null) {
+        c = StreamUtil.goodClassOrNull(partitionerSpec_, defaultPackage);
+        if (c != null) {
+            jobConf_.setPartitionerClass(c);
+        } else {
+            fail("-partitioner : class not found : " + partitionerSpec_);
+        }
+    }
+    if (numReduceTasksSpec_ != null) {
+        int numReduceTasks = Integer.parseInt(numReduceTasksSpec_);
+        jobConf_.setNumReduceTasks(numReduceTasks);
+    }
+    if (reducerNone_) {
+        jobConf_.setNumReduceTasks(0);
+    }
+    if (mapDebugSpec_ != null) {
+        jobConf_.setMapDebugScript(mapDebugSpec_);
+    }
+    if (reduceDebugSpec_ != null) {
+        jobConf_.setReduceDebugScript(reduceDebugSpec_);
+    }
+    // last, allow user to override anything
+    // (although typically used with properties we didn't touch)
+    jar_ = packageJobJar();
+    if (jar_ != null) {
+        jobConf_.setJar(jar_);
+    }
+    if ((cacheArchives != null) || (cacheFiles != null)) {
+        getURIs(cacheArchives, cacheFiles);
+        boolean b = DistributedCache.checkURIs(fileURIs, archiveURIs);
+        if (!b)
+            fail(LINK_URI);
+    }
+    DistributedCache.createSymlink(jobConf_);
+    // set the jobconf for the caching parameters
+    if (cacheArchives != null)
+        DistributedCache.setCacheArchives(archiveURIs, jobConf_);
+    if (cacheFiles != null)
+        DistributedCache.setCacheFiles(fileURIs, jobConf_);
+    if (verbose_) {
+        listJobConfProperties();
+    }
+    msg("submitting to jobconf: " + getJobTrackerHostPort());
+}
